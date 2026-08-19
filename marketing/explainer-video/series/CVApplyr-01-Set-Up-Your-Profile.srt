@@ -1,32 +1,32 @@
 1
-00:00:00,150 --> 00:00:04,898
+00:00:00,150 --> 00:00:04,877
 Set up your profile once. Every application after this uses it.
 
 2
-00:00:05,198 --> 00:00:07,946
+00:00:05,177 --> 00:00:07,848
 Open the menu, then Account Settings.
 
 3
-00:00:08,246 --> 00:00:13,357
+00:00:08,148 --> 00:00:13,264
 Add your details. Name, phone, address, date of birth.
 
 4
-00:00:13,657 --> 00:00:15,076
+00:00:13,564 --> 00:00:14,917
 Attach your résumé.
 
 5
-00:00:15,376 --> 00:00:17,949
+00:00:15,217 --> 00:00:17,948
 That is the file it attaches for you later.
 
 6
-00:00:18,249 --> 00:00:22,535
+00:00:18,248 --> 00:00:22,269
 No signature? It draws one from your name. Pick a style.
 
 7
-00:00:22,835 --> 00:00:26,362
+00:00:22,569 --> 00:00:27,309
 Save. Done. You will not type any of this again.
 
 8
-00:00:26,662 --> 00:00:29,426
+00:00:27,609 --> 00:00:30,793
 Next. Generate your résumé with AI.
 

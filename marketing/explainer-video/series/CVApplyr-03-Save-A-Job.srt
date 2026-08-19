@@ -1,28 +1,28 @@
 1
-00:00:00,150 --> 00:00:03,400
+00:00:00,150 --> 00:00:03,406
 Save a job, and let the app research it for you.
 
 2
-00:00:03,700 --> 00:00:07,136
+00:00:03,706 --> 00:00:07,012
 Search inside the app. Describe the job you want.
 
 3
-00:00:07,436 --> 00:00:08,891
+00:00:07,312 --> 00:00:09,324
 Or search the live web.
 
 4
-00:00:09,191 --> 00:00:13,182
+00:00:09,624 --> 00:00:13,332
 Open any careers page. The robot button follows you.
 
 5
-00:00:13,482 --> 00:00:15,335
+00:00:13,632 --> 00:00:16,350
 Tap it, then Fetch job.
 
 6
-00:00:15,635 --> 00:00:19,602
+00:00:16,650 --> 00:00:20,905
 Saved. Salary, skills, and your match score.
 
 7
-00:00:19,902 --> 00:00:24,269
+00:00:21,205 --> 00:00:25,239
 Next. It researches the company, and writes your cover letter.
 

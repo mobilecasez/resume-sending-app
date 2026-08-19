@@ -1,44 +1,44 @@
 1
-00:00:00,150 --> 00:00:04,092
+00:00:00,150 --> 00:00:05,382
 Generate your résumé with AI, formatted for where you apply.
 
 2
-00:00:04,392 --> 00:00:10,133
+00:00:05,682 --> 00:00:11,551
 Before a human reads your résumé, software does. Pretty templates fail it.
 
 3
-00:00:10,133 --> 00:00:14,633
+00:00:11,551 --> 00:00:16,151
 So every format here is rated. Five stars reads perfectly.
 
 4
-00:00:14,933 --> 00:00:16,277
+00:00:16,451 --> 00:00:18,147
 Open Resume Builder.
 
 5
-00:00:16,577 --> 00:00:21,488
+00:00:18,447 --> 00:00:23,649
 Paste anything. An old résumé, a LinkedIn bio, rough notes.
 
 6
-00:00:21,788 --> 00:00:24,871
+00:00:23,949 --> 00:00:27,287
 Generate. A structured résumé comes back.
 
 7
-00:00:25,171 --> 00:00:29,601
+00:00:27,587 --> 00:00:32,662
 A German CV needs a photo. A US résumé must not have one.
 
 8
-00:00:29,601 --> 00:00:33,021
+00:00:32,662 --> 00:00:36,580
 Pick your region, and it rebuilds instantly.
 
 9
-00:00:33,321 --> 00:00:37,129
+00:00:36,880 --> 00:00:40,501
 Swipe the formats. Each one shows its star rating.
 
 10
-00:00:37,429 --> 00:00:39,439
+00:00:40,801 --> 00:00:43,754
 Download as PDF or Word.
 
 11
-00:00:39,739 --> 00:00:43,212
+00:00:44,054 --> 00:00:47,349
 Next. Save a job, and skip the research.
 
