@@ -1246,6 +1246,88 @@ function helpersSourceProblems() {
     await p.close();
   }
 
+  // ── intl-tel-input DIAL PICKER (amazon.jobs phone) ──────────────────────────────────────────
+  // Amazon's phone country-code picker is a <div class="iti__selected-flag" role="combobox"> — not
+  // an input, not a select — owning a <ul> of rows that read "India +91" (name span + dial span,
+  // read from Amazon's own served bundle). A scanner that only collected input/textarea/select
+  // never saw the widget at all: "it missed the country code" was the scanner, not the matcher.
+  {
+    const p = await browser.newPage();
+    await p.setContent(`<!doctype html><html><body><form>
+      <label id="dlab">Country for phone number</label>
+      <div class="iti">
+        <div class="iti__selected-flag" role="combobox" aria-haspopup="listbox" aria-expanded="false"
+             aria-owns="iti-lst" aria-labelledby="dlab" tabindex="0" style="width:40px;height:30px">
+          <span id="dsel" class="iti__flag"></span>
+        </div>
+        <ul id="iti-lst" class="iti__country-list" style="display:none"></ul>
+        <label for="ph">Phone number</label>
+        <input id="ph" name="phone" type="tel">
+      </div>
+    </form></body></html>`);
+    await p.evaluate(`${BRIDGE}
+      var flag=document.querySelector('.iti__selected-flag'), lst=document.getElementById('iti-lst');
+      var ROWS=[['United States','+1'],['United Kingdom','+44'],['India','+91'],['Indonesia','+62']];
+      window.__dial='';
+      function open(){ lst.style.display='block'; lst.innerHTML='';
+        ROWS.forEach(function(r){ var li=document.createElement('li'); li.className='iti__country';
+          li.innerHTML='<span class="iti__country-name">'+r[0]+'</span> <span class="iti__dial-code">'+r[1]+'</span>';
+          li.style.padding='6px';
+          li.addEventListener('click', function(){ window.__dial=r[1]; document.getElementById('dsel').textContent=r[0]; lst.style.display='none'; flag.setAttribute('aria-expanded','false'); });
+          lst.appendChild(li); });
+        flag.setAttribute('aria-expanded','true'); }
+      flag.addEventListener('click', open);`);
+    await p.evaluate(fillJs({ 'l:country for phone number|': '+91', 'n:phone|tel': '+91 79005 91039' }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 40000 });
+    const r = await p.evaluate(() => ({
+      dial: window.__dial,
+      phone: document.getElementById('ph').value,
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('ITI FLAG: the div-combobox dial picker is driven — "+91" picks India', r.dial === '+91', r);
+    ok('…and the tel input gets the LOCAL number beside a dial control', /^[\s0-9]+$/.test(r.phone) && r.phone.replace(/\D/g, '') === '7900591039', r.phone);
+    await p.close();
+  }
+
+  // ── DEPENDENT STATE SELECT (amazon.jobs address) ────────────────────────────────────────────
+  // Amazon's State/Province options are injected only AFTER the country commits (select2 re-init,
+  // read from the bundle). The single synchronous pass always met an empty state list and failed
+  // it — "State is not selected". The empty select is now queued and retried once, after the
+  // dropdown phase, when the country's states exist.
+  {
+    const p = await browser.newPage();
+    await p.setContent(`<!doctype html><html><body><form>
+      <label for="ctysel">Country/Region</label>
+      <select id="ctysel" name="country_id" class="country required">
+        <option value=""></option><option value="1">Belgium</option><option value="2">Brazil</option>
+        <option value="3">Canada</option><option value="4">France</option><option value="5">Germany</option>
+        <option value="6">India</option><option value="7">Sweden</option>
+      </select>
+      <label for="stsel">State/Province</label>
+      <select id="stsel" name="state_id" class="state-province required"></select>
+    </form></body></html>`);
+    await p.evaluate(`${BRIDGE}
+      // Amazon injects states on the country's change event, a tick later.
+      document.getElementById('ctysel').addEventListener('change', function(){
+        setTimeout(function(){
+          var st=document.getElementById('stsel'); st.innerHTML='';
+          [['','Select'],['901','Karnataka'],['902','Madhya Pradesh'],['903','Tamil Nadu']].forEach(function(o){
+            var e=document.createElement('option'); e.value=o[0]; e.textContent=o[1]; st.appendChild(e); });
+        }, 80);
+      });`);
+    await p.evaluate(fillJs({ 'n:country_id|select-one': 'India', 'n:state_id|select-one': 'Madhya Pradesh' }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 40000 });
+    const r = await p.evaluate(() => ({
+      country: document.getElementById('ctysel').selectedOptions[0]?.text || '',
+      state: document.getElementById('stsel').selectedOptions[0]?.text || '',
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('DEPENDENT SELECT: the country lands first', r.country === 'India', r);
+    ok('…and the state that did not exist yet is selected on the retry', r.state === 'Madhya Pradesh', r);
+    ok('…and neither is reported as failed', !(r.msg.failed || []).some((f) => /country_id|state_id/.test(f.key)), r.msg);
+    await p.close();
+  }
+
   // ── PASSKEY GUARD ───────────────────────────────────────────────────────────────────────────
   // A passkey ceremony can never complete in a third-party WKWebView (associated-domains is a
   // compile-time list; a job browser cannot enumerate every employer portal). Left alone the

@@ -494,8 +494,29 @@ const JS_HELPERS = `
     return __cvfShadow.on;
   }
   function ctrls(){
-    if(!hasShadow()) return Array.prototype.slice.call(document.querySelectorAll('input,textarea,select'));
-    return deepQuery('input,textarea,select');
+    var base = hasShadow() ? deepQuery('input,textarea,select')
+                           : Array.prototype.slice.call(document.querySelectorAll('input,textarea,select'));
+    // ⚠️ AMAZON'S DIAL-CODE PICKER IS A <div>. intl-tel-input's flag trigger
+    // (div.iti__selected-flag[role=combobox]) carries the whole widget in a non-form element, so a
+    // scanner that only collects input/textarea/select never saw it — "country code missed" on
+    // amazon.jobs was THIS function. Verified against Amazon's own served bundle: the row text is
+    // "India +91", the trigger owns the list via aria, and nothing about it is an <input>.
+    // Guards keep this narrow: a trigger that CONTAINS a form control is already represented by
+    // that control (react-select, MUI put role=combobox around/on an input), and select2/Chosen
+    // triggers sit NEXT TO a still-present native <select> that the scan already drives — adding
+    // the span too would double-map the same question under a second sig.
+    var extra = [];
+    try {
+      var cand = hasShadow() ? deepQuery('div[role=combobox],span[role=combobox],a[role=combobox]')
+                             : Array.prototype.slice.call(document.querySelectorAll('div[role=combobox],span[role=combobox],a[role=combobox]'));
+      for (var ci=0; ci<cand.length; ci++){
+        var c=cand[ci];
+        try { if (c.querySelector && c.querySelector('input,select,textarea')) continue; } catch(e){}
+        try { if (c.closest && c.closest('.select2-container,[class*=chosen-container]')) continue; } catch(e){}
+        extra.push(c);
+      }
+    } catch(e){}
+    return extra.length ? base.concat(extra) : base;
   }
   function vis(el){ try { var t=(el.type||'').toLowerCase(); if(t!=='file'&&el.offsetParent===null) return false; var st=window.getComputedStyle(el); if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false; var r=el.getBoundingClientRect(); if(t!=='file'&&r.width===0&&r.height===0) return false; } catch(e){} return true; }
   // Question text for a control. Wizard/SPA pages (Instahyre, Typeform-likes) put the question in a
@@ -1440,8 +1461,12 @@ const JS_HELPERS = `
   // box. These used to be skipped entirely by both the scan and the fill ("many dropdowns missed").
   function isComboTrigger(el){
     try{
-      if(!el || el.tagName!=='INPUT') return false;
-      if(!isCombo(el)) return false;
+      if(!el || !isCombo(el)) return false;
+      // A NON-FORM element (Amazon's div.iti__selected-flag dial picker) cannot be typed into —
+      // being opened by CLICK is the only way it works, which is the definition of a trigger. The
+      // typeable path used to "type" into the div, find no popup, and hand the field back.
+      if(el.tagName!=='INPUT' && el.tagName!=='TEXTAREA' && el.tagName!=='SELECT') return true;
+      if(el.tagName!=='INPUT') return false;
       var t=(el.type||'').toLowerCase();
       return t==='button' || el.readOnly===true;
     }catch(e){ return false; }
@@ -1772,6 +1797,13 @@ const JS_HELPERS = `
         var tv=cleanTxt(el.value||'');
         var ph2=cbNorm(el.placeholder||'');
         if(tv && cbNorm(tv)!==ph2 && !/^(select|choose|please select|-{2,})/i.test(tv)) return tv;
+        // A NON-INPUT trigger has no .value at all — its answer is its own rendered text
+        // (the iti flag shows the picked country inside the trigger). Without this read, a pick
+        // that landed was verified against '' and scored as a failure — the vue-select bug again.
+        if(el.tagName!=='INPUT'){
+          var tv3=cleanTxt(el.innerText||el.textContent||'');
+          if(tv3 && tv3.length<=60 && !/^(select|choose|please select|-{2,})/i.test(tv3)) return tv3;
+        }
       }
       return '';
     }catch(e){ return ''; }
@@ -2360,6 +2392,11 @@ const JS_HELPERS = `
       // Groups are answered ONCE for all their members; chips and repeaters need their own async
       // phase (a menu to open, a row to appear) so they queue up exactly like the dropdowns do.
       var grpDone={}, chipQ=[], cseen={}, repQ=[], consented=[];
+      // Selects whose OPTIONS had not loaded when we reached them. Amazon's State/Province is a
+      // dependent select2: its option list is injected only after the country commits, so the
+      // single synchronous pass always found it empty and failed it. One retry after the dropdown
+      // phase — by then the country has been picked and the states exist.
+      var selRetryQ=[];
       // The phone number we wrote, and the number we were HANDED before splitting it. Kept so the
       // split can be undone at the end if the dial half never landed (see phoneReconcile).
       var phoneRec=null;
@@ -2482,7 +2519,14 @@ const JS_HELPERS = `
                 if (so && (so===m || cleanTxt(so.text)===cleanTxt(m.text))) filled[s]=true;
                 else if (!filled[s]) fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the dropdown rejected the value'};
               }
-              else if (!filled[s]) fails[s]={key:s,label:nlbl(el).slice(0,90),why:'no matching option'};
+              else if (!filled[s]) {
+                if (oarr.length<=1 && selRetryQ.length<6) {
+                  selRetryQ.push({ s:s, v:v });
+                  fails[s]={key:s,label:nlbl(el).slice(0,90),why:'its options had not loaded yet'};
+                } else {
+                  fails[s]={key:s,label:nlbl(el).slice(0,90),why:'no matching option'};
+                }
+              }
             } else if (t==='checkbox'){
               // A checkbox GROUP ("What are your pronouns?" → He/him · She/her · They/them) carries
               // the answer in each box's LABEL, and its value attribute is just "on". Testing the
@@ -2956,10 +3000,37 @@ const JS_HELPERS = `
       // overlap). Elements are re-resolved by signature here rather than held from the scroll pass —
       // a virtualized form detaches them. Guard on for the whole phase; hard caps 8 widgets / 9s.
       function drain(done){
-        if(!deferred.length){ done(); return; }
+        if(!deferred.length && !selRetryQ.length){ done(); return; }
         cbGuardOn();
         var di=0, t0=Date.now();
-        function fin(){ try{ restoreWrote(); }catch(e){} cbGuardOff(); done(); }
+        function retryEmptySelects(){
+          for(var ri=0;ri<selRetryQ.length;ri++){
+            var d=selRetryQ[ri]; if(filled[d.s]) continue;
+            var all2=ctrls(), el2=null;
+            for(var rj=0;rj<all2.length;rj++){ try{ if(sig(all2[rj])===d.s){ el2=all2[rj]; break; } }catch(e){} }
+            if(!el2 || el2.tagName!=='SELECT') continue;
+            var oarr2=Array.prototype.slice.call(el2.options);
+            if(oarr2.length<=1) continue;               // still empty — the recorded failure stands
+            try{
+              var vC=valueIsCountry(d.v);
+              var m2=isCountrySelect(el2)?pickDial(oarr2,d.v):null;
+              if(!m2 && (vC||isCountryish(el2)||looksLikeCountryList(oarr2))) m2=pickCountry(oarr2,d.v);
+              if(!m2 && !vC) m2=pickOpt(el2.options,d.v);
+              if(m2){
+                setNative(el2,m2.value); el2.__cvfW=1;
+                var so2=el2.options[el2.selectedIndex];
+                if(so2 && (so2===m2 || cleanTxt(so2.text)===cleanTxt(m2.text))){ filled[d.s]=true; delete fails[d.s]; }
+              }
+            }catch(e){}
+          }
+        }
+        function fin(){
+          try{ restoreWrote(); }catch(e){}
+          // Dependent selects get their one retry HERE: the dropdown phase has committed the
+          // country by now, so the state list finally exists. 700ms is select2's re-init breath.
+          if(selRetryQ.length){ setTimeout(function(){ try{ retryEmptySelects(); }catch(e){} cbGuardOff(); done(); }, 700); return; }
+          cbGuardOff(); done();
+        }
         function step(){
           // Put back anything the PREVIOUS dropdown wiped, before touching the next one — otherwise
           // a form cleared at picker #1 stays cleared while we work through pickers #2 and #3.
@@ -3257,7 +3328,8 @@ const JS_HELPERS = `
   // A dial-code control, as opposed to a plain country control. "Current country" must NOT match:
   // it is a residence question, and treating it as the phone's code half would pair the number with
   // the wrong widget entirely.
-  var DIAL_LABEL=/dial|calling code|phone code|country code|phone country|\\bisd\\b/i;
+  // 'country for phone' is Amazon's exact aria label on the iti flag widget (read from their bundle).
+  var DIAL_LABEL=/dial|calling code|phone code|country code|phone country|country for phone|\\bisd\\b/i;
   function isDialCtrl(el){
     try{
       if(!el || !vis(el)) return false;
