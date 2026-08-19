@@ -28,6 +28,9 @@ const MAX_CLUSTERS_PER_RUN = parseInt(process.env.DEMAND_RESEARCH_CLUSTERS || '1
 const MAX_URLS_PER_CLUSTER = parseInt(process.env.DEMAND_RESEARCH_URLS || '8', 10);
 // How far back "recently added users" reaches for the résumé lane (see loadResumeClusters).
 const NEW_USER_DAYS = parseInt(process.env.DEMAND_RESEARCH_NEW_USER_DAYS || '7', 10);
+// The search lane. Set DEMAND_SEARCH_LANE=0 to fall back to the previous interest+résumé behaviour.
+const SEARCH_LANE = (process.env.DEMAND_SEARCH_LANE || '1') === '1';
+const SEARCH_LANE_DAYS = parseInt(process.env.DEMAND_SEARCH_LANE_DAYS || '30', 10);
 // Founder/test accounts never drive research or receive these pushes.
 // User 1 (the founder) is deliberately NOT excluded here: their saved interests must be
 // researched like anyone's, or the end-to-end loop (save interest → research → match push)
@@ -130,16 +133,110 @@ async function loadResumeClusters(clusters) {
   }
 }
 
+// ── LANE 3: what users ACTUALLY SEARCHED FOR ─────────────────────────────────────────────────
+// The two lanes above between them describe demand we INFER (a résumé) or that users bothered to
+// save (3 saved interests across the whole user base). Neither is what a jobseeker types at 1am.
+// Production made the gap plain: the catalogue is 30% Sweden, 29% US and 39k software titles, while
+// the people who actually arrive asked for warehouse work in Tangier, security in Sweden and
+// midwifery in Doha — 1, 228 and 0 jobs respectively. We were researching what was easy to reach.
+//
+// This lane closes that loop: their own search text becomes the research brief, so supply follows
+// demand instead of convenience. It is deliberately FIRST in loadClusters — when the per-run cap
+// bites, a query someone typed outranks a guess we made from their CV.
+//
+// ⚠️ Depends on google_search_opened carrying props.q, which only started with 4.4 (build 174).
+// Older rows have empty props and are skipped, so this lane simply grows as users search.
+async function loadSearchClusters(clusters) {
+  if (!SEARCH_LANE) return;
+  const rows = await dbConfig.query(
+    `SELECT e.user_id, e.props->>'q' AS q, u.country AS profile_country
+       FROM app_events e
+       JOIN users u ON u.id = e.user_id AND u.deleted_at IS NULL
+      WHERE e.event IN ('google_search_opened', 'job_search_launched')
+        AND COALESCE(e.props->>'q', '') <> ''
+        AND e.created_at > NOW() - ($1 || ' days')::interval
+      ORDER BY e.created_at DESC
+      LIMIT 400`, [String(SEARCH_LANE_DAYS)]).catch((e) => {
+    console.warn('[demandResearch] search-lane query failed:', e.message);
+    return [];
+  });
+
+  // Parse first, resolve places second. A city we cannot name a country for is looked up in
+  // global_jobs itself — "Amsterdam" alone is a perfectly normal thing to type, and a hard-coded
+  // city list would be both incomplete and another table to maintain. One batched query, not 400.
+  const parsed = [];
+  const unresolved = new Set();
+  for (const r of rows || []) {
+    if (TEST_USER_IDS.has(Number(r.user_id))) continue;
+    const raw = String(r.q || '').trim();
+    // A pasted link is a job they already found, not a demand signal.
+    if (!raw || raw.length < 3 || /^https?:\/\//i.test(raw)) continue;
+
+    // "warehouse jobs in Tangier" → role "warehouse", place "Tangier". The launcher composes
+    // exactly this shape (see MobileApp/utils/searchSuggest.ts composeQuery), and free-typed
+    // queries overwhelmingly follow it too.
+    const lower = raw.toLowerCase();
+    const split = lower.split(/\s+\bin\b\s+/);
+    const head = split[0] || '';
+    const placeText = split.length > 1 ? split.slice(1).join(' in ') : '';
+
+    // Drop the scaffolding words so the research brief is the OCCUPATION, not "jobs".
+    const role = head
+      .replace(/\b(jobs?|vacancy|vacancies|positions?|hiring|careers?|openings?)\b/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    if (!role || role.length < 2) continue;
+
+    // Country: from the place they typed, else their profile. No country → not researchable,
+    // which is the same rule the résumé lane already applies.
+    const head2 = placeText ? placeText.split(',')[0].trim() : '';
+    const country = (placeText ? countryFromResume(placeText) : null)
+      || (String(r.profile_country || '').trim() || null);
+    if (!country && head2) unresolved.add(head2.toLowerCase());
+    parsed.push({ userId: Number(r.user_id), role, placeText, head: head2, country });
+  }
+
+  // One lookup for every city we could not place, answered by our own catalogue.
+  const cityCountry = new Map();
+  if (unresolved.size) {
+    const list = [...unresolved].slice(0, 60);
+    const found = await dbConfig.query(
+      `SELECT LOWER(TRIM(SPLIT_PART(location, ',', 1))) AS city, country, COUNT(*)::int AS n
+         FROM global_jobs
+        WHERE is_active AND country IS NOT NULL AND country <> '' AND country <> 'Global'
+          AND LOWER(TRIM(SPLIT_PART(location, ',', 1))) = ANY($1)
+        GROUP BY 1, 2 ORDER BY n DESC`, [list]).catch(() => []);
+    for (const row of found || []) {
+      if (!cityCountry.has(row.city)) cityCountry.set(row.city, row.country);   // busiest country wins
+    }
+  }
+
+  for (const p of parsed) {
+    const country = p.country || (p.head ? cityCountry.get(p.head.toLowerCase()) : null) || null;
+    if (!country) continue;                       // still unplaceable → not researchable, same rule as the résumé lane
+    let city = null;
+    if (p.head && p.head.toLowerCase() !== String(country).toLowerCase() && !NOT_A_CITY.has(p.head.toLowerCase())) {
+      city = p.head.replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    const skills = [p.role].slice(0, 6);
+    const key = clusterKey(country, city, skills);
+    if (!clusters.has(key)) clusters.set(key, { country, city: city || null, skills, userIds: new Set(), lane: 'search' });
+    clusters.get(key).userIds.add(p.userId);
+  }
+}
+
 async function loadClusters() {
   const clusters = new Map();   // key country|city|skills → { country, city, skills, userIds, lane }
-  await loadInterestClusters(clusters);          // explicit demand first…
-  const interestCount = clusters.size;
-  await loadResumeClusters(clusters);            // …then inferred demand, deduped against it
+  await loadSearchClusters(clusters);            // what they TYPED wins the cap…
+  const searchCount = clusters.size;
+  await loadInterestClusters(clusters);          // …then what they saved…
+  const interestCount = clusters.size - searchCount;
+  await loadResumeClusters(clusters);            // …then what we inferred, deduped against both
   const all = [...clusters.values()];
   return {
     clusters: all.slice(0, MAX_CLUSTERS_PER_RUN),
+    fromSearches: searchCount,
     fromInterests: interestCount,
-    fromResumes: all.length - interestCount,
+    fromResumes: all.length - searchCount - interestCount,
     total: all.length,
   };
 }
@@ -586,7 +683,7 @@ async function runDemandResearch() {
   _running = true;
   const startedAt = new Date().toISOString();
   try {
-    const { clusters, fromInterests, fromResumes, total } = await loadClusters();
+    const { clusters, fromSearches, fromInterests, fromResumes, total } = await loadClusters();
     if (!clusters.length) {
       console.log('[demandResearch] no saved interests and no recent parsed résumés — nothing to research');
       await recordRun(`ran — nothing to research (0 saved interests, 0 résumé clusters in the last ${NEW_USER_DAYS}d)`);
@@ -598,7 +695,7 @@ async function runDemandResearch() {
       await recordRun('SKIPPED — no GEMINI_API_KEY');
       return { error: 'no_key' };
     }
-    console.log(`[demandResearch] ${clusters.length}/${total} demand clusters (${fromInterests} interest, ${fromResumes} résumé)`);
+    console.log(`[demandResearch] ${clusters.length}/${total} demand clusters (${fromSearches} search, ${fromInterests} interest, ${fromResumes} résumé)`);
     let jobsAdded = 0;
     for (const cluster of clusters) {
       const urls = await discoverUrls(model, cluster);
@@ -612,9 +709,9 @@ async function runDemandResearch() {
     // driven entirely by résumés still reads as if only interests exist.
     const dropped = total > clusters.length ? `, ${total - clusters.length} over cap` : '';
     await recordRun(
-      `ran — ${clusters.length} clusters (${fromInterests} interest + ${fromResumes} résumé${dropped}), ` +
+      `ran — ${clusters.length} clusters (${fromSearches} search + ${fromInterests} interest + ${fromResumes} résumé${dropped}), ` +
       `${jobsAdded} jobs added, ${pushed} interest + ${resumePushed} résumé pushes`);
-    return { clusters: clusters.length, fromInterests, fromResumes, jobsAdded, pushed, resumePushed };
+    return { clusters: clusters.length, fromSearches, fromInterests, fromResumes, jobsAdded, pushed, resumePushed };
   } catch (e) {
     console.error('[demandResearch] run failed:', e.message);
     await recordRun(`FAILED — ${String(e.message).slice(0, 200)}`);
