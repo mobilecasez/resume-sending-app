@@ -86,5 +86,43 @@ ok('84 → Strong', bandFor(84) === 'Strong');
 ok('85 → Excellent', bandFor(85) === 'Excellent');
 ok('100 → Excellent', bandFor(100) === 'Excellent');
 
+// ── the output contract ───────────────────────────────────────────────────────────────────────
+// The schema is enforced by the API during generation, so it — not the prompt — is what actually
+// guarantees "exactly 3 improvements" and every length limit. Two ways that can rot: the schema
+// drifts from what the popup can display, or someone relaxes a bound. Both are asserted here, and
+// the caps are cross-checked against normalise() so changing one side alone fails the build.
+const schemaSrc = grab(/const SCORE_SCHEMA = \{[\s\S]*?\n\};/, 'SCORE_SCHEMA');
+const sm = new module.constructor();
+sm._compile(schemaSrc + '\nmodule.exports = { SCORE_SCHEMA };', '/schema-harness.js');
+const S = sm.exports.SCORE_SCHEMA;
+
+ok('schema locks additionalProperties', S.additionalProperties === false);
+ok('all five fields required', S.required.length === 5, S.required.length);
+ok('score bounded 0-100 by the API', S.properties.score.minimum === 0 && S.properties.score.maximum === 100);
+ok('exactly 3 improvements is ENFORCED, not requested',
+  S.properties.improvements.minItems === 3 && S.properties.improvements.maxItems === 3);
+ok('all four subscores required', S.properties.subscores.required.length === 4);
+ok('subscores object locked', S.properties.subscores.additionalProperties === false);
+ok('improvement items locked', S.properties.improvements.items.additionalProperties === false);
+// The model writes to these budgets; normalise truncates to the same ones. If they disagree, the
+// model writes to one length and we cut it at another — mid-word, on someone's home screen.
+ok('headline budget matches normalise cap', S.properties.headline.maxLength === 60, S.properties.headline.maxLength);
+ok('summary budget matches normalise cap', S.properties.summary.maxLength === 240, S.properties.summary.maxLength);
+ok('improvement title budget matches normalise cap', S.properties.improvements.items.properties.title.maxLength === 42);
+ok('improvement detail budget matches normalise cap', S.properties.improvements.items.properties.detail.maxLength === 110);
+ok('normalise still truncates headline at 60', /str\(o\.headline, 60\)/.test(src));
+ok('normalise still truncates summary at 240', /str\(o\.summary, 240\)/.test(src));
+ok('normalise still truncates title at 42', /str\(i && i\.title, 42\)/.test(src));
+ok('normalise still truncates detail at 110', /str\(i && i\.detail, 110\)/.test(src));
+
+// ── the model we call ─────────────────────────────────────────────────────────────────────────
+ok('defaults to claude-opus-5', /RESUME_SCORE_MODEL \|\| 'claude-opus-5'/.test(src));
+ok('adaptive thinking (scoring is a calibration judgement)', /thinking: \{ type: 'adaptive' \}/.test(src));
+ok('a safety refusal is checked BEFORE reading content',
+  src.indexOf("stop_reason === 'refusal'") < src.indexOf("find((b) => b.type === 'text')"));
+ok('the text block is found by TYPE, not position (thinking comes first)',
+  /find\(\(b\) => b\.type === 'text'\)/.test(src));
+ok('no Gemini left in the file', !/gemini|GoogleGenerativeAI/i.test(src));
+
 console.log(`\nresume score: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
