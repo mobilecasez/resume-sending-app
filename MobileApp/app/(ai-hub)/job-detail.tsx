@@ -1374,6 +1374,25 @@ const JS_HELPERS = `
     if(word.length){ word.sort(function(a,b){ return a.x.length-b.x.length; }); return word[0].o; }
     return null;
   }
+  // ⚠️ THE VALUE SIDE OF THE SAME PROTECTION. pickCountry only ran when the WIDGET was recognised
+  // as a country list — and Amazon's virtualized dropdown defeats every detector at once: at judge
+  // time the rendered rows can hold "British Indian Ocean Territory" while "India" itself is not in
+  // the DOM yet (rows render lazily, B before I), fewer than five sentinel countries are visible,
+  // and the label reads garbage. Detection fails, pickOpt's single-containing-candidate rule runs,
+  // and the atoll wins again — the exact bug the comment above pickCountry describes, back through
+  // a different door. So the test is now on the value we are PLACING: if it names a country, only
+  // pickCountry may decide, in every path, and null means "hand it back to the applicant".
+  var CTRY_NAMES=['india','germany','france','spain','italy','portugal','netherlands','belgium','austria','switzerland','sweden','norway','denmark','finland','poland','ireland','united kingdom','great britain','england','united states','usa','canada','mexico','brazil','argentina','chile','colombia','peru','australia','new zealand','japan','china','south korea','korea','singapore','malaysia','indonesia','philippines','thailand','vietnam','pakistan','bangladesh','sri lanka','nepal','qatar','saudi arabia','united arab emirates','uae','kuwait','bahrain','oman','jordan','lebanon','israel','turkey','egypt','morocco','tunisia','algeria','nigeria','ghana','kenya','ethiopia','south africa','tanzania','uganda','zambia','zimbabwe','russia','ukraine','czech republic','czechia','slovakia','hungary','romania','bulgaria','greece','croatia','serbia','slovenia','estonia','latvia','lithuania','iceland','luxembourg','malta','cyprus'];
+  function valueIsCountry(v){
+    var w=ctryName(String(v==null?'':v).replace(/[+0-9]+/g,' '));
+    if(!w || w.length<3) return false;
+    for(var i=0;i<CTRY_NAMES.length;i++){
+      var c=CTRY_NAMES[i];
+      if(w===c) return true;
+      if(c.length>=4 && w.indexOf(c)===0) return true;   // demonym: "indian" opens with "india"
+    }
+    return false;
+  }
   // Inverse of PRIM_NAME: "India" / "India (+91)" → "91". Only ever a FALLBACK for reading back a
   // dial code out of a value that carries no "+NN" at all (the model answering a code picker with a
   // country name). Exact whole-name match, so "Indian Ocean Territory" can never resolve to India.
@@ -2209,7 +2228,10 @@ const JS_HELPERS = `
             // Same guard as the native-select path: on a country list a substring match is a wrong
             // answer, not a near miss. Judged against the applicant's value, never the search query
             // we typed — a rung like "indian" must not be allowed to match by containment either.
-            var ctry = isCountryish(el) || looksLikeCountryList(pool);
+            // valueIsCountry() covers the widget a VIRTUALIZED list hides from both detectors: the
+            // visible pool can hold the atoll but not "India" itself, and too few sentinel rows to
+            // read as a country list — so the VALUE, not the widget, decides the strict path.
+            var ctry = valueIsCountry(want) || isCountryish(el) || looksLikeCountryList(pool);
             if(!m && ctry) m=pickCountry(pool, want);
             if(!m && !ctry) m=pickOpt(pool, step.q||want);
             if(!m && !ctry && step.q && step.q!==want) m=pickOpt(pool, want);
@@ -2445,9 +2467,12 @@ const JS_HELPERS = `
               // dial codes numerically, so "+1"/"+44"/"+7" matched nothing on a full country list.
               var oarr=Array.prototype.slice.call(el.options);
               var m=isCountrySelect(el) ? pickDial(oarr,v) : null;
-              // Country/nationality lists get the strict matcher BEFORE pickOpt's substring rules.
-              if (!m && (isCountryish(el) || looksLikeCountryList(oarr))) m=pickCountry(oarr,v);
-              if (!m) m=pickOpt(el.options,v);
+              // Country/nationality lists get the strict matcher BEFORE pickOpt's substring rules —
+              // and when the VALUE itself names a country, pickOpt never runs at all: substring
+              // containment is how "India" once became "British Indian Ocean Territory".
+              var vCtry = valueIsCountry(v);
+              if (!m && (vCtry || isCountryish(el) || looksLikeCountryList(oarr))) m=pickCountry(oarr,v);
+              if (!m && !vCtry) m=pickOpt(el.options,v);
               if (m){
                 setNative(el, m.value);
                 el.__cvfW=1;
@@ -4401,6 +4426,7 @@ export default function JobDetailScreen() {
   const fieldsCapRef   = useRef<any>(null);      // ceiling so a silent frame can't hang the scan
   const fillCapRef     = useRef<any>(null);
   const runTimerRef    = useRef<any>(null);      // whole-run ceiling (a hung mapping used to spin forever)
+  const lastAfTapRef   = useRef<number>(0);      // double-tap guard for the supersede-on-retap path
   const failedAccumRef = useRef<any[]>([]);      // per-field failures merged across frames
   // Every consent / agreement control the fill TICKED. RULE: the applicant sees, in the wording the
   // employer used, everything they are about to agree to — before they press submit.
@@ -5261,6 +5287,26 @@ export default function JobDetailScreen() {
     if (runTimerRef.current) { clearTimeout(runTimerRef.current); runTimerRef.current = null; }
     setAutofillState(state);
     setAutofillNote(note);
+    // Every failed run so far has reached us as a user's prose recollection — no host, no widget
+    // shapes, no failed labels. LABELS ONLY, never values: a label is the page's text, a value is
+    // the applicant's.
+    try {
+      const widgets: Record<string, number> = {};
+      for (const f of (fieldsAccumRef.current || [])) {
+        const w = String((f && (f.widget || f.tag)) || 'text');
+        widgets[w] = (widgets[w] || 0) + 1;
+      }
+      track('autofill_run', {
+        host: (() => { try { return new URL(currentUrlRef.current).host; } catch { return ''; } })(),
+        state,
+        fields: (fieldsAccumRef.current || []).length,
+        filled: filledCountRef.current || 0,
+        skills: skillsCountRef.current || 0,
+        widgets,
+        failed: (failedAccumRef.current || []).slice(0, 6).map((f: any) => String(f?.label || f?.why || '').slice(0, 60)),
+        note: String(note).slice(0, 120),
+      });
+    } catch {}
   };
   // Keep the ref in step with the state it mirrors.
   const applyWizardUi = (v: { i: number; n: number; name: string } | null) => { wizardUiRef.current = v; setWizardUi(v); };
@@ -5315,7 +5361,21 @@ export default function JobDetailScreen() {
     autofillRef.current.active && autofillRef.current.gen === gen && sameOrigin();
 
   const startAutofill = () => {
-    if (!applyWebRef.current || autofillRef.current.active) return;
+    if (!applyWebRef.current) return;
+    if (autofillRef.current.active) {
+      // ⚠️ A RUN LEFT ACTIVE BY A PAGE CHANGE USED TO MAKE THIS BUTTON DEAD FOR 95 SECONDS. On a
+      // multi-page application (Amazon's wizard navigates between steps) the injected script dies
+      // with the page, but `active` stayed true until the whole-run watchdog fired — so on the next
+      // step every tap returned HERE, silently. "On the next page nothing got selected" was this
+      // line. A fresh tap now supersedes the stale run: ++gen below invalidates every callback it
+      // still has in flight (they all check stillValid), and its timers are cleared so its
+      // "took too long" note cannot land in the middle of the new run.
+      if (Date.now() - (lastAfTapRef.current || 0) < 1500) return;   // a double-tap is not a retry
+      for (const r of [scanTimerRef, skillsTimerRef, fieldsCapRef, fillCapRef, runTimerRef, filledTimerRef, fieldsTimerRef, wizTimerRef]) {
+        if (r.current) { clearTimeout(r.current); r.current = null; }
+      }
+    }
+    lastAfTapRef.current = Date.now();
     // Lock the run to the origin the user is currently viewing.
     try { applyOriginRef.current = new URL(currentUrlRef.current || applyWebUrl || '').origin; } catch { applyOriginRef.current = ''; }
     if (!applyOriginRef.current) { setAutofillState('error'); setAutofillNote('Could not read the page. Reload and try again.'); setAfStep({}); return; }

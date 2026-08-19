@@ -1180,6 +1180,72 @@ function helpersSourceProblems() {
     await p.close();
   }
 
+  // ── VIRTUALIZED COUNTRY LIST (amazon.jobs) ──────────────────────────────────────────────────
+  // Amazon's country dropdown renders rows lazily: at judge time the DOM holds the alphabetical
+  // head of the list — which INCLUDES "British Indian Ocean Territory" and does NOT include
+  // "India". Fewer than five sentinel countries are visible and the label reads garbage, so every
+  // WIDGET detector fails, and pickOpt's single-containing-candidate rule elected the atoll.
+  // The fix is value-driven: "India" IS a country, so only pickCountry may decide — and a strict
+  // matcher that cannot see "India" hands the field back rather than guessing.
+  {
+    const p = await browser.newPage();
+    await p.setContent(`<!doctype html><html><body><form>
+      <label>First name<input name="firstname"></label>
+      <div class="select__control" role="combobox" aria-expanded="false" aria-haspopup="listbox">
+        <label for="xq1">Select an option</label>
+        <input id="xq1" name="xq1" role="combobox" aria-autocomplete="list" autocomplete="off">
+        <div id="menu1" style="display:none"></div>
+      </div>
+    </form></body></html>`);
+    await p.evaluate(`${BRIDGE}
+      var box=document.getElementById('xq1'), menu=document.getElementById('menu1');
+      // Virtualization simulated: whatever is typed, only the alphabetical HEAD is ever rendered.
+      var HEAD=['Argentina','Belgium','British Indian Ocean Territory','Brunei'];
+      window.__picked='';
+      function open(){ menu.style.display='block'; menu.innerHTML='';
+        HEAD.forEach(function(t){ var d=document.createElement('div'); d.setAttribute('role','option');
+          d.textContent=t; d.style.padding='8px';
+          d.addEventListener('click', function(){ window.__picked=t; box.value=t; menu.style.display='none'; });
+          menu.appendChild(d); }); box.setAttribute('aria-expanded','true'); }
+      box.addEventListener('click', open); box.addEventListener('focus', open); box.addEventListener('input', open);`);
+    await p.evaluate(fillJs({ 'n:firstname|text': 'Rishi', 'n:xq1|text': 'India' }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 40000 });
+    const r = await p.evaluate(() => ({
+      picked: window.__picked,
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('VIRTUALIZED LIST: the atoll is never clicked for "India"', r.picked !== 'British Indian Ocean Territory', r);
+    ok('…and the country field is handed back, not guessed',
+      (r.msg.failed || []).some((f) => f.key === 'n:xq1|text'), r.msg);
+    ok('…while the plain field beside it still filled', r.msg.count >= 1, r.msg);
+    await p.close();
+  }
+
+  // ── DEMONYM vs GARBAGE LABEL (native select) ────────────────────────────────────────────────
+  // Nationality arrives as "Indian". With a garbage label and too few sentinel rows for
+  // looksLikeCountryList, the old path fell to pickOpt, whose contains-rule matched exactly one
+  // option: "British Indian Ocean Territory" ("indian" sits inside it). valueIsCountry() now
+  // routes the value through pickCountry, whose demonym rung reads "India" ⊂ "Indian".
+  {
+    const p = await browser.newPage();
+    await p.setContent(`<!doctype html><html><body><form>
+      <label for="zz9">Choose…</label>
+      <select id="zz9" name="zz9">
+        <option value=""></option>
+        <option>Belgium</option>
+        <option>British Indian Ocean Territory</option>
+        <option>Brunei</option>
+        <option>India</option>
+      </select>
+    </form></body></html>`);
+    await p.evaluate(BRIDGE);
+    await p.evaluate(fillJs({ 'n:zz9|select-one': 'Indian' }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 30000 });
+    const sel = await p.evaluate(() => document.getElementById('zz9').selectedOptions[0]?.text || '');
+    ok('DEMONYM: "Indian" on an undetected list resolves to India, not the atoll', sel === 'India', sel);
+    await p.close();
+  }
+
   // ── PASSKEY GUARD ───────────────────────────────────────────────────────────────────────────
   // A passkey ceremony can never complete in a third-party WKWebView (associated-domains is a
   // compile-time list; a job browser cannot enumerate every employer portal). Left alone the
