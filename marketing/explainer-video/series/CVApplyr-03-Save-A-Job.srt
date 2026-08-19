@@ -1,68 +1,28 @@
 1
-00:00:00,150 --> 00:00:04,132
-Part three. Finding a job, and handing the homework over.
+00:00:00,150 --> 00:00:03,400
+Save a job, and let the app research it for you.
 
 2
-00:00:04,432 --> 00:00:08,939
-Every application you take seriously starts with the same unpaid hour.
+00:00:03,700 --> 00:00:07,136
+Search inside the app. Describe the job you want.
 
 3
-00:00:08,939 --> 00:00:13,638
-Reading the posting properly. Working out what the company actually does.
+00:00:07,436 --> 00:00:08,891
+Or search the live web.
 
 4
-00:00:13,638 --> 00:00:16,535
-Digging out the salary, the skills they want,
+00:00:09,191 --> 00:00:13,182
+Open any careers page. The robot button follows you.
 
 5
-00:00:16,535 --> 00:00:18,660
-and who you should be writing to.
+00:00:13,482 --> 00:00:15,335
+Tap it, then Fetch job.
 
 6
-00:00:18,660 --> 00:00:23,230
-Save the job here instead, and that whole list moves across to the app.
+00:00:15,635 --> 00:00:19,602
+Saved. Salary, skills, and your match score.
 
 7
-00:00:23,230 --> 00:00:26,192
-You spend your time applying, not researching.
-
-8
-00:00:26,492 --> 00:00:30,752
-Search from inside the app. Describe the job in your own words.
-
-9
-00:00:31,052 --> 00:00:36,023
-Or search the live web right there. Real results, current listings.
-
-10
-00:00:36,323 --> 00:00:38,339
-Open any careers page you like.
-
-11
-00:00:38,339 --> 00:00:40,551
-The robot button travels with you,
-
-12
-00:00:40,551 --> 00:00:44,193
-so it is sitting right there on the employer's own site.
-
-13
-00:00:44,493 --> 00:00:48,203
-Tap it, hit Fetch job, and it reads the whole page.
-
-14
-00:00:48,503 --> 00:00:52,751
-The posting lands in your saved list, scored against your résumé.
-
-15
-00:00:53,051 --> 00:00:55,264
-Next, what it does with all that.
-
-16
-00:00:55,264 --> 00:00:58,685
-It reads the role, goes and researches the company,
-
-17
-00:00:58,685 --> 00:01:00,697
-and writes the letter for you.
+00:00:19,902 --> 00:00:24,269
+Next. It researches the company, and writes your cover letter.
 

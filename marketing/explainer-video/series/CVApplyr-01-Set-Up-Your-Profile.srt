@@ -1,64 +1,32 @@
 1
-00:00:00,150 --> 00:00:02,533
-Part one. Setting up your profile.
+00:00:00,150 --> 00:00:04,898
+Set up your profile once. Every application after this uses it.
 
 2
-00:00:02,533 --> 00:00:05,897
-You do this once, and then you are done with it.
+00:00:05,198 --> 00:00:07,946
+Open the menu, then Account Settings.
 
 3
-00:00:06,197 --> 00:00:09,690
-Every job application asks you for the same things.
+00:00:08,246 --> 00:00:13,357
+Add your details. Name, phone, address, date of birth.
 
 4
-00:00:09,690 --> 00:00:12,635
-Your name, your phone number, your address,
+00:00:13,657 --> 00:00:15,076
+Attach your résumé.
 
 5
-00:00:12,635 --> 00:00:15,306
-your résumé, a signature at the bottom.
-
-6
-00:00:15,306 --> 00:00:16,471
-Even your gender,
-
-7
-00:00:16,471 --> 00:00:22,429
-which this app only ever asks so it can answer that question when a form insists on it.
-
-8
-00:00:22,429 --> 00:00:24,142
-Fill it in here one time,
-
-9
-00:00:24,142 --> 00:00:27,840
-and it is carried into every form you meet after that.
-
-10
-00:00:28,140 --> 00:00:31,144
-Open the menu, and tap Account Settings.
-
-11
-00:00:31,444 --> 00:00:36,913
-Your photo, name, email, phone, address, date of birth.
-
-12
-00:00:37,213 --> 00:00:40,427
-Then attach your résumé, straight from your phone.
-
-13
-00:00:40,727 --> 00:00:43,301
+00:00:15,376 --> 00:00:17,949
 That is the file it attaches for you later.
 
-14
-00:00:43,601 --> 00:00:47,887
+6
+00:00:18,249 --> 00:00:22,535
 No signature? It draws one from your name. Pick a style.
 
-15
-00:00:48,187 --> 00:00:50,355
-Save, and the setup is done.
+7
+00:00:22,835 --> 00:00:26,362
+Save. Done. You will not type any of this again.
 
-16
-00:00:50,655 --> 00:00:55,561
-Next, we turn that into a résumé built for the country you are applying to.
+8
+00:00:26,662 --> 00:00:29,426
+Next. Generate your résumé with AI.
 

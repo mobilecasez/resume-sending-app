@@ -25,6 +25,14 @@ python3 make-subs.py         # .srt and .vtt for each
 
 Re-run any single piece: `python3 build.py --film 3`, `--only f5-06`, `python3 gen-vo.py --only f2-04`.
 
+## Straightforward, by request
+
+The first cut carried five long "concept" scenes (30s of why-ATS-matters, 22s on research pain,
+etc). Feedback was blunt: too long, not straightforward. Those scenes are gone. What remains per
+film: a one-line title card, the steps over real footage with terse lines, a one-line next-up card.
+Films now run 25-44s (were 51-89s). The only concept beats kept are the two film 2 was asked to
+make - the star rating and the regional formats - each cut to one breath over its graphic.
+
 ## The one rule
 
 **A scene is exactly as long as its narration.** Nothing in `series.json` sets a scene length. Change
@@ -97,7 +105,7 @@ not estimated. Two traps found that way and avoided:
 - The films are vertical only, matching what was asked for. A 1:1 or 16:9 cut means re-rendering the
   plates and anims at the new size — the phone geometry constants at the top of `build.py` and
   `render-cards.js` are the only things that have to agree.
-- Film 2 is the longest (~89s) because it carries two concept scenes. If it needs to be shorter, the
-  `parse` line is the one to cut.
+- Film 2 is the longest (~44s) because it keeps the two concept beats. The `parse` line is still
+  the one to cut if it must be shorter.
 - `.gemini-key` is written into this directory transiently and deleted after a run. It is gitignored;
   so are `vo/`, `work/`, `cards/` and the mp4s.
