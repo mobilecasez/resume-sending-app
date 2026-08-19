@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
 import { useEventCosts } from '../../hooks/useEventCosts';
+import { fetchResumeSourceText } from '../../services/resumeScoreService';
 
 const T = {
   bg:       '#E5EAF3',
@@ -128,10 +129,38 @@ export default function ResumeBuilderIndex() {
   // Point 5: optionally fold the uploaded profile resume into the AI generation.
   const [hasUploadedResume,      setHasUploadedResume]      = useState(false);
   const [includeUploadedResume,  setIncludeUploadedResume]  = useState(false);
+  // Set when the user arrived by tapping "Enhance My Résumé" on the score popup. It drives the
+  // prefill + the "anything to add?" prompt, and nothing else — a normal visit is untouched.
+  const [scoreEntry, setScoreEntry] = useState<{ score: number; free: boolean; improvements: string[] } | null>(null);
+  const [pulling, setPulling] = useState(false);
 
   // Runs every time screen gains focus
   useFocusEffect(useCallback(() => {
     (async () => {
+
+      // ── 0. Arrived from the résumé-score popup ──────────────────────────────
+      // The promise on that button was "we will improve YOUR résumé", so the box must not open
+      // empty. Pull their current résumé in as prose, then ask what to add. The key is consumed
+      // immediately so backing out and returning does not silently re-prefill over their edits.
+      const entryRaw = await AsyncStorage.getItem('resume_builder_entry').catch(() => null);
+      if (entryRaw) {
+        await AsyncStorage.removeItem('resume_builder_entry').catch(() => {});
+        try {
+          const e = JSON.parse(entryRaw);
+          if (e && e.from === 'resume_score') {
+            setScoreEntry({ score: Number(e.score) || 0, free: !!e.free, improvements: Array.isArray(e.improvements) ? e.improvements : [] });
+            setBuildMethod('ai');
+            setMode('ai');
+            await AsyncStorage.setItem('resumeBuilderMethod', 'ai').catch(() => {});
+            setPulling(true);
+            const pulled = await fetchResumeSourceText();
+            setPulling(false);
+            // Only ever ADD to what is there. Overwriting text the user already typed would
+            // destroy work in the one flow where they are most likely to have typed something.
+            if (pulled) setRawText((t) => (t && t.trim().length > 30 ? t : pulled));
+          }
+        } catch {}
+      }
 
       // ── 1. Handle "Regenerate" flag set by preview screen ───────────────────
       const action = await AsyncStorage.getItem('resumeBuilderAction').catch(() => null);
@@ -577,11 +606,52 @@ export default function ResumeBuilderIndex() {
             </View>
           </Modal>
 
+          {/* ── Arrived from the résumé score: their résumé is already in the box ────────────
+              This is the "would you like to add more details before generating?" step. It replaces
+              the generic hint rather than sitting above it, because the generic hint ("paste
+              anything") is wrong advice once the box is already full of their own résumé. */}
+          {!!scoreEntry && (
+            <View style={s.scoreEntryCard}>
+              <View style={s.scoreEntryHead}>
+                <View style={s.scoreEntryBadge}>
+                  <Text style={s.scoreEntryBadgeNum}>{scoreEntry.score}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.scoreEntryTitle}>
+                    {pulling ? 'Pulling in your résumé…' : 'Your résumé is loaded below'}
+                  </Text>
+                  <Text style={s.scoreEntrySub}>
+                    Anything to add before we rewrite it? A recent role, a certification, or real
+                    numbers behind your work — all of it lifts the score.
+                  </Text>
+                </View>
+              </View>
+              {scoreEntry.improvements.length > 0 && (
+                <View style={s.scoreEntryChips}>
+                  {scoreEntry.improvements.map((t, i) => (
+                    <View key={i} style={s.scoreEntryChip}>
+                      <Ionicons name="arrow-up-circle" size={12} color={T.emerald} />
+                      <Text style={s.scoreEntryChipText} numberOfLines={1}>{t}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {scoreEntry.free && (
+                <View style={s.scoreEntryFree}>
+                  <Ionicons name="gift" size={13} color={T.emerald} />
+                  <Text style={s.scoreEntryFreeText}>This rewrite is on us — no credits will be used.</Text>
+                </View>
+              )}
+            </View>
+          )}
+
           {/* Story textarea */}
           <View style={s.card}>
-            <Text style={s.sectionLabel}>YOUR CAREER STORY</Text>
+            <Text style={s.sectionLabel}>{scoreEntry ? 'YOUR RÉSUMÉ — ADD ANYTHING NEW' : 'YOUR CAREER STORY'}</Text>
             <Text style={s.storyHint}>
-              Paste anything — old resume text, LinkedIn bio, rough notes about your jobs, projects, and education. The more detail, the better.
+              {scoreEntry
+                ? 'Edit anything that is out of date, and add what is missing. We will rewrite the whole thing from this.'
+                : 'Paste anything — old resume text, LinkedIn bio, rough notes about your jobs, projects, and education. The more detail, the better.'}
             </Text>
             <TextInput
               style={s.storyInput}
@@ -633,6 +703,29 @@ export default function ResumeBuilderIndex() {
 }
 
 const s = StyleSheet.create({
+  // ── résumé-score entry banner ──────────────────────────────────────────────
+  scoreEntryCard: {
+    marginHorizontal: 16, marginBottom: 14, padding: 16, borderRadius: 20,
+    backgroundColor: '#F0FDF9', borderWidth: 1, borderColor: 'rgba(16,185,129,0.22)',
+  },
+  scoreEntryHead: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
+  scoreEntryBadge: {
+    width: 42, height: 42, borderRadius: 14, backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: 'rgba(16,185,129,0.35)',
+  },
+  scoreEntryBadgeNum: { fontSize: 17, fontWeight: '800', color: T.emerald, letterSpacing: -0.5 },
+  scoreEntryTitle: { fontSize: 15.5, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  scoreEntrySub: { fontSize: 12.8, color: T.muted, lineHeight: 18, marginTop: 3 },
+  scoreEntryChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12 },
+  scoreEntryChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%',
+    backgroundColor: '#FFFFFF', borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5,
+    borderWidth: 1, borderColor: 'rgba(16,185,129,0.20)',
+  },
+  scoreEntryChipText: { fontSize: 11.5, fontWeight: '700', color: T.inkSoft, flexShrink: 1 },
+  scoreEntryFree: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12 },
+  scoreEntryFreeText: { fontSize: 12.3, fontWeight: '700', color: T.emerald },
+
   safe:         { flex: 1, backgroundColor: T.bg },
   topBar:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, backgroundColor: T.bg },
   backPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },

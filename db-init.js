@@ -1496,6 +1496,65 @@ async function runPostgresMigrations(db) {
         await col(`CREATE INDEX IF NOT EXISTS idx_push_opens_created ON push_opens(created_at DESC)`);
         console.log('✅ Migration 040: push_sends / push_campaigns / push_opens done');
 
+        // ── Migration 041: RESUME SCORE — the activation hook on Home ──────────────────────────
+        // 42 of 50 real installs never upload a resume, and of those who do, most never learn
+        // whether it is any good. This table holds ONE scored verdict per (user, resume version)
+        // so Home can open with "your resume scores 61 — here is what is holding it back".
+        //
+        // `fingerprint` is a hash of the exact text that was scored. It is what makes this cheap
+        // AND correct: re-running the batch over an unchanged resume hits the unique index and
+        // costs nothing, while editing the resume produces a new fingerprint and therefore a new
+        // score the user can compare against the old one. Never key this on user_id alone — that
+        // would silently overwrite the history the "your score improved" message depends on.
+        //
+        // shown_at / dismissed_at / acted_at are per-ROW, not per-user: dismissing the score for
+        // one resume must not suppress the score for the next version of it.
+        await col(`CREATE TABLE IF NOT EXISTS resume_scores (
+            id            BIGSERIAL PRIMARY KEY,
+            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            score         SMALLINT NOT NULL,
+            band          VARCHAR(24),
+            headline      TEXT,
+            summary       TEXT,
+            improvements  JSONB NOT NULL DEFAULT '[]'::jsonb,
+            subscores     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source        VARCHAR(16),
+            fingerprint   VARCHAR(64) NOT NULL,
+            model         VARCHAR(48),
+            status        VARCHAR(16) NOT NULL DEFAULT 'ready',
+            shown_at      TIMESTAMPTZ,
+            dismissed_at  TIMESTAMPTZ,
+            acted_at      TIMESTAMPTZ,
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_resume_scores_user_fp ON resume_scores(user_id, fingerprint)`);
+
+        // user_resumes has always been created LAZILY, by ensureResumeTable() the first time
+        // somebody opens the résumé builder. That was survivable while only the builder read it —
+        // it is not survivable now that the scoring sweep JOINs against it, because a missing table
+        // makes the whole candidate query throw and the sweep silently does nothing forever.
+        // (Caught by the e2e run on a clean database: sweep → {ran:false, reason:'query_failed'}.)
+        // Identical definition to resumeBuilderController.ensureResumeTable, so the two cannot drift
+        // apart destructively — whichever runs first wins and the other is a no-op.
+        await col(`CREATE TABLE IF NOT EXISTS user_resumes (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            resume_data JSONB   NOT NULL DEFAULT '{}',
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (user_id)
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_resume_scores_user_created ON resume_scores(user_id, created_at DESC)`);
+        // The batch picks work off this: rows still waiting to be scored are found by their ABSENCE
+        // here, so the only index that matters for the sweep is the one above.
+        // Ship DISARMED — same reason as Migration 034. notifSwitch treats a MISSING row as ON,
+        // so the row must EXIST and say FALSE, or deploying this file starts an AI call per résumé
+        // on the platform the moment the process boots.
+        await col(`INSERT INTO user_notification_switches (key, enabled, updated_at)
+                   VALUES ('resume_score', FALSE, NOW())
+                   ON CONFLICT (key) DO NOTHING`);
+        console.log('✅ Migration 041: resume_scores done (switch seeded OFF)');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

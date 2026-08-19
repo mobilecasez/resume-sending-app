@@ -2,6 +2,8 @@ import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import ReplyComposeModal from './ReplyComposeModal';
 import OnboardingChecklist from './OnboardingChecklist';
 import WelcomeExplainer from './WelcomeExplainer';
+import ResumeScoreModal from './ResumeScoreModal';
+import { fetchResumeScore, markResumeScore, claimEnhancePass } from '../services/resumeScoreService';
 import HelpAssistant from './HelpAssistant';
 import { track } from '../services/analytics';
 import {
@@ -1413,6 +1415,60 @@ export default function HomeScreen({
     })();
     return () => { alive = false; };
   }, [explainerKey, API_BASE]);
+  // ── RÉSUMÉ SCORE (scored in the background; shown once per résumé version) ────────────────────
+  // Deliberately NOT shown while the first-run explainer or the setup checklist is up: someone who
+  // has not finished their profile yet does not need a third thing shouting at them, and the score
+  // only exists once there IS a résumé. The server owns "should this interrupt them" — the app just
+  // asks, so a dismissal survives a reinstall and cannot be resurrected by clearing app storage.
+  const [resumeScore, setResumeScore] = useState(null);
+  const [showResumeScore, setShowResumeScore] = useState(false);
+  const [enhanceBusy, setEnhanceBusy] = useState(false);
+  const scoreAskedRef = useRef(false);
+  useFocusEffect(useCallback(() => {
+    let alive = true;
+    (async () => {
+      if (scoreAskedRef.current || !user?.token) return;
+      if (showExplainer || showOnboarding) return;      // never stack popups
+      scoreAskedRef.current = true;
+      try {
+        const r = await fetchResumeScore();
+        if (!alive || !r?.shouldPrompt || !r.score) return;
+        setResumeScore(r.score);
+        setShowResumeScore(true);
+        try { track('resume_score_shown', { score: r.score.score, band: r.score.band, source: r.score.source }); } catch {}
+        markResumeScore(r.score.id, 'shown');
+      } catch { /* a home screen must never break on this */ }
+    })();
+    return () => { alive = false; };
+  }, [user?.token, showExplainer, showOnboarding]));
+
+  const dismissResumeScore = useCallback(() => {
+    setShowResumeScore(false);
+    if (resumeScore) {
+      try { track('resume_score_dismiss', { score: resumeScore.score }); } catch {}
+      markResumeScore(resumeScore.id, 'dismissed');
+    }
+  }, [resumeScore]);
+
+  // The button promises FREE, so the pass is claimed BEFORE navigating — if we navigated first and
+  // granted after, a user on a slow connection would reach the builder and be asked to pay.
+  const enhanceFromScore = useCallback(async () => {
+    if (!resumeScore || enhanceBusy) return;
+    setEnhanceBusy(true);
+    try { track('resume_score_enhance', { score: resumeScore.score }); } catch {}
+    let free = false;
+    try { ({ free } = await claimEnhancePass(resumeScore.id)); } catch {}
+    try {
+      await AsyncStorage.setItem('resume_builder_entry', JSON.stringify({
+        from: 'resume_score', scoreId: resumeScore.id, score: resumeScore.score, free,
+        improvements: (resumeScore.improvements || []).map((i) => i.title),
+      }));
+    } catch {}
+    setEnhanceBusy(false);
+    setShowResumeScore(false);
+    require('expo-router').router?.push?.('/(resume-builder)');
+  }, [resumeScore, enhanceBusy]);
+
   // ── Finish a notification deep link that needs THIS screen ────────────────────────────────────
   // A tapped "complete your profile" / "see how it works" push can only get halfway on its own:
   // pushRouting writes the request, but App.js's profile screen and the intro guide are BOTH reached
@@ -2069,6 +2125,15 @@ export default function HomeScreen({
         visible={showExplainer}
         onClose={dismissExplainer}
         onExplore={() => { dismissExplainer(); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } }); }}
+      />
+
+      {/* ── RÉSUMÉ SCORE VERDICT ──────────────────────────── */}
+      <ResumeScoreModal
+        visible={showResumeScore}
+        score={resumeScore}
+        busy={enhanceBusy}
+        onDismiss={dismissResumeScore}
+        onEnhance={enhanceFromScore}
       />
 
       {/* ── FLOATING AI HELP ASSISTANT (draggable) ────────── */}

@@ -4034,6 +4034,7 @@ app.use('/api', notificationsRoutes);
 app.use('/api', jobRoutes);
 app.use('/api/ai-hub', aiHubRoutes);
 app.use('/api/resume-builder', resumeBuilderRoutes);
+app.use('/api', require('./server/routes/resumeScoreRoutes'));   // résumé score popup (additive)
 app.use('/api', featureFlagsRoutes);
 const batchRoutes = require('./server/routes/batchRoutes');
 app.use('/api', batchRoutes);
@@ -4105,6 +4106,12 @@ catch (e) { console.error('[demandResearch] failed to start:', e.message); }
 
 try { require('./server/services/globalJobFirehose').startGlobalJobFirehose(); }
 catch (e) { console.error('[firehose] failed to start:', e.message); }
+
+// Résumé-scoring sweep. SHIPS DISARMED, twice: this call is a no-op unless RESUME_SCORE_SWEEP=1,
+// and every sweep it would run re-checks the 'resume_score' admin switch, which Migration 041
+// seeds FALSE. Deploying this line must not start spending money on AI by itself.
+try { require('./server/services/resumeScorer').startScheduler(); }
+catch (e) { console.error('[resumeScore] failed to start:', e.message); }
 
 // Start server
 const HOST = process.env.HOST || '0.0.0.0';

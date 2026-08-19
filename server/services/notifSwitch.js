@@ -33,6 +33,16 @@ const SWITCHES = [
     types: [],
   },
   {
+    // ⚠️ Like 'instant_research' above, this gates SPENDING, not sending — it sends nothing. It is
+    // the on/off for the background résumé-scoring sweep, which costs one AI call per résumé
+    // VERSION (a fingerprint makes a re-score of unchanged text free). Seeded OFF by Migration 041:
+    // deploying an armed sweep would score every résumé on the platform the moment the process
+    // boots, which is exactly the kind of unrequested spend that has burned us before.
+    key: 'resume_score', label: 'Résumé scoring sweep', icon: '📊',
+    description: 'Scores each user’s résumé in the background so Home can show them what is holding it back, with a one-tap free rewrite. One AI call per résumé version; an unchanged résumé is never re-scored. Off by default.',
+    types: [],
+  },
+  {
     key: 'daily_reminders', label: 'Follow-up reminders', icon: '⏰',
     description: 'Daily nudge when an application got no reply after a few days — “time to follow up with X”.',
     types: ['reminder'],
