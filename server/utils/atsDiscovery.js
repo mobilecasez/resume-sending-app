@@ -517,8 +517,17 @@ const adapters = [
       if (!site) { const m = String(c.html || '').match(new RegExp('cxs\\/' + tenant + '\\/([A-Za-z0-9_]+)', 'i')); site = m ? m[1] : null; }
       if (!site) return [];
       const base = `https://${host}/wday/cxs/${tenant}/${site}`;
-      const all = []; const CAP = 120;
+      // ⚠️ 120 WAS A STARTUP-SIZED CAP ON AN ENTERPRISE ATS. Workday is what Siemens, SAP and
+      // Allianz-scale employers run, and they post thousands — we were taking the first 6 pages.
+      // The cap is raised, but paired with a TIME budget, because the firehose kills a board at
+      // FIREHOSE_BOARD_MS (25s) and a board that times out returns NOTHING — strictly worse than
+      // 120 jobs. So: keep paging until the cap, the end of the list, or the clock, whichever
+      // comes first, and return everything gathered so far either way.
+      const all = []; const CAP = parseInt(process.env.ATS_WD_CAP || '1000', 10);
+      const WD_MS = parseInt(process.env.ATS_WD_MS || '18000', 10);
+      const wdT0 = Date.now();
       for (let offset = 0; offset < CAP; offset += 20) {
+        if (Date.now() - wdT0 > WD_MS) break;
         let page; try { page = await postJson(`${base}/jobs`, { appliedFacets: {}, limit: 20, offset, searchText: '' }); } catch { break; }
         const posts = (page && Array.isArray(page.jobPostings)) ? page.jobPostings : [];
         all.push(...posts);
@@ -544,17 +553,30 @@ const adapters = [
     },
     async fetch(c) {
       const company = c.token;
-      const all = []; const CAP = 100;
+      // ⚠️ THIS LOOP RAN EXACTLY ONCE. It was `CAP = 100` with `offset += 100`, so the condition
+      // `offset < CAP` was true only at offset 0 — every SmartRecruiters employer returned ONE page
+      // and no more, silently. Measured against the live API: Delivery Hero advertises
+      // totalFound = 1012 and we were ingesting 100 of them. The cap now bounds the number of
+      // PAGES, which is what it was always meant to do.
+      const all = []; const CAP = parseInt(process.env.ATS_SR_CAP || '2000', 10);
       for (let offset = 0; offset < CAP; offset += 100) {
         let page; try { page = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${company}/postings?limit=100&offset=${offset}`); } catch { break; }
         const posts = (page && Array.isArray(page.content)) ? page.content : [];
         all.push(...posts);
         if (posts.length < 100) break;
+        if (page && Number.isFinite(page.totalFound) && all.length >= page.totalFound) break;
       }
       const name = resolveCompany(c.html, company, c.origin);
+      const DETAIL_CAP = parseInt(process.env.ATS_SR_DETAIL_CAP || '120', 10);
+      let detailBudget = DETAIL_CAP;
       const jobs = await mapLimit(all.slice(0, CAP), 12, async (p) => {
         let descHtml = '', reqHtml = '';
-        try { const d = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${company}/postings/${p.id}`); const s = (d && d.jobAd && d.jobAd.sections) || {}; descHtml = (s.jobDescription && s.jobDescription.text) || ''; reqHtml = (s.qualifications && s.qualifications.text) || ''; } catch {}
+        // Spend the detail budget on the first N; beyond that take the listing as-is. A job with a
+        // thin description still reaches the applicant; a job we never fetched does not exist.
+        if (detailBudget > 0) {
+          detailBudget -= 1;
+          try { const d = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${company}/postings/${p.id}`); const s = (d && d.jobAd && d.jobAd.sections) || {}; descHtml = (s.jobDescription && s.jobDescription.text) || ''; reqHtml = (s.qualifications && s.qualifications.text) || ''; } catch {}
+        }
         const loc = p.location ? [p.location.city, p.location.region, p.location.country].filter(Boolean).join(', ') : 'Not specified';
         return makeJob({ title: p.name, location: loc, job_url: `https://jobs.smartrecruiters.com/${company}/${p.id}`, employer_name: name, employmentCode: p.typeOfEmployment && p.typeOfEmployment.label, descHtml, reqHtml });
       });
