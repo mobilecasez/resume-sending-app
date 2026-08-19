@@ -30,6 +30,12 @@ const UPSERT_TAIL = `ON CONFLICT (job_url) DO UPDATE SET
     location=EXCLUDED.location, work_mode=EXCLUDED.work_mode, job_type=EXCLUDED.job_type, salary=EXCLUDED.salary,
     experience=EXCLUDED.experience, responsibilities=EXCLUDED.responsibilities, skills=EXCLUDED.skills,
     source=EXCLUDED.source, field=EXCLUDED.field, role_category=EXCLUDED.role_category, seniority=EXCLUDED.seniority,
+    -- country was the ONE derived column this upsert never refreshed, even though the location it
+    -- is derived FROM is refreshed right above. A job could therefore sit at location
+    -- "Tokyo, Tokyo, JP" with country 'Global' for as long as it stayed open, and no improvement to
+    -- the resolver could ever reach a job we had already seen once. Found while fixing ISO-2 code
+    -- parsing: 445 of SAP's 1,035 jobs were filed under 'Global' and would have STAYED there.
+    country=EXCLUDED.country,
     is_active=TRUE, last_seen=NOW()`;
 const INSERT_HEAD = `INSERT INTO global_jobs
   (job_url, title, employer_name, employer_domain, location, work_mode, job_type, salary, experience, responsibilities, skills, source, country, field, role_category, seniority, is_active, first_seen, last_seen) VALUES `;

@@ -71,6 +71,52 @@ const COUNTRY_PATTERNS = [
   ['US', /\b(united states|u\.s\.a?\.?|usa|new york|san francisco|seattle|austin|boston|chicago|los angeles|denver|atlanta|dallas|houston|miami|phoenix|san diego|san jose|washington, dc|california|texas|new jersey|virginia|colorado|massachusetts|illinois|florida|north carolina|pennsylvania|ohio|michigan|minnesota|utah|arizona|oregon|nevada|tennessee|missouri|wisconsin|maryland|georgia, us)\b/i],
 ];
 
+// ── ISO-2 country codes ──────────────────────────────────────────────────────
+// Some feeds never spell the country out. SAP writes "Walldorf, DE, 69190" and, in the US,
+// "Palo Alto, CA, US, 94304" — 445 of its 1,035 jobs (43%) resolved to nothing before this.
+//
+// ⚠️ THE TRAP: half the US state abbreviations ARE ISO-2 country codes. CA is California AND
+// Canada; IN is Indiana AND India; DE is Delaware AND Germany; GA, AZ, MD, PA, AL, AR, CO, ID,
+// LA, MT, NE, SC, VA all collide too. Reading the FIRST two-letter token would file Palo Alto
+// under Canada.
+//
+// The rule that works is: the country is the LAST standalone two-letter token, never the first.
+// It holds for every shape in the data — "Palo Alto, CA, US, 94304" → US, "Bangalore, KA, IN,
+// 560066" → IN, "Toronto, ON, CA" → CA(nada), "Walldorf, DE, 69190" → DE. A state code is always
+// followed by its country; a country code never is.
+//
+// Names on the right MUST match COUNTRY_PATTERNS exactly ("US" not "United States", "UK" not
+// "GB") or the same country becomes two separate facets in the feed.
+const ISO2_COUNTRY = {
+  IN: 'India', SG: 'Singapore', ID: 'Indonesia', MY: 'Malaysia', PH: 'Philippines', TH: 'Thailand',
+  VN: 'Vietnam', JP: 'Japan', KR: 'South Korea', CN: 'China', HK: 'Hong Kong', TW: 'Taiwan',
+  AU: 'Australia', NZ: 'New Zealand', AE: 'UAE', SA: 'Saudi Arabia', EG: 'Egypt', IL: 'Israel',
+  TR: 'Turkey', NG: 'Nigeria', KE: 'Kenya', ZA: 'South Africa', BR: 'Brazil', MX: 'Mexico',
+  AR: 'Argentina', CO: 'Colombia', CL: 'Chile', PE: 'Peru', UY: 'Uruguay', CA: 'Canada',
+  IE: 'Ireland', GB: 'UK', UK: 'UK', DE: 'Germany', FR: 'France', NL: 'Netherlands', ES: 'Spain',
+  IT: 'Italy', PT: 'Portugal', CH: 'Switzerland', AT: 'Austria', BE: 'Belgium', SE: 'Sweden',
+  NO: 'Norway', DK: 'Denmark', FI: 'Finland', PL: 'Poland', CZ: 'Czechia', RO: 'Romania',
+  HU: 'Hungary', GR: 'Greece', EE: 'Estonia', LT: 'Lithuania', LV: 'Latvia', BG: 'Bulgaria',
+  RS: 'Serbia', UA: 'Ukraine', US: 'US',
+  // Beyond the pattern list — these had no way to resolve at all before.
+  SK: 'Slovakia', SI: 'Slovenia', HR: 'Croatia', LU: 'Luxembourg', IS: 'Iceland', MT: 'Malta',
+  CY: 'Cyprus', MA: 'Morocco', TN: 'Tunisia', DZ: 'Algeria', GH: 'Ghana', TZ: 'Tanzania',
+  UG: 'Uganda', ET: 'Ethiopia', AO: 'Angola', QA: 'Qatar', KW: 'Kuwait', BH: 'Bahrain',
+  OM: 'Oman', JO: 'Jordan', LB: 'Lebanon', PK: 'Pakistan', BD: 'Bangladesh', LK: 'Sri Lanka',
+  NP: 'Nepal', KZ: 'Kazakhstan', AZ: 'Azerbaijan', GE: 'Georgia', AM: 'Armenia', CR: 'Costa Rica',
+  PA: 'Panama', GT: 'Guatemala', DO: 'Dominican Republic', EC: 'Ecuador', BO: 'Bolivia',
+  PY: 'Paraguay', VE: 'Venezuela', PR: 'Puerto Rico', MU: 'Mauritius', RU: 'Russia',
+};
+
+// The country is the LAST standalone uppercase two-letter token — see the trap above.
+function countryFromIso2(location) {
+  const parts = String(location || '').split(/[,/|]/).map((p) => p.trim());
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (/^[A-Z]{2}$/.test(parts[i]) && ISO2_COUNTRY[parts[i]]) return ISO2_COUNTRY[parts[i]];
+  }
+  return null;
+}
+
 // A board's own label is only trusted when it already looks like a plain country name.
 const CLEAN_LABEL = /^[A-Za-zÀ-ÿ .'-]{2,24}$/;
 
@@ -85,6 +131,10 @@ function countryFromLocation(location) {
 // fallback; anything else becomes 'Global' rather than a bogus facet of its own.
 function resolveCountry(location, boardRegion) {
   return countryFromLocation(location)
+    // ISO-2 runs AFTER the name/city patterns and BEFORE the board's own label, so it can only
+    // ever turn a job we were about to file under "Global" (or under a board label like "Europe")
+    // into its real country. It can never override a country we already recognised by name.
+    || countryFromIso2(location)
     || (CLEAN_LABEL.test(String(boardRegion || '').trim()) ? String(boardRegion).trim() : null)
     || 'Global';
 }
@@ -92,4 +142,4 @@ function resolveCountry(location, boardRegion) {
 // COUNTRY_PATTERNS is exported so geoRank.js can reuse the SAME "is this location in country X"
 // rule for ranking (in JS and, transliterated \b→\y, in SQL) instead of writing a second one that
 // would drift from this one.
-module.exports = { countryFromLocation, resolveCountry, CLEAN_LABEL, COUNTRY_PATTERNS };
+module.exports = { countryFromLocation, countryFromIso2, resolveCountry, CLEAN_LABEL, COUNTRY_PATTERNS, ISO2_COUNTRY };
