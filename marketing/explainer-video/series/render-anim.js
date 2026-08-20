@@ -656,7 +656,17 @@ const BUILDERS = {
   const n = Math.max(2, Math.round(DUR * FPS));
   for (let i = 0; i < n; i++) {
     await page.evaluate((u) => window.seek(u), n === 1 ? 0 : i / (n - 1));
-    await page.screenshot({ path: path.join(OUT, String(i).padStart(5, '0') + '.png') });
+    // One screenshot per frame, hundreds per scene, with ffmpeg encodes running beside us - under
+    // that load a single call CAN blow Playwright's 30s default and it once killed the whole
+    // build (a TimeoutError here left films 4 and 5 joined against week-old audio). A generous
+    // timeout plus one retry; only a second consecutive failure is a real error.
+    const file = path.join(OUT, String(i).padStart(5, '0') + '.png');
+    try {
+      await page.screenshot({ path: file, timeout: 90000 });
+    } catch (e) {
+      process.stderr.write(`  frame ${i}/${n} screenshot failed (${e.name}) - retrying once\n`);
+      await page.screenshot({ path: file, timeout: 90000 });
+    }
   }
   await browser.close();
   console.log(`  anim ${SCENE} (${scene.anim}) ${n} frames`);

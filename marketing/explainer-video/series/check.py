@@ -77,6 +77,18 @@ def main():
         if not ok_shape:
             bad += 1
 
+        # THE STALE-FILM CHECK. A film's length is fully determined by its narration (scene =
+        # line, minus one crossfade per cut), so a file that does not match the current
+        # durations.json was joined against OLD audio. Exactly this shipped once: the build
+        # crashed on film 4, the failure was piped through `tail` and lost, and two films went
+        # out carrying the scratch voice while every shape check passed.
+        expect = sum(vo[s["id"]] for s in film["scenes"]) - (len(film["scenes"]) - 1) * 0.30
+        drift = abs(d - expect)
+        print(f"  duration vs narration: {d:.1f}s vs {expect:.1f}s expected"
+              f"{'' if drift <= 0.5 else '   <<< STALE - built from older narration'}")
+        if drift > 0.5:
+            bad += 1
+
         # Sample the tail of each screen scene - that is where a frame is held, and where any
         # crawl on the UI text would show up worst.
         t = 0.0
