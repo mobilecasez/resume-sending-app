@@ -72,5 +72,12 @@ ok('coach renders nothing when the journey is complete', /if \(!journey \|\| jou
 // One driver everywhere — mixing them is what crashed builds 126-128.
 ok('no useNativeDriver: true anywhere in the coach', !/useNativeDriver:\s*true/.test(coach));
 
+// ── switching chapters must START the next film, not resume into it ───────────────────────────
+// Reported: switching from 20s into film 1 started film 2 at 0:20. expo-av REUSES the player when
+// only `source` changes, and it keeps the old playhead.
+ok('the player is keyed on the film, forcing a fresh one', /key=\{film\.file\}/.test(tut));
+ok('position is stated explicitly', /positionMillis=\{0\}/.test(tut));
+ok('and rewound on load as a fallback', /setPositionAsync\(0\)/.test(tut));
+
 console.log(`\njourney: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

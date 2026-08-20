@@ -269,14 +269,22 @@ export default function TutorialScreen() {
       <View style={s.stage}>
         {source && !failed ? (
           <Video
+            // ⚠️ KEYED ON THE FILM. Swapping only `source` REUSES the underlying player, and it
+            // keeps the old playhead — so switching from 20s into film 1 started film 2 at 0:20,
+            // which is what was reported. The key forces a fresh player per film, and
+            // positionMillis={0} states the intent rather than relying on that.
+            key={film.file}
             ref={videoRef}
             source={source}
+            positionMillis={0}
             style={{ width, height: height * 0.72 }}
             resizeMode={ResizeMode.CONTAIN}
             useNativeControls
             shouldPlay
             isLooping={false}
-            onLoad={() => setReady(true)}
+            // Belt and braces: if a player ever IS reused, rewind the moment it reports ready.
+            // Seeking to 0 on a stream already at 0 is a no-op, so this cannot cause a visible jump.
+            onLoad={() => { setReady(true); videoRef.current?.setPositionAsync(0).catch(() => {}); }}
             onError={() => { setFailed(true); track('tutorial_failed').catch(() => {}); }}
             onPlaybackStatusUpdate={onStatus}
           />
