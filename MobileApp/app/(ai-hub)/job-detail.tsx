@@ -6942,6 +6942,27 @@ export default function JobDetailScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* ⚠️ THIS BANNER HAD STATE AND NO UI. setAuthBanner(true) was called in two places and
+              nothing ever rendered it, so a sign-in that stalled left the user staring at a blank
+              provider page with no explanation and no way back. Automatic return handles the normal
+              case; this is the escape hatch for when it does not, and it is the only thing on
+              screen telling them their half-filled form is still safe. */}
+          {authBanner && (
+            <View style={s.authBanner}>
+              <Ionicons name="log-in-outline" size={15} color="#fff" />
+              <Text style={s.authBannerTx} numberOfLines={2}>
+                Signing you in — we’ll bring you back to your application
+              </Text>
+              <TouchableOpacity
+                onPress={() => { if (preAuthUrlRef.current) returnFromAuth(0); else setAuthBanner(false); }}
+                style={s.authBannerBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={s.authBannerBtnTx}>Back to form</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* Thin progress bar while loading */}
           {applyLoading && (
             <View style={s.webProgressTrack}>
@@ -7059,7 +7080,23 @@ export default function JobDetailScreen() {
               }}
               onNavigationStateChange={(nav) => {
                 setApplyCanGoBack(nav.canGoBack);
+                const prevUrl = currentUrlRef.current;
                 if (nav.url) { currentUrlRef.current = nav.url; try { setApplyHost(new URL(nav.url).hostname.replace(/^www\./, '')); } catch {} }
+                // ⚠️ ARM THE RETURN FOR REDIRECT-STYLE SIGN-IN TOO — not only for pop-ups.
+                // beginAuthFlow is the only thing that sets preAuthUrlRef, and it runs exclusively
+                // from the window.open hook. Sites that send the MAIN FRAME to the provider instead
+                // (Glassdoor's "Continue with Google" does) never went through it, so preAuthUrlRef
+                // stayed empty — and returnFromAuth, the storagerelay guard and the sign-in-finished
+                // check below ALL begin by reading it and silently do nothing when it is blank.
+                // Reported symptom, exactly: Google's Continue screen, then a blank page, and
+                // nothing happens, with no way back to the half-filled form.
+                if (nav.url && !preAuthUrlRef.current && isAuthUrl(nav.url)
+                    && prevUrl && /^https?:/i.test(prevUrl) && !isAuthUrl(prevUrl)) {
+                  preAuthUrlRef.current = prevUrl;
+                  try { authOriginRef.current = new URL(prevUrl).origin; } catch { authOriginRef.current = ''; }
+                  authAtRef.current = Date.now();
+                  setAuthBanner(true);
+                }
                 // Sign-in finished: we're back on the site's own origin, off the auth path. Give the
                 // callback a beat to exchange its code, then return to the form. Once only.
                 if (nav.url && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
@@ -7782,6 +7819,13 @@ const s = StyleSheet.create({
   webHeaderTitle:  { fontSize: 14, fontWeight: '700', color: T.ink, maxWidth: '92%' },
   webHostRow:      { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 1 },
   webHeaderHost:   { fontSize: 11, color: T.textMuted, maxWidth: 200 },
+  authBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 9,
+  },
+  authBannerTx: { flex: 1, color: '#fff', fontSize: 12.5, fontWeight: '600', lineHeight: 16 },
+  authBannerBtn: { backgroundColor: 'rgba(255,255,255,0.22)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
+  authBannerBtnTx: { color: '#fff', fontSize: 11.5, fontWeight: '800' },
   webProgressTrack:{ height: 2.5, backgroundColor: 'rgba(79,141,255,0.15)' },
   webProgressFill: { height: 2.5, backgroundColor: T.blue, borderRadius: 2 },
   webView:         { flex: 1, backgroundColor: '#fff' },

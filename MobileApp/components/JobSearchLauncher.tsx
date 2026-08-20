@@ -15,7 +15,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Animated, Easing,
   ActivityIndicator, Keyboard, Modal, Pressable, ScrollView, KeyboardAvoidingView, Platform,
+  Dimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -35,6 +37,16 @@ const T = {
 export type LaunchPayload = { query: string; role: string; location: string; url: string; mode: 'query' | 'url' };
 
 type Suggest = { label: string; sub?: string };
+
+// ⚠️ THE SUGGESTION LIST MUST NOT RESIZE THE SHEET.
+// It renders inside the sheet's ScrollView, so its height was the sheet's height: one match made a
+// short sheet, eight made a tall one, and because a bottom sheet grows UPWARDS the whole panel
+// jumped on nearly every keystroke — and with the keyboard padding on top it could slide under the
+// status bar and cover the clock. Capping the list at a fixed number of visible rows makes the
+// sheet's height stop depending on how many places happen to match what was typed.
+const SUG_ROW_H = 40;          // paddingVertical 11 × 2 + ~18 line box
+const SUG_MAX_ROWS = 4;
+const SUG_MAX_H = SUG_ROW_H * SUG_MAX_ROWS;
 
 // The robot's nudge, under the CTA. Sits on the page rather than in the sheet: the point is to be
 // FOUND by someone who does not yet know what happens after a search, not to interrupt one.
@@ -77,6 +89,16 @@ export default function JobSearchLauncher({
   const [url, setUrl] = useState('');
   const [advanced, setAdvanced] = useState(false);
   const [prefilled, setPrefilled] = useState(false);
+
+  // ⚠️ Bound the sheet against the REAL top inset, not a percentage. A bottom sheet grows upward,
+  // and this one had no ceiling at all — with the keyboard padding and a long suggestion list it
+  // ran past the top of the screen and sat over the status-bar clock. insets.top is the notch/clock
+  // strip, so this stops exactly below it on every device instead of guessing.
+  const insets = useSafeAreaInsets();
+  const winH = Dimensions.get('window').height;
+  const sheetMaxH = Math.max(320, winH - insets.top - 12);
+  // The scrolling body gets what is left after the grip, header, prefill note and footer button.
+  const bodyMaxH = Math.max(220, sheetMaxH - 210);
 
   const [roleSug, setRoleSug] = useState<Suggest[]>([]);
   const [placeSug, setPlaceSug] = useState<Suggest[]>([]);
@@ -180,16 +202,31 @@ export default function JobSearchLauncher({
     }, 22);
   }, [canGo, url, role, location, composed, onLaunch]);
 
+  // The OUTER view is a fixed SUG_MAX_H slot; the visible box inside is sized to its rows.
+  //
+  // Two separate problems, two parts of this fix. The slot means the sheet's height stops depending
+  // on how many places matched — one result and twelve now occupy the same space, so the panel no
+  // longer jumps on every keystroke. The inner box staying content-sized means a single match still
+  // looks like a single match instead of one row floating in an empty box.
   const suggestBox = (items: Suggest[], pick: (v: string) => void, icon: 'search' | 'location') => (
-    <View style={s.sugBox}>
-      {items.map((x, i) => (
-        <TouchableOpacity key={x.label + i} style={s.sugRow} activeOpacity={0.7}
-          onPress={() => { pick(x.label); setFocus(null); Keyboard.dismiss(); }}>
-          <Ionicons name={icon} size={13} color={T.faint} />
-          <Text style={s.sugTx} numberOfLines={1}>{x.label}</Text>
-          {!!x.sub && <Text style={s.sugSub}>{x.sub}</Text>}
-        </TouchableOpacity>
-      ))}
+    <View style={{ height: SUG_MAX_H + 6 }}>
+    <View style={[s.sugBox, { height: Math.min(items.length, SUG_MAX_ROWS) * SUG_ROW_H }]}>
+      <ScrollView
+        style={{ flex: 1 }}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={items.length > SUG_MAX_ROWS}
+      >
+        {items.map((x, i) => (
+          <TouchableOpacity key={x.label + i} style={s.sugRow} activeOpacity={0.7}
+            onPress={() => { pick(x.label); setFocus(null); Keyboard.dismiss(); }}>
+            <Ionicons name={icon} size={13} color={T.faint} />
+            <Text style={s.sugTx} numberOfLines={1}>{x.label}</Text>
+            {!!x.sub && <Text style={s.sugSub}>{x.sub}</Text>}
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    </View>
     </View>
   );
 
@@ -219,7 +256,7 @@ export default function JobSearchLauncher({
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={s.sheetOverlay}>
           <Pressable style={{ flex: 1 }} onPress={() => { Keyboard.dismiss(); setOpen(false); }} />
-          <View style={s.sheet}>
+          <View style={[s.sheet, { maxHeight: sheetMaxH }]}>
             <View style={s.sheetGrip} />
             <View style={s.sheetHead}>
               <Text style={s.sheetTitle}>Find your job now</Text>
@@ -234,7 +271,7 @@ export default function JobSearchLauncher({
               </View>
             )}
 
-            <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <ScrollView style={{ maxHeight: bodyMaxH }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <Text style={s.label}>Role you're looking for</Text>
               <View style={s.fieldWrap}>
                 <Ionicons name="briefcase-outline" size={16} color={T.blue} />

@@ -15,6 +15,12 @@ const POPUP_PARAMS = /^(mobile|width|height|bga|needsredirect|jan1offset|jun1off
 
 // A path segment that means "sign in / create an account", not "the job".
 const AUTH_SEG = /^(login|signin|sign-in|register|registration|createaccount|create-account|auth)$/i;
+// Older portals put sign-in in a FILE, not a folder — Glassdoor's is `/profile/login_input.htm`.
+// ⚠️ Deliberately requires a file EXTENSION. The obvious widening (`^login[._-]`) would also match
+// a job slug like `sign-in-systems-engineer`, and a false positive here is worse than a miss: it
+// makes the portal-capture skip a real job URL and makes the apply flow treat a job page as a
+// sign-in page.
+const AUTH_FILE = /^(login|signin|sign-in|register|registration|createaccount|create-account|auth)([_-][a-z]+)?\.(htm|html|aspx|php|jsp|do|action)$/i;
 
 /**
  * A sign-in that can ONLY answer by postMessage to `window.opener` — Google Identity Services and
@@ -45,7 +51,7 @@ export function isAuthUrl(url: string): boolean {
   try {
     const u = new URL(String(url));
     const segs = u.pathname.split('/').filter(Boolean);
-    if (segs.some((s) => AUTH_SEG.test(s))) return true;
+    if (segs.some((s) => AUTH_SEG.test(s) || AUTH_FILE.test(s))) return true;
     if (/^(login|signin|accounts|auth[0-9]?)\./i.test(u.hostname)) return true;
     return false;
   } catch { return false; }
