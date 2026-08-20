@@ -23,12 +23,13 @@ const RELEASE_NAME = process.env.RELEASE_NAME || '3.8';
 
 // Play caps release notes at 500 chars per language — asserted below, not hoped for.
 const NOTES = [
-  'Your plan, clearly.',
+  'Know where you stand, and what to do next.',
   '',
-  '• The Free plan is front and centre: 5 AI cover letters and 1 tailored resume every 30 days, refilling automatically. No card, no time limit.',
-  '• Searching, Auto Fill, page translation and applying stay free on every plan.',
-  '• The explainer video plays with sound and is easier to find.',
-  '• Fixed: a profile photo or resume could go missing after deleting and re-creating an account.',
+  '• Résumé score: an honest score out of 100, the three changes that would lift it most, and a free AI rewrite.',
+  '• Guided setup that points at your next step, with five short videos.',
+  '• Thousands more jobs — Amazon, Google, SAP, Siemens, Allianz, Zalando, Revolut, Bolt, Personio.',
+  '• Results now sorted by résumé match, highest first, plus a new "Near me" sort.',
+  '• Search remembers what you last looked for.',
 ].join('\n');
 
 async function main() {
