@@ -46,10 +46,24 @@ async function resumeContentFor(userId) {
     }
   } catch (e) { console.warn('[resumeScore] builder read failed:', e.message); }
   try {
-    const meta = await dbConfig.get(
-      "SELECT full_text, summary, experience, education, skills FROM resume_metadata WHERE user_id = ? AND parse_status = 'done'", [userId]);
+    // ⚠️ SELECT *, not a column list. database/postgres-schema.sql describes a resume_metadata with
+    // `full_text`; PRODUCTION has no such column — it has raw_text plus structured skills /
+    // technical_skills / education / certifications / job_titles / industries. Naming columns made
+    // every uploaded résumé throw "column full_text does not exist" and silently skip, which is 95
+    // of the 103 people waiting for a score. Reading the whole row and serialising whatever is
+    // there works against both shapes and cannot break again when the parser adds a field.
+    const meta = await dbConfig.get("SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = 'done'", [userId]);
     if (meta) {
-      const text = String(meta.full_text || [meta.summary, meta.experience, meta.education, meta.skills].filter(Boolean).join('\n\n') || '');
+      const { id, user_id, parse_status, parse_error, parsed_at, created_at, updated_at, ...rest } = meta;
+      const parts = [];
+      for (const [k, v] of Object.entries(rest)) {
+        if (v == null || v === '') continue;
+        const val = (typeof v === 'string') ? v
+          : (Array.isArray(v) ? v.filter(Boolean).join(', ') : JSON.stringify(v));
+        if (!val || val === '[]' || val === '{}') continue;
+        parts.push(`${k.replace(/_/g, ' ').toUpperCase()}: ${val}`);
+      }
+      const text = parts.join('\n\n');
       if (text.trim().length > 120) return { text: text.slice(0, 24000), source: 'upload' };
     }
   } catch (e) { console.warn('[resumeScore] metadata read failed:', e.message); }
@@ -412,6 +426,14 @@ function startScheduler() {
   const everyMs = Math.max(5, SWEEP_MIN) * 60 * 1000;
   timer = setInterval(() => { runSweep().catch((e) => console.warn('[resumeScore] sweep error:', e.message)); }, everyMs);
   if (timer.unref) timer.unref();
+  // setInterval does not fire until one FULL period has elapsed, so arming this on a deploy used to
+  // mean an hour of silence before the first score existed — and every redeploy restarted that
+  // clock, so a service that redeploys often could sweep never. Kick one off shortly after boot
+  // instead. The delay is so a restart storm doesn't have several instances sweeping at once, and
+  // runSweep still re-checks the admin switch, so this cannot arm anything by itself.
+  const first = setTimeout(() => { runSweep().catch((e) => console.warn('[resumeScore] initial sweep error:', e.message)); },
+    parseInt(process.env.RESUME_SCORE_FIRST_MS || '120000', 10));
+  if (first.unref) first.unref();
   console.log(`[resumeScore] sweep scheduler armed — every ${SWEEP_MIN}min (still gated on the 'resume_score' admin switch)`);
   return { started: true, everyMs };
 }
