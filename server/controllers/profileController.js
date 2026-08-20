@@ -314,6 +314,9 @@ const updatePrivacySettings = (req, res) => {
 };
 
 module.exports = {
+    // Exported so the journey service can apply the SAME "is this file really on disk" rule.
+    // A second copy of it is how one surface ends up saying "done" while the other asks again.
+    livePath,
     getProfile,
     uploadProfileImage,
     uploadResume,

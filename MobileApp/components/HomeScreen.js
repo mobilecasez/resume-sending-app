@@ -3,6 +3,8 @@ import ReplyComposeModal from './ReplyComposeModal';
 import OnboardingChecklist from './OnboardingChecklist';
 import WelcomeExplainer from './WelcomeExplainer';
 import ResumeScoreModal from './ResumeScoreModal';
+import JourneyCoach from './JourneyCoach';
+import { fetchJourney } from '../services/journeyService';
 import { fetchResumeScore, markResumeScore, claimEnhancePass } from '../services/resumeScoreService';
 import HelpAssistant from './HelpAssistant';
 import { track } from '../services/analytics';
@@ -1469,6 +1471,36 @@ export default function HomeScreen({
     require('expo-router').router?.push?.('/(resume-builder)');
   }, [resumeScore, enhanceBusy]);
 
+  // ── ACTIVATION JOURNEY COACH ─────────────────────────────────────────────────────────────────
+  // Refetched on EVERY focus, not once: the whole point is that finishing a step makes the coach
+  // move on, and Home is exactly where the user lands after finishing one. A stale journey would
+  // keep pointing at something they already did, which is worse than not pointing at all.
+  const [journey, setJourney] = useState(null);
+  useFocusEffect(useCallback(() => {
+    let alive = true;
+    (async () => {
+      if (!user?.token) return;
+      try { const j = await fetchJourney(); if (alive) setJourney(j); } catch { /* home must not break */ }
+    })();
+    return () => { alive = false; };
+  }, [user?.token]));
+
+  const watchStep = useCallback((stepKey) => {
+    try { track('journey_watch', { step: stepKey }); } catch {}
+    require('expo-router').router?.push?.({ pathname: '/(tutorial)', params: { film: stepKey } });
+  }, []);
+
+  // Where each step actually lives. `cover_letter` deliberately has no push — Home IS the letters
+  // screen, so sending them anywhere else would be a detour away from the thing they need.
+  const goStep = useCallback((stepKey) => {
+    try { track('journey_go', { step: stepKey }); } catch {}
+    const r = require('expo-router').router;
+    if (stepKey === 'profile') { handleOnboardingStep('profile'); return; }
+    if (stepKey === 'resume') { r?.push?.('/(resume-builder)'); return; }
+    if (stepKey === 'save_job' || stepKey === 'apply') { r?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } }); return; }
+    // cover_letter → already here.
+  }, [handleOnboardingStep]);
+
   // ── Finish a notification deep link that needs THIS screen ────────────────────────────────────
   // A tapped "complete your profile" / "see how it works" push can only get halfway on its own:
   // pushRouting writes the request, but App.js's profile screen and the intro guide are BOTH reached
@@ -2126,6 +2158,11 @@ export default function HomeScreen({
         onClose={dismissExplainer}
         onExplore={() => { dismissExplainer(); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } }); }}
       />
+
+      {/* ── ACTIVATION COACH (hides itself once all five steps are done) ─── */}
+      {!showExplainer && !showResumeScore && (
+        <JourneyCoach journey={journey} onWatch={watchStep} onGo={goStep} />
+      )}
 
       {/* ── RÉSUMÉ SCORE VERDICT ──────────────────────────── */}
       <ResumeScoreModal

@@ -30,7 +30,34 @@ const T = {
   accent: '#F4A259', border: 'rgba(255,255,255,0.10)',
 };
 
-const TUTORIAL_FILE = 'tutorial-v1.mp4';
+/**
+ * The five films, in the order they teach — and the order they are NUMBERED ON SCREEN. Each clip
+ * renders "01 … 05" in its own header, so this array and the films have to agree: reordering here
+ * without re-cutting them would show a film captioned "04" under the heading "Step 3 of 5".
+ *
+ * `key` matches the server's journey step keys (server/services/journey.js), which is how the coach
+ * on Home opens the film for whatever the user has to do next.
+ *
+ * ⚠️ Every file is HOSTED, never bundled. Together they are ~7.7 MB — bundling would add that to
+ * the download for every installer including the majority who never open the guide, and a bundled
+ * file can only be corrected in a store release. Cache-busting is by FILENAME (`-v1`): re-cut a
+ * film, ship `-v2`, bump the entry, and every device fetches the new one.
+ */
+const FILMS = [
+  { key: 'profile',      n: 1, file: 'guide-01-profile-v1.mp4',     title: 'Set up your profile',  secs: 31 },
+  { key: 'resume',       n: 2, file: 'guide-02-resume-v1.mp4',      title: 'AI résumé + formats',  secs: 48 },
+  { key: 'save_job',     n: 3, file: 'guide-03-savejob-v1.mp4',     title: 'Save a job',           secs: 26 },
+  { key: 'cover_letter', n: 4, file: 'guide-04-coverletter-v1.mp4', title: 'Cover letter',         secs: 28 },
+  { key: 'apply',        n: 5, file: 'guide-05-autofill-v1.mp4',    title: 'Auto Fill & apply',    secs: 40 },
+] as const;
+
+const filmIndexFor = (v?: string) => {
+  if (!v) return 0;
+  const byKey = FILMS.findIndex((f) => f.key === v);
+  if (byKey >= 0) return byKey;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= 1 && n <= FILMS.length ? n - 1 : 0;
+};
 /** API_BASE ends in `/api` and is a LIVE binding (an admin can repoint it) — so derive the media
  *  origin from it at call time rather than hard-coding a host. */
 const mediaUrl = (name: string) => `${String(API_BASE).replace(/\/api\/?$/, '')}/media/${name}`;
@@ -42,8 +69,11 @@ export default function TutorialScreen() {
   // Set when the screen was reached from a push, so a watch can be credited to the campaign that
   // drove it. Absent when opened from the menu or the help sheet — which is most of the time, and
   // is exactly why watches must not all be attributed to whatever push went out that day.
-  const { nid: nidParam } = useLocalSearchParams<{ nid?: string }>();
+  const { nid: nidParam, film: filmParam } = useLocalSearchParams<{ nid?: string; film?: string }>();
   const nid = typeof nidParam === 'string' && nidParam ? nidParam : null;
+  // Which film to open on. The coach passes the user's NEXT step key; the menu passes nothing.
+  const [at, setAt] = useState(() => filmIndexFor(typeof filmParam === 'string' ? filmParam : undefined));
+  const film = FILMS[at];
   const videoRef = useRef<Video | null>(null);
   const [source, setSource] = useState<Src | null>(null);
   const [ready, setReady] = useState(false);
@@ -55,9 +85,11 @@ export default function TutorialScreen() {
   // and only then spend bandwidth on making next time offline-capable.
   useEffect(() => {
     let alive = true;
+    setReady(false); setFailed(false); setDone(false);
+    reported.current = { half: false, end: false };
     (async () => {
-      const remote = mediaUrl(TUTORIAL_FILE);
-      const local = `${cacheDirectory}${TUTORIAL_FILE}`;
+      const remote = mediaUrl(film.file);
+      const local = `${cacheDirectory}${film.file}`;
       try {
         const info = await getInfoAsync(local);
         // A truncated file from an interrupted download would play as a few broken seconds, so
@@ -74,7 +106,7 @@ export default function TutorialScreen() {
       } catch { /* offline or server down — streaming already covered the user */ }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [film.file]);
 
   // ⚠️ WITHOUT THIS THE FILM PLAYS SILENTLY FOR MOST PEOPLE. expo-av defaults
   // playsInSilentModeIOS to FALSE, which means iOS honours the ring/silent switch — and that switch
@@ -103,7 +135,8 @@ export default function TutorialScreen() {
     };
   }, []);
 
-  useEffect(() => { track('tutorial_opened', { file: TUTORIAL_FILE, nid: nid || undefined }).catch(() => {}); }, [nid]);
+  // Opening a film is its own event, and switching counts as opening the next one.
+  useEffect(() => { track('tutorial_opened', { file: film.file, film: film.key, nid: nid || undefined }).catch(() => {}); }, [film.file, film.key, nid]);
 
   // ── Watch measurement ───────────────────────────────────────────────────────────────────────
   //
@@ -121,7 +154,11 @@ export default function TutorialScreen() {
   // scrubber to the end in two seconds. That number would be worse than having none.
   const BUCKETS = 40;
   const MAX_STEP_MS = 1500;
-  const watch = useRef({ seen: new Set<number>(), ms: 0, lastPos: -1, replays: 0, sent: 0 });
+  // ⚠️ `file` lives IN the ref. flush() runs on unmount and on switching films, and by then `film`
+  // is already the NEXT one — reading it there would file every film's watch time under its
+  // successor. The ref records what was actually being measured.
+  const watch = useRef<{ seen: Set<number>; ms: number; lastPos: number; replays: number; sent: number; file: string; key: string }>(
+    { seen: new Set<number>(), ms: 0, lastPos: -1, replays: 0, sent: 0, file: FILMS[0].file, key: FILMS[0].key });
 
   /** Send what we have. Called on a timer, on unmount, and when the app goes to the background. */
   const flush = useCallback((reason: string) => {
@@ -131,7 +168,8 @@ export default function TutorialScreen() {
     if (seconds < 1 || seconds === w.sent) return;
     w.sent = seconds;
     track('tutorial_progress', {
-      file: TUTORIAL_FILE,
+      file: w.file,
+      film: w.key,
       seconds,
       coverPct: Math.min(100, Math.round((w.seen.size / BUCKETS) * 100)),
       completed: reported.current.end,
@@ -174,15 +212,28 @@ export default function TutorialScreen() {
 
     if (dur > 0 && !reported.current.half && pos / dur >= 0.5) {
       reported.current.half = true;
-      track('tutorial_halfway', { nid: nid || undefined }).catch(() => {});
+      track('tutorial_halfway', { film: watch.current.key, nid: nid || undefined }).catch(() => {});
     }
     if (s.didJustFinish && !reported.current.end) {
       reported.current.end = true;
       setDone(true);
-      track('tutorial_completed', { nid: nid || undefined }).catch(() => {});
+      track('tutorial_completed', { film: watch.current.key, nid: nid || undefined }).catch(() => {});
       flush('finished');
     }
   }, [flush, nid]);
+
+  // Switch films. Flush FIRST — the outgoing film's watch time belongs to the outgoing film — then
+  // reset the counters so the next one starts from zero rather than inheriting a coverage figure.
+  const selectFilm = useCallback((i: number) => {
+    if (i === at || i < 0 || i >= FILMS.length) return;
+    flush('switch');
+    watch.current = { seen: new Set<number>(), ms: 0, lastPos: -1, replays: 0, sent: 0, file: FILMS[i].file, key: FILMS[i].key };
+    setAt(i);
+  }, [at, flush]);
+
+  // Keep the ref pointed at the film on screen even when `at` was set by the route param rather
+  // than by selectFilm (a coach deep-link opens straight on film 3, and nothing else would set it).
+  useEffect(() => { watch.current.file = film.file; watch.current.key = film.key; }, [film.file, film.key]);
 
   const replay = useCallback(async () => {
     setDone(false);
@@ -206,8 +257,9 @@ export default function TutorialScreen() {
 
       <View style={s.header}>
         <View style={{ flex: 1 }}>
-          <Text style={s.title}>How CVApplyr works</Text>
-          <Text style={s.sub}>1 minute 27 seconds</Text>
+          <Text style={s.eyebrow}>STEP {film.n} OF {FILMS.length}</Text>
+          <Text style={s.title}>{film.title}</Text>
+          <Text style={s.sub}>{film.secs} seconds</Text>
         </View>
         <TouchableOpacity onPress={close} style={s.close} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Ionicons name="close" size={26} color={T.mut} />
@@ -243,7 +295,7 @@ export default function TutorialScreen() {
             <Text style={s.errBody}>Check your connection and try again.</Text>
             <TouchableOpacity
               style={s.btn}
-              onPress={() => { setFailed(false); setReady(false); setSource({ uri: mediaUrl(TUTORIAL_FILE) }); }}
+              onPress={() => { setFailed(false); setReady(false); setSource({ uri: mediaUrl(film.file) }); }}
             >
               <Text style={s.btnText}>Retry</Text>
             </TouchableOpacity>
@@ -251,15 +303,39 @@ export default function TutorialScreen() {
         ) : null}
       </View>
 
+      {/* Chapter strip. Always visible, because "there are five of these and I am on the second"
+          is the single most useful thing to know here — and it lets someone who only needs the
+          Auto Fill film get to it without sitting through four others. */}
+      <View style={s.strip}>
+        {FILMS.map((f, i) => (
+          <TouchableOpacity
+            key={f.key}
+            onPress={() => selectFilm(i)}
+            style={[s.chip, i === at && s.chipOn]}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityLabel={`Step ${f.n}: ${f.title}`}
+          >
+            <Text style={[s.chipText, i === at && s.chipTextOn]}>{String(f.n).padStart(2, '0')}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       {/* The point of the whole screen: send them somewhere useful the moment it ends. A tutorial
           that finishes on a dead end wastes the attention it just earned. */}
       <View style={s.footer}>
         {done ? (
           <>
-            <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => router.push('/(discover)')}>
-              <Ionicons name="search" size={18} color="#0B1120" />
-              <Text style={[s.btnText, s.btnTextPrimary]}>Find my first job</Text>
-            </TouchableOpacity>
+            {at < FILMS.length - 1 ? (
+              <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => selectFilm(at + 1)}>
+                <Ionicons name="play" size={17} color="#0B1120" />
+                <Text style={[s.btnText, s.btnTextPrimary]}>Next: {FILMS[at + 1].title}</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => router.push('/(discover)')}>
+                <Ionicons name="search" size={18} color="#0B1120" />
+                <Text style={[s.btnText, s.btnTextPrimary]}>Find my first job</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={s.ghost} onPress={replay}>
               <Ionicons name="refresh" size={16} color={T.mut} />
               <Text style={s.ghostText}>Watch again</Text>
@@ -279,7 +355,16 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20,
     paddingTop: Platform.OS === 'android' ? 14 : 6, paddingBottom: 14,
   },
+  eyebrow: { color: T.accent, fontSize: 10.5, fontWeight: '800', letterSpacing: 1.4, marginBottom: 3 },
   title: { color: T.ink, fontSize: 20, fontWeight: '700', letterSpacing: -0.3 },
+  strip: { flexDirection: 'row', justifyContent: 'center', gap: 8, paddingTop: 14 },
+  chip: {
+    minWidth: 40, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
+    borderWidth: 1, borderColor: T.border, alignItems: 'center',
+  },
+  chipOn: { backgroundColor: T.accent, borderColor: T.accent },
+  chipText: { color: T.faint, fontSize: 12.5, fontWeight: '800', letterSpacing: 0.4 },
+  chipTextOn: { color: '#0B1120' },
   sub: { color: T.faint, fontSize: 13, marginTop: 3 },
   close: { padding: 4 },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' },
