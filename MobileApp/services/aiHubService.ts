@@ -1267,7 +1267,7 @@ export type DiscoverFacets = {
 export async function fetchDiscoverJobs(
   opts: {
     offset?: number; limit?: number; q?: string; country?: string; work_mode?: string; employer?: string;
-    skill?: string; field?: string; role_category?: string; sort?: 'match' | 'recent'; min_match?: number;
+    skill?: string; field?: string; role_category?: string; sort?: 'match' | 'recent' | 'nearby'; min_match?: number;
   } = {},
 ): Promise<DiscoverResponse> {
   const headers = await getAuthHeader();

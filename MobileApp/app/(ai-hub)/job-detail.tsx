@@ -43,7 +43,7 @@ import CreditCostPill from '../../components/CreditCostPill';
 import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
-import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth } from '../../utils/jobUrl';
+import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth } from '../../utils/jobUrl';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS } from '../../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
@@ -4569,6 +4569,29 @@ export default function JobDetailScreen() {
   const copyTimerRef    = useRef<any>(null);
   const localFillRef    = useRef<{ fullName?: string; email?: string; phone?: string; location?: string }>({}); // local session + resume-builder facts
 
+  // ⚠️ GOOGLE SIGN-IN CANNOT COMPLETE IN AN APP WEB VIEW. Stop before the blank page.
+  //
+  // Two independent, documented, unfixed-by-the-vendor blocks stack here:
+  //   • Google has rejected OAuth from embedded web views since Feb 2023 (disallowed_useragent).
+  //     Spoofing the user-agent is against their terms and stops working whenever they tighten it.
+  //   • WKWebView returns a NULL window.opener in popups from iOS 17.5 (Apple forum 759487, open
+  //     with no fix), so even a rendering page has nowhere to deliver the token.
+  // The user-visible result of both is the same blank accounts.google.com — reported here twice.
+  //
+  // So we intercept the navigation and hand over a real choice INSTEAD of a dead end. Email and
+  // password still work in this view (the passkey guard makes sites offer it), and the phone's
+  // browser is where Google's flow genuinely completes.
+  const offerBrowserSignIn = () => {
+    Alert.alert(
+      'Google sign-in needs your browser',
+      'Google blocks its sign-in inside apps, so this page would come up blank. Sign in with the site’s email and password here — or open this job in your phone’s browser, where Google works.',
+      [
+        { text: 'Use email instead', style: 'cancel' },
+        { text: 'Open in browser', onPress: () => openCurrentInBrowser() },
+      ],
+    );
+  };
+
   // Take over a sign-in popup: remember where we were, then run the auth in this same view.
   const beginAuthFlow = (target: string, from?: string) => {
     if (!target || !applyWebRef.current) return;
@@ -4577,7 +4600,7 @@ export default function JobDetailScreen() {
     // there is no opener. Taking the main frame to Google therefore destroys the half-filled form
     // and ends on a `storagerelay://` URL that will not load. Say so up front and offer the phone's
     // browser, which is the only place this flow can actually complete.
-    if (isPostMessageOnlyAuth(target)) {
+    if (isPostMessageOnlyAuth(target) || isBlockedEmbeddedAuth(target)) {
       const host = (() => { try { return new URL(target).hostname; } catch { return 'This provider'; } })();
       Alert.alert(
         'Sign in needs your browser',
@@ -7005,6 +7028,9 @@ export default function JobDetailScreen() {
                 const u = req?.url || '';
                 if (/^mailto:/i.test(u)) { handleMailtoApply(u); return false; }
                 if (/^(tel|sms|facetime|maps|geo):/i.test(u)) { Linking.openURL(u).catch(() => {}); return false; }
+                // Cancel Google's OAuth endpoints outright — see offerBrowserSignIn. Letting this
+                // load is what produced the blank accounts.google.com screenshot.
+                if (isBlockedEmbeddedAuth(u)) { offerBrowserSignIn(); return false; }
                 // ⚠️ A SCHEME WKWebView CANNOT LOAD MUST NOT BE "ALLOWED". Returning true for
                 // `storagerelay://…` — where Google's popup sign-in delivers its result — parked the
                 // user on a permanently dead page with their half-filled form gone. Anything outside

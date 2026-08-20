@@ -22,11 +22,12 @@ const harness = [
   grab(/const AUTH_FILE = [^\n]*\n/, 'AUTH_FILE'),
   grab(/export function isPostMessageOnlyAuth[\s\S]*?\n}\n/, 'isPostMessageOnlyAuth'),
   grab(/export function isAuthUrl[\s\S]*?\n}\n/, 'isAuthUrl'),
-  'module.exports = { isAuthUrl, isPostMessageOnlyAuth };',
+  grab(/export function isBlockedEmbeddedAuth[\s\S]*?\n}\n/, 'isBlockedEmbeddedAuth'),
+  'module.exports = { isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth };',
 ].join('\n').replace(/export function/g, 'function').replace(/: string\)/g, ')').replace(/: boolean/g, '');
 const m = new module.constructor();
 m._compile(harness, '/joburl-harness.js');
-const { isAuthUrl, isPostMessageOnlyAuth } = m.exports;
+const { isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth } = m.exports;
 
 console.log('── the provider pages we must recognise as "signing in" ──');
 // If this is false, the fix never arms and the user is stranded exactly as reported.
@@ -55,6 +56,27 @@ ok('storagerelay redirect_uri is pop-up-only',
   isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/auth?redirect_uri=storagerelay%3A%2F%2Fhttps%2Fglassdoor.com'));
 ok('a normal redirect flow is NOT pop-up-only — it can finish in the web view',
   !isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2Fwww.glassdoor.com%2Fcb'));
+
+console.log('── Google OAuth is intercepted BEFORE it can render blank ──');
+// Reported twice: a blank accounts.google.com after choosing an account. Google has blocked
+// embedded web views since Feb 2023, and WKWebView has had a null window.opener since iOS 17.5 —
+// both documented, both unfixed by the vendor. So these must never be allowed to load here.
+ok('the OAuth authorize endpoint', isBlockedEmbeddedAuth('https://accounts.google.com/o/oauth2/v2/auth?client_id=x'));
+ok('the consent step', isBlockedEmbeddedAuth('https://accounts.google.com/signin/oauth/consent?a=1'));
+ok('Google Identity Services', isBlockedEmbeddedAuth('https://accounts.google.com/gsi/select'));
+ok('the classic ServiceLogin', isBlockedEmbeddedAuth('https://accounts.google.com/ServiceLogin?continue=x'));
+// ⚠️ Scoped to the OAuth endpoints. Cancelling every google.com hop would break ordinary browsing.
+ok('a Google SEARCH page is not intercepted', !isBlockedEmbeddedAuth('https://www.google.com/search?q=jobs'));
+ok('a Google careers job page is not intercepted',
+  !isBlockedEmbeddedAuth('https://www.google.com/about/careers/applications/jobs/results/123-engineer'));
+ok('accounts.google.com root is not intercepted', !isBlockedEmbeddedAuth('https://accounts.google.com/'));
+ok('a job site is never intercepted', !isBlockedEmbeddedAuth('https://www.glassdoor.com/job-listing/x.htm'));
+
+const jd0 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
+ok('the web view cancels it instead of loading it', /isBlockedEmbeddedAuth\(u\)\) \{ offerBrowserSignIn\(\); return false; \}/.test(jd0));
+ok('the pop-up path refuses it too', /isPostMessageOnlyAuth\(target\) \|\| isBlockedEmbeddedAuth\(target\)/.test(jd0));
+ok('the user is offered email OR their browser, not a dead end',
+  /Use email instead/.test(jd0) && /Open in browser/.test(jd0));
 
 console.log('── the two code paths ──');
 const jd = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');

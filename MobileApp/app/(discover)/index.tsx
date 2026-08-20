@@ -242,7 +242,7 @@ function FilterFab({ active, count, onPress }: { active: boolean; count: number;
 
 // Reusable Explore feed. `embedded` renders JUST the feed (no SafeAreaView / top bar / Explore|Saved
 // sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
-export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialSort }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void; onSavedChange?: () => void; initialSort?: 'match' | 'recent' }) {
+export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialSort }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void; onSavedChange?: () => void; initialSort?: 'match' | 'recent' | 'nearby' }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { costOf } = useEventCosts();
@@ -261,7 +261,8 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
   const [liveOpen, setLiveOpen] = useState(false);   // "Look for live jobs on Google" modal
   const [launcherOpen, setLauncherOpen] = useState(false);   // the Find-your-job panel is expanded
   const [liveQuery, setLiveQuery] = useState('');
-  const [sort, setSort] = useState<'match' | 'recent'>(initialSort === 'recent' ? 'recent' : 'match');
+  const [sort, setSort] = useState<'match' | 'recent' | 'nearby'>(
+    initialSort === 'recent' ? 'recent' : initialSort === 'nearby' ? 'nearby' : 'match');
   const [mode, setMode] = useState('');          // work_mode
   const [skill, setSkill] = useState('');
   const [country, setCountry] = useState('');
@@ -595,7 +596,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
           {fmt(total)} {total === 1 ? 'job' : 'jobs'}
           {isOwnField && !noProfile ? ' · best matches' : (field ? ` · ${shortField(field)}` : '')}
         </Text>
-        <SortControl options={[{ key: 'match', label: 'Best match' }, { key: 'recent', label: 'Newest first' }]} value={sort} onChange={(k) => setSort(k as any)} />
+        <SortControl options={[{ key: 'match', label: 'Best match' }, { key: 'nearby', label: 'Near me' }, { key: 'recent', label: 'Newest first' }]} value={sort} onChange={(k) => setSort(k as any)} />
       </View>
       </>)}
     </View>

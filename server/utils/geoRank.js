@@ -350,7 +350,15 @@ function orderSql(mode, opts = {}) {
   const tier = opts.tier || 'geo_tier';
   const match = opts.match || 'match';
   if (mode === 'country-first') return `${tier} ASC, ${match} DESC NULLS LAST`;
-  return `floor(coalesce(${match}, -10)::numeric / 10) DESC, ${tier} ASC, ${match} DESC NULLS LAST`;
+  // ⚠️ THE ORDER MUST AGREE WITH THE NUMBER ON THE BADGE.
+  // This used to be `floor(match/10) DESC, tier ASC, match DESC` — match bucketed into TENS, with
+  // geography deciding inside each bucket. It reads as broken sorting, because it is: a list of
+  // 78%, 71%, 75%, 73% is not "best match first" to anyone looking at it, and once the badge and
+  // the order disagree the badge stops being believed at all.
+  // Match is now the primary key and geography only breaks TIES (two jobs at the same %, nearest
+  // first). Country-first above is unchanged — that mode exists precisely to put place ahead of
+  // match, and it is now only reachable when the user asks for it.
+  return `${match} DESC NULLS LAST, ${tier} ASC`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

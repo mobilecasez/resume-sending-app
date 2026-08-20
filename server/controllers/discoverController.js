@@ -113,7 +113,10 @@ async function discoverJobs(req, res) {
     let field = String(req.query.field || '').trim().slice(0, 60);
     const roleCat = String(req.query.role_category || '').trim().slice(0, 90);
     if (/^all$/i.test(field)) field = '';
-    const wantMatchSort = String(req.query.sort || '') !== 'recent';   // default = best match
+    // 'match' (default) = best match first, honestly. 'nearby' = the user ASKING for their own
+    // country first. 'recent' = newest. Anything else falls back to 'match'.
+    const sortKey = /^(recent|nearby)$/.test(String(req.query.sort || '')) ? String(req.query.sort) : 'match';
+    const wantMatchSort = sortKey !== 'recent';
     // min match: default 10 only when the user is scoped to a field (their focused view); 0 when browsing all.
     const minMatchRaw = req.query.min_match;
     const minMatch = Math.max(0, Math.min(100, parseInt(minMatchRaw != null ? minMatchRaw : (field ? DEFAULT_MIN_MATCH : 0), 10) || 0));
@@ -149,14 +152,20 @@ async function discoverJobs(req, res) {
     const matchExpr = noProfile ? 'NULL::int' : matchExprSql(P(userSkills));
     // Geo term. With sort=recent there is no match to interleave with, so only the strong
     // (country-first) mode applies — the honest fallback must never turn "newest" into "nearest".
-    const applyGeo = geo.active && (useMatchSort || geo.mode === 'country-first');
+    // ⚠️ THE SORT THE USER PICKED IS THE SORT THEY GET.
+    // geo.mode is decided from DATA (does this user's field have enough jobs at home?) and used to
+    // be applied whatever the user had chosen — so "Best match" could silently return a
+    // country-first list where a 40% local job outranked a 95% one, and "Newest first" could return
+    // nearest-first, which this file's own comment said it must never do.
+    // Ordering mode now follows the user's choice; geo.mode still drives the explanatory notice.
+    const geoMode = sortKey === 'nearby' ? 'country-first' : 'match-first';
+    const applyGeo = geo.active && sortKey !== 'recent';
     const geoSel = applyGeo ? `, ${geoRank.tierSql(geo.anchor, P, { countryCol: 'country', locationCol: 'location' })} AS geo_tier` : '';
-    const geoOrd = !applyGeo ? ''
-      : (useMatchSort ? geoRank.orderSql(geo.mode, { tier: 'geo_tier', match: 'match' }) : 'geo_tier ASC') + ', ';
+    const geoOrd = !applyGeo ? '' : geoRank.orderSql(geoMode, { tier: 'geo_tier', match: 'match' }) + ', ';
     // The candidate window is the freshest BASE_CAP rows, so in country-first mode it has to be
     // drawn nearest-first as well — otherwise "France first" can only reorder whatever handful of
     // French jobs happened to land in a worldwide freshness window.
-    const baseOrder = (applyGeo && geo.mode === 'country-first') ? 'geo_tier ASC, last_seen DESC' : 'last_seen DESC';
+    const baseOrder = (applyGeo && geoMode === 'country-first') ? 'geo_tier ASC, last_seen DESC' : 'last_seen DESC';
     const rnOrder = geoOrd + (useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC');
     const finalOrder = geoOrd + (useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC');
     const minClause = applyMinMatch ? `WHERE match >= ${minMatch}` : '';
@@ -200,7 +209,7 @@ async function discoverJobs(req, res) {
     const hasMore = jobs.length === limit && (offset + limit) < BASE_CAP && (offset + jobs.length) < total;
     res.json({
       success: true, jobs, total, offset, limit, hasMore,
-      noProfile, sort: useMatchSort ? 'match' : 'recent',
+      noProfile, sort: useMatchSort ? sortKey : 'recent',
       userField: userFieldObj ? userFieldObj.field : null,
       userRoleCategory: userFieldObj ? userFieldObj.roleCategory : null,
       appliedField: field || null, minMatch: applyMinMatch ? minMatch : 0,

@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchSearchPrefill, fetchRoleSuggestions, fetchPlaceSuggestions } from '../services/interestsService';
 import { localRoles, localPlaces, mergeSuggestions, composeQuery } from '../utils/searchSuggest';
 
@@ -123,6 +124,40 @@ export default function JobSearchLauncher({
   useEffect(() => { onExpandChange?.(open); }, [open, onExpandChange]);
 
   const watchTutorial = useCallback(() => { try { router.push(TUTORIAL_ROUTE); } catch {} }, [router]);
+
+  // ── Remember the last search, across restarts ────────────────────────────────────────────────
+  // Retyping the same role and city every time the app is reopened is the kind of small friction
+  // that quietly stops people searching at all. Restored on mount rather than on first open, so the
+  // fields are already right the moment the sheet slides up.
+  //
+  // ⚠️ Restored BEFORE the résumé prefill can run, and the prefill only ever fills a field that is
+  // still empty (`cur || p.role`) — so what the user last typed always beats what we inferred from
+  // their résumé. The other way round would silently undo their edit on every launch.
+  const LAST_KEY = 'job_search_last_v1';
+  const restoredOnce = useRef(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(LAST_KEY);
+        if (!raw) { restoredOnce.current = true; return; }
+        const d = JSON.parse(raw) || {};
+        if (typeof d.role === 'string' && d.role) setRole((cur) => cur || d.role);
+        if (typeof d.location === 'string' && d.location) setLocation((cur) => cur || d.location);
+        if (typeof d.url === 'string' && d.url) { setUrl((cur) => cur || d.url); setAdvanced(true); }
+      } catch { /* a corrupt entry must not stop the sheet opening */ }
+      restoredOnce.current = true;
+    })();
+  }, []);
+
+  // Persist on every edit, debounced — not only on submit. Someone who types a city and then
+  // backgrounds the app without searching still expects it there when they come back.
+  useEffect(() => {
+    if (!restoredOnce.current) return;          // don't write the empty initial state over a saved one
+    const t = setTimeout(() => {
+      AsyncStorage.setItem(LAST_KEY, JSON.stringify({ role, location, url })).catch(() => {});
+    }, 400);
+    return () => clearTimeout(t);
+  }, [role, location, url]);
 
   // Prefill from the résumé on first open — a returning jobseeker should never retype their own
   // job title. Failure is silent: an empty sheet is still a working sheet.

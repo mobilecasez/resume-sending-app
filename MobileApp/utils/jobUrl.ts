@@ -46,6 +46,27 @@ export function isPostMessageOnlyAuth(url: string): boolean {
   } catch { return false; }
 }
 
+/**
+ * Sign-in that CANNOT complete inside an app web view, no matter what we do.
+ *
+ * Google has blocked OAuth from embedded web views since Feb 2023 (`disallowed_useragent`), and
+ * spoofing the user-agent to get around it is against their terms — so that is not a fix, it is a
+ * workaround that stops working whenever Google tightens the check. Independently, WKWebView has
+ * returned a null `window.opener` in popups since iOS 17.5, so even when the pages render, the
+ * provider has nowhere to deliver the token. Both are documented, both are open with no vendor
+ * fix, and together they produce exactly one user-visible thing: a blank accounts.google.com.
+ *
+ * We therefore stop pretending and hand the user a real choice BEFORE the blank page, rather than
+ * after it. Scoped to the OAuth endpoints — a plain google.com page is not sign-in.
+ */
+export function isBlockedEmbeddedAuth(url: string): boolean {
+  try {
+    const u = new URL(String(url));
+    if (!/(^|\.)accounts\.google\.com$/i.test(u.hostname)) return false;
+    return /^\/(o\/oauth2|signin\/oauth|gsi|oauth2)/i.test(u.pathname) || /(^|\/)ServiceLogin/i.test(u.pathname);
+  } catch { return false; }
+}
+
 /** True when the URL is an account/sign-in page rather than a job posting. */
 export function isAuthUrl(url: string): boolean {
   try {
