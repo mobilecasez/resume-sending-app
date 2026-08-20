@@ -11,29 +11,33 @@
 require('dotenv').config();
 // Stub ONLY the transport. Prompt build, schema, refusal handling, normalise, fingerprint, upsert,
 // history, latestFor, mark and cascade are all the real production path.
-const sdkPath = require.resolve('@anthropic-ai/sdk');
-let lastReq = null, calls = 0, nextScore = 58, mode = 'ok';
-require.cache[sdkPath] = { id: sdkPath, filename: sdkPath, loaded: true, exports: class {
-  constructor(opts) { this.opts = opts; this.messages = { create: async (req) => {
-    lastReq = req; calls++;
-    if (mode === 'refusal') return { stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] };
-    if (mode === 'notext') return { stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '...' }] };
-    return { stop_reason: 'end_turn', content: [
-      { type: 'thinking', thinking: 'weighing impact vs clarity' },   // thinking block FIRST, on purpose
-      { type: 'text', text: JSON.stringify({
-        score: nextScore,
-        subscores: { impact: nextScore - 12, clarity: nextScore + 6, keywords: nextScore - 4, completeness: nextScore + 9 },
-        headline: 'Your achievements read as duties, not results',
-        summary: 'Solid experience, but almost nothing is quantified. Add numbers and this lifts fast.',
-        improvements: [
-          { title: 'Quantify your top 5 bullets', detail: 'Add a number to each — team size, %, revenue, time saved.' },
-          { title: 'Lead with the outcome', detail: 'Start each bullet with what changed, not what you were assigned.' },
-          { title: 'Add a certifications section', detail: 'List credentials a recruiter would filter on.' },
-        ],
-      }) }] };
-  } }; }
+const sdkPath = require.resolve('@google/generative-ai');
+let lastReq = null, lastCfg = null, calls = 0, nextScore = 58, mode = 'ok';
+require.cache[sdkPath] = { id: sdkPath, filename: sdkPath, loaded: true, exports: {
+  GoogleGenerativeAI: class {
+    constructor(key) { this.key = key; }
+    getGenerativeModel(cfg) {
+      lastCfg = cfg;
+      return { generateContent: async (prompt) => {
+        lastReq = prompt; calls++;
+        if (mode === 'truncated') return { response: { candidates: [{ finishReason: 'MAX_TOKENS' }], text: () => '{"score":' } };
+        if (mode === 'garbage') return { response: { candidates: [{ finishReason: 'STOP' }], text: () => 'I think it is quite good!' } };
+        return { response: { candidates: [{ finishReason: 'STOP' }], text: () => JSON.stringify({
+          score: nextScore,
+          subscores: { impact: nextScore - 12, clarity: nextScore + 6, keywords: nextScore - 4, completeness: nextScore + 9 },
+          headline: 'Your achievements read as duties, not results',
+          summary: 'Solid experience, but almost nothing is quantified. Add numbers and this lifts fast.',
+          improvements: [
+            { title: 'Quantify your top 5 bullets', detail: 'Add a number to each — team size, %, revenue, time saved.' },
+            { title: 'Lead with the outcome', detail: 'Start each bullet with what changed, not what you were assigned.' },
+            { title: 'Add a certifications section', detail: 'List credentials a recruiter would filter on.' },
+          ],
+        }) } };
+      } };
+    }
+  },
 } };
-process.env.ANTHROPIC_API_KEY = 'sk-ant-stub';
+process.env.GEMINI_API_KEY = 'stub-key';
 
 const db = require('../../db-config'); db.initializeConnection();
 const scorer = require('../services/resumeScorer');
@@ -57,30 +61,29 @@ const RESUME = 'RAJESH KUMAR\nBackend Developer, TechCorp Pune 2022-Present\n- R
   console.log('\n── the request we actually send to Claude ──');
   const r = await scorer.scoreOne(uid);
   t('scored', r.ok && r.reason === 'scored', r.reason);
-  t('model is claude-opus-5', lastReq.model === 'claude-opus-5', lastReq.model);
-  t('adaptive thinking on', lastReq.thinking && lastReq.thinking.type === 'adaptive', JSON.stringify(lastReq.thinking));
-  t('structured output enforced', lastReq.output_config.format.type === 'json_schema');
-  t('schema travels with the request', !!lastReq.output_config.format.schema.properties.score);
-  t('exactly-3 enforced by the API, not the prompt', lastReq.output_config.format.schema.properties.improvements.minItems === 3);
-  t('system prompt carries the calibration', /calibrated|CALIBRATED/i.test(lastReq.system));
-  t('max_tokens leaves room for thinking', lastReq.max_tokens >= 8000, lastReq.max_tokens);
-  t('résumé text reaches the model', lastReq.messages[0].content.includes('RAJESH KUMAR'));
-  t('prompt no longer restates the JSON shape', !/"improvements"\s*:\s*\[/.test(lastReq.messages[0].content));
+  t('model is gemini-2.5-flash', lastCfg.model === 'gemini-2.5-flash', lastCfg.model);
+  t('JSON mime type set', lastCfg.generationConfig.responseMimeType === 'application/json');
+  t('schema travels with the request', !!lastCfg.generationConfig.responseSchema.properties.score);
+  t('exactly-3 enforced by the schema, not the prompt', lastCfg.generationConfig.responseSchema.properties.improvements.minItems === 3);
+  t('system instruction carries the calibration', /calibrated|CALIBRATED/i.test(lastCfg.systemInstruction));
+  t('maxOutputTokens leaves room for thinking', lastCfg.generationConfig.maxOutputTokens >= 8192, lastCfg.generationConfig.maxOutputTokens);
+  t('résumé text reaches the model', lastReq.includes('RAJESH KUMAR'));
+  t('prompt no longer restates the JSON shape', !/"improvements"\s*:\s*\[/.test(lastReq));
 
   console.log('\n── response parsing ──');
-  t('text block found past the thinking block', r.row.score === 58, r.row && r.row.score);
+  t('response parsed', r.row.score === 58, r.row && r.row.score);
   t('band derived', r.row.band === 'Decent', r.row && r.row.band);
   const imp = typeof r.row.improvements === 'string' ? JSON.parse(r.row.improvements) : r.row.improvements;
   t('3 improvements stored', imp.length === 3, imp.length);
 
   console.log('\n── failure modes must not write a row or crash ──');
   const before = (await db.query('SELECT COUNT(*)::int n FROM resume_scores WHERE user_id=$1',[uid]))[0].n;
-  mode = 'refusal';
+  mode = 'truncated';
   const ref = await scorer.scoreOne(uid, { force: true });
-  t('a safety refusal degrades to ai_failed', ref.ok === false && ref.reason === 'ai_failed', ref.reason);
-  mode = 'notext';
+  t('a token-truncated response degrades to ai_failed', ref.ok === false && ref.reason === 'ai_failed', ref.reason);
+  mode = 'garbage';
   const nt = await scorer.scoreOne(uid, { force: true });
-  t('a thinking-only response degrades to ai_failed', nt.ok === false && nt.reason === 'ai_failed', nt.reason);
+  t('non-JSON prose degrades to ai_failed', nt.ok === false && nt.reason === 'ai_failed', nt.reason);
   t('no row written by either failure', (await db.query('SELECT COUNT(*)::int n FROM resume_scores WHERE user_id=$1',[uid]))[0].n === before);
   t('the previous good score still stands', (await scorer.latestFor(uid)).score.score === 58);
   mode = 'ok';
@@ -96,21 +99,21 @@ const RESUME = 'RAJESH KUMAR\nBackend Developer, TechCorp Pune 2022-Present\n- R
   const L = await scorer.latestFor(uid);
   t('two rows', (await db.query('SELECT COUNT(*)::int n FROM resume_scores WHERE user_id=$1',[uid]))[0].n === 2);
   t('previousScore drives the delta chip', L.score.previousScore === 58, L.score.previousScore);
-  t('model recorded on the row', /claude/.test((await db.query('SELECT model FROM resume_scores WHERE user_id=$1 ORDER BY id DESC LIMIT 1',[uid]))[0].model));
+  t('model recorded on the row', /gemini/.test((await db.query('SELECT model FROM resume_scores WHERE user_id=$1 ORDER BY id DESC LIMIT 1',[uid]))[0].model));
 
   console.log('\n── missing key must be a clean, nameable failure ──');
-  const saved = process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_API_KEY;
+  const saved = process.env.GEMINI_API_KEY; delete process.env.GEMINI_API_KEY;
   delete require.cache[require.resolve('../services/resumeScorer')];
   const fresh = require('../services/resumeScorer');
   await db.query(`UPDATE resume_metadata SET full_text=$2 WHERE user_id=$1`, [uid, RESUME + '\nANOTHER EDIT']);
   const nokey = await fresh.scoreOne(uid);
   t('no key → ai_failed, not a crash', nokey.ok === false && nokey.reason === 'ai_failed', nokey.reason);
-  process.env.ANTHROPIC_API_KEY = saved;
+  process.env.GEMINI_API_KEY = saved;
 
   await notifSwitch.set('resume_score', false);
   t('switch left OFF', (await notifSwitch.isOn('resume_score')) === false);
   await db.query(`DELETE FROM users WHERE id=$1`, [uid]);
 
-  console.log(`\nclaude e2e: ${ok} passed, ${bad} failed  (API calls: ${calls})`);
+  console.log(`\nresume score integration: ${ok} passed, ${bad} failed  (API calls: ${calls})`);
   await db.close(); process.exit(bad ? 1 : 0);
 })().catch(e => { console.error('FAIL', e); process.exit(1); });

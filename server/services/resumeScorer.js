@@ -16,7 +16,7 @@
 const crypto = require('crypto');
 const dbConfig = require('../../db-config');
 
-const MODEL = process.env.RESUME_SCORE_MODEL || 'claude-opus-5';
+const MODEL = process.env.RESUME_SCORE_MODEL || 'gemini-2.5-flash';
 const DAILY_CAP = parseInt(process.env.RESUME_SCORE_DAILY_CAP || '200', 10);
 const RUN_CAP = parseInt(process.env.RESUME_SCORE_RUN_CAP || '25', 10);
 const SWEEP_MIN = parseFloat(process.env.RESUME_SCORE_SWEEP_MIN || '60');
@@ -121,78 +121,69 @@ async function narrativeFor(userId) {
   return null;
 }
 
-// ── The prompt ───────────────────────────────────────────────────────────────────────────────
-// Deliberately constrained: the popup has room for ONE headline, TWO short lines, and THREE fixes.
-// Asking for more produces an essay nobody reads and costs more tokens. The tone rule is not
-// decoration — this lands unprompted on someone's home screen, and a harsh verdict about their
-// career from an app they just installed is how you lose the user, not activate them.
 // ── The output contract ──────────────────────────────────────────────────────────────────────
-// A real JSON Schema, enforced by the API during generation — not a shape described in prose and
-// hoped for. This is the main reason this service is worth moving off a "return JSON" prompt:
-// "exactly 3 improvements" and every character limit are now GUARANTEED rather than requested,
-// so the model writes to the popup's real dimensions instead of being truncated mid-word by us.
-// The limits match ResumeScoreModal's layout exactly; changing one means changing both.
+// Handed to Gemini as `responseSchema`, which constrains generation — so this is what makes
+// "exactly 3 improvements" a GUARANTEE rather than a request the model may quietly ignore. The
+// popup renders improvements[0..2] unconditionally, so that count is load-bearing.
+//
+// ⚠️ Gemini's responseSchema is a SUBSET of JSON Schema. It honours type / properties / required /
+// items / minItems / maxItems / enum / nullable / description, and does NOT honour
+// `additionalProperties`, `minimum`, `maximum` or `maxLength`. So the SHAPE and the COUNT are
+// enforced here, while numeric ranges and character budgets are enforced by normalise() below.
+// The split is deliberate — do not add unsupported keywords here expecting them to bite.
 const SCORE_SCHEMA = {
   type: 'object',
   properties: {
-    score: { type: 'integer', minimum: 0, maximum: 100 },
+    score: { type: 'integer', description: 'Overall 0-100. Your judgement, NOT an average of the four subscores.' },
     subscores: {
       type: 'object',
       properties: {
-        impact: { type: 'integer', minimum: 0, maximum: 100 },
-        clarity: { type: 'integer', minimum: 0, maximum: 100 },
-        keywords: { type: 'integer', minimum: 0, maximum: 100 },
-        completeness: { type: 'integer', minimum: 0, maximum: 100 },
+        impact: { type: 'integer', description: '0-100. Are achievements quantified and outcome-led, or just duty lists?' },
+        clarity: { type: 'integer', description: '0-100. Structure, length, readability, consistent tense and formatting.' },
+        keywords: { type: 'integer', description: '0-100. Concrete skills, tools and domain terms an ATS would search for.' },
+        completeness: { type: 'integer', description: '0-100. Contact details, dates, education, no unexplained gaps.' },
       },
       required: ['impact', 'clarity', 'keywords', 'completeness'],
-      additionalProperties: false,
     },
-    headline: { type: 'string', maxLength: 60 },
-    summary: { type: 'string', maxLength: 240 },
+    headline: { type: 'string', description: 'MAX 60 CHARACTERS. The single biggest thing holding the résumé back.' },
+    summary: { type: 'string', description: 'MAX 220 CHARACTERS. Two short sentences, plain language, why it scores what it does.' },
     improvements: {
       type: 'array',
       minItems: 3,
       maxItems: 3,
+      description: 'Exactly 3, ordered by how much each would raise the score, highest first.',
       items: {
         type: 'object',
         properties: {
-          title: { type: 'string', maxLength: 42 },
-          detail: { type: 'string', maxLength: 110 },
+          title: { type: 'string', description: 'MAX 42 CHARACTERS. An action.' },
+          detail: { type: 'string', description: 'MAX 110 CHARACTERS. Concretely what to change.' },
         },
         required: ['title', 'detail'],
-        additionalProperties: false,
       },
     },
   },
   required: ['score', 'subscores', 'headline', 'summary', 'improvements'],
-  additionalProperties: false,
 };
 
 // ── The prompt ───────────────────────────────────────────────────────────────────────────────
-// Only JUDGEMENT lives here now. The shape used to be half this prompt — restating it alongside an
-// enforced schema just gives the model two sources of truth to disagree with.
+// Only JUDGEMENT lives here — the shape is the schema's job now. Restating the JSON shape next to
+// an enforced schema just gives the model two sources of truth to disagree with, and it used to be
+// half this prompt.
 //
 // The tone rule is not decoration: this lands unprompted on someone's home screen, and a harsh
 // verdict about their career from an app they installed yesterday loses the user rather than
 // activating them.
 const SYSTEM_PROMPT = `You are a veteran technical recruiter who has screened tens of thousands of résumés.
 
-Score résumés HONESTLY and on a CALIBRATED scale. Most real résumés land between 45 and 75.
-Reserve 85+ for a résumé that would genuinely pass a top-tier screen with no changes. Never inflate
-a score to be kind — a flattering number the candidate cannot act on is worthless to them.
-
-Judge four dimensions, each 0-100:
-- impact:       are achievements quantified and outcome-led, or just duty lists?
-- clarity:      structure, length, readability, consistent tense and formatting
-- keywords:     concrete skills, tools and domain terms an ATS and a recruiter would search for
-- completeness: contact details, dates, education, no unexplained gaps, no missing sections
-
-The overall score is your judgement, NOT an average of the four.
-
-Order "improvements" by how much each would raise the score, highest first.
+Score résumés HONESTLY and on a CALIBRATED scale. Most real résumés land between 45 and 75. Reserve
+85+ for a résumé that would genuinely pass a top-tier screen with no changes. Never inflate a score
+to be kind — a flattering number the candidate cannot act on is worthless to them.
 
 TONE: address the candidate as "your résumé". Be specific and constructive, never harsh or
-discouraging. Point at the fix, not the failure.`;
+discouraging. Point at the fix, not the failure.
+
+Respect every character limit in the schema. They are the real dimensions of the card this appears
+on, not a style preference.`;
 
 function buildPrompt(text, source) {
   return `Score the résumé below (${source === 'builder' ? 'structured JSON from our résumé builder' : 'text extracted from an uploaded file'}).
@@ -201,44 +192,31 @@ function buildPrompt(text, source) {
 ${text}`;
 }
 
-// One Claude call. Adaptive thinking is on because scoring is a calibration judgement, not an
-// extraction — the difference between a 58 and a 71 is exactly the kind of thing worth thinking
-// about. Effort is left at its default (high) and exposed as an env var rather than quietly
-// lowered: how much to spend per résumé is an operator decision, not one to bury in a constant.
-let _client = null;
-function client() {
-  if (_client) return _client;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
-  const Anthropic = require('@anthropic-ai/sdk');
-  _client = new Anthropic({ apiKey, maxRetries: 2 });
-  return _client;
-}
-
-async function callClaude(prompt) {
-  const req = {
+// ⚠️ maxOutputTokens must stay generous: gemini-2.5-flash spends "thinking" tokens from the SAME
+// budget, so a tight cap truncates the JSON mid-object and JSON.parse throws an opaque SyntaxError.
+// This is the exact failure resumeBuilderController hit and documented; 4096 was too tight there.
+async function callGemini(prompt) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+  const { GoogleGenerativeAI } = require('@google/generative-ai');
+  const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
     model: MODEL,
-    max_tokens: 16000,
-    system: SYSTEM_PROMPT,
-    thinking: { type: 'adaptive' },
-    output_config: { format: { type: 'json_schema', schema: SCORE_SCHEMA } },
-    messages: [{ role: 'user', content: prompt }],
-  };
-  const effort = process.env.RESUME_SCORE_EFFORT;
-  if (effort) req.output_config.effort = effort;
-
-  const res = await client().messages.create(req);
-
-  // A safety decline returns HTTP 200 with stop_reason 'refusal' and NO usable content, so it must
-  // be checked before reading content or the next line throws something unrelated and misleading.
-  if (res.stop_reason === 'refusal') {
-    throw new Error(`AI_REFUSED: ${(res.stop_details && res.stop_details.category) || 'unspecified'}`);
+    systemInstruction: SYSTEM_PROMPT,
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 8192,
+      responseMimeType: 'application/json',
+      responseSchema: SCORE_SCHEMA,
+    },
+  });
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('AI_TIMEOUT')), 60_000));
+  const res = await Promise.race([model.generateContent(prompt), timeout]);
+  // Say "truncated" out loud rather than letting JSON.parse throw something unrelated-looking.
+  const cand = res.response.candidates && res.response.candidates[0];
+  if (cand && cand.finishReason && cand.finishReason !== 'STOP') {
+    throw new Error('AI_BAD_OUTPUT: finishReason ' + cand.finishReason);
   }
-  // content is a discriminated union — thinking blocks come first when thinking is on, so pick the
-  // text block by type rather than trusting position.
-  const block = (res.content || []).find((b) => b.type === 'text');
-  if (!block || !block.text) throw new Error('AI_BAD_OUTPUT: no text block');
-  return block.text;
+  return res.response.text().trim();
 }
 
 // Normalise whatever the model returned into something the UI can render without defensive code.
@@ -297,7 +275,7 @@ async function scoreOne(userId, { force = false } = {}) {
 
   let parsed;
   try {
-    parsed = normalise(await callClaude(buildPrompt(content.text, content.source)));
+    parsed = normalise(await callGemini(buildPrompt(content.text, content.source)));
   } catch (e) {
     console.warn(`[resumeScore] user ${uid} scoring failed: ${e.message}`);
     return { ok: false, reason: 'ai_failed' };

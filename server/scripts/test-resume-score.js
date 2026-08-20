@@ -87,42 +87,49 @@ ok('85 → Excellent', bandFor(85) === 'Excellent');
 ok('100 → Excellent', bandFor(100) === 'Excellent');
 
 // ── the output contract ───────────────────────────────────────────────────────────────────────
-// The schema is enforced by the API during generation, so it — not the prompt — is what actually
-// guarantees "exactly 3 improvements" and every length limit. Two ways that can rot: the schema
-// drifts from what the popup can display, or someone relaxes a bound. Both are asserted here, and
-// the caps are cross-checked against normalise() so changing one side alone fails the build.
+// The schema is handed to Gemini as `responseSchema`, which constrains generation — so it, not the
+// prompt, is what guarantees "exactly 3 improvements". The popup renders improvements[0..2]
+// unconditionally, so that count is load-bearing.
 const schemaSrc = grab(/const SCORE_SCHEMA = \{[\s\S]*?\n\};/, 'SCORE_SCHEMA');
 const sm = new module.constructor();
 sm._compile(schemaSrc + '\nmodule.exports = { SCORE_SCHEMA };', '/schema-harness.js');
 const S = sm.exports.SCORE_SCHEMA;
 
-ok('schema locks additionalProperties', S.additionalProperties === false);
 ok('all five fields required', S.required.length === 5, S.required.length);
-ok('score bounded 0-100 by the API', S.properties.score.minimum === 0 && S.properties.score.maximum === 100);
 ok('exactly 3 improvements is ENFORCED, not requested',
   S.properties.improvements.minItems === 3 && S.properties.improvements.maxItems === 3);
 ok('all four subscores required', S.properties.subscores.required.length === 4);
-ok('subscores object locked', S.properties.subscores.additionalProperties === false);
-ok('improvement items locked', S.properties.improvements.items.additionalProperties === false);
-// The model writes to these budgets; normalise truncates to the same ones. If they disagree, the
-// model writes to one length and we cut it at another — mid-word, on someone's home screen.
-ok('headline budget matches normalise cap', S.properties.headline.maxLength === 60, S.properties.headline.maxLength);
-ok('summary budget matches normalise cap', S.properties.summary.maxLength === 240, S.properties.summary.maxLength);
-ok('improvement title budget matches normalise cap', S.properties.improvements.items.properties.title.maxLength === 42);
-ok('improvement detail budget matches normalise cap', S.properties.improvements.items.properties.detail.maxLength === 110);
+ok('improvement items require both title and detail',
+  S.properties.improvements.items.required.join() === 'title,detail');
+ok('score is an integer', S.properties.score.type === 'integer');
+
+// ⚠️ Gemini's responseSchema IGNORES these keywords. Putting them here would look like enforcement
+// while enforcing nothing — the numeric ranges and character budgets are normalise()'s job, and
+// this asserts nobody has quietly added them back expecting them to bite.
+const json = JSON.stringify(S);
+ok('no additionalProperties (unsupported by Gemini)', !json.includes('additionalProperties'));
+ok('no maxLength (unsupported by Gemini)', !json.includes('maxLength'));
+ok('no minimum/maximum (unsupported by Gemini)', !json.includes('"minimum"') && !json.includes('"maximum"'));
+
+// The budgets therefore live in `description` (which Gemini DOES read) and must match the caps
+// normalise() truncates to — otherwise the model writes to one length and we cut at another.
+ok('headline description states the 60 cap', /60/.test(S.properties.headline.description));
+ok('summary description states its cap', /2[024]0/.test(S.properties.summary.description));
+ok('title description states the 42 cap', /42/.test(S.properties.improvements.items.properties.title.description));
+ok('detail description states the 110 cap', /110/.test(S.properties.improvements.items.properties.detail.description));
 ok('normalise still truncates headline at 60', /str\(o\.headline, 60\)/.test(src));
 ok('normalise still truncates summary at 240', /str\(o\.summary, 240\)/.test(src));
 ok('normalise still truncates title at 42', /str\(i && i\.title, 42\)/.test(src));
 ok('normalise still truncates detail at 110', /str\(i && i\.detail, 110\)/.test(src));
 
-// ── the model we call ─────────────────────────────────────────────────────────────────────────
-ok('defaults to claude-opus-5', /RESUME_SCORE_MODEL \|\| 'claude-opus-5'/.test(src));
-ok('adaptive thinking (scoring is a calibration judgement)', /thinking: \{ type: 'adaptive' \}/.test(src));
-ok('a safety refusal is checked BEFORE reading content',
-  src.indexOf("stop_reason === 'refusal'") < src.indexOf("find((b) => b.type === 'text')"));
-ok('the text block is found by TYPE, not position (thinking comes first)',
-  /find\(\(b\) => b\.type === 'text'\)/.test(src));
-ok('no Gemini left in the file', !/gemini|GoogleGenerativeAI/i.test(src));
+// ── the call we make ──────────────────────────────────────────────────────────────────────────
+ok('stays on Gemini', /RESUME_SCORE_MODEL \|\| 'gemini-2\.5-flash'/.test(src));
+ok('schema is actually attached to the request', /responseSchema: SCORE_SCHEMA/.test(src));
+ok('JSON mime type still set', /responseMimeType: 'application\/json'/.test(src));
+// 2.5-flash spends thinking tokens from the SAME budget; a tight cap truncates JSON mid-object.
+ok('maxOutputTokens leaves room for thinking', /maxOutputTokens: (8192|1[0-9]{4}|[2-9][0-9]{4})/.test(src));
+ok('a truncated response is named, not left to JSON.parse', /finishReason/.test(src));
+ok('no Claude/Anthropic left in the service', !/claude|anthropic/i.test(src));
 
 console.log(`\nresume score: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
