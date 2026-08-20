@@ -32,7 +32,7 @@
     "android": {
       "package": "com.cvapplyr.mobile",
       "googleServicesFile": "./google-services.json",
-      "versionCode": 87,
+      "versionCode": 88,
       "intentFilters": [
         {
           "action": "VIEW",
