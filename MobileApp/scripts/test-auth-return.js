@@ -118,10 +118,30 @@ console.log('── a site running its OWN redirect round trip must not be inter
 const jd3 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
 ok('an explicit auto-return flag exists', /autoReturnRef/.test(jd3));
 ok('beginAuthFlow decides it by comparing ORIGINS', /crossOrigin = new URL\(target\)\.origin !== /.test(jd3));
-ok('the auto-return trigger requires the flag', /nav\.url && autoReturnRef\.current && preAuthUrlRef\.current/.test(jd3));
+// b187: the flag moved INSIDE the settled block, so the same check can also END a site-driven
+// flow quietly. The requirement is unchanged: no navigation without the flag.
+ok('the auto-return trigger requires the flag',
+  /if \(autoReturnRef\.current && nav\.url !== preAuthUrlRef\.current\) returnFromAuth\(1200\);/.test(jd3));
 ok('the redirect-arming path applies the same rule',
   /autoReturnRef\.current = new URL\(nav\.url\)\.origin !== new URL\(preAuthUrlRef\.current\)\.origin/.test(jd3));
-ok('the banner only claims a takeover we are actually managing', /if \(autoReturnRef\.current\) setAuthBanner\(true\);/.test(jd3));
+// b187: the banner became an ESCAPE HATCH — it shows in both modes, because a site-driven flow
+// that stalls (Indeed self-closing over a missing opener) leaves the user parked with no other
+// way back to their form.
+ok('the banner shows during every flow as the escape hatch', /setAuthBanner\(true\);\s*\n\s*try \{ applyWebRef\.current\.injectJavaScript/.test(jd3));
+
+console.log('── a stray window.close() must not end a login the user is still doing ──');
+// Reported on 186: "Indeed shows for a few seconds, then it comes back, still logged out."
+// Our close hook is injected into EVERY page; Indeed's popup-only login, finding no opener,
+// bails by closing — a real browser ignores that, we treated it as "sign-in finished".
+ok('AUTH_DONE returns only in a flow WE manage',
+  /if \(msg\.type === 'AUTH_DONE'\) \{ if \(autoReturnRef\.current\) returnFromAuth\(600\); return; \}/.test(jd3));
+ok('the unloadable-scheme guard cancels but only navigates when managed',
+  /preAuthUrlRef\.current && autoReturnRef\.current\) returnFromAuth\(0\);/.test(jd3));
+ok('the managed/site-driven decision is made ONCE per flow',
+  /const flowActive = !!preAuthUrlRef\.current && \(Date\.now\(\) - authAtRef\.current < 5 \* 60_000\);/.test(jd3));
+ok('mid-flow window.open hops cannot re-arm the auto-return', /if \(!flowActive\) \{/.test(jd3));
+ok('a site-driven flow ENDS quietly when the site lands the user back',
+  /else if \(!autoReturnRef\.current\) \{[\s\S]{0,400}?setAuthBanner\(false\);/.test(jd3));
 // ⚠️ The return point is still remembered either way, so the manual "Back to form" button works
 // even on a same-origin flow we are deliberately not steering.
 ok('the return point is still recorded for the manual button', /preAuthUrlRef\.current = back;/.test(jd3));

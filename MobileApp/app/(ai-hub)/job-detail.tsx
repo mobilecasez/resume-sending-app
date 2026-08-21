@@ -4629,26 +4629,35 @@ export default function JobDetailScreen() {
     // Prefer the last page that was NOT a sign-in page (the job the user actually came from);
     // fall back to where we are now. Landing back on the login page is a bad return point, but it
     // is enormously better than having none — the site sees the fresh session cookie and moves on.
-    const fromUrl = (from && /^https?:/i.test(from)) ? from : '';
-    const back = (fromUrl && !isAuthUrl(fromUrl) ? fromUrl : '')
-      || lastNonAuthUrlRef.current
-      || fromUrl
-      || currentUrlRef.current
-      || '';
-    if (back) {
-      preAuthUrlRef.current = back;
-      try { authOriginRef.current = new URL(back).origin; } catch { authOriginRef.current = ''; }
+    // ⚠️ THE MANAGED/SITE-DRIVEN DECISION IS MADE ONCE, AT THE FLOW'S FIRST HOP.
+    // Provider chains window.open() again mid-flow (Glassdoor's bootstrap hops to Indeed, Indeed
+    // hops to its e-mail form). Re-deciding on every hop flipped a site-driven flow into a
+    // "managed" one the moment a hop crossed origins — re-arming the very auto-return that yanks
+    // the user out mid-login. A flow keeps its first decision until it ends.
+    const flowActive = !!preAuthUrlRef.current && (Date.now() - authAtRef.current < 5 * 60_000);
+    if (!flowActive) {
+      const fromUrl = (from && /^https?:/i.test(from)) ? from : '';
+      const back = (fromUrl && !isAuthUrl(fromUrl) ? fromUrl : '')
+        || lastNonAuthUrlRef.current
+        || fromUrl
+        || currentUrlRef.current
+        || '';
+      if (back) {
+        preAuthUrlRef.current = back;
+        try { authOriginRef.current = new URL(back).origin; } catch { authOriginRef.current = ''; }
+      }
+      // Cross-origin (accounts.google.com, appleid.apple.com…) can leave the user nowhere, so we
+      // bring them back. Same-origin means the site is driving its own round trip and will return
+      // them itself; steering that is what broke Glassdoor on 185.
+      let crossOrigin = true;
+      try { crossOrigin = new URL(target).origin !== (authOriginRef.current || new URL(back || target).origin); } catch {}
+      autoReturnRef.current = crossOrigin;
+      authAtRef.current = Date.now();
     }
-    // Cross-origin (accounts.google.com, appleid.apple.com, secure.indeed.com reached directly…)
-    // can leave the user nowhere, so we bring them back. Same-origin means the site is driving its
-    // own round trip and will return them; interfering there is what broke Glassdoor.
-    let crossOrigin = true;
-    try { crossOrigin = new URL(target).origin !== (authOriginRef.current || new URL(back || target).origin); } catch {}
-    autoReturnRef.current = crossOrigin;
-    // Only announce a takeover we are actually managing.
-    if (!crossOrigin) setAuthBanner(false);
-    authAtRef.current = Date.now();
-    if (autoReturnRef.current) setAuthBanner(true);
+    // The banner is an ESCAPE HATCH, not an announcement — it shows in both modes, because a
+    // site-driven flow that stalls (Indeed self-closing over a missing opener) leaves the user
+    // parked with no other way back to their form.
+    setAuthBanner(true);
     try { applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
   };
 
@@ -5728,7 +5737,13 @@ export default function JobDetailScreen() {
     // The page tried to open a sign-in popup (impossible on iOS) — run it here and remember the form.
     if (msg.type === 'AUTH_POPUP') { beginAuthFlow(String(msg.url || ''), String(msg.from || '')); return; }
     // The callback page called window.close() → auth finished, go back to the application.
-    if (msg.type === 'AUTH_DONE') { returnFromAuth(600); return; }
+    // ⚠️ window.close() is NOT proof the sign-in finished. Our close hook is injected into every
+    // page, and a popup-only login that finds no window.opener (Indeed's) bails by CLOSING — in a
+    // real browser that is silently ignored, but here it fired returnFromAuth and yanked the user
+    // off the login they were still doing: "Indeed shows for a few seconds, then it comes back,
+    // still logged out." Only a flow WE manage treats close as the finish line; a site-driven flow
+    // returns the user itself, and its stray close() must be ignored.
+    if (msg.type === 'AUTH_DONE') { if (autoReturnRef.current) returnFromAuth(600); return; }
 
     // Job page text captured → remember it, and prefetch the job details (canonical UUID + AI
     // responsibilities) so Generate-Cover-Letter has real data ready. No-op for real DB jobs.
@@ -7069,7 +7084,9 @@ export default function JobDetailScreen() {
                 // the loadable set is cancelled; blob:/data:/about: stay allowed because the résumé
                 // and cover-letter previews use them.
                 if (u && !/^(https?|about|blob|data|file):/i.test(u)) {
-                  if (preAuthUrlRef.current) returnFromAuth(0);
+                  // Cancel always; NAVIGATE back only in a flow we manage — in a site-driven one
+                  // this fired mid-login and bounced the user off the provider page.
+                  if (preAuthUrlRef.current && autoReturnRef.current) returnFromAuth(0);
                   return false;
                 }
                 // ── iOS universal-link guard (same code Browse & Fetch ships) ──
@@ -7163,11 +7180,19 @@ export default function JobDetailScreen() {
                 }
                 // Sign-in finished: we're back on the site's own origin, off the auth path. Give the
                 // callback a beat to exchange its code, then return to the form. Once only.
-                if (nav.url && autoReturnRef.current && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
+                if (nav.url && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
                   let sameSite = false;
                   try { sameSite = new URL(nav.url).origin === authOriginRef.current; } catch {}
                   const settled = Date.now() - authAtRef.current > 2500;
-                  if (sameSite && settled && !isAuthUrl(nav.url) && nav.url !== preAuthUrlRef.current) returnFromAuth(1200);
+                  if (sameSite && settled && !isAuthUrl(nav.url)) {
+                    if (autoReturnRef.current && nav.url !== preAuthUrlRef.current) returnFromAuth(1200);
+                    else if (!autoReturnRef.current) {
+                      // The site finished its own round trip — the flow is over. Clear the state
+                      // and the banner; navigating here would fight the page the site chose.
+                      preAuthUrlRef.current = ''; authOriginRef.current = ''; authAtRef.current = 0;
+                      setAuthBanner(false);
+                    }
+                  }
                 }
                 // ── LinkedIn → company-portal capture: the user tapped Apply on a LinkedIn page and
                 // landed on the company's own site. Save that URL as this job's link (per-user
