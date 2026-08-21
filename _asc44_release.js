@@ -7,8 +7,10 @@
 const { req, get, retry, APP } = require('./_asc37.js');
 
 const VERSION = '4.4';
-const WANT_BUILD = '183';
-const DRY = process.argv[2] === 'dry';
+// Build number is overridable so a later build can be swapped into the SAME 4.4 version while it
+// is still WAITING_FOR_REVIEW:  node _asc44_release.js 184        (or `… 184 dry`)
+const WANT_BUILD = (process.argv.find((a) => /^\d{2,4}$/.test(a))) || '183';
+const DRY = process.argv.includes('dry');
 
 const WHATS_NEW = [
   'Know where you stand, and what to do next.',
