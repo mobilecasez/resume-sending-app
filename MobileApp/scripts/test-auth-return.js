@@ -171,7 +171,6 @@ ok('the shim parses as JavaScript', (() => { try { new Function(shim.replace(/tr
 ok('it presents origin === location.origin', /get origin\(\)\{ return window\.location\.origin; \}/.test(shim));
 ok('it defines window.opener', /Object\.defineProperty\(window,'opener'/.test(shim));
 ok('it defers to a REAL opener when one exists', /if \(window\.opener\) return;/.test(shim));
-ok('it seeds originationURL so the callback lands on the job, not "/"', /indeed-oauth-params/.test(shim));
 
 // ⚠️ Scope. A non-null window.opener changes noopener/popup semantics, so this must never fire on
 // an ordinary employer portal. Both guards are pulled out of the interpreted script and exercised.
@@ -188,7 +187,11 @@ const pathRe = new RegExp(shim.match(/if \(!(\/.*?\/i)\.test\(location\.pathname
 const jd4 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
 // ⚠️ Document-END is too late: the gate runs in the page's mount effect.
 ok('injected at document START', /injectedJavaScriptBeforeContentLoaded=\{OPENER_SHIM_JS\}/.test(jd4));
-ok('into sub-frames too', /injectedJavaScriptBeforeContentLoadedForMainFrameOnly=\{false\}/.test(jd4));
+// ⚠️ MAIN FRAME ONLY. The gate runs in the main frame; injecting a forged opener into every
+// sub-frame is blast radius for no benefit.
+ok('NOT injected into sub-frames', !/injectedJavaScriptBeforeContentLoadedForMainFrameOnly/.test(jd4));
+ok('no dead originationURL seeding (that branch is unreachable)',
+  !/sessionStorage\.setItem\('indeed-oauth-params'/.test(shim));
 ok('Android gets a stall watchdog (its pre-script hook is best-effort)', /openerRetryRef/.test(jd4) && /location\.reload\(\); true;/.test(jd4));
 ok('the watchdog retries a given stuck URL only once', /openerRetryRef\.current !== nav\.url/.test(jd4));
 

@@ -208,13 +208,11 @@ export const OPENER_SHIM_JS = `(function(){
       location:{ href: window.location.href }
     };
     Object.defineProperty(window,'opener',{value:stub,writable:true,configurable:true});
-    // The callback leg reads originationURL out of sessionStorage, which the LOGIN page would have
-    // written in a real popup flow. Here that entry does not exist, so the user would land on "/"
-    // instead of their job. Seed it from the URL's own originationURL parameter.
-    if (/\\/auth\\/login\\/oauth2\\/code\\//i.test(location.pathname)
-        && !sessionStorage.getItem('indeed-oauth-params')) {
-      var o = new URLSearchParams(location.search).get('originationURL');
-      if (o) sessionStorage.setItem('indeed-oauth-params', JSON.stringify({ originationURL:o }));
-    }
+    // ⚠️ NOTHING ELSE IS SEEDED HERE, deliberately. An earlier draft also wrote
+    // sessionStorage['indeed-oauth-params'].originationURL so the callback would land on the job.
+    // That is dead code: the callback render ships codeChallenge as undefined, so the
+    // \`if (codeChallenge) location.replace(originationURL)\` branch is UNREACHABLE and the value is
+    // never read. Success always takes the postMessage-then-close branch instead, which is why the
+    // app classifies a self-close carrying ?code= as completion.
   } catch(e){}
 })(); true;`;

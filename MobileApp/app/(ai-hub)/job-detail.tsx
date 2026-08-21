@@ -7074,7 +7074,6 @@ export default function JobDetailScreen() {
               // page's own mount effect; injectedJavaScript (document-end) lands after it has
               // already thrown and given up. See OPENER_SHIM_JS.
               injectedJavaScriptBeforeContentLoaded={OPENER_SHIM_JS}
-              injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
               javaScriptEnabled
               domStorageEnabled
               thirdPartyCookiesEnabled
