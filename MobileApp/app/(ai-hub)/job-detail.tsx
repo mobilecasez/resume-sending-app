@@ -4520,6 +4520,14 @@ export default function JobDetailScreen() {
   // Sign-in flow: the page we must return the user to once auth finishes, plus guards so we restore
   // exactly once and never fight the provider's own redirect chain.
   const preAuthUrlRef   = useRef<string>('');
+  // ⚠️ AUTO-RETURN IS FOR THIRD-PARTY PROVIDERS ONLY.
+  // A SAME-ORIGIN sign-in is the site running its own redirect round trip — Glassdoor's
+  // "Continue with Apple or email" opens /auth/login/oauth2/code/indeed and passes
+  // originationURL=<the page to come back to>. It brings the user back itself. When we ALSO
+  // returned them, we fought that redirect and dropped them on the page the flow started from —
+  // the login page — so it looked like "redirecting to Indeed… and nothing happened, same page
+  // again". Set only for cross-origin providers, which are the ones that can genuinely strand you.
+  const autoReturnRef = useRef<boolean>(false);
   // The last page the user was on that was NOT a sign-in page — i.e. the job or application they
   // actually came from. See beginAuthFlow for why the current URL is not good enough.
   const lastNonAuthUrlRef = useRef<string>('');
@@ -4631,8 +4639,16 @@ export default function JobDetailScreen() {
       preAuthUrlRef.current = back;
       try { authOriginRef.current = new URL(back).origin; } catch { authOriginRef.current = ''; }
     }
+    // Cross-origin (accounts.google.com, appleid.apple.com, secure.indeed.com reached directly…)
+    // can leave the user nowhere, so we bring them back. Same-origin means the site is driving its
+    // own round trip and will return them; interfering there is what broke Glassdoor.
+    let crossOrigin = true;
+    try { crossOrigin = new URL(target).origin !== (authOriginRef.current || new URL(back || target).origin); } catch {}
+    autoReturnRef.current = crossOrigin;
+    // Only announce a takeover we are actually managing.
+    if (!crossOrigin) setAuthBanner(false);
     authAtRef.current = Date.now();
-    setAuthBanner(true);
+    if (autoReturnRef.current) setAuthBanner(true);
     try { applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
   };
 
@@ -7138,13 +7154,16 @@ export default function JobDetailScreen() {
                 if (nav.url && !preAuthUrlRef.current && isAuthUrl(nav.url)
                     && (lastNonAuthUrlRef.current || (prevUrl && /^https?:/i.test(prevUrl)))) {
                   preAuthUrlRef.current = lastNonAuthUrlRef.current || prevUrl;
+                  // Same rule as beginAuthFlow: only a CROSS-ORIGIN provider gets an auto-return.
+                  try { autoReturnRef.current = new URL(nav.url).origin !== new URL(preAuthUrlRef.current).origin; }
+                  catch { autoReturnRef.current = false; }
                   try { authOriginRef.current = new URL(preAuthUrlRef.current).origin; } catch { authOriginRef.current = ''; }
                   authAtRef.current = Date.now();
-                  setAuthBanner(true);
+                  if (autoReturnRef.current) setAuthBanner(true);
                 }
                 // Sign-in finished: we're back on the site's own origin, off the auth path. Give the
                 // callback a beat to exchange its code, then return to the form. Once only.
-                if (nav.url && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
+                if (nav.url && autoReturnRef.current && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
                   let sameSite = false;
                   try { sameSite = new URL(nav.url).origin === authOriginRef.current; } catch {}
                   const settled = Date.now() - authAtRef.current > 2500;

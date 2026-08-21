@@ -109,6 +109,32 @@ ok('beginAuthFlow now always records SOMETHING', /if \(back\) \{\s*\n\s*preAuthU
 ok('it prefers a real (non-auth) page over the login page', /fromUrl && !isAuthUrl\(fromUrl\) \? fromUrl : ''\)\s*\n\s*\|\| lastNonAuthUrlRef\.current/.test(jd2));
 ok('the auth origin is derived from what we actually stored', /new URL\(preAuthUrlRef\.current\)\.origin/.test(jd2));
 
+console.log('── a site running its OWN redirect round trip must not be interrupted ──');
+// Reported on 185: "Redirecting to Indeed for one login… then nothing, same page again."
+// Glassdoor's pop-up target is SAME-ORIGIN (/auth/login/oauth2/code/indeed) and carries
+// originationURL=<page to come back to> — the site returns the user itself. Our auto-return fired
+// when the chain landed back on glassdoor.com and sent them to where the flow STARTED: the login
+// page. We were fighting the site's own redirect. Auto-return is now cross-origin only.
+const jd3 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
+ok('an explicit auto-return flag exists', /autoReturnRef/.test(jd3));
+ok('beginAuthFlow decides it by comparing ORIGINS', /crossOrigin = new URL\(target\)\.origin !== /.test(jd3));
+ok('the auto-return trigger requires the flag', /nav\.url && autoReturnRef\.current && preAuthUrlRef\.current/.test(jd3));
+ok('the redirect-arming path applies the same rule',
+  /autoReturnRef\.current = new URL\(nav\.url\)\.origin !== new URL\(preAuthUrlRef\.current\)\.origin/.test(jd3));
+ok('the banner only claims a takeover we are actually managing', /if \(autoReturnRef\.current\) setAuthBanner\(true\);/.test(jd3));
+// ⚠️ The return point is still remembered either way, so the manual "Back to form" button works
+// even on a same-origin flow we are deliberately not steering.
+ok('the return point is still recorded for the manual button', /preAuthUrlRef\.current = back;/.test(jd3));
+
+// The origin rule, stated as data so the intent is unambiguous.
+const sameOrigin = (a2, b2) => { try { return new URL(a2).origin === new URL(b2).origin; } catch { return false; } };
+ok('Glassdoor pop-up is same-origin → site drives it',
+  sameOrigin('https://www.glassdoor.com/auth/login/oauth2/code/indeed?x=1', 'https://www.glassdoor.com/member/profile/login'));
+ok('Google is cross-origin → we drive it',
+  !sameOrigin('https://accounts.google.com/o/oauth2/v2/auth', 'https://www.glassdoor.com/member/profile/login'));
+ok('Apple is cross-origin → we drive it',
+  !sameOrigin('https://appleid.apple.com/auth/authorize', 'https://www.glassdoor.com/member/profile/login'));
+
 console.log('── the search sheet must stop moving under the clock ──');
 const sl = fs.readFileSync(path.join(__dirname, '../components/JobSearchLauncher.tsx'), 'utf8');
 ok('the sheet is bounded by the real top inset', /useSafeAreaInsets/.test(sl) && /winH - insets\.top/.test(sl));
