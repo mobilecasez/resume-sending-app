@@ -44,7 +44,7 @@ import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth } from '../../utils/jobUrl';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS } from '../../utils/webviewAuth';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS, GD_SEED_JS, GD_PROBE_JS } from '../../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
 import type { Contact, Job, Employer } from '../../types/aiHub';
@@ -4533,6 +4533,8 @@ export default function JobDetailScreen() {
   const lastNonAuthUrlRef = useRef<string>('');
   // One retry per stuck URL — see the Android stall watchdog.
   const openerRetryRef = useRef<string>('');
+  // At most one Glassdoor failure alert per apply session.
+  const gdAlertedRef = useRef<boolean>(false);
   const authOriginRef   = useRef<string>('');
   const authAtRef       = useRef<number>(0);
   const authRestoreTmr  = useRef<any>(null);
@@ -4660,7 +4662,24 @@ export default function JobDetailScreen() {
     // site-driven flow that stalls (Indeed self-closing over a missing opener) leaves the user
     // parked with no other way back to their form.
     setAuthBanner(true);
-    try { applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
+    // ⚠️ GLASSDOOR/INDEED "ONE LOGIN": write the site's own non-popup switch BEFORE we leave this
+    // page. sessionStorage is per-origin and we are ALREADY on the glassdoor origin, so this is the
+    // one place the write is deterministic on both platforms — no injection race, no dependence on
+    // the document-start hook that Android only honours best-effort. It buys two things at once: an
+    // opener-free route through the gate ("google" + a same-origin referrer, which location.href
+    // gives us), and a RETURN leg that navigates to our page instead of postMessage-ing into a dead
+    // opener. See GD_SEED_JS.
+    let seed = '';
+    try {
+      const t = new URL(target);
+      const c = new URL(currentUrlRef.current || target);
+      if (/(^|\.)glassdoor\.[a-z.]+$/i.test(t.hostname)
+          && t.origin === c.origin                                  // never seed across a TLD
+          && /\/auth\/(login\/)?oauth2\//i.test(t.pathname)) {
+        seed = GD_SEED_JS(preAuthUrlRef.current || t.searchParams.get('originationURL') || '') + '\n';
+      }
+    } catch {}
+    try { applyWebRef.current.injectJavaScript(seed + `window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
   };
 
   // Auth is done — put the user back on the form they were filling. The session cookie is set by
@@ -4702,6 +4721,7 @@ export default function JobDetailScreen() {
     setAfStep({});
     setFilePick(null);
     setFilePickBusy(null);
+    gdAlertedRef.current = false;
     filesRef.current = {};
     setResumeRegion(''); setClRegion(''); setResumeExpanded(false); setClExpanded(false); setPreview(null); setPreviewBusy(null);
     submitMarkedRef.current = false; submitIntentRef.current = 0; setAppliedBanner(false);
@@ -5764,7 +5784,38 @@ export default function JobDetailScreen() {
     }
     // The forged opener was written to — the provider believes it handed its result back. Treat it
     // as completion and put the user on their form; the session cookie is in our jar by now.
-    if (msg.type === 'OPENER_MSG') { if (preAuthUrlRef.current) returnFromAuth(900); return; }
+    // Only a write carrying ?code= is a finished exchange; any other opener.postMessage would
+    // otherwise yank the user mid-flow — the 186 mistake in a new costume.
+    if (msg.type === 'OPENER_MSG') {
+      if (preAuthUrlRef.current && /[?&]code=/.test(String((msg as any).href || ''))) returnFromAuth(900);
+      return;
+    }
+    // Telemetry + the user-facing affordance. NEVER a completion signal.
+    if (msg.type === 'GD_PROBE') {
+      const p: any = msg;
+      try { track('gd_probe', { tag: p.tag, shim: p.shim, seed: p.seed, opener: p.opener,
+        hasRef: !!p.ref, form: !!p.form, captcha: !!p.captcha,
+        notice: String(p.notice || '').slice(0, 80) }); } catch {}
+      const href = String(p.href || '');
+      // Still sitting on the bootstrap page 11s in, with no code and nothing on screen to explain
+      // it — that is the frozen spinner, and it must never again be silent.
+      const bootStuck = /\/auth\/(login\/)?oauth2\/code\//i.test(href) && !/[?&]code=/.test(href)
+                        && p.tag === 't11000' && !p.notice;
+      if (!gdAlertedRef.current && (p.notice || bootStuck)) {
+        gdAlertedRef.current = true;
+        Alert.alert(
+          'Glassdoor sign-in didn’t go through',
+          (p.notice ? `${p.notice}\n\n` : '') +
+          'Glassdoor hands sign-in to Indeed, and it stopped part-way. Try once more, or open this job in your phone’s browser and sign in there.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Back to job', onPress: () => { if (preAuthUrlRef.current) returnFromAuth(0); else setAuthBanner(false); } },
+            { text: 'Open in browser', onPress: () => openCurrentInBrowser() },
+          ],
+        );
+      }
+      return;
+    }
 
     // Job page text captured → remember it, and prefetch the job details (canonical UUID + AI
     // responsibilities) so Generate-Cover-Letter has real data ready. No-op for real DB jobs.
@@ -7068,7 +7119,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
+              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + GD_PROBE_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
               injectedJavaScriptForMainFrameOnly={false}
               // ⚠️ DOCUMENT-START, not document-end. The opener gate this defeats runs in the
               // page's own mount effect; injectedJavaScript (document-end) lands after it has
@@ -7224,14 +7275,25 @@ export default function JobDetailScreen() {
                   let sameSite = false;
                   try { sameSite = new URL(nav.url).origin === authOriginRef.current; } catch {}
                   const settled = Date.now() - authAtRef.current > 2500;
-                  if (sameSite && settled && !isAuthUrl(nav.url)) {
-                    if (autoReturnRef.current && nav.url !== preAuthUrlRef.current) returnFromAuth(1200);
-                    else if (!autoReturnRef.current) {
-                      // The site finished its own round trip — the flow is over. Clear the state
-                      // and the banner; navigating here would fight the page the site chose.
-                      preAuthUrlRef.current = ''; authOriginRef.current = ''; authAtRef.current = 0;
-                      setAuthBanner(false);
-                    }
+                  const bare = (x: string) => String(x || '').replace(/#.*$/, '');
+                  // ⚠️ THE SITE'S OWN SUCCESS URL CAN ITSELF BE A LOGIN URL. Glassdoor's
+                  // originationURL for a flow that starts on /member/profile/login IS that page,
+                  // and isAuthUrl() calls it auth — so a "!isAuthUrl" test alone can NEVER see this
+                  // flow succeed. Landing exactly where we asked to be returned is the finish line,
+                  // whatever the path looks like.
+                  const backHere = bare(nav.url) === bare(preAuthUrlRef.current);
+                  const clear = () => {
+                    preAuthUrlRef.current = ''; authOriginRef.current = ''; authAtRef.current = 0;
+                    setAuthBanner(false);
+                  };
+                  if (sameSite && settled && (backHere || !isAuthUrl(nav.url))) {
+                    if (autoReturnRef.current && !backHere) returnFromAuth(1200);
+                    else clear();
+                  } else if (Date.now() - authAtRef.current > 5 * 60_000) {
+                    // Hard ceiling. Without it a flow that never resolves pins the banner and keeps
+                    // preAuthUrlRef populated for the rest of the session, which then poisons the
+                    // NEXT sign-in on a completely different site.
+                    clear();
                   }
                 }
                 // ── LinkedIn → company-portal capture: the user tapped Apply on a LinkedIn page and

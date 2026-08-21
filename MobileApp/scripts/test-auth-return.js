@@ -121,13 +121,15 @@ ok('beginAuthFlow decides it by comparing ORIGINS', /crossOrigin = new URL\(targ
 // b187: the flag moved INSIDE the settled block, so the same check can also END a site-driven
 // flow quietly. The requirement is unchanged: no navigation without the flag.
 ok('the auto-return trigger requires the flag',
-  /if \(autoReturnRef\.current && nav\.url !== preAuthUrlRef\.current\) returnFromAuth\(1200\);/.test(jd3));
+  /if \(autoReturnRef\.current && !backHere\) returnFromAuth\(1200\);/.test(jd3));
 ok('the redirect-arming path applies the same rule',
   /autoReturnRef\.current = new URL\(nav\.url\)\.origin !== new URL\(preAuthUrlRef\.current\)\.origin/.test(jd3));
 // b187: the banner became an ESCAPE HATCH — it shows in both modes, because a site-driven flow
 // that stalls (Indeed self-closing over a missing opener) leaves the user parked with no other
 // way back to their form.
-ok('the banner shows during every flow as the escape hatch', /setAuthBanner\(true\);\s*\n\s*try \{ applyWebRef\.current\.injectJavaScript/.test(jd3));
+// (b189 inserted the Glassdoor seed between the banner and the navigation.)
+ok('the banner shows during every flow as the escape hatch',
+  /setAuthBanner\(true\);[\s\S]{0,1400}injectJavaScript\(seed \+ `window\.location\.href/.test(jd3));
 
 console.log('── a stray window.close() must not end a login the user is still doing ──');
 // Reported on 186: "Indeed shows for a few seconds, then it comes back, still logged out."
@@ -142,8 +144,9 @@ ok('the unloadable-scheme guard cancels but only navigates when managed',
 ok('the managed/site-driven decision is made ONCE per flow',
   /const flowActive = !!preAuthUrlRef\.current && \(Date\.now\(\) - authAtRef\.current < 5 \* 60_000\);/.test(jd3));
 ok('mid-flow window.open hops cannot re-arm the auto-return', /if \(!flowActive\) \{/.test(jd3));
+// b189 folded the quiet end into a shared clear(), which the 5-minute ceiling also uses.
 ok('a site-driven flow ENDS quietly when the site lands the user back',
-  /else if \(!autoReturnRef\.current\) \{[\s\S]{0,400}?setAuthBanner\(false\);/.test(jd3));
+  /const clear = \(\) => \{[\s\S]{0,220}?setAuthBanner\(false\);/.test(jd3) && /else clear\(\);/.test(jd3));
 // ⚠️ The return point is still remembered either way, so the manual "Back to form" button works
 // even on a same-origin flow we are deliberately not steering.
 ok('the return point is still recorded for the manual button', /preAuthUrlRef\.current = back;/.test(jd3));
@@ -170,7 +173,7 @@ const shim = eval(shimRaw);                     // the REAL injected script, esc
 ok('the shim parses as JavaScript', (() => { try { new Function(shim.replace(/true;\s*$/, '')); return true; } catch { return false; } })());
 ok('it presents origin === location.origin', /get origin\(\)\{ return window\.location\.origin; \}/.test(shim));
 ok('it defines window.opener', /Object\.defineProperty\(window,'opener'/.test(shim));
-ok('it defers to a REAL opener when one exists', /if \(window\.opener\) return;/.test(shim));
+ok('it defers to a REAL opener when one exists', /if \(window\.opener\) \{ window\.__cvfOpenerShim = 'skip:real-opener'; return; \}/.test(shim));
 
 // ⚠️ Scope. A non-null window.opener changes noopener/popup semantics, so this must never fire on
 // an ordinary employer portal. Both guards are pulled out of the interpreted script and exercised.
@@ -190,8 +193,57 @@ ok('injected at document START', /injectedJavaScriptBeforeContentLoaded=\{OPENER
 // ⚠️ MAIN FRAME ONLY. The gate runs in the main frame; injecting a forged opener into every
 // sub-frame is blast radius for no benefit.
 ok('NOT injected into sub-frames', !/injectedJavaScriptBeforeContentLoadedForMainFrameOnly/.test(jd4));
-ok('no dead originationURL seeding (that branch is unreachable)',
-  !/sessionStorage\.setItem\('indeed-oauth-params'/.test(shim));
+// ⚠️ THIS ASSERTION USED TO DEMAND THE OPPOSITE, and it was wrong. A reviewer mis-deminified the
+// return branch as `if (codeChallenge) …` and concluded the redirect path was unreachable, so we
+// deleted the seed. The variable tested is actually the RAW sessionStorage string:
+//     let t = sessionStorage.getItem("indeed-oauth-params");
+//     …then(n => t ? location.replace(originationURL || "/") : (chan.postMessage(n), close()));
+// The presence of that key is exactly what selects redirect mode over popup mode.
+ok('the shim seeds indeed-oauth-params (selects redirect mode)',
+  /sessionStorage\.setItem\('indeed-oauth-params'/.test(shim));
+ok('it seeds auth_provider google (the opener-free route through the gate)',
+  /auth_provider: 'google'/.test(shim));
+ok('it only seeds when absent, so a better value wins',
+  /if \(!sessionStorage\.getItem\('indeed-oauth-params'\)\)/.test(shim));
+ok('the shim reports whether it installed or why it skipped',
+  /__cvfOpenerShim = 'installed'/.test(shim) && (shim.match(/__cvfOpenerShim = 'skip:/g) || []).length === 3);
+
+console.log('── the deterministic route: seed BEFORE navigating ──');
+// The shim has to win a document-start race; this does not — it runs on the page we are already
+// on. sessionStorage is per-origin, so the value is waiting when the bootstrap page loads.
+const seedFn = eval('(' + wa.match(/export const GD_SEED_JS = (\(back: string\) => `[\s\S]*?`);/)[1].replace(': string', '') + ')');
+const seeded = seedFn('https://www.glassdoor.com/job-listing/abc.htm');
+ok('GD_SEED_JS parses', (() => { try { new Function(seeded.replace(/true;\s*$/, '')); return true; } catch { return false; } })());
+ok('it writes auth_provider google', /auth_provider = 'google'/.test(seeded));
+ok('it carries the return URL', seeded.includes('job-listing/abc.htm'));
+ok('it MERGES rather than clobbers an existing entry', /if \(!cur\.auth_provider\)/.test(seeded));
+ok('it is scoped to glassdoor origins', /glassdoor/.test(seeded) && !/indeed\.com/.test(seeded));
+ok('an empty return URL is not written', seedFn('').includes("var back = \"\""));
+ok('beginAuthFlow seeds before it navigates',
+  /seed = GD_SEED_JS\([\s\S]{0,120}\n[\s\S]{0,200}injectJavaScript\(seed \+ `window\.location\.href/.test(jd4));
+ok('and never seeds across a different TLD', /t\.origin === c\.origin/.test(jd4));
+
+console.log('── stop shipping blind ──');
+const probe = eval(wa.match(/export const GD_PROBE_JS = (`[\s\S]*?`);/)[1]);
+ok('GD_PROBE_JS parses', (() => { try { new Function(probe.replace(/true;\s*$/, '')); return true; } catch { return false; } })());
+ok('it reports Glassdoor\'s OWN error notice', /indeed-oauth-error-notice/.test(probe));
+ok('it reports whether the shim installed and the seed landed', /__cvfOpenerShim/.test(probe) && /__cvfGdSeed/.test(probe));
+ok('it reports whether an email/password form is on screen', /input\[name="__email"\]/.test(probe));
+ok('it snapshots more than once', /\[1500, 5000, 11000\]/.test(probe));
+ok('the probe is NEVER treated as completion', !/GD_PROBE'\) \{[\s\S]{0,400}returnFromAuth/.test(jd4));
+ok('a frozen spinner now surfaces an alert instead of nothing', /bootStuck/.test(jd4));
+ok('at most one alert per apply session', /gdAlertedRef/.test(jd4));
+
+console.log('── landing where we asked to be returned IS success ──');
+// Glassdoor's originationURL for a flow starting on /member/profile/login IS that login page, and
+// isAuthUrl() calls it auth — so a "!isAuthUrl" test alone could never see this flow finish.
+ok('finishing on the remembered URL counts even if it looks like auth', /const backHere = bare\(nav\.url\) === bare\(preAuthUrlRef\.current\)/.test(jd4));
+ok('success is (backHere || !isAuthUrl)', /if \(sameSite && settled && \(backHere \|\| !isAuthUrl\(nav\.url\)\)\)/.test(jd4));
+ok('a never-resolving flow cannot pin the banner forever', /Date\.now\(\) - authAtRef\.current > 5 \* 60_000/.test(jd4));
+ok('OPENER_MSG only counts with ?code=', /OPENER_MSG'\) \{[\s\S]{0,200}\[\?&\]code=/.test(jd4));
+
+const bf = fs.readFileSync(path.join(__dirname, '../components/BrowseFetch.tsx'), 'utf8');
+ok('Browse & Fetch gets the shim too (it can land on Glassdoor)', /STAY_IN_APP_JS \+ '\\n' \+ OPENER_SHIM_JS/.test(bf));
 ok('Android gets a stall watchdog (its pre-script hook is best-effort)', /openerRetryRef/.test(jd4) && /location\.reload\(\); true;/.test(jd4));
 ok('the watchdog retries a given stuck URL only once', /openerRetryRef\.current !== nav\.url/.test(jd4));
 

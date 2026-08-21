@@ -23,7 +23,7 @@ import { fetchJobDetail, saveCard, translateBatch, markAppliedByUrl, type LiveJo
 import { SUBMIT_DETECT_JS } from '../app/(ai-hub)/submitDetect';
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS, PASSKEY_GUARD_JS } from '../utils/webviewAuth';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS } from '../utils/webviewAuth';
 import { APP_BUILD } from '../services/analytics';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
@@ -949,7 +949,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         // is the whole mechanism. FRAME_GUARD_JS comes along because STAY_IN_APP_JS reads the
         // __cvfSkipFrame flag it sets, and without it we would install inside captcha frames too.
         // Re-injection is harmless: the __cvfStayHook guard makes the second run a no-op.
-        injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS}
+        injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + OPENER_SHIM_JS}
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
         injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS + '\n' + SUBMIT_DETECT_JS}
         injectedJavaScriptForMainFrameOnly={false}

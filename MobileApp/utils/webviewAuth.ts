@@ -196,9 +196,9 @@ export const PASSKEY_GUARD_JS = `(function(){
 // popup-detection semantics, so it is scoped to these hosts AND these paths only.
 export const OPENER_SHIM_JS = `(function(){
   try {
-    if (window.opener) return;                        // a real opener (Android popup) — leave it alone
-    if (!/(^|\\.)(glassdoor\\.[a-z.]+|indeed\\.com)$/i.test(location.hostname)) return;
-    if (!/\\/auth\\/(login\\/)?oauth2\\//i.test(location.pathname)) return;
+    if (window.opener) { window.__cvfOpenerShim = 'skip:real-opener'; return; }   // real popup — leave alone
+    if (!/(^|\\.)(glassdoor\\.[a-z.]+|indeed\\.com)$/i.test(location.hostname)) { window.__cvfOpenerShim = 'skip:host'; return; }
+    if (!/\\/auth\\/(login\\/)?oauth2\\//i.test(location.pathname)) { window.__cvfOpenerShim = 'skip:path'; return; }
     var stub = {
       get origin(){ return window.location.origin; },
       closed:false, close:function(){}, focus:function(){}, blur:function(){},
@@ -208,11 +208,91 @@ export const OPENER_SHIM_JS = `(function(){
       location:{ href: window.location.href }
     };
     Object.defineProperty(window,'opener',{value:stub,writable:true,configurable:true});
-    // ⚠️ NOTHING ELSE IS SEEDED HERE, deliberately. An earlier draft also wrote
-    // sessionStorage['indeed-oauth-params'].originationURL so the callback would land on the job.
-    // That is dead code: the callback render ships codeChallenge as undefined, so the
-    // \`if (codeChallenge) location.replace(originationURL)\` branch is UNREACHABLE and the value is
-    // never read. Success always takes the postMessage-then-close branch instead, which is why the
-    // app classifies a self-close carrying ?code= as completion.
+    window.__cvfOpenerShim = 'installed';
+    // ⚠️ RESTORED. A previous pass deleted this on the claim that the redirect branch was
+    // unreachable ("codeChallenge is undefined on the callback render"). That was a
+    // mis-deminification: the variable tested is the RAW sessionStorage string, not codeChallenge —
+    //     let t = sessionStorage.getItem("indeed-oauth-params");
+    //     …then(n => t ? location.replace(originationURL || "/") : (chan.postMessage(n), close()));
+    // So the presence of this ONE key is what selects the site's redirect mode over popup mode.
+    // beginAuthFlow writes a better originationURL before we ever leave the previous page; this is
+    // the fallback for a bootstrap page we did NOT drive (onOpenWindow, a redirect-style entry, or
+    // the Android reload watchdog). Seed only when absent so the better value always wins.
+    try {
+      if (!sessionStorage.getItem('indeed-oauth-params')) {
+        var o = new URLSearchParams(location.search).get('originationURL') || '';
+        var seed = { auth_provider: 'google' };
+        if (/^https?:/i.test(o)) seed.originationURL = o;
+        sessionStorage.setItem('indeed-oauth-params', JSON.stringify(seed));
+      }
+    } catch(e){}
+  } catch(e){}
+})(); true;`;
+
+// ── The deterministic half of the Glassdoor fix ───────────────────────────────
+// The opener shim above depends on winning an injection race (document-start). This does not: it
+// runs on the page we are ALREADY on, before we navigate anywhere, and sessionStorage is per-origin
+// so the value is waiting when the bootstrap page loads.
+//
+// From Glassdoor's shipped chunk, the outbound gate is:
+//     const provider = JSON.parse(sessionStorage['indeed-oauth-params']).auth_provider;
+//     const refSame  = new URL(document.referrer).origin === location.origin;
+//     if (window.opener?.origin === location.origin || "google" === provider && refSame) { …go… }
+//     else throw Error("Origin mismatch error");        // catch → window.close() → frozen spinner
+//
+// So auth_provider:"google" plus a same-origin referrer is a SECOND, opener-free way through — and
+// navigating with location.href from a glassdoor page gives us exactly that referrer.
+//
+// ⚠️ It does NOT turn this into a Google sign-in. auth_provider is read ONLY by that gate; every
+// parameter forwarded to /auth/oauth2/authorization/indeed is built from the request query, never
+// from sessionStorage. Indeed still renders its own Google / Apple / email page.
+//
+// ⚠️ And the same key switches the RETURN leg from "postMessage into a dead opener and close" to
+// location.replace(originationURL) — the site brings the user back itself.
+//
+// ⚠️ sessionStorage is per-ORIGIN: only ever inject this while the WebView is on the same glassdoor
+// origin as the bootstrap URL (glassdoor.com and glassdoor.co.in are different origins).
+export const GD_SEED_JS = (back: string) => `(function(){
+  try {
+    if (!/(^|\\.)glassdoor\\.[a-z.]+$/i.test(String(location.hostname||''))) return;
+    var cur = null;
+    try { cur = JSON.parse(sessionStorage.getItem('indeed-oauth-params') || 'null'); } catch(e){}
+    if (!cur || typeof cur !== 'object') cur = {};
+    if (!cur.auth_provider) cur.auth_provider = 'google';
+    var back = ${JSON.stringify(back || '')};
+    if (/^https?:/i.test(back)) cur.originationURL = back;
+    sessionStorage.setItem('indeed-oauth-params', JSON.stringify(cur));
+    window.__cvfGdSeed = 'ok';
+  } catch(e){ try { window.__cvfGdSeed = 'err'; } catch(e2){} }
+})(); true;`;
+
+// ── Stop shipping blind ───────────────────────────────────────────────────────
+// ⚠️ THE REASON 185/186/187/188 EACH COST A WHOLE BUILD is that "still not working" carried no
+// information — four rounds of inferring a mechanism from one sentence. This reports the page's
+// actual state, including Glassdoor's OWN on-screen error notice, so the next report is a readable
+// symptom instead of a guess. Scoped hard to the two hosts and their /auth paths.
+export const GD_PROBE_JS = `(function(){
+  try {
+    if (window.__cvfSkipFrame || window.__cvfGdProbe) return;
+    if (!/(^|\\.)(glassdoor\\.[a-z.]+|indeed\\.com)$/i.test(String(location.hostname||''))) return;
+    if (!/\\/auth/i.test(String(location.pathname||''))) return;
+    window.__cvfGdProbe = true;
+    function snap(tag){
+      var d = { __cvf:true, type:'GD_PROBE', tag:tag, href:String(location.href) };
+      try { d.shim = String(window.__cvfOpenerShim || 'absent'); } catch(e){}
+      try { d.seed = String(window.__cvfGdSeed || 'absent'); } catch(e){}
+      try { d.opener = window.opener ? String(window.opener.origin || '?') : 'null'; } catch(e){ d.opener = 'throw'; }
+      try { d.ref = String(document.referrer || ''); } catch(e){}
+      try { d.ss = { params: !!sessionStorage.getItem('indeed-oauth-params'),
+                     verifier: !!sessionStorage.getItem('indeed-oauth-code-verifier'),
+                     nonce:    !!sessionStorage.getItem('indeed-oauth-nonce') }; } catch(e){}
+      try { var n = document.getElementById('indeed-oauth-error-notice');
+            d.notice = n ? String(n.innerText||'').trim().slice(0,300) : ''; } catch(e){}
+      try { d.head = String((document.querySelector('h1,h2,h3')||{}).innerText||'').trim().slice(0,120); } catch(e){}
+      try { d.form = !!document.querySelector('input[type=password], input[name="__email"]'); } catch(e){}
+      try { d.captcha = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], #px-captcha'); } catch(e){}
+      try { window.ReactNativeWebView.postMessage(JSON.stringify(d)); } catch(e){}
+    }
+    [1500, 5000, 11000].forEach(function(ms){ setTimeout(function(){ snap('t'+ms); }, ms); });
   } catch(e){}
 })(); true;`;
