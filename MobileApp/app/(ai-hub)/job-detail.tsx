@@ -4520,6 +4520,9 @@ export default function JobDetailScreen() {
   // Sign-in flow: the page we must return the user to once auth finishes, plus guards so we restore
   // exactly once and never fight the provider's own redirect chain.
   const preAuthUrlRef   = useRef<string>('');
+  // The last page the user was on that was NOT a sign-in page — i.e. the job or application they
+  // actually came from. See beginAuthFlow for why the current URL is not good enough.
+  const lastNonAuthUrlRef = useRef<string>('');
   const authOriginRef   = useRef<string>('');
   const authAtRef       = useRef<number>(0);
   const authRestoreTmr  = useRef<any>(null);
@@ -4609,9 +4612,22 @@ export default function JobDetailScreen() {
       );
       return;
     }
-    const back = (from && /^https?:/i.test(from) ? from : currentUrlRef.current) || '';
-    // Don't overwrite the remembered form with an auth page if the provider chains through several.
-    if (back && !isAuthUrl(back)) {
+    // ⚠️ REMEMBER SOMETHING, ALWAYS. This used to store the return point only when the page we
+    // came FROM was not itself a sign-in page — and on Glassdoor the page you start from IS
+    // /member/profile/login, which isAuthUrl reports as auth. So preAuthUrlRef stayed empty, and
+    // returnFromAuth, the storagerelay guard and the sign-in-finished check all read it first and
+    // silently did nothing. Tapping "Continue with Apple or email" therefore went nowhere at all.
+    //
+    // Prefer the last page that was NOT a sign-in page (the job the user actually came from);
+    // fall back to where we are now. Landing back on the login page is a bad return point, but it
+    // is enormously better than having none — the site sees the fresh session cookie and moves on.
+    const fromUrl = (from && /^https?:/i.test(from)) ? from : '';
+    const back = (fromUrl && !isAuthUrl(fromUrl) ? fromUrl : '')
+      || lastNonAuthUrlRef.current
+      || fromUrl
+      || currentUrlRef.current
+      || '';
+    if (back) {
       preAuthUrlRef.current = back;
       try { authOriginRef.current = new URL(back).origin; } catch { authOriginRef.current = ''; }
     }
@@ -7116,10 +7132,13 @@ export default function JobDetailScreen() {
                 // check below ALL begin by reading it and silently do nothing when it is blank.
                 // Reported symptom, exactly: Google's Continue screen, then a blank page, and
                 // nothing happens, with no way back to the half-filled form.
+                // Remember the last page that was NOT a sign-in page, so a flow that STARTS on a
+                // login page still has a real place to come back to.
+                if (nav.url && /^https?:/i.test(nav.url) && !isAuthUrl(nav.url)) lastNonAuthUrlRef.current = nav.url;
                 if (nav.url && !preAuthUrlRef.current && isAuthUrl(nav.url)
-                    && prevUrl && /^https?:/i.test(prevUrl) && !isAuthUrl(prevUrl)) {
-                  preAuthUrlRef.current = prevUrl;
-                  try { authOriginRef.current = new URL(prevUrl).origin; } catch { authOriginRef.current = ''; }
+                    && (lastNonAuthUrlRef.current || (prevUrl && /^https?:/i.test(prevUrl)))) {
+                  preAuthUrlRef.current = lastNonAuthUrlRef.current || prevUrl;
+                  try { authOriginRef.current = new URL(preAuthUrlRef.current).origin; } catch { authOriginRef.current = ''; }
                   authAtRef.current = Date.now();
                   setAuthBanner(true);
                 }

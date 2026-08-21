@@ -80,13 +80,34 @@ ok('the user is offered email OR their browser, not a dead end',
 
 console.log('── the two code paths ──');
 const jd = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
-ok('redirect-style sign-in now arms preAuthUrlRef',
-  /!preAuthUrlRef\.current && isAuthUrl\(nav\.url\)[\s\S]{0,180}preAuthUrlRef\.current = prevUrl;/.test(jd));
+ok('redirect-style sign-in arms preAuthUrlRef',
+  /!preAuthUrlRef\.current && isAuthUrl\(nav\.url\)[\s\S]{0,220}preAuthUrlRef\.current = lastNonAuthUrlRef\.current \|\| prevUrl;/.test(jd));
 ok('it reads the PREVIOUS url, captured before currentUrlRef is overwritten',
   /const prevUrl = currentUrlRef\.current;[\s\S]{0,200}currentUrlRef\.current = nav\.url;/.test(jd));
-ok('it will not remember an auth page as the form to return to', /&& !isAuthUrl\(prevUrl\)/.test(jd));
+// ⚠️ This assertion used to demand the OPPOSITE — "never remember an auth page" — and that rule is
+// precisely what broke Glassdoor, whose sign-in STARTS on /member/profile/login. The rule now is:
+// PREFER a real page, but never end up with nothing.
+ok('a real page is preferred over a sign-in page',
+  /fromUrl && !isAuthUrl\(fromUrl\) \? fromUrl : ''/.test(jd));
+ok('but we never end up remembering nothing', /\|\| currentUrlRef\.current\s*\n?\s*\|\| '';/.test(jd) || /\|\| fromUrl\s*\n\s*\|\| currentUrlRef\.current/.test(jd));
 ok('the auth banner is actually rendered now', /\{authBanner && \(/.test(jd));
 ok('the banner offers a way back', /Back to form/.test(jd));
+
+console.log('── a sign-in that STARTS on a login page still has somewhere to return to ──');
+// Glassdoor's login page is /member/profile/login, and BOTH its buttons ("Continue with Google"
+// and "Continue with Apple or email") call window.open — the Apple/email one to Indeed's OAuth,
+// since Glassdoor is Indeed-owned. beginAuthFlow used to store the return point only when the page
+// we came FROM was not itself a sign-in page, so on Glassdoor it stored NOTHING and every recovery
+// path silently no-opped. That is the "nothing happens" the user reported.
+ok('Glassdoor\'s own login page is classified as auth (why the old rule failed)',
+  isAuthUrl('https://www.glassdoor.com/member/profile/login'));
+ok('so is the Indeed OAuth popup target', isAuthUrl('https://www.glassdoor.com/auth/login/oauth2/code/indeed?authNonce=x'));
+const jd2 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
+ok('a last-non-auth-page ref exists', /lastNonAuthUrlRef/.test(jd2));
+ok('it is kept fresh on navigation', /!isAuthUrl\(nav\.url\)\) lastNonAuthUrlRef\.current = nav\.url;/.test(jd2));
+ok('beginAuthFlow now always records SOMETHING', /if \(back\) \{\s*\n\s*preAuthUrlRef\.current = back;/.test(jd2));
+ok('it prefers a real (non-auth) page over the login page', /fromUrl && !isAuthUrl\(fromUrl\) \? fromUrl : ''\)\s*\n\s*\|\| lastNonAuthUrlRef\.current/.test(jd2));
+ok('the auth origin is derived from what we actually stored', /new URL\(preAuthUrlRef\.current\)\.origin/.test(jd2));
 
 console.log('── the search sheet must stop moving under the clock ──');
 const sl = fs.readFileSync(path.join(__dirname, '../components/JobSearchLauncher.tsx'), 'utf8');
