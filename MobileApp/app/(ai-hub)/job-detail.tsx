@@ -44,7 +44,7 @@ import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth } from '../../utils/jobUrl';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS } from '../../utils/webviewAuth';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS } from '../../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
 import type { Contact, Job, Employer } from '../../types/aiHub';
@@ -4531,6 +4531,8 @@ export default function JobDetailScreen() {
   // The last page the user was on that was NOT a sign-in page — i.e. the job or application they
   // actually came from. See beginAuthFlow for why the current URL is not good enough.
   const lastNonAuthUrlRef = useRef<string>('');
+  // One retry per stuck URL — see the Android stall watchdog.
+  const openerRetryRef = useRef<string>('');
   const authOriginRef   = useRef<string>('');
   const authAtRef       = useRef<number>(0);
   const authRestoreTmr  = useRef<any>(null);
@@ -5743,7 +5745,26 @@ export default function JobDetailScreen() {
     // off the login they were still doing: "Indeed shows for a few seconds, then it comes back,
     // still logged out." Only a flow WE manage treats close as the finish line; a site-driven flow
     // returns the user itself, and its stray close() must be ignored.
-    if (msg.type === 'AUTH_DONE') { if (autoReturnRef.current) returnFromAuth(600); return; }
+    if (msg.type === 'AUTH_DONE') {
+      // ⚠️ A PAGE CLOSING ITSELF MEANS TWO OPPOSITE THINGS, and only the URL separates them.
+      // On an OAuth callback path WITHOUT ?code=, the provider REFUSED to start (Glassdoor's
+      // opener gate) — returning would hide a failure. WITH ?code=, the exchange SUCCEEDED and the
+      // popup branch is closing; that is exactly the case build 187 broke by ignoring close
+      // entirely. Anything else keeps the ownership rule.
+      const href = String((msg as any).href || '');
+      const onCallback = /\/auth\/(login\/)?oauth2\//i.test(href);
+      const hasCode = /[?&]code=/.test(href);
+      if (onCallback && !hasCode) {
+        setAuthBanner(true);                       // leave the escape hatch up; do NOT navigate
+        return;
+      }
+      if (onCallback && hasCode) { returnFromAuth(600); return; }
+      if (autoReturnRef.current) returnFromAuth(600);
+      return;
+    }
+    // The forged opener was written to — the provider believes it handed its result back. Treat it
+    // as completion and put the user on their form; the session cookie is in our jar by now.
+    if (msg.type === 'OPENER_MSG') { if (preAuthUrlRef.current) returnFromAuth(900); return; }
 
     // Job page text captured → remember it, and prefetch the job details (canonical UUID + AI
     // responsibilities) so Generate-Cover-Letter has real data ready. No-op for real DB jobs.
@@ -7049,6 +7070,11 @@ export default function JobDetailScreen() {
               originWhitelist={['*']}
               injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
               injectedJavaScriptForMainFrameOnly={false}
+              // ⚠️ DOCUMENT-START, not document-end. The opener gate this defeats runs in the
+              // page's own mount effect; injectedJavaScript (document-end) lands after it has
+              // already thrown and given up. See OPENER_SHIM_JS.
+              injectedJavaScriptBeforeContentLoaded={OPENER_SHIM_JS}
+              injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
               javaScriptEnabled
               domStorageEnabled
               thirdPartyCookiesEnabled
@@ -7165,6 +7191,21 @@ export default function JobDetailScreen() {
                 // check below ALL begin by reading it and silently do nothing when it is blank.
                 // Reported symptom, exactly: Google's Continue screen, then a blank page, and
                 // nothing happens, with no way back to the half-filled form.
+                // ⚠️ ANDROID STALL WATCHDOG. onPageStarted → callInjectedJavaScriptBeforeContentLoaded
+                // is best-effort on Android, not a guaranteed pre-script hook, so the shim can land
+                // after the gate has already run. If we are still sitting on the bootstrap URL a
+                // few seconds after it finished loading, inject the shim and reload ONCE — the
+                // reload re-fires the document-start hook with the shim already installed.
+                if (Platform.OS === 'android' && nav.url && !nav.loading
+                    && /\/auth\/(login\/)?oauth2\/code\//i.test(nav.url) && !/[?&]code=/.test(nav.url)
+                    && openerRetryRef.current !== nav.url) {
+                  const stuckUrl = nav.url;
+                  openerRetryRef.current = stuckUrl;
+                  setTimeout(() => {
+                    if (currentUrlRef.current !== stuckUrl) return;   // it moved on by itself
+                    try { applyWebRef.current?.injectJavaScript(OPENER_SHIM_JS + '\nlocation.reload(); true;'); } catch {}
+                  }, 3500);
+                }
                 // Remember the last page that was NOT a sign-in page, so a flow that STARTS on a
                 // login page still has a real place to come back to.
                 if (nav.url && /^https?:/i.test(nav.url) && !isAuthUrl(nav.url)) lastNonAuthUrlRef.current = nav.url;

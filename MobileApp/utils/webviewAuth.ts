@@ -57,8 +57,11 @@ export const AUTH_FLOW_JS = `(function(){
   };
   // A popup-style callback finishes with window.close(); in the main frame that is a no-op, so we
   // use it as the "auth finished" signal and send the user back to their application.
+  // ⚠️ REPORT WHERE THE CLOSE HAPPENED. A bare "the page closed itself" is ambiguous and we got it
+  // wrong twice: a provider that REFUSES to start also closes itself, and so does one that has just
+  // FINISHED. Only the URL distinguishes them, so send it and let the app classify.
   var realClose = window.close;
-  window.close = function(){ post({type:'AUTH_DONE', reason:'self-close'}); try{ realClose.call(window); }catch(e){} };
+  window.close = function(){ post({type:'AUTH_DONE', reason:'self-close', href: String(location.href)}); try{ realClose.call(window); }catch(e){} };
 })(); true;`;
 
 // ── Stay in this window ───────────────────────────────────────────────────────
@@ -168,4 +171,50 @@ export const PASSKEY_GUARD_JS = `(function(){
       };
     });
   }catch(e){}
+})(); true;`;
+
+// ── Admission ticket: a same-origin window.opener ─────────────────────────────
+// ⚠️ THIS IS THE FIX FOR "Redirecting to Indeed for one login… and nothing happens".
+//
+// Glassdoor's /auth/login/oauth2/code/indeed page is a client-side bootstrap whose mount effect is,
+// deminified from their own chunk:
+//
+//     if (window.opener?.origin === window.location.origin || (provider === "google" && refSameOrigin)) {
+//       …write PKCE verifier to sessionStorage…
+//       window.location.replace('/auth/oauth2/authorization/indeed?' + params);
+//     } else throw Error("Origin mismatch error");
+//     } catch (e) { window.close(); }
+//
+// An embedded WebView can NEVER have a real opener (WKWebView's createWebViewWithConfiguration
+// returns nil unconditionally), so `window.opener?.origin` is undefined, the check throws, and
+// window.close() in a TOP-LEVEL frame is a no-op — the page sits on its spinner forever and the
+// browser never reaches indeed.com at all. Builds 185-187 all tried to fix our NAVIGATION; the flow
+// was dying before any navigation happened.
+//
+// So we hand the page an opener. Nothing is ever delivered through it — it is an admission ticket,
+// not a channel. Deliberately narrow: a non-null window.opener changes `noopener` and
+// popup-detection semantics, so it is scoped to these hosts AND these paths only.
+export const OPENER_SHIM_JS = `(function(){
+  try {
+    if (window.opener) return;                        // a real opener (Android popup) — leave it alone
+    if (!/(^|\\.)(glassdoor\\.[a-z.]+|indeed\\.com)$/i.test(location.hostname)) return;
+    if (!/\\/auth\\/(login\\/)?oauth2\\//i.test(location.pathname)) return;
+    var stub = {
+      get origin(){ return window.location.origin; },
+      closed:false, close:function(){}, focus:function(){}, blur:function(){},
+      addEventListener:function(){}, removeEventListener:function(){},
+      postMessage:function(d,o){ try{ window.ReactNativeWebView.postMessage(
+        JSON.stringify({__cvf:true,type:'OPENER_MSG',origin:String(o||''),href:String(location.href)})); }catch(e){} },
+      location:{ href: window.location.href }
+    };
+    Object.defineProperty(window,'opener',{value:stub,writable:true,configurable:true});
+    // The callback leg reads originationURL out of sessionStorage, which the LOGIN page would have
+    // written in a real popup flow. Here that entry does not exist, so the user would land on "/"
+    // instead of their job. Seed it from the URL's own originationURL parameter.
+    if (/\\/auth\\/login\\/oauth2\\/code\\//i.test(location.pathname)
+        && !sessionStorage.getItem('indeed-oauth-params')) {
+      var o = new URLSearchParams(location.search).get('originationURL');
+      if (o) sessionStorage.setItem('indeed-oauth-params', JSON.stringify({ originationURL:o }));
+    }
+  } catch(e){}
 })(); true;`;

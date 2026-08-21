@@ -133,8 +133,10 @@ console.log('── a stray window.close() must not end a login the user is stil
 // Reported on 186: "Indeed shows for a few seconds, then it comes back, still logged out."
 // Our close hook is injected into EVERY page; Indeed's popup-only login, finding no opener,
 // bails by closing — a real browser ignores that, we treated it as "sign-in finished".
-ok('AUTH_DONE returns only in a flow WE manage',
-  /if \(msg\.type === 'AUTH_DONE'\) \{ if \(autoReturnRef\.current\) returnFromAuth\(600\); return; \}/.test(jd3));
+// b188 supersedes 187's blanket rule: the URL is consulted FIRST (a refusal and a success both
+// close the page), and the ownership rule remains only as the fallback for everything else.
+ok('outside a callback, AUTH_DONE still respects flow ownership',
+  /if \(autoReturnRef\.current\) returnFromAuth\(600\);\s*\n\s*return;\s*\n\s*\}/.test(jd3));
 ok('the unloadable-scheme guard cancels but only navigates when managed',
   /preAuthUrlRef\.current && autoReturnRef\.current\) returnFromAuth\(0\);/.test(jd3));
 ok('the managed/site-driven decision is made ONCE per flow',
@@ -154,6 +156,49 @@ ok('Google is cross-origin → we drive it',
   !sameOrigin('https://accounts.google.com/o/oauth2/v2/auth', 'https://www.glassdoor.com/member/profile/login'));
 ok('Apple is cross-origin → we drive it',
   !sameOrigin('https://appleid.apple.com/auth/authorize', 'https://www.glassdoor.com/member/profile/login'));
+
+console.log('── the opener gate: the actual cause of the Glassdoor stall ──');
+// Deminified from Glassdoor's own chunk, the bootstrap page's mount effect is:
+//   if (window.opener?.origin === window.location.origin || …) { …replace(/auth/oauth2/authorization/indeed…) }
+//   else throw Error("Origin mismatch error"); } catch (e) { window.close(); }
+// An embedded WebView can never have a real opener, so it throws and closes — a no-op in a top
+// frame — and the page stalls on "Redirecting to Indeed for one login" WITHOUT EVER REACHING
+// indeed.com. Builds 185-187 all fixed our navigation; the flow died before any navigation.
+const wa = fs.readFileSync(path.join(__dirname, '../utils/webviewAuth.ts'), 'utf8');
+const shimRaw = wa.match(/export const OPENER_SHIM_JS = (`[\s\S]*?`);/)[1];
+const shim = eval(shimRaw);                     // the REAL injected script, escapes interpreted
+ok('the shim parses as JavaScript', (() => { try { new Function(shim.replace(/true;\s*$/, '')); return true; } catch { return false; } })());
+ok('it presents origin === location.origin', /get origin\(\)\{ return window\.location\.origin; \}/.test(shim));
+ok('it defines window.opener', /Object\.defineProperty\(window,'opener'/.test(shim));
+ok('it defers to a REAL opener when one exists', /if \(window\.opener\) return;/.test(shim));
+ok('it seeds originationURL so the callback lands on the job, not "/"', /indeed-oauth-params/.test(shim));
+
+// ⚠️ Scope. A non-null window.opener changes noopener/popup semantics, so this must never fire on
+// an ordinary employer portal. Both guards are pulled out of the interpreted script and exercised.
+const hostRe = new RegExp(shim.match(/if \(!(\/.*?\/i)\.test\(location\.hostname\)\)/)[1].slice(1, -2), 'i');
+const pathRe = new RegExp(shim.match(/if \(!(\/.*?\/i)\.test\(location\.pathname\)\)/)[1].slice(1, -2), 'i');
+[['www.glassdoor.com', true], ['glassdoor.co.in', true], ['secure.indeed.com', true],
+ ['www.google.com', false], ['boards.greenhouse.io', false], ['jobs.lever.co', false],
+ ['myworkdayjobs.com', false]].forEach(([h, want]) =>
+  ok(`host scope: ${h}`, hostRe.test(h) === want, String(hostRe.test(h))));
+[['/auth/login/oauth2/code/indeed', true], ['/auth/oauth2/authorization/indeed', true],
+ ['/member/profile/login', false], ['/partner/jobListing.htm', false]].forEach(([pa, want]) =>
+  ok(`path scope: ${pa}`, pathRe.test(pa) === want, String(pathRe.test(pa))));
+
+const jd4 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
+// ⚠️ Document-END is too late: the gate runs in the page's mount effect.
+ok('injected at document START', /injectedJavaScriptBeforeContentLoaded=\{OPENER_SHIM_JS\}/.test(jd4));
+ok('into sub-frames too', /injectedJavaScriptBeforeContentLoadedForMainFrameOnly=\{false\}/.test(jd4));
+ok('Android gets a stall watchdog (its pre-script hook is best-effort)', /openerRetryRef/.test(jd4) && /location\.reload\(\); true;/.test(jd4));
+ok('the watchdog retries a given stuck URL only once', /openerRetryRef\.current !== nav\.url/.test(jd4));
+
+console.log('── a self-close means two opposite things; only the URL separates them ──');
+ok('the close hook now reports its URL', /reason:'self-close', href: String\(location\.href\)/.test(wa));
+ok('close on a callback WITHOUT ?code= is a refusal — do not navigate',
+  /if \(onCallback && !hasCode\) \{[\s\S]{0,140}return;/.test(jd4));
+ok('close on a callback WITH ?code= is success — return (187 broke exactly this)',
+  /if \(onCallback && hasCode\) \{ returnFromAuth\(600\); return; \}/.test(jd4));
+ok('a write to the forged opener counts as completion', /OPENER_MSG/.test(jd4));
 
 console.log('── the search sheet must stop moving under the clock ──');
 const sl = fs.readFileSync(path.join(__dirname, '../components/JobSearchLauncher.tsx'), 'utf8');
