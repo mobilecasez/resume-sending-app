@@ -43,7 +43,7 @@ import CreditCostPill from '../../components/CreditCostPill';
 import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
-import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth } from '../../utils/jobUrl';
+import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth, hasIndeedGoogleRoute } from '../../utils/jobUrl';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS, GD_SEED_JS, GD_PROBE_JS,
          STAY_IN_APP_JS, GOOGLE_AUTH_WATCH_JS, NO_EXIT_JS } from '../../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
@@ -4626,6 +4626,22 @@ export default function JobDetailScreen() {
     // A redirect-flow provider is fine in this view; the one thing that genuinely cannot land is a
     // credential delivered by postMessage to an opener iOS never created (storagerelay:, GIS).
     if (isPostMessageOnlyAuth(target)) {
+      try { track('auth_popup_only', { host: (() => { try { return new URL(target).hostname; } catch { return ''; } })(),
+        ru: (() => { try { return new URL(target).searchParams.get('redirect_uri') || ''; } catch { return ''; } })().slice(0, 40) }); } catch {}
+      // ⚠️ THERE IS A ROUTE THAT WORKS ON GLASSDOOR, AND THE USER FOUND IT BEFORE WE DID.
+      // Glassdoor's own Google button is a GIS pop-up (redirect_uri=gis_transform — a sentinel, not
+      // an address), so nothing can come back to it here. But Glassdoor hands e-mail/Apple sign-in
+      // to Indeed, and Indeed's Google button uses a REAL redirect_uri
+      // (secure.indeed.com/account/googleauth) which completes in this view perfectly. So the honest
+      // answer is not "go to your browser" — it is "take the other door".
+      if (hasIndeedGoogleRoute(currentUrlRef.current || '')) {
+        Alert.alert(
+          'Use “Continue with Apple or email”',
+          'Glassdoor’s own Google button opens a pop-up window, which apps aren’t allowed to show — so it can’t finish here.\n\nTap “Continue with Apple or email” instead. It hands you to Indeed, and Google works normally on that page.',
+          [{ text: 'Got it', style: 'cancel' }, { text: 'Open in browser', onPress: () => openCurrentInBrowser() }],
+        );
+        return;
+      }
       const host = (() => { try { return new URL(target).hostname; } catch { return 'This provider'; } })();
       Alert.alert(
         'Sign in needs your browser',

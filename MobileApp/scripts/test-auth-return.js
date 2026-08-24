@@ -50,6 +50,23 @@ ok('a job slug that merely CONTAINS sign-in is not auth',
 ok('a "login" job slug is not auth', !isAuthUrl('https://jobs.example.com/roles/login-platform-engineer'));
 
 console.log('── pop-up-only flows still refuse up front ──');
+// ⚠️ CAPTURED LIVE FROM GLASSDOOR'S OWN BUTTON (2026-08-24), and the old rule MISSED it:
+//   window.open('…/o/oauth2/v2/auth?gsiwebsdk=gis_attributes&redirect_uri=gis_transform
+//                &response_type=token&display=popup&response_mode=form_post', 'g_auth_token_window_…')
+// `gis_transform` is a GIS sentinel, not an address — the token goes into the pop-up and is relayed
+// to window.opener, so nothing ever comes back to glassdoor.com. THIS is why Glassdoor's Google
+// button fails here while Indeed's works: Indeed's redirect_uri is a real URL.
+ok('Glassdoor’s real GIS pop-up URL is refused',
+  isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=gis_attributes&client_id=x&redirect_uri=gis_transform&response_type=token&display=popup&response_mode=form_post'));
+ok('Indeed’s real redirect URL is ALLOWED — it is the one that works on a device',
+  !isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/v2/auth?client_id=x&response_type=code&redirect_uri=https%3A%2F%2Fsecure.indeed.com%2Faccount%2Fgoogleauth'));
+ok('a native-app custom scheme cannot land here either',
+  isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=com.example.app%3A%2Foauth'));
+ok('the rule is the PROPERTY, not a list of sentinels',
+  /ru && !\/\^https\?:/.test(fs.readFileSync(path.join(__dirname, '../utils/jobUrl.ts'), 'utf8')));
+ok('Glassdoor is told about the Indeed route instead of just "use your browser"',
+  /hasIndeedGoogleRoute/.test(fs.readFileSync(path.join(__dirname, '../utils/jobUrl.ts'), 'utf8'))
+  && /Continue with Apple or email/.test(fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8')));
 ok('GIS /gsi/ is pop-up-only', isPostMessageOnlyAuth('https://accounts.google.com/gsi/select?client_id=x'));
 ok('storagerelay redirect_uri is pop-up-only',
   isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/auth?redirect_uri=storagerelay%3A%2F%2Fhttps%2Fglassdoor.com'));

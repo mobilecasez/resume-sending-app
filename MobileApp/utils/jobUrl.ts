@@ -40,10 +40,33 @@ export function isPostMessageOnlyAuth(url: string): boolean {
     const u = new URL(String(url));
     if (/^\/gsi\//i.test(u.pathname)) return true;                                    // Google Identity Services
     const ru = u.searchParams.get('redirect_uri') || '';
-    if (/^storagerelay:/i.test(ru)) return true;                                      // the GIS popup relay
-    if (/^\/o\/oauth2\//i.test(u.pathname) && /^postmessage$/i.test(ru)) return true;  // legacy gapi
+    // ⚠️ THE ONE RULE THAT MATTERS: A REDIRECT TARGET THAT IS NOT AN http(s) URL CANNOT LAND HERE.
+    //
+    // The three named cases below were each added after being seen in the wild, and the list kept
+    // missing the next one — most importantly Glassdoor's, captured live from its own button:
+    //   window.open('…/o/oauth2/v2/auth?gsiwebsdk=gis_attributes&redirect_uri=gis_transform
+    //                &response_type=token&display=popup&response_mode=form_post',
+    //               'g_auth_token_window_…', 'width=500,height=550,…')
+    // `gis_transform` is a GIS sentinel, not an address. Google posts the token INTO the popup and
+    // the SDK relays it to window.opener — so nothing is ever redirected back to glassdoor.com, and
+    // there is no URL for this WebView to arrive at. Compare Indeed, which works here precisely
+    // because its redirect_uri is a real one: https://secure.indeed.com/account/googleauth.
+    //
+    // So stop enumerating sentinels and test the property itself. A custom-scheme redirect_uri
+    // (a native app's com.example:/oauth) is caught by the same rule and for the same reason.
+    if (ru && !/^https?:\/\//i.test(ru)) return true;
     return false;
   } catch { return false; }
+}
+
+/**
+ * Glassdoor hands its e-mail/Apple sign-in to Indeed — and Indeed's Google button DOES work here,
+ * because Indeed uses a real redirect_uri. So when Glassdoor's own popup-only Google button is
+ * refused, there is a route that actually works, and the user found it before we did: take
+ * "Continue with Apple or email", then choose Google on the Indeed page that follows.
+ */
+export function hasIndeedGoogleRoute(pageUrl: string): boolean {
+  try { return /(^|\.)glassdoor\.[a-z.]+$/i.test(new URL(String(pageUrl)).hostname); } catch { return false; }
 }
 
 /**
