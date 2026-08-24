@@ -125,7 +125,11 @@ console.log('── nothing offers the user a way OUT of a half-filled applicati
 ok('the stay-in-app interceptor finally ships in the apply view (it never did)',
   /STAY_IN_APP_JS/.test(jd0));
 ok('and at document-START, where it can beat the page own handlers',
-  /injectedJavaScriptBeforeContentLoaded=\{FRAME_GUARD_JS \+ '\\n' \+ STAY_IN_APP_JS/.test(jd0));
+  /injectedJavaScriptBeforeContentLoaded=\{[^}]*STAY_IN_APP_JS/.test(jd0));
+// The passkey guard has to come even earlier: a site feature-detects passkeys in its own first
+// scripts, and a guard that lands after that has already let the button onto the screen.
+ok('the passkey guard runs before the stay-in-app hook',
+  /injectedJavaScriptBeforeContentLoaded=\{FRAME_GUARD_JS \+ '\\n' \+ PASSKEY_GUARD_JS/.test(jd0));
 ok('exit-ramp banners are stripped', /export const NO_EXIT_JS/.test(wsrc) && /NO_EXIT_JS/.test(jd0));
 ok('the iOS smart app banner meta tag is removed', /apple-itunes-app/.test(wsrc));
 ok('app-store and app-scheme links are defused', /itms-apps\|itms\|market\|intent/.test(wsrc));
