@@ -977,7 +977,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         // is the whole mechanism. FRAME_GUARD_JS comes along because STAY_IN_APP_JS reads the
         // __cvfSkipFrame flag it sets, and without it we would install inside captcha frames too.
         // Re-injection is harmless: the __cvfStayHook guard makes the second run a no-op.
-        injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + OPENER_SHIM_JS}
+        injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + OPENER_SHIM_JS}
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
         injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + GOOGLE_AUTH_WATCH_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS + '\n' + SUBMIT_DETECT_JS}
         injectedJavaScriptForMainFrameOnly={false}

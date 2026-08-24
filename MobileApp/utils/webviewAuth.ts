@@ -154,6 +154,39 @@ export const STAY_IN_APP_JS = `(function(){
 export const PASSKEY_GUARD_JS = `(function(){
   if (window.__cvfSkipFrame || window.__cvfPkHook) return; window.__cvfPkHook = true;
   function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+  // ⚠️ REFUSING THE CEREMONY IS NOT ENOUGH — THE OPTION MUST NEVER BE OFFERED.
+  //
+  // The old guard only rejected navigator.credentials.get({publicKey}). Glassdoor therefore still
+  // ASKED: it feature-detects passkeys the way every site does, saw them "available", rendered a
+  // passkey button, and only discovered the truth when the user tapped it — by which point it had
+  // committed to that path and showed "something went wrong" instead of falling back. Indeed never
+  // offered one, which is the whole difference the user noticed.
+  //
+  // A site decides whether to SHOW the option from these three, all of which must now say no:
+  //   window.PublicKeyCredential                                  (does the browser do WebAuthn?)
+  //   PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()   (is there an authenticator?)
+  //   PublicKeyCredential.isConditionalMediationAvailable()        (passkey autofill?)
+  // Answering honestly is not a downgrade: the ceremony genuinely cannot complete here (a passkey
+  // binds to the site's own domain and iOS only admits an app holding that associated-domains
+  // entitlement — impossible for arbitrary employer portals), so every one of these is TRUE-but-
+  // useless. Saying no is what makes the site show the password form it already has.
+  try {
+    var PKC = window.PublicKeyCredential;
+    if (PKC) {
+      // Patch the statics FIRST, so a page that captured a reference before we removed the global
+      // still gets a truthful answer.
+      try { PKC.isUserVerifyingPlatformAuthenticatorAvailable = function(){ return Promise.resolve(false); }; } catch(e){}
+      try { PKC.isConditionalMediationAvailable = function(){ return Promise.resolve(false); }; } catch(e){}
+      try { PKC.isPasskeyPlatformAuthenticatorAvailable = function(){ return Promise.resolve(false); }; } catch(e){}
+      // Then take the feature flag itself away — this is the check most sites actually branch on.
+      try { Object.defineProperty(window, 'PublicKeyCredential', { value: undefined, configurable: true, writable: true }); }
+      catch(e){ try { window.PublicKeyCredential = undefined; } catch(e2){} }
+      post({type:'PASSKEY_HIDDEN', host:location.hostname});
+    }
+  } catch(e){}
+  // Last line of defence: a site that tries the ceremony anyway gets the exact error its fallback
+  // branch is written against, rather than a promise that never settles (the original "the button
+  // just spins forever" report).
   try{
     var c = navigator.credentials; if(!c) return;
     ['get','create'].forEach(function(k){

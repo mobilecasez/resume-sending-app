@@ -7184,7 +7184,7 @@ export default function JobDetailScreen() {
               // thing that stops iOS handing the URL to an installed app ("Open in Google?",
               // "Open in Indeed?"). Document-START, because it has to beat the page's own
               // handlers; also injected at document-end above for content added later.
-              injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + OPENER_SHIM_JS}
+              injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + OPENER_SHIM_JS}
               javaScriptEnabled
               domStorageEnabled
               thirdPartyCookiesEnabled

@@ -21,6 +21,7 @@ function grab(name) {
 }
 const NO_EXIT_JS = grab('NO_EXIT_JS');
 const GOOGLE_AUTH_WATCH_JS = grab('GOOGLE_AUTH_WATCH_JS');
+const PASSKEY_GUARD_JS = grab('PASSKEY_GUARD_JS');
 const BRIDGE = `window.__msgs=[];window.ReactNativeWebView={postMessage:function(s){window.__msgs.push(JSON.parse(s));}};`;
 
 let pass = 0, fail = 0;
@@ -215,6 +216,46 @@ const PAGE = `<!doctype html><html><head>
   await other.waitForTimeout(2000);
   const off = await other.evaluate(() => window.__msgs.length);
   ok('the watcher is inert anywhere but accounts.google.com', off === 0, off);
+
+  // ── PASSKEY: the option must never be OFFERED ───────────────────────────────────────────────
+  // ⚠️ Glassdoor showed a passkey button and then "something went wrong". Rejecting the ceremony
+  // was not enough — by the time get() fails the site has already committed to that path. What
+  // decides whether the button appears at all is the feature detection below, run exactly the way
+  // a real site runs it. Indeed never offered one; this makes every site behave like Indeed.
+  console.log('\npasskeys: the option is never offered, not merely refused');
+  const pk = await ctx.newPage();
+  await pk.route('https://www.glassdoor.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<html><body><form><input name=u></form></body></html>' }));
+  await pk.goto('https://www.glassdoor.com/member/profile/login');
+  await pk.evaluate(BRIDGE);
+  const det = await pk.evaluate(async (js) => {
+    // A page that captured the reference BEFORE our guard ran — the hardest case.
+    const captured = window.PublicKeyCredential;
+    eval(js);
+    const out = { hasGlobal: typeof window.PublicKeyCredential !== 'undefined' };
+    try { out.iuvpaa = await captured.isUserVerifyingPlatformAuthenticatorAvailable(); } catch (e) { out.iuvpaa = 'threw'; }
+    try { out.conditional = await captured.isConditionalMediationAvailable(); } catch (e) { out.conditional = 'threw'; }
+    try { await navigator.credentials.get({ publicKey: { challenge: new Uint8Array(8) } }); out.get = 'resolved'; }
+    catch (e) { out.get = e.name; }
+    // the password manager path must survive
+    try { await navigator.credentials.get({ password: true }); out.pw = 'ok'; } catch (e) { out.pw = 'ok:' + e.name; }
+    out.msgs = window.__msgs.map((m) => m.type);
+    return out;
+  }, PASSKEY_GUARD_JS);
+  await pk.close();
+
+  ok('window.PublicKeyCredential is gone — the check sites branch on', det.hasGlobal === false, det);
+  ok('isUserVerifyingPlatformAuthenticatorAvailable() answers false, even on a captured reference',
+    det.iuvpaa === false, det);
+  ok('isConditionalMediationAvailable() answers false too (passkey autofill)', det.conditional === false, det);
+  ok('a ceremony attempted anyway still gets NotAllowedError, never a hanging promise',
+    det.get === 'NotAllowedError', det);
+  ok('password-manager credentials.get({password}) is untouched', String(det.pw).startsWith('ok'), det);
+  ok('and it reports both what it hid and what it blocked',
+    det.msgs.includes('PASSKEY_HIDDEN') && det.msgs.includes('PASSKEY_BLOCKED'), det.msgs);
+
+  const jdSrc = require('fs').readFileSync(require('path').join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
+  ok('the guard runs at document-START, before the page can feature-detect',
+    /injectedJavaScriptBeforeContentLoaded=\{FRAME_GUARD_JS \+ '\\n' \+ PASSKEY_GUARD_JS/.test(jdSrc));
 
   await browser.close();
   console.log(`\nno-exit + google-auth: ${pass} passed, ${fail} failed`);
