@@ -22,12 +22,11 @@ const harness = [
   grab(/const AUTH_FILE = [^\n]*\n/, 'AUTH_FILE'),
   grab(/export function isPostMessageOnlyAuth[\s\S]*?\n}\n/, 'isPostMessageOnlyAuth'),
   grab(/export function isAuthUrl[\s\S]*?\n}\n/, 'isAuthUrl'),
-  grab(/export function isBlockedEmbeddedAuth[\s\S]*?\n}\n/, 'isBlockedEmbeddedAuth'),
-  'module.exports = { isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth };',
+  'module.exports = { isAuthUrl, isPostMessageOnlyAuth };',
 ].join('\n').replace(/export function/g, 'function').replace(/: string\)/g, ')').replace(/: boolean/g, '');
 const m = new module.constructor();
 m._compile(harness, '/joburl-harness.js');
-const { isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth } = m.exports;
+const { isAuthUrl, isPostMessageOnlyAuth } = m.exports;
 
 console.log('── the provider pages we must recognise as "signing in" ──');
 // If this is false, the fix never arms and the user is stranded exactly as reported.
@@ -57,26 +56,60 @@ ok('storagerelay redirect_uri is pop-up-only',
 ok('a normal redirect flow is NOT pop-up-only — it can finish in the web view',
   !isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2Fwww.glassdoor.com%2Fcb'));
 
-console.log('── Google OAuth is intercepted BEFORE it can render blank ──');
-// Reported twice: a blank accounts.google.com after choosing an account. Google has blocked
-// embedded web views since Feb 2023, and WKWebView has had a null window.opener since iOS 17.5 —
-// both documented, both unfixed by the vendor. So these must never be allowed to load here.
-ok('the OAuth authorize endpoint', isBlockedEmbeddedAuth('https://accounts.google.com/o/oauth2/v2/auth?client_id=x'));
-ok('the consent step', isBlockedEmbeddedAuth('https://accounts.google.com/signin/oauth/consent?a=1'));
-ok('Google Identity Services', isBlockedEmbeddedAuth('https://accounts.google.com/gsi/select'));
-ok('the classic ServiceLogin', isBlockedEmbeddedAuth('https://accounts.google.com/ServiceLogin?continue=x'));
-// ⚠️ Scoped to the OAuth endpoints. Cancelling every google.com hop would break ordinary browsing.
-ok('a Google SEARCH page is not intercepted', !isBlockedEmbeddedAuth('https://www.google.com/search?q=jobs'));
-ok('a Google careers job page is not intercepted',
-  !isBlockedEmbeddedAuth('https://www.google.com/about/careers/applications/jobs/results/123-engineer'));
-ok('accounts.google.com root is not intercepted', !isBlockedEmbeddedAuth('https://accounts.google.com/'));
-ok('a job site is never intercepted', !isBlockedEmbeddedAuth('https://www.glassdoor.com/job-listing/x.htm'));
+console.log('── Google OAuth is ALLOWED to run, and its refusal is detected, not predicted ──');
+// ⚠️ THIS SECTION USED TO ASSERT THE EXACT OPPOSITE, and the assertions were the bug.
+// isBlockedEmbeddedAuth cancelled every accounts.google.com OAuth navigation on the theory that
+// Google's embedded-webview block makes it impossible here. Field evidence: the user signed in to
+// Glassdoor via Indeed, chose "log in with Google", and it completed normally in this same view —
+// it only got the chance because Indeed starts Google with a 302, and WKWebView does not consult
+// onShouldStartLoadWithRequest on a server redirect. Every path the block DID reach, it broke.
+const ju = fs.readFileSync(path.join(__dirname, '../utils/jobUrl.ts'), 'utf8');
+ok('isBlockedEmbeddedAuth is gone from jobUrl.ts', !/export function isBlockedEmbeddedAuth/.test(ju));
+ok('and the reason it is gone is written down where it lived',
+  /USED TO LIVE HERE, AND DELETING IT IS THE FIX/.test(ju));
 
 const jd0 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
-ok('the web view cancels it instead of loading it', /isBlockedEmbeddedAuth\(u\)\) \{ offerBrowserSignIn\(\); return false; \}/.test(jd0));
-ok('the pop-up path refuses it too', /isPostMessageOnlyAuth\(target\) \|\| isBlockedEmbeddedAuth\(target\)/.test(jd0));
+const code = (t) => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+ok('no call site cancels a Google navigation any more', !/isBlockedEmbeddedAuth\(/.test(code(jd0)));
+ok('the pop-up path refuses ONLY what cannot be delivered',
+  /if \(isPostMessageOnlyAuth\(target\)\) \{/.test(jd0)
+  && !/isPostMessageOnlyAuth\(target\) \|\| /.test(jd0));
+
+// The safety net that replaced the prediction: read Google's own refusal, then offer the browser.
+const wsrc = fs.readFileSync(path.join(__dirname, '../utils/webviewAuth.ts'), 'utf8');
+ok('a watcher exists for Google sign-in pages', /export const GOOGLE_AUTH_WATCH_JS/.test(wsrc));
+ok('it is scoped to accounts.google.com', /accounts\\\\\.google\\\\\.com\$\/i\.test\(String\(location\.hostname/.test(wsrc));
+ok('it matches the words Google actually uses',
+  /disallowed_useragent\|browser or app may not be secure/.test(wsrc));
+ok('a page that rendered nothing counts as a refusal too', /reason:'blank'/.test(wsrc));
+ok('the watcher is injected into the apply web view', /GOOGLE_AUTH_WATCH_JS/.test(jd0));
+ok('the browser is offered only when Google has actually said no',
+  /msg\.type === 'GOOGLE_AUTH_BLOCKED'[\s\S]{0,320}offerBrowserSignIn\(reason\)/.test(jd0));
+ok('and only once per apply session', /gAuthAlertedRef\.current = false;/.test(jd0)
+  && /!gAuthAlertedRef\.current/.test(jd0));
 ok('the user is offered email OR their browser, not a dead end',
   /Use email instead/.test(jd0) && /Open in browser/.test(jd0));
+
+console.log('── nothing offers the user a way OUT of a half-filled application ──');
+// "Open in Google?", "Continue in Safari", the long-press sheet — every one of them abandons the
+// form, the attached resume and the cover letter, none of which exist outside this WebView.
+ok('the stay-in-app interceptor finally ships in the apply view (it never did)',
+  /STAY_IN_APP_JS/.test(jd0));
+ok('and at document-START, where it can beat the page own handlers',
+  /injectedJavaScriptBeforeContentLoaded=\{FRAME_GUARD_JS \+ '\\n' \+ STAY_IN_APP_JS/.test(jd0));
+ok('exit-ramp banners are stripped', /export const NO_EXIT_JS/.test(wsrc) && /NO_EXIT_JS/.test(jd0));
+ok('the iOS smart app banner meta tag is removed', /apple-itunes-app/.test(wsrc));
+ok('app-store and app-scheme links are defused', /itms-apps\|itms\|market\|intent/.test(wsrc));
+ok('a banner is hidden only when it BOTH reads and links like an exit ramp',
+  /if \(host && EXIT_TX\.test\(tx\)\)/.test(wsrc));
+ok('the sweep is bounded so a hostile page cannot loop us', /if \(runs\+\+ > 40\) return;/.test(wsrc));
+ok('long-press link preview is off in the apply view', /allowsLinkPreview=\{false\}/.test(jd0));
+ok('data detectors are off', /dataDetectorTypes="none"/.test(jd0));
+ok('Look Up / Share / Translate are suppressed in the selection menu',
+  /suppressMenuItems=\{\['lookup', 'share', 'translate'\]\}/.test(jd0));
+const bf0 = fs.readFileSync(path.join(__dirname, '../components/BrowseFetch.tsx'), 'utf8');
+ok('Browse & Fetch gets the same treatment', /NO_EXIT_JS/.test(bf0) && /allowsLinkPreview=\{false\}/.test(bf0)
+  && /suppressMenuItems=\{\['lookup', 'share', 'translate'\]\}/.test(bf0));
 
 console.log('── the two code paths ──');
 const jd = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
@@ -189,7 +222,7 @@ const pathRe = new RegExp(shim.match(/if \(!(\/.*?\/i)\.test\(location\.pathname
 
 const jd4 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
 // ⚠️ Document-END is too late: the gate runs in the page's mount effect.
-ok('injected at document START', /injectedJavaScriptBeforeContentLoaded=\{OPENER_SHIM_JS\}/.test(jd4));
+ok('injected at document START', /injectedJavaScriptBeforeContentLoaded=\{[^}]*OPENER_SHIM_JS\}/.test(jd4));
 // ⚠️ MAIN FRAME ONLY. The gate runs in the main frame; injecting a forged opener into every
 // sub-frame is blast radius for no benefit.
 ok('NOT injected into sub-frames', !/injectedJavaScriptBeforeContentLoadedForMainFrameOnly/.test(jd4));
@@ -243,7 +276,7 @@ ok('a never-resolving flow cannot pin the banner forever', /Date\.now\(\) - auth
 ok('OPENER_MSG only counts with ?code=', /OPENER_MSG'\) \{[\s\S]{0,200}\[\?&\]code=/.test(jd4));
 
 const bf = fs.readFileSync(path.join(__dirname, '../components/BrowseFetch.tsx'), 'utf8');
-ok('Browse & Fetch gets the shim too (it can land on Glassdoor)', /STAY_IN_APP_JS \+ '\\n' \+ OPENER_SHIM_JS/.test(bf));
+ok('Browse & Fetch gets the shim too (it can land on Glassdoor)', /STAY_IN_APP_JS \+ '\\n' \+ NO_EXIT_JS \+ '\\n' \+ OPENER_SHIM_JS/.test(bf));
 ok('Android gets a stall watchdog (its pre-script hook is best-effort)', /openerRetryRef/.test(jd4) && /location\.reload\(\); true;/.test(jd4));
 ok('the watchdog retries a given stuck URL only once', /openerRetryRef\.current !== nav\.url/.test(jd4));
 

@@ -23,7 +23,8 @@ import { fetchJobDetail, saveCard, translateBatch, markAppliedByUrl, type LiveJo
 import { SUBMIT_DETECT_JS } from '../app/(ai-hub)/submitDetect';
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS } from '../utils/webviewAuth';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS,
+         GOOGLE_AUTH_WATCH_JS, NO_EXIT_JS } from '../utils/webviewAuth';
 import { APP_BUILD } from '../services/analytics';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
@@ -591,6 +592,15 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       setStayKept((n) => n + 1);
       return;
     }
+    // Google said no on its own page (not a guess made before the navigation — see jobUrl.ts).
+    if (payload && payload.__cvf && payload.type === 'GOOGLE_AUTH_BLOCKED') {
+      Alert.alert(
+        'Google couldn’t sign you in here',
+        'Google turned down the sign-in from inside the app. Use the site’s email option, or open the page in your phone’s browser to sign in there.',
+        [{ text: 'OK', style: 'cancel' }],
+      );
+      return;
+    }
     if (payload && payload.__cvf && payload.type === 'STAY_BLOCKED_SCHEME') {
       console.log('[stay-in-app] blocked an app-scheme link:', payload.url);
       setStayKept((n) => n + 1);
@@ -949,9 +959,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         // is the whole mechanism. FRAME_GUARD_JS comes along because STAY_IN_APP_JS reads the
         // __cvfSkipFrame flag it sets, and without it we would install inside captcha frames too.
         // Re-injection is harmless: the __cvfStayHook guard makes the second run a no-op.
-        injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + OPENER_SHIM_JS}
+        injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + OPENER_SHIM_JS}
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
-        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS + '\n' + SUBMIT_DETECT_JS}
+        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + GOOGLE_AUTH_WATCH_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS + '\n' + SUBMIT_DETECT_JS}
         injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
         javaScriptEnabled
@@ -966,6 +976,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         // popups allowed, and popup windows loaded IN THIS WebView (iOS drops them by default →
         // "nothing happens" / endless spinner on Sign in with Google/Apple).
         userAgent={BROWSER_UA}
+        // Same reasoning as the apply WebView: the long-press sheet and the selection menu's
+        // Look Up / Share / Translate are all doors out of a session the user is in the middle of.
+        allowsLinkPreview={false}
+        dataDetectorTypes="none"
+        suppressMenuItems={['lookup', 'share', 'translate']}
         javaScriptCanOpenWindowsAutomatically
         setSupportMultipleWindows={false}
         onOpenWindow={(e: any) => {

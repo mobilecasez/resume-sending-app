@@ -83,6 +83,10 @@ const env = {
   handleMailtoApply: (u) => calls.push(['mailto', u]),
   Linking: { openURL: (u) => { calls.push(['openURL', u]); return { catch: () => {} }; } },
   preAuthUrlRef: { current: '' },
+  // ⚠️ MISSING, AND IT CRASHED THE WHOLE FILE. The handler only reads autoReturnRef after
+  // preAuthUrlRef passes, so every earlier case short-circuited past it and the gap stayed hidden
+  // until a test set a return point — then the run died before reporting a single result.
+  autoReturnRef: { current: false },
   returnFromAuth: (d) => calls.push(['returnFromAuth', d]),
 };
 const handler = new Function(...Object.keys(env), 'return function (req) ' + js(handlerBody) + ';')(...Object.values(env));
@@ -155,8 +159,17 @@ ok('tel: still hands off to the OS', handler({ url: 'tel:+41791234567' }) === fa
 calls.length = 0; env.preAuthUrlRef.current = 'https://www.efinancialcareers.com/jobs/1';
 ok('storagerelay:// is cancelled, not allowed',
   handler({ url: 'storagerelay://https/www.efinancialcareers.com?id=auth1' }) === false, calls);
-ok('...and it takes the user back to the form they were filling',
+// ⚠️ CANCELLING AND RETURNING ARE TWO DECISIONS. A dead scheme is always cancelled, but the user is
+// only carried back in a flow WE started — in a site-driven round trip that same navigation fired
+// mid-login and threw them off the provider's page.
+env.autoReturnRef.current = true; calls.length = 0;
+handler({ url: 'storagerelay://https/www.efinancialcareers.com?id=auth1' });
+ok('...and in a flow we manage it takes the user back to the form they were filling',
   calls.some((c) => c[0] === 'returnFromAuth'), calls);
+env.autoReturnRef.current = false; calls.length = 0;
+handler({ url: 'storagerelay://https/www.efinancialcareers.com?id=auth1' });
+ok('...but a site-driven flow is left alone to return the user itself',
+  !calls.some((c) => c[0] === 'returnFromAuth'), calls);
 env.preAuthUrlRef.current = '';
 ok('an unknown app scheme is cancelled too', handler({ url: 'intent://x#Intent;scheme=http;end' }) === false);
 

@@ -47,25 +47,23 @@ export function isPostMessageOnlyAuth(url: string): boolean {
 }
 
 /**
- * Sign-in that CANNOT complete inside an app web view, no matter what we do.
+ * ⚠️ `isBlockedEmbeddedAuth` USED TO LIVE HERE, AND DELETING IT IS THE FIX.
  *
- * Google has blocked OAuth from embedded web views since Feb 2023 (`disallowed_useragent`), and
- * spoofing the user-agent to get around it is against their terms — so that is not a fix, it is a
- * workaround that stops working whenever Google tightens the check. Independently, WKWebView has
- * returned a null `window.opener` in popups since iOS 17.5, so even when the pages render, the
- * provider has nowhere to deliver the token. Both are documented, both are open with no vendor
- * fix, and together they produce exactly one user-visible thing: a blank accounts.google.com.
+ * It reported every Google OAuth endpoint as impossible-in-a-web-view and both callers cancelled
+ * the navigation on its word. The premise was Google's embedded-webview block
+ * (`disallowed_useragent`) — real, but not what happens to us: with a clean browser UA Google
+ * serves the ordinary redirect-based mobile flow, which needs no popup and no `window.opener` and
+ * completes inside a single WebView.
  *
- * We therefore stop pretending and hand the user a real choice BEFORE the blank page, rather than
- * after it. Scoped to the OAuth endpoints — a plain google.com page is not sign-in.
+ * Proven in the field: signing in to Glassdoor through Indeed, "log in with Google" went through
+ * normally in this same view. It only survived because Indeed starts Google with a SERVER redirect
+ * and WKWebView does not consult `decidePolicyForNavigationAction` on a 302 — so the block never
+ * ran. Every path where the block DID run is a path we broke ourselves.
+ *
+ * The refusal is now detected instead of predicted: GOOGLE_AUTH_WATCH_JS reads Google's own error
+ * page and reports it, so we speak up when Google has actually said no. Do not reintroduce a
+ * pre-emptive URL test here — a wrong prediction costs a working sign-in.
  */
-export function isBlockedEmbeddedAuth(url: string): boolean {
-  try {
-    const u = new URL(String(url));
-    if (!/(^|\.)accounts\.google\.com$/i.test(u.hostname)) return false;
-    return /^\/(o\/oauth2|signin\/oauth|gsi|oauth2)/i.test(u.pathname) || /(^|\/)ServiceLogin/i.test(u.pathname);
-  } catch { return false; }
-}
 
 /** True when the URL is an account/sign-in page rather than a job posting. */
 export function isAuthUrl(url: string): boolean {

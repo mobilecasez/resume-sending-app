@@ -43,8 +43,9 @@ import CreditCostPill from '../../components/CreditCostPill';
 import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
-import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth, isBlockedEmbeddedAuth } from '../../utils/jobUrl';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS, GD_SEED_JS, GD_PROBE_JS } from '../../utils/webviewAuth';
+import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth } from '../../utils/jobUrl';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS, GD_SEED_JS, GD_PROBE_JS,
+         STAY_IN_APP_JS, GOOGLE_AUTH_WATCH_JS, NO_EXIT_JS } from '../../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
 import type { Contact, Job, Employer } from '../../types/aiHub';
@@ -4535,6 +4536,9 @@ export default function JobDetailScreen() {
   const openerRetryRef = useRef<string>('');
   // At most one Glassdoor failure alert per apply session.
   const gdAlertedRef = useRef<boolean>(false);
+  // Same, for a Google refusal — GOOGLE_AUTH_WATCH_JS samples the page three times and a retry
+  // reloads it, so without this latch one dead sign-in could stack several identical alerts.
+  const gAuthAlertedRef = useRef<boolean>(false);
   const authOriginRef   = useRef<string>('');
   const authAtRef       = useRef<number>(0);
   const authRestoreTmr  = useRef<any>(null);
@@ -4584,24 +4588,25 @@ export default function JobDetailScreen() {
   const copyTimerRef    = useRef<any>(null);
   const localFillRef    = useRef<{ fullName?: string; email?: string; phone?: string; location?: string }>({}); // local session + resume-builder facts
 
-  // ⚠️ GOOGLE SIGN-IN CANNOT COMPLETE IN AN APP WEB VIEW. Stop before the blank page.
+  // ⚠️ WE NO LONGER PREDICT THAT GOOGLE WILL REFUSE — WE WAIT UNTIL IT DOES.
   //
-  // Two independent, documented, unfixed-by-the-vendor blocks stack here:
-  //   • Google has rejected OAuth from embedded web views since Feb 2023 (disallowed_useragent).
-  //     Spoofing the user-agent is against their terms and stops working whenever they tighten it.
-  //   • WKWebView returns a NULL window.opener in popups from iOS 17.5 (Apple forum 759487, open
-  //     with no fix), so even a rendering page has nowhere to deliver the token.
-  // The user-visible result of both is the same blank accounts.google.com — reported here twice.
+  // This used to fire BEFORE the navigation, on the theory that Google's embedded-webview block
+  // makes its sign-in impossible here. It is not: with a clean browser UA Google serves the
+  // redirect-based mobile flow, which needs no popup and no window.opener, and the user has
+  // completed exactly that flow in this view (Glassdoor → Indeed → "log in with Google"). The
+  // pre-emptive cancel was the only thing stopping it — see jobUrl.ts.
   //
-  // So we intercept the navigation and hand over a real choice INSTEAD of a dead end. Email and
-  // password still work in this view (the passkey guard makes sites offer it), and the phone's
-  // browser is where Google's flow genuinely completes.
-  const offerBrowserSignIn = () => {
+  // Now GOOGLE_AUTH_WATCH_JS reads Google's OWN refusal page and this runs only on its say-so, so
+  // the offer of the browser is a response to a real failure instead of a prophecy.
+  const offerBrowserSignIn = (reason?: string) => {
     Alert.alert(
-      'Google sign-in needs your browser',
-      'Google blocks its sign-in inside apps, so this page would come up blank. Sign in with the site’s email and password here — or open this job in your phone’s browser, where Google works.',
+      'Google couldn’t sign you in here',
+      reason === 'blank'
+        ? 'Google’s sign-in page came up empty. Try the site’s email option on this page — or open this job in your phone’s browser and sign in there.'
+        : 'Google turned down the sign-in from inside the app. Use the site’s email and password here — or open this job in your phone’s browser, where Google’s own page will accept it.',
       [
         { text: 'Use email instead', style: 'cancel' },
+        { text: 'Back to job', onPress: () => { if (preAuthUrlRef.current) returnFromAuth(0); else setAuthBanner(false); } },
         { text: 'Open in browser', onPress: () => openCurrentInBrowser() },
       ],
     );
@@ -4615,7 +4620,11 @@ export default function JobDetailScreen() {
     // there is no opener. Taking the main frame to Google therefore destroys the half-filled form
     // and ends on a `storagerelay://` URL that will not load. Say so up front and offer the phone's
     // browser, which is the only place this flow can actually complete.
-    if (isPostMessageOnlyAuth(target) || isBlockedEmbeddedAuth(target)) {
+    // ⚠️ ONLY isPostMessageOnlyAuth. isBlockedEmbeddedAuth was ALSO tested here and it matched
+    // every ordinary Google OAuth URL, so "Continue with Google" was refused before it was tried.
+    // A redirect-flow provider is fine in this view; the one thing that genuinely cannot land is a
+    // credential delivered by postMessage to an opener iOS never created (storagerelay:, GIS).
+    if (isPostMessageOnlyAuth(target)) {
       const host = (() => { try { return new URL(target).hostname; } catch { return 'This provider'; } })();
       Alert.alert(
         'Sign in needs your browser',
@@ -4722,6 +4731,7 @@ export default function JobDetailScreen() {
     setFilePick(null);
     setFilePickBusy(null);
     gdAlertedRef.current = false;
+    gAuthAlertedRef.current = false;
     filesRef.current = {};
     setResumeRegion(''); setClRegion(''); setResumeExpanded(false); setClExpanded(false); setPreview(null); setPreviewBusy(null);
     submitMarkedRef.current = false; submitIntentRef.current = 0; setAppliedBanner(false);
@@ -5788,6 +5798,21 @@ export default function JobDetailScreen() {
     // otherwise yank the user mid-flow — the 186 mistake in a new costume.
     if (msg.type === 'OPENER_MSG') {
       if (preAuthUrlRef.current && /[?&]code=/.test(String((msg as any).href || ''))) returnFromAuth(900);
+      return;
+    }
+    // Google has ACTUALLY refused (its own error page or a genuinely empty one) — not a guess
+    // made before the navigation, which is what used to break the flow that works.
+    if (msg.type === 'GOOGLE_AUTH_BLOCKED') {
+      const reason = String((msg as any).reason || '');
+      try { track('google_auth_blocked', { reason, note: String((msg as any).note || '').slice(0, 80) }); } catch {}
+      if (!gAuthAlertedRef.current) { gAuthAlertedRef.current = true; offerBrowserSignIn(reason); }
+      return;
+    }
+    // A cross-origin link tap was taken over in-page so iOS could not hand it to another app.
+    // Logged, never surfaced: it is the normal path now, not an event.
+    if (msg.type === 'STAY_INTERCEPT' || msg.type === 'STAY_BLOCKED_SCHEME') {
+      try { track('apply_stay_in_app', { kind: msg.type === 'STAY_INTERCEPT' ? 'link' : 'scheme',
+        host: String((msg as any).host || '') }); } catch {}
       return;
     }
     // Telemetry + the user-facing affordance. NEVER a completion signal.
@@ -7119,12 +7144,18 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + GD_PROBE_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
+              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + GOOGLE_AUTH_WATCH_JS + '\n' + GD_PROBE_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
               injectedJavaScriptForMainFrameOnly={false}
               // ⚠️ DOCUMENT-START, not document-end. The opener gate this defeats runs in the
               // page's own mount effect; injectedJavaScript (document-end) lands after it has
               // already thrown and given up. See OPENER_SHIM_JS.
-              injectedJavaScriptBeforeContentLoaded={OPENER_SHIM_JS}
+              // ⚠️ STAY_IN_APP_JS SHIPPED IN BROWSE & FETCH AND NEVER HERE — and this is the
+              // view people actually apply from. It is what neutralises target="_blank" and
+              // re-issues a cross-origin link tap as a scripted navigation, which is the only
+              // thing that stops iOS handing the URL to an installed app ("Open in Google?",
+              // "Open in Indeed?"). Document-START, because it has to beat the page's own
+              // handlers; also injected at document-end above for content added later.
+              injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + NO_EXIT_JS + '\n' + OPENER_SHIM_JS}
               javaScriptEnabled
               domStorageEnabled
               thirdPartyCookiesEnabled
@@ -7137,6 +7168,14 @@ export default function JobDetailScreen() {
               // them by default → the "stuck on loading" the user hit). The shared cookie store means
               // a LinkedIn/Google login done here (or in the hidden extractor) is reused next time.
               userAgent={BROWSER_UA}
+              // ── Keep the application in front of the user ──────────────────────────────────
+              // Long-press on a link raises iOS's own "Open / Open in New Tab / Share" sheet, and
+              // the selection menu offers Look Up / Translate / Share — every one of them a way
+              // out of a half-filled form. Data detectors do the same to any phone number or
+              // address on the page. None of them help someone apply for a job.
+              allowsLinkPreview={false}
+              dataDetectorTypes="none"
+              suppressMenuItems={['lookup', 'share', 'translate']}
               javaScriptCanOpenWindowsAutomatically
               setSupportMultipleWindows={false}
               onOpenWindow={(e: any) => {
@@ -7151,9 +7190,12 @@ export default function JobDetailScreen() {
                 const u = req?.url || '';
                 if (/^mailto:/i.test(u)) { handleMailtoApply(u); return false; }
                 if (/^(tel|sms|facetime|maps|geo):/i.test(u)) { Linking.openURL(u).catch(() => {}); return false; }
-                // Cancel Google's OAuth endpoints outright — see offerBrowserSignIn. Letting this
-                // load is what produced the blank accounts.google.com screenshot.
-                if (isBlockedEmbeddedAuth(u)) { offerBrowserSignIn(); return false; }
+                // ⚠️ NOTHING CANCELS GOOGLE HERE ANY MORE. This line used to read
+                //     if (isBlockedEmbeddedAuth(u)) { offerBrowserSignIn(); return false; }
+                // and it cancelled every accounts.google.com OAuth navigation on principle. The
+                // principle was wrong: the same flow completes in this view when it is allowed to
+                // run (verified on Indeed, which only escaped because a 302 bypasses this handler).
+                // Google's refusal, if it ever comes, arrives as GOOGLE_AUTH_BLOCKED below.
                 // ⚠️ A SCHEME WKWebView CANNOT LOAD MUST NOT BE "ALLOWED". Returning true for
                 // `storagerelay://…` — where Google's popup sign-in delivers its result — parked the
                 // user on a permanently dead page with their half-filled form gone. Anything outside

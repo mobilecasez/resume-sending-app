@@ -296,3 +296,154 @@ export const GD_PROBE_JS = `(function(){
     [1500, 5000, 11000].forEach(function(ms){ setTimeout(function(){ snap('t'+ms); }, ms); });
   } catch(e){}
 })(); true;`;
+
+// ── Google sign-in: let it TRY, then catch the real failure ───────────────────
+//
+// ⚠️ THE OLD DOCTRINE HERE WAS WRONG, AND IT WAS THE BUG.
+//
+// We used to cancel every navigation to Google's OAuth endpoints on the theory that Google's
+// embedded-webview block (disallowed_useragent) makes them impossible in principle. Field evidence
+// says otherwise: signing in to Glassdoor via Indeed, the user picked "log in with Google" and it
+// completed normally in this same WebView. The reason it survived is that Indeed starts Google with
+// a SERVER redirect, and WKWebView does not consult decidePolicyForNavigationAction on a 302 — so
+// the block never fired, the page loaded, and Google's redirect flow worked exactly as designed.
+//
+// In other words the only thing our pre-emptive block reliably stopped was the flow that works. A
+// clean browser UA (BROWSER_UA) already gets us served the redirect-based mobile flow, and that
+// flow needs no popup and no window.opener, so nothing about this web view is disqualifying.
+//
+// What remains true is that Google CAN refuse — and when it does it says so on a page we can read.
+// So we stop predicting the refusal and start detecting it: watch Google's own sign-in pages, and
+// speak up only when Google has actually said no. A wrong prediction costs the user a working
+// sign-in; a late detection costs them a few seconds.
+export const GOOGLE_AUTH_WATCH_JS = `(function(){
+  try {
+    if (window.__cvfSkipFrame || window.__cvfGWatch) return;
+    if (!/(^|\\.)accounts\\.google\\.com$/i.test(String(location.hostname||''))) return;
+    window.__cvfGWatch = true;
+    function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+    function text(){ try { return String((document.body && document.body.innerText) || ''); } catch(e){ return ''; } }
+    // Google's refusal is explicit and stable: the URL carries error=disallowed_useragent, or the
+    // page is the "this browser may not be secure" interstitial. Both are quoted verbatim from
+    // Google's own copy, so a match is a REFUSAL and not a guess.
+    var REFUSED = /disallowed_useragent|browser or app may not be secure|try using a different browser|couldn.t sign you in/i;
+    var fired = false;
+    function check(tag){
+      if (fired) return;
+      var href = String(location.href || '');
+      var t = text();
+      if (REFUSED.test(href) || REFUSED.test(t.slice(0, 4000))) {
+        fired = true;
+        post({ type:'GOOGLE_AUTH_BLOCKED', reason:'refused', href:href, note:t.slice(0,200) });
+        return;
+      }
+      // A page that rendered NOTHING is the other real failure — the blank accounts.google.com in
+      // the screenshot. Only report it late and only when there is genuinely no UI, so a slow load
+      // or a page mid-redirect is never mistaken for a dead one.
+      if (tag === 'late' && t.replace(/\\s+/g,'').length < 40
+          && !document.querySelector('input,button,form')) {
+        fired = true;
+        post({ type:'GOOGLE_AUTH_BLOCKED', reason:'blank', href:href });
+      }
+    }
+    [1200, 4000].forEach(function(ms){ setTimeout(function(){ check('t'+ms); }, ms); });
+    setTimeout(function(){ check('late'); }, 9000);
+  } catch(e){}
+})(); true;`;
+
+// ── No exit ramps ─────────────────────────────────────────────────────────────
+// The user is mid-application. Every "Open in the app", "Continue in Safari", "Open in browser"
+// banner is an invitation to leave — and leaving means the half-filled form, the attached resume
+// and the cover letter are gone, because none of that exists outside this WebView.
+//
+// Three separate sources of that invitation, all handled here:
+//   1. iOS Smart App Banner (<meta name="apple-itunes-app">) — the OS renders it, so the meta tag
+//      has to go before the page settles.
+//   2. The site's own interstitial/banner. Matched on BOTH an exit phrase AND an app-store or app
+//      scheme link, so an ordinary cookie notice or job-alert bar is never touched.
+//   3. Long-press on a link, which raises iOS's own "Open / Open in New Tab / Share" sheet.
+//      -webkit-touch-callout kills that sheet while leaving text selection alone.
+//
+// Deliberately conservative: nothing is REMOVED unless it both talks like an exit ramp and links
+// like one. Anything ambiguous is left on screen — a stray banner is a far smaller failure than a
+// hidden Apply button.
+export const NO_EXIT_JS = `(function(){
+  if (window.__cvfSkipFrame || window.__cvfNoExit) return; window.__cvfNoExit = true;
+  var EXIT_TX = /open (this )?(page |link )?(in|with) (the )?(app|browser|safari|chrome|google)|continue (in|with) (safari|chrome|the browser|browser|app)|view (this )?in (the )?app|get the app|use the app|switch to the app|open in app/i;
+  var EXIT_HREF = /^(itms-apps|itms|market|intent|googlechrome|googleapp|x-safari-https?|x-web-search|fb|twitter|instagram|snssdk|vnd\\.youtube):|^https?:\\/\\/(apps\\.apple\\.com|itunes\\.apple\\.com|play\\.google\\.com\\/store)/i;
+  function css(){
+    try {
+      if (document.getElementById('__cvf_noexit_css')) return;
+      var st = document.createElement('style');
+      st.id = '__cvf_noexit_css';
+      // Links only — the page's own text stays selectable and copyable.
+      st.textContent = 'a,img{-webkit-touch-callout:none !important;}';
+      (document.head || document.documentElement).appendChild(st);
+    } catch(e){}
+  }
+  function killMeta(){
+    try {
+      var m = document.querySelectorAll('meta[name="apple-itunes-app"], meta[name="google-play-app"]');
+      for (var i=0;i<m.length;i++) m[i].parentNode && m[i].parentNode.removeChild(m[i]);
+    } catch(e){}
+  }
+  function deadLink(a){
+    try {
+      a.removeAttribute('href'); a.removeAttribute('target');
+      a.setAttribute('data-cvf-exit','1');
+      a.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); }, true);
+    } catch(e){}
+  }
+  // Walk up from an exit link looking for the overlay that CONTAINS it. Bounded to 6 levels and
+  // never as far as <body>, so we can never blank the page.
+  //
+  // ⚠️ THE SAFETY RULE IS "NO FORM FIELDS", NOT "NOT TOO TALL". A height cap was the first attempt
+  // and it let the worst case straight through: a "Continue in Safari" interstitial is normally
+  // position:fixed;inset:0, i.e. exactly full height, which is precisely when the user is stuck.
+  // What actually must never be hidden is the application itself — so the test is for the thing
+  // that makes it an application: an input, a textarea or a select. An exit ramp has none.
+  function bannerFor(a){
+    try {
+      var n = a;
+      for (var i=0;i<6 && n && n !== document.body && n !== document.documentElement;i++){
+        var st = window.getComputedStyle(n);
+        var r = n.getBoundingClientRect();
+        var overlay = st && (st.position === 'fixed' || st.position === 'sticky' || Number(st.zIndex) > 100);
+        if (overlay && r.height > 0 && !n.querySelector('input,textarea,select')) return n;
+        n = n.parentElement;
+      }
+    } catch(e){}
+    return null;
+  }
+  var runs = 0;
+  function sweep(){
+    if (runs++ > 40) return;                    // bounded: a page cannot make us loop forever
+    css(); killMeta();
+    try {
+      var as = document.querySelectorAll('a[href]:not([data-cvf-exit])');
+      for (var i=0;i<as.length;i++){
+        var a = as[i], h = '';
+        try { h = a.getAttribute('href') || ''; } catch(e){}
+        if (!h || !EXIT_HREF.test(h)) continue;
+        var host = bannerFor(a);
+        var tx = '';
+        try { tx = String((host || a).innerText || ''); } catch(e){}
+        deadLink(a);
+        // Hide the surrounding banner ONLY when it also reads like one. An app-store link inside a
+        // normal page (a job at Apple, a "our app" footer link) loses its href and nothing else.
+        if (host && EXIT_TX.test(tx)) {
+          try { host.setAttribute('data-cvf-exit','1'); host.style.setProperty('display','none','important'); } catch(e){}
+        }
+      }
+    } catch(e){}
+  }
+  sweep();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sweep);
+  // Interstitials are usually injected a beat after load; watch briefly, throttled, then stop.
+  try {
+    var t = null;
+    var mo = new MutationObserver(function(){ if (t) return; t = setTimeout(function(){ t = null; sweep(); }, 700); });
+    mo.observe(document.documentElement, { childList:true, subtree:true });
+    setTimeout(function(){ try { mo.disconnect(); } catch(e){} }, 30000);
+  } catch(e){}
+})(); true;`;
