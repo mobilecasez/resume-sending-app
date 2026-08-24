@@ -69,6 +69,7 @@ ok('and the reason it is gone is written down where it lived',
   /USED TO LIVE HERE, AND DELETING IT IS THE FIX/.test(ju));
 
 const jd0 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
+const bf0 = fs.readFileSync(path.join(__dirname, '../components/BrowseFetch.tsx'), 'utf8');
 const code = (t) => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
 ok('no call site cancels a Google navigation any more', !/isBlockedEmbeddedAuth\(/.test(code(jd0)));
 ok('the pop-up path refuses ONLY what cannot be delivered',
@@ -81,10 +82,21 @@ ok('a watcher exists for Google sign-in pages', /export const GOOGLE_AUTH_WATCH_
 ok('it is scoped to accounts.google.com', /accounts\\\\\.google\\\\\.com\$\/i\.test\(String\(location\.hostname/.test(wsrc));
 ok('it matches the words Google actually uses',
   /disallowed_useragent\|browser or app may not be secure/.test(wsrc));
-ok('a page that rendered nothing counts as a refusal too', /reason:'blank'/.test(wsrc));
+// ⚠️ REVERSED FROM b190, WHICH ASSERTED THE OPPOSITE AND SHIPPED THE BUG. "The page looks empty"
+// raised a modal, and it fired from a hidden Google One Tap IFRAME during ordinary browsing —
+// telling the user their sign-in was refused when none had been attempted.
+ok('an empty page no longer counts as a refusal', !/reason:'blank'/.test(wsrc));
+ok('the watcher never runs outside the top frame', /window\.top !== window\.self\) return;/.test(wsrc));
+ok('"Couldn\'t sign you in" is gone — Google shows it for a wrong password too',
+  !/couldn\.t sign you in/i.test(wsrc));
+ok('the empty-page signal survives as telemetry only',
+  /GOOGLE_AUTH_SEEN/.test(wsrc) && /TELEMETRY ONLY/.test(wsrc));
 ok('the watcher is injected into the apply web view', /GOOGLE_AUTH_WATCH_JS/.test(jd0));
 ok('the browser is offered only when Google has actually said no',
-  /msg\.type === 'GOOGLE_AUTH_BLOCKED'[\s\S]{0,320}offerBrowserSignIn\(reason\)/.test(jd0));
+  /msg\.type === 'GOOGLE_AUTH_BLOCKED'[\s\S]{0,420}offerBrowserSignIn\(said\)/.test(jd0));
+ok('and the alert quotes Google, so a false positive is recognisable on sight',
+  /Google says: /.test(jd0) && /Google says: /.test(bf0));
+ok('telemetry records what the sign-in page looked like', /google_auth_seen/.test(jd0));
 ok('and only once per apply session', /gAuthAlertedRef\.current = false;/.test(jd0)
   && /!gAuthAlertedRef\.current/.test(jd0));
 ok('the user is offered email OR their browser, not a dead end',
@@ -107,7 +119,6 @@ ok('long-press link preview is off in the apply view', /allowsLinkPreview=\{fals
 ok('data detectors are off', /dataDetectorTypes="none"/.test(jd0));
 ok('Look Up / Share / Translate are suppressed in the selection menu',
   /suppressMenuItems=\{\['lookup', 'share', 'translate'\]\}/.test(jd0));
-const bf0 = fs.readFileSync(path.join(__dirname, '../components/BrowseFetch.tsx'), 'utf8');
 ok('Browse & Fetch gets the same treatment', /NO_EXIT_JS/.test(bf0) && /allowsLinkPreview=\{false\}/.test(bf0)
   && /suppressMenuItems=\{\['lookup', 'share', 'translate'\]\}/.test(bf0));
 

@@ -248,6 +248,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const handoffTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Hosts already told that passkeys need the real browser — sites retry on every tap.
   const passkeyToldRef = useRef<Set<string>>(new Set());
+  // ⚠️ ONE ALERT PER HOST, EVER. This surface browses Google itself, so an un-latched Google
+  // warning could reappear on every result page — which is how a diagnostic becomes the very
+  // kind of interruption the user asked us to get rid of.
+  const gAuthToldRef = useRef<Set<string>>(new Set());
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -592,13 +596,27 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       setStayKept((n) => n + 1);
       return;
     }
-    // Google said no on its own page (not a guess made before the navigation — see jobUrl.ts).
+    // ⚠️ THIS ALERT IS THE ONE THE USER SAW WRONGLY IN b190 — it fired from a hidden Google One Tap
+    // iframe on an ordinary page, with the same copy for "Google refused" and "the page looked
+    // empty". The empty-page branch is gone from the watcher, it is top-frame only now, and this
+    // quotes Google so a false positive can never again read as a refusal.
     if (payload && payload.__cvf && payload.type === 'GOOGLE_AUTH_BLOCKED') {
+      const said = String(payload.head || payload.note || '').trim();
+      console.log('[google-auth] refused on', payload.href, '→', said.slice(0, 120));
+      let gh = 'accounts.google.com';
+      try { gh = new URL(String(payload.href || '')).hostname; } catch {}
+      if (gAuthToldRef.current.has(gh)) return;
+      gAuthToldRef.current.add(gh);
       Alert.alert(
         'Google couldn’t sign you in here',
-        'Google turned down the sign-in from inside the app. Use the site’s email option, or open the page in your phone’s browser to sign in there.',
+        (said ? `Google says: “${said.slice(0, 140)}”\n\n` : '') +
+        'Use the site’s email option, or open the page in your phone’s browser to sign in there.',
         [{ text: 'OK', style: 'cancel' }],
       );
+      return;
+    }
+    if (payload && payload.__cvf && payload.type === 'GOOGLE_AUTH_SEEN') {
+      console.log('[google-auth] page seen:', payload.path, 'len', payload.len, 'inputs', payload.inputs, 'refused', payload.refused);
       return;
     }
     if (payload && payload.__cvf && payload.type === 'STAY_BLOCKED_SCHEME') {

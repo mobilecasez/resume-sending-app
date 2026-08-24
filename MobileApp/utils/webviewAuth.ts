@@ -318,36 +318,56 @@ export const GD_PROBE_JS = `(function(){
 // sign-in; a late detection costs them a few seconds.
 export const GOOGLE_AUTH_WATCH_JS = `(function(){
   try {
+    // ⚠️⚠️ TOP FRAME ONLY. THIS LINE IS THE WHOLE BUG FROM b190.
+    // These scripts are injected with injectedJavaScriptForMainFrameOnly={false}, so without this
+    // the watcher ran inside every accounts.google.com IFRAME — and a hidden 1x1 Google One Tap
+    // frame (present on Google Search and on any site with a Google button) has no text and no
+    // controls, so the "blank page" branch fired ~9s into ordinary browsing and told the user
+    // "Google turned down the sign-in" when nothing had been refused and nothing even attempted.
+    // A subframe is NEVER the page the user is signing in on. Reproduced in test-no-exit.js.
+    if (window.top !== window.self) return;
     if (window.__cvfSkipFrame || window.__cvfGWatch) return;
     if (!/(^|\\.)accounts\\.google\\.com$/i.test(String(location.hostname||''))) return;
+    // …and only on a real sign-in page, not every accounts.google.com URL.
+    if (!/^\\/(o\\/oauth2|oauth2|signin|v3\\/signin|gsi\\/|ServiceLogin|AccountChooser|InteractiveLogin)/i
+          .test(String(location.pathname||''))) return;
     window.__cvfGWatch = true;
     function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
     function text(){ try { return String((document.body && document.body.innerText) || ''); } catch(e){ return ''; } }
-    // Google's refusal is explicit and stable: the URL carries error=disallowed_useragent, or the
-    // page is the "this browser may not be secure" interstitial. Both are quoted verbatim from
-    // Google's own copy, so a match is a REFUSAL and not a guess.
-    var REFUSED = /disallowed_useragent|browser or app may not be secure|try using a different browser|couldn.t sign you in/i;
-    var fired = false;
-    function check(tag){
-      if (fired) return;
-      var href = String(location.href || '');
+
+    // ⚠️ ONLY GOOGLE'S OWN WORDS COUNT, AND ONLY THE UNAMBIGUOUS ONES.
+    // "Couldn't sign you in" was in this list and has been REMOVED: Google shows it for a wrong
+    // password and for account-recovery too, neither of which is an embedded-webview refusal.
+    // 7532311 is the help article Google links from the real interstitial, so it is the most
+    // precise signal available.
+    var REFUSED = /disallowed_useragent|browser or app may not be secure|try using a different browser|answer[\\/=]7532311/i;
+    var reported = false;
+    function facts(){
       var t = text();
-      if (REFUSED.test(href) || REFUSED.test(t.slice(0, 4000))) {
-        fired = true;
-        post({ type:'GOOGLE_AUTH_BLOCKED', reason:'refused', href:href, note:t.slice(0,200) });
-        return;
-      }
-      // A page that rendered NOTHING is the other real failure — the blank accounts.google.com in
-      // the screenshot. Only report it late and only when there is genuinely no UI, so a slow load
-      // or a page mid-redirect is never mistaken for a dead one.
-      if (tag === 'late' && t.replace(/\\s+/g,'').length < 40
-          && !document.querySelector('input,button,form')) {
-        fired = true;
-        post({ type:'GOOGLE_AUTH_BLOCKED', reason:'blank', href:href });
+      var d = { href: String(location.href||'').slice(0,300), path: String(location.pathname||'') };
+      try { d.ready = String(document.readyState||''); } catch(e){}
+      try { d.len = t.replace(/\\s+/g,'').length; } catch(e){}
+      try { d.inputs = document.querySelectorAll('input,button,form').length; } catch(e){}
+      try { d.head = String((document.querySelector('h1,h2')||{}).innerText||'').trim().slice(0,120); } catch(e){}
+      d.note = t.slice(0,240);
+      d.refused = REFUSED.test(String(location.href||'')) || REFUSED.test(t.slice(0,4000));
+      return d;
+    }
+    function check(tag){
+      if (reported) return;
+      var d = facts();
+      if (d.refused) {
+        reported = true;
+        // Carry what Google ACTUALLY said. A refusal the user can read back to us is a symptom;
+        // a bare "sign-in failed" is the guesswork that cost builds 185-190.
+        post({ type:'GOOGLE_AUTH_BLOCKED', reason:'refused', href:d.href, note:d.note, head:d.head, tag:tag });
       }
     }
-    [1200, 4000].forEach(function(ms){ setTimeout(function(){ check('t'+ms); }, ms); });
-    setTimeout(function(){ check('late'); }, 9000);
+    [1200, 4000, 9000].forEach(function(ms){ setTimeout(function(){ check('t'+ms); }, ms); });
+    // ⚠️ TELEMETRY ONLY — NEVER AN ALERT. The old "the page looks empty" heuristic raised a modal
+    // and was wrong; a blank page is already visible to the user, and a confident wrong explanation
+    // is worse than none. This just records what the page looked like so the NEXT report is data.
+    setTimeout(function(){ var d = facts(); d.type = 'GOOGLE_AUTH_SEEN'; post(d); }, 6000);
   } catch(e){}
 })(); true;`;
 

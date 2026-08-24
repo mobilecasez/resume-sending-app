@@ -151,9 +151,61 @@ const PAGE = `<!doctype html><html><head>
   const refused = await google('<html><body><h2>This browser or app may not be secure</h2><p>Try using a different browser.</p></body></html>', 2000);
   ok('Google’s own refusal page is reported', refused.length === 1 && refused[0].reason === 'refused', refused);
 
+  // ⚠️ THE b190 REGRESSION, PINNED DOWN. An empty page used to raise "Google turned down the
+  // sign-in". It must not: a blank page is already visible to the user, and the same branch fired
+  // from a background iframe during ordinary browsing. It is telemetry now, and telemetry only.
   const blank = await google('<html><body></body></html>', 9600);
-  ok('a page that rendered nothing is reported as blank',
-    blank.length === 1 && blank[0].reason === 'blank', blank);
+  ok('an empty page NEVER claims Google refused', blank.length === 0, blank);
+
+  // ⚠️ THE EXACT SHAPE THAT REACHED THE USER. Every site with a Google button embeds a hidden
+  // accounts.google.com iframe, and our scripts run in every frame
+  // (injectedJavaScriptForMainFrameOnly={false}). The watcher must be inert in all of them.
+  const framed = await ctx.newPage();
+  await framed.route('https://www.glassdoor.com/**', (r) => r.fulfill({ contentType: 'text/html', body:
+    '<html><body><h1>Senior Engineer</h1>'
+    + '<iframe src="https://accounts.google.com/gsi/iframe/select?client_id=x" style="width:1px;height:1px;border:0"></iframe>'
+    + '</body></html>' }));
+  await framed.route('https://accounts.google.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
+  await framed.goto('https://www.glassdoor.com/job-listing/x.htm');
+  for (const f of framed.frames()) {
+    try { await f.evaluate(BRIDGE); } catch (e) {}
+    try { await f.evaluate((js) => { eval(js); }, GOOGLE_AUTH_WATCH_JS); } catch (e) {}
+  }
+  await framed.waitForTimeout(10000);
+  let framedMsgs = [];
+  for (const f of framed.frames()) {
+    try { framedMsgs = framedMsgs.concat(await f.evaluate(() => window.__msgs || [])); } catch (e) {}
+  }
+  await framed.close();
+  ok('a hidden Google One Tap iframe raises NOTHING (this is what the user actually hit)',
+    framedMsgs.length === 0, framedMsgs);
+
+  // Not every accounts.google.com URL is a sign-in page either.
+  const nonAuth = await ctx.newPage();
+  await nonAuth.route('https://accounts.google.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
+  await nonAuth.goto('https://accounts.google.com/');
+  await nonAuth.evaluate(BRIDGE);
+  await nonAuth.evaluate((js) => { eval(js); }, GOOGLE_AUTH_WATCH_JS);
+  await nonAuth.waitForTimeout(7000);
+  const naMsgs = await nonAuth.evaluate(() => window.__msgs.length);
+  await nonAuth.close();
+  ok('accounts.google.com root is not watched at all', naMsgs === 0, naMsgs);
+
+  // "Couldn't sign you in" is a WRONG-PASSWORD message too — it must not read as a webview refusal.
+  const wrongPw = await google('<html><body><h1>Couldn’t sign you in</h1><form><input type="password"><button>Try again</button></form></body></html>', 4600);
+  ok('a wrong-password page is not mistaken for a refusal', wrongPw.length === 0, wrongPw);
+
+  // The telemetry half: a real sign-in page still reports what it looked like, silently.
+  const seen = await ctx.newPage();
+  await seen.route('https://accounts.google.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<html><body><h1>Sign in</h1><form><input type="email"><button>Next</button></form></body></html>' }));
+  await seen.goto('https://accounts.google.com/o/oauth2/v2/auth?client_id=x');
+  await seen.evaluate(BRIDGE);
+  await seen.evaluate((js) => { eval(js); }, GOOGLE_AUTH_WATCH_JS);
+  await seen.waitForTimeout(7000);
+  const seenMsgs = await seen.evaluate(() => window.__msgs);
+  await seen.close();
+  ok('a real sign-in page is recorded for diagnosis, without alerting',
+    seenMsgs.length === 1 && seenMsgs[0].type === 'GOOGLE_AUTH_SEEN' && seenMsgs[0].refused === false, seenMsgs);
 
   const other = await ctx.newPage();
   await other.route('https://www.glassdoor.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<html><body>This browser or app may not be secure</body></html>' }));

@@ -4598,12 +4598,13 @@ export default function JobDetailScreen() {
   //
   // Now GOOGLE_AUTH_WATCH_JS reads Google's OWN refusal page and this runs only on its say-so, so
   // the offer of the browser is a response to a real failure instead of a prophecy.
-  const offerBrowserSignIn = (reason?: string) => {
+  const offerBrowserSignIn = (said?: string) => {
     Alert.alert(
       'Google couldn’t sign you in here',
-      reason === 'blank'
-        ? 'Google’s sign-in page came up empty. Try the site’s email option on this page — or open this job in your phone’s browser and sign in there.'
-        : 'Google turned down the sign-in from inside the app. Use the site’s email and password here — or open this job in your phone’s browser, where Google’s own page will accept it.',
+      // ⚠️ QUOTE GOOGLE. If this ever fires wrongly again, the user can read back the exact words
+      // on screen and we will know in one message whether Google refused or we invented it.
+      (said ? `Google says: “${said.slice(0, 140)}”\n\n` : '') +
+      'Use the site’s email and password here — or open this job in your phone’s browser, where Google’s own page will accept it.',
       [
         { text: 'Use email instead', style: 'cancel' },
         { text: 'Back to job', onPress: () => { if (preAuthUrlRef.current) returnFromAuth(0); else setAuthBanner(false); } },
@@ -5800,12 +5801,24 @@ export default function JobDetailScreen() {
       if (preAuthUrlRef.current && /[?&]code=/.test(String((msg as any).href || ''))) returnFromAuth(900);
       return;
     }
-    // Google has ACTUALLY refused (its own error page or a genuinely empty one) — not a guess
-    // made before the navigation, which is what used to break the flow that works.
+    // ⚠️ ONLY A REFUSAL GOOGLE ITSELF PRINTED. b190 also alerted on "the page looks empty", which
+    // fired from a hidden Google One Tap IFRAME during ordinary browsing and told the user their
+    // sign-in had been turned down when nothing had even been attempted. The empty-page signal is
+    // now telemetry (GOOGLE_AUTH_SEEN) and raises nothing.
     if (msg.type === 'GOOGLE_AUTH_BLOCKED') {
-      const reason = String((msg as any).reason || '');
-      try { track('google_auth_blocked', { reason, note: String((msg as any).note || '').slice(0, 80) }); } catch {}
-      if (!gAuthAlertedRef.current) { gAuthAlertedRef.current = true; offerBrowserSignIn(reason); }
+      const said = String((msg as any).head || (msg as any).note || '').trim();
+      try { track('google_auth_blocked', { reason: String((msg as any).reason || ''),
+        tag: String((msg as any).tag || ''), note: said.slice(0, 120) }); } catch {}
+      if (!gAuthAlertedRef.current) { gAuthAlertedRef.current = true; offerBrowserSignIn(said); }
+      return;
+    }
+    // What a Google sign-in page actually looked like. Recorded, never shown — so the next report
+    // is evidence instead of another round of inferring a mechanism from one sentence.
+    if (msg.type === 'GOOGLE_AUTH_SEEN') {
+      const p: any = msg;
+      try { track('google_auth_seen', { path: String(p.path || ''), ready: String(p.ready || ''),
+        len: Number(p.len || 0), inputs: Number(p.inputs || 0), refused: !!p.refused,
+        head: String(p.head || '').slice(0, 80) }); } catch {}
       return;
     }
     // A cross-origin link tap was taken over in-page so iOS could not hand it to another app.
