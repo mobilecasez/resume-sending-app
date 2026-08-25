@@ -100,5 +100,17 @@ ok('sharp photo crops are cached against the file mtime', /photoCache/.test(ctl)
 ok('the gallery renders the VISIBLE design first, neighbours after',
   /ensurePreviews\(\[cur\]\)\.then\(/.test(tpl));
 
+console.log('── a lost preview request must NEVER spin forever ──');
+// Field report (b195): "Rendering Azure Sidebar and just spinning." Production rendered in
+// 1.4s — the request had failed client-side and the only error UI was gated on the CATALOGUE
+// failing, so a 404/timeout/dropped request left the pager in spinner-limbo with no way out.
+ok('every batch has its own timeout', /setTimeout\(\(\) => controller\.abort\(\), 45_000\)/.test(tpl));
+ok('a failed id gets a per-card retry, not a spinner', /failed\[tid\][\s\S]{0,400}Tap to retry/.test(tpl));
+ok('retry re-requests just that design', /onPress=\{\(\) => ensurePreviews\(\[tid\]\)\}/.test(tpl));
+ok('a 404 (no built resume) gets its own full state with a way forward',
+  /res\.status === 404[\s\S]{0,60}setNoResume\(true\)/.test(tpl) && /Build my resume/.test(tpl));
+ok('ids missing from a partial response are marked failed too', /missing\.length/.test(tpl));
+ok('a retry clears the failure before refetching', /for \(const id of need\) delete next\[id\]/.test(tpl));
+
 console.log(`\nresume rebuild flow: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

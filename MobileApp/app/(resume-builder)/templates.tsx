@@ -61,6 +61,12 @@ export default function ResumeTemplates() {
   // family id → the variant currently chosen on that family's page (defaults to the base)
   const [chosen, setChosen]     = useState<Record<string, string>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
+  // ids whose preview request FAILED → the card shows a retry instead of a spinner. A silent
+  // failure here was an infinite "Rendering Azure Sidebar…": the full-screen error only covers
+  // catalogue failure, so a lost preview request left the pager spinning with no way out.
+  const [failed, setFailed] = useState<Record<string, string>>({});
+  // The account has no built resume yet — previews are impossible, say so instead of spinning.
+  const [noResume, setNoResume] = useState(false);
   const inFlight = useRef<Set<string>>(new Set());
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
@@ -73,31 +79,48 @@ export default function ResumeTemplates() {
   const totalDesigns = useMemo(() => families.reduce((a, f) => a + f.variants.length, 0), [families]);
 
   // ── Lazy preview loader: small batches, deduped, merged into a cache ───────
+  // Every batch carries its own 45s timeout and marks ITS ids as failed on any miss — the pager
+  // card then shows a tap-to-retry. Nothing in here may leave an id in spinner-limbo.
   async function ensurePreviews(ids: string[]) {
     const need = [...new Set(ids)].filter((id) => id && !previews[id] && !inFlight.current.has(id));
     if (!need.length) return;
     need.forEach((id) => inFlight.current.add(id));
+    setFailed((f) => { const next = { ...f }; for (const id of need) delete next[id]; return next; });
     try {
       const token = await getToken();
       if (!token) throw new Error('Not logged in');
       for (let i = 0; i < need.length; i += 3) {
         const batch = need.slice(i, i + 3);
-        const res = await fetch(`${API_BASE}/resume-builder/preview-templates`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: batch }),
-        });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Could not build previews');
-        const got: Preview[] = json.previews || [];
-        setPreviews((prev) => {
-          const next = { ...prev };
-          for (const p of got) next[p.id] = p;
-          return next;
-        });
+        const controller = new AbortController();
+        const tmr = setTimeout(() => controller.abort(), 45_000);
+        try {
+          const res = await fetch(`${API_BASE}/resume-builder/preview-templates`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: batch }),
+            signal: controller.signal,
+          });
+          const json = await res.json();
+          if (res.status === 404) { setNoResume(true); return; }
+          if (!res.ok) throw new Error(json.error || 'Could not build previews');
+          const got: Preview[] = json.previews || [];
+          setPreviews((prev) => {
+            const next = { ...prev };
+            for (const p of got) next[p.id] = p;
+            return next;
+          });
+          const gotIds = new Set(got.map((p) => p.id));
+          const missing = batch.filter((id) => !gotIds.has(id));
+          if (missing.length) setFailed((f) => { const next = { ...f }; for (const id of missing) next[id] = 'Could not render this design.'; return next; });
+        } catch (e: any) {
+          const msg = e?.name === 'AbortError' ? 'This took too long.' : (e?.message || 'Could not render this design.');
+          setFailed((f) => { const next = { ...f }; for (const id of batch) next[id] = msg; return next; });
+        } finally {
+          clearTimeout(tmr);
+        }
       }
     } catch (e: any) {
-      if (!Object.keys(previews).length) setError(e.message || 'Something went wrong. Please try again.');
+      setFailed((f) => { const next = { ...f }; for (const id of need) next[id] = e?.message || 'Could not render this design.'; return next; });
     } finally {
       need.forEach((id) => inFlight.current.delete(id));
     }
@@ -251,6 +274,15 @@ export default function ResumeTemplates() {
           <ActivityIndicator size="large" color={T.blue} />
           <Text style={s.loadingText}>Loading the design catalogue…</Text>
         </View>
+      ) : noResume ? (
+        <View style={s.center}>
+          <Ionicons name="document-text-outline" size={46} color={T.faint} />
+          <Text style={s.errTitle}>Generate your resume first — then every design here previews it for free.</Text>
+          <TouchableOpacity onPress={() => router.back()} style={s.retryBtn} activeOpacity={0.85}>
+            <Ionicons name="color-wand-outline" size={15} color="#fff" />
+            <Text style={s.retryText}>Build my resume</Text>
+          </TouchableOpacity>
+        </View>
       ) : error && !families.length ? (
         <View style={s.center}>
           <Ionicons name="alert-circle-outline" size={46} color={T.faint} />
@@ -297,6 +329,15 @@ export default function ResumeTemplates() {
                             >
                               <Image source={{ uri: p.image }} style={{ width: CARD_W, height: imgH }} contentFit="cover" transition={160} />
                             </ScrollView>
+                          ) : failed[tid] ? (
+                            <TouchableOpacity style={s.previewLoading} activeOpacity={0.8} onPress={() => ensurePreviews([tid])}>
+                              <Ionicons name="cloud-offline-outline" size={38} color={T.faint} />
+                              <Text style={s.previewLoadingText}>{failed[tid]}</Text>
+                              <View style={[s.retryChip, { backgroundColor: accent }]}>
+                                <Ionicons name="refresh" size={13} color="#fff" />
+                                <Text style={s.retryChipText}>Tap to retry</Text>
+                              </View>
+                            </TouchableOpacity>
                           ) : (
                             <View style={s.previewLoading}>
                               <ActivityIndicator size="large" color={accent} />
@@ -440,8 +481,10 @@ const s = StyleSheet.create({
   cardClip:     { flex: 1, borderRadius: 16, overflow: 'hidden', backgroundColor: '#fff' },
   zoomScroll:   { flex: 1 },
   zoomContent:  { alignItems: 'center' },
-  previewLoading:     { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  previewLoadingText: { fontSize: 12.5, fontWeight: '600', color: T.muted },
+  previewLoading:     { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: 24 },
+  previewLoadingText: { fontSize: 12.5, fontWeight: '600', color: T.muted, textAlign: 'center' },
+  retryChip:          { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 8 },
+  retryChipText:      { fontSize: 12.5, fontWeight: '800', color: '#fff' },
 
   indicator:    { alignItems: 'center', gap: 6, paddingTop: 10 },
   dots:         { flexDirection: 'row', alignItems: 'center', gap: 7 },
