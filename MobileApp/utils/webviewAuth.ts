@@ -184,6 +184,40 @@ export const PASSKEY_GUARD_JS = `(function(){
       post({type:'PASSKEY_HIDDEN', host:location.hostname});
     }
   } catch(e){}
+  // ⚠️ FEATURE-DETECTION LIES ARE NOT ENOUGH EITHER — INDEED RENDERS THE BUTTON SERVER-SIDE.
+  // Its login page is SSR (the passport-ssr-* classes), and for an account that has a passkey
+  // registered the server draws the passkey option before any client JS asks anything. No amount
+  // of patching PublicKeyCredential removes a button the server already drew — which is exactly
+  // what b193 shipped and exactly why "still the same". So the last word is the DOM: any control
+  // that SAYS passkey is hidden, because tapping it can only ever end in "something went wrong".
+  // Narrow on purpose: interactive tags only, short label text only — a paragraph or an article
+  // that merely mentions passkeys is content, not a control, and stays.
+  function hidePasskeyControls(){
+    try {
+      var els = document.querySelectorAll('button, a, [role=button], input[type=submit], input[type=button]');
+      var hid = 0;
+      for (var i=0;i<els.length;i++){
+        var el = els[i];
+        if (el.__cvfPkHid) continue;
+        var t = String(el.innerText || el.value || '').trim();
+        if (!t || t.length > 60) continue;
+        if (!/\\bpass\\s?key/i.test(t)) continue;
+        el.__cvfPkHid = true;
+        try { el.style.setProperty('display','none','important'); hid++; } catch(e){}
+      }
+      if (hid) post({type:'PASSKEY_UI_HIDDEN', host:location.hostname, n:hid});
+    } catch(e){}
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', hidePasskeyControls);
+  else hidePasskeyControls();
+  // SPA logins render the option a beat later; watch briefly, throttled, then stop.
+  try {
+    var pkT = null;
+    var pkMo = new MutationObserver(function(){ if (pkT) return; pkT = setTimeout(function(){ pkT = null; hidePasskeyControls(); }, 500); });
+    var arm = function(){ try { pkMo.observe(document.documentElement, {childList:true, subtree:true}); } catch(e){} };
+    if (document.documentElement) arm(); else document.addEventListener('DOMContentLoaded', arm);
+    setTimeout(function(){ try { pkMo.disconnect(); } catch(e){} }, 25000);
+  } catch(e){}
   // Last line of defence: a site that tries the ceremony anyway gets the exact error its fallback
   // branch is written against, rather than a promise that never settles (the original "the button
   // just spins forever" report).
@@ -499,4 +533,27 @@ export const NO_EXIT_JS = `(function(){
     mo.observe(document.documentElement, { childList:true, subtree:true });
     setTimeout(function(){ try { mo.disconnect(); } catch(e){} }, 30000);
   } catch(e){}
+})(); true;`;
+
+// ── Glassdoor: walk the door that works ───────────────────────────────────────
+// The user's ask, verbatim: "can't we make it working like Indeed so that google login will work
+// for glassdoor as well". We cannot rewrite Glassdoor's button — its GIS pop-up flow has no return
+// URL for a WebView to land on — but Glassdoor ships a second door on the same card ("Continue
+// with Apple or email") that hands sign-in to INDEED, whose Google button uses a real redirect and
+// works here. So a tap on Glassdoor's Google no longer earns a lecture about which door to use:
+// we press the other door FOR the user and tell them to pick Google on the page that appears.
+// Posts GD_ROUTE{found} so the app can fall back to the explanatory alert when the button moved.
+export const GD_EMAIL_ROUTE_JS = `(function(){
+  function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+  try {
+    var els = document.querySelectorAll('button, a, [role=button]');
+    var hit = null;
+    for (var i=0;i<els.length;i++){
+      var t = String(els[i].innerText||'').trim();
+      if (t.length > 60) continue;
+      if (/apple\\s*or\\s*email/i.test(t) || /continue with (apple|email)/i.test(t)) { hit = els[i]; break; }
+    }
+    if (hit) { hit.click(); post({type:'GD_ROUTE', found:true}); }
+    else post({type:'GD_ROUTE', found:false});
+  } catch(e){ post({type:'GD_ROUTE', found:false}); }
 })(); true;`;

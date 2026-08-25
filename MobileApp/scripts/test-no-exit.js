@@ -22,6 +22,7 @@ function grab(name) {
 const NO_EXIT_JS = grab('NO_EXIT_JS');
 const GOOGLE_AUTH_WATCH_JS = grab('GOOGLE_AUTH_WATCH_JS');
 const PASSKEY_GUARD_JS = grab('PASSKEY_GUARD_JS');
+const GD_EMAIL_ROUTE_JS = grab('GD_EMAIL_ROUTE_JS');
 const BRIDGE = `window.__msgs=[];window.ReactNativeWebView={postMessage:function(s){window.__msgs.push(JSON.parse(s));}};`;
 
 let pass = 0, fail = 0;
@@ -256,6 +257,59 @@ const PAGE = `<!doctype html><html><head>
   const jdSrc = require('fs').readFileSync(require('path').join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
   ok('the guard runs at document-START, before the page can feature-detect',
     /injectedJavaScriptBeforeContentLoaded=\{FRAME_GUARD_JS \+ '\\n' \+ PASSKEY_GUARD_JS/.test(jdSrc));
+
+  // ── PASSKEY: the SERVER-RENDERED button — the case b193 missed ─────────────────────────────
+  // Indeed's login is SSR: for an account with a passkey registered, the server draws the button
+  // before any client JS asks anything. Feature-detection lies cannot remove it; the DOM sweep must.
+  console.log('\npasskeys: a server-drawn button is hidden too');
+  const ssr = await ctx.newPage();
+  await ssr.route('https://secure.indeed.com/**', (r) => r.fulfill({ contentType: 'text/html', body:
+    '<html><body>'
+    + '<button id="pkbtn">Continue with a passkey</button>'
+    + '<button id="pwbtn">Sign in with password</button>'
+    + '<p id="pktext">Passkeys are a safer alternative to passwords, and this paragraph about them must never be hidden.</p>'
+    + '</body></html>' }));
+  await ssr.goto('https://secure.indeed.com/auth');
+  await ssr.evaluate(BRIDGE);
+  await ssr.evaluate((js) => { eval(js); }, PASSKEY_GUARD_JS);
+  await ssr.waitForTimeout(300);
+  const ssrSt = await ssr.evaluate(async () => {
+    const vis = (id) => getComputedStyle(document.getElementById(id)).display !== 'none';
+    const before = { pk: vis('pkbtn'), pw: vis('pwbtn'), text: vis('pktext') };
+    // and an SPA that renders the option a beat later
+    const d = document.createElement('button'); d.id = 'pklate'; d.textContent = 'Use passkey'; document.body.appendChild(d);
+    await new Promise((r) => setTimeout(r, 900));
+    return { ...before, late: vis('pklate'), msgs: window.__msgs.map((m) => m.type) };
+  });
+  await ssr.close();
+  ok('the server-drawn passkey button is hidden', ssrSt.pk === false, ssrSt);
+  ok('the password button is untouched', ssrSt.pw === true, ssrSt);
+  ok('a paragraph ABOUT passkeys is content, not a control — it stays', ssrSt.text === true, ssrSt);
+  ok('a passkey button rendered later by an SPA is hidden as it appears', ssrSt.late === false, ssrSt);
+  ok('and the hide is reported', ssrSt.msgs.includes('PASSKEY_UI_HIDDEN'), ssrSt.msgs);
+
+  // ── The Glassdoor→Indeed reroute clicker ───────────────────────────────────────────────────
+  console.log('\nGlassdoor Google tap: we press the working door ourselves');
+  const gd = await ctx.newPage();
+  await gd.route('https://www.glassdoor.com/**', (r) => r.fulfill({ contentType: 'text/html', body:
+    '<html><body>'
+    + '<button id="g">Continue with Google</button>'
+    + '<button id="e" onclick="window.__pressed=true">Continue with Apple or email</button>'
+    + '</body></html>' }));
+  await gd.goto('https://www.glassdoor.com/member/profile/login');
+  await gd.evaluate(BRIDGE);
+  const gdSt = await gd.evaluate((js) => { eval(js); return { pressed: !!window.__pressed, msgs: window.__msgs }; }, GD_EMAIL_ROUTE_JS);
+  ok('it finds and clicks "Continue with Apple or email"', gdSt.pressed === true, gdSt);
+  ok('…and reports found:true', gdSt.msgs.some((m) => m.type === 'GD_ROUTE' && m.found === true), gdSt.msgs);
+  const gdNone = await gd.evaluate((js) => {
+    document.body.innerHTML = '<button>Continue with Google</button>';
+    window.__msgs = [];
+    eval(js);
+    return window.__msgs;
+  }, GD_EMAIL_ROUTE_JS);
+  await gd.close();
+  ok('a page without that button reports found:false so the app can explain instead',
+    gdNone.some((m) => m.type === 'GD_ROUTE' && m.found === false), gdNone);
 
   await browser.close();
   console.log(`\nno-exit + google-auth: ${pass} passed, ${fail} failed`);

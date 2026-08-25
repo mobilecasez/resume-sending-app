@@ -24,7 +24,8 @@ import { SUBMIT_DETECT_JS } from '../app/(ai-hub)/submitDetect';
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS,
-         GOOGLE_AUTH_WATCH_JS, NO_EXIT_JS } from '../utils/webviewAuth';
+         GOOGLE_AUTH_WATCH_JS, NO_EXIT_JS, GD_EMAIL_ROUTE_JS } from '../utils/webviewAuth';
+import { isPostMessageOnlyAuth, hasIndeedGoogleRoute } from '../utils/jobUrl';
 import { APP_BUILD } from '../services/analytics';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
@@ -468,6 +469,27 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const authAtRef = useRef<number>(0);
   const beginAuthFlow = useCallback((target: string, from?: string) => {
     if (!target || !webRef.current) return;
+    // ⚠️ THIS SURFACE NEVER HAD THE POP-UP-ONLY REFUSAL — the apply view refused these while
+    // Browse & Fetch navigated the main frame straight into them, which is where the original
+    // blank accounts.google.com screenshot came from. A GIS pop-up flow (redirect_uri that is not
+    // a URL) cannot land anywhere in a WebView; on Glassdoor, press the door that works instead.
+    if (isPostMessageOnlyAuth(target)) {
+      if (hasIndeedGoogleRoute(currentUrlRef.current || '')) {
+        Alert.alert(
+          'Continuing on Indeed',
+          'Glassdoor’s own Google button needs a pop-up that apps can’t show — but Indeed’s works here. Taking you to the Indeed sign-in page: choose “Continue with Google” there.',
+          [{ text: 'OK' }],
+        );
+        try { webRef.current.injectJavaScript(GD_EMAIL_ROUTE_JS); } catch {}
+        return;
+      }
+      Alert.alert(
+        'Sign in needs your browser',
+        "This site signs you in with a pop-up window, which apps aren't allowed to show. Use its email and password option here, or open the page in your phone's browser.",
+        [{ text: 'Not now', style: 'cancel' }, { text: 'Open in browser', onPress: () => openInBrowser() }],
+      );
+      return;
+    }
     const back = (from && /^https?:/i.test(from) ? from : currentUrlRef.current) || '';
     if (back && !/\/(login|signin|sign-in|register|oauth2?|auth|callback|sso)(\/|$|\?)/i.test(back)) {
       preAuthUrlRef.current = back;

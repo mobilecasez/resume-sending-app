@@ -45,7 +45,7 @@ import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth, hasIndeedGoogleRoute } from '../../utils/jobUrl';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS, OPENER_SHIM_JS, GD_SEED_JS, GD_PROBE_JS,
-         STAY_IN_APP_JS, GOOGLE_AUTH_WATCH_JS, NO_EXIT_JS } from '../../utils/webviewAuth';
+         STAY_IN_APP_JS, GOOGLE_AUTH_WATCH_JS, NO_EXIT_JS, GD_EMAIL_ROUTE_JS } from '../../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
 import type { Contact, Job, Employer } from '../../types/aiHub';
@@ -4635,11 +4635,18 @@ export default function JobDetailScreen() {
       // (secure.indeed.com/account/googleauth) which completes in this view perfectly. So the honest
       // answer is not "go to your browser" — it is "take the other door".
       if (hasIndeedGoogleRoute(currentUrlRef.current || '')) {
+        // ⚠️ b192 put up an alert TELLING the user to tap "Continue with Apple or email". The user's
+        // reply was, reasonably, "can't we make it work like Indeed?" — so now we press that button
+        // for them. It triggers Glassdoor's own handoff (whose popup our stub catches and routes
+        // through GD_SEED, the proven b189 path) and the user lands on Indeed's page, where the
+        // Google button genuinely works. GD_ROUTE{found:false} falls back to the explanation.
         Alert.alert(
-          'Use “Continue with Apple or email”',
-          'Glassdoor’s own Google button opens a pop-up window, which apps aren’t allowed to show — so it can’t finish here.\n\nTap “Continue with Apple or email” instead. It hands you to Indeed, and Google works normally on that page.',
-          [{ text: 'Got it', style: 'cancel' }, { text: 'Open in browser', onPress: () => openCurrentInBrowser() }],
+          'Continuing on Indeed',
+          'Glassdoor’s own Google button needs a pop-up that apps can’t show — but Indeed’s works here. Taking you to the Indeed sign-in page: choose “Continue with Google” there.',
+          [{ text: 'OK' }],
         );
+        setAuthBanner(true);
+        try { applyWebRef.current?.injectJavaScript(GD_EMAIL_ROUTE_JS); } catch {}
         return;
       }
       const host = (() => { try { return new URL(target).hostname; } catch { return 'This provider'; } })();
@@ -5842,6 +5849,18 @@ export default function JobDetailScreen() {
     if (msg.type === 'STAY_INTERCEPT' || msg.type === 'STAY_BLOCKED_SCHEME') {
       try { track('apply_stay_in_app', { kind: msg.type === 'STAY_INTERCEPT' ? 'link' : 'scheme',
         host: String((msg as any).host || '') }); } catch {}
+      return;
+    }
+    // The Glassdoor→Indeed reroute pressed the site's own button — or could not find it.
+    if (msg.type === 'GD_ROUTE') {
+      try { track('gd_google_reroute', { found: !!(msg as any).found }); } catch {}
+      if (!(msg as any).found) {
+        Alert.alert(
+          'Use “Continue with Apple or email”',
+          'Glassdoor’s own Google button needs a pop-up that apps can’t show. Tap “Continue with Apple or email” — it hands you to Indeed, where Google works normally.',
+          [{ text: 'Got it', style: 'cancel' }, { text: 'Open in browser', onPress: () => openCurrentInBrowser() }],
+        );
+      }
       return;
     }
     // Telemetry + the user-facing affordance. NEVER a completion signal.
