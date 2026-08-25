@@ -103,14 +103,14 @@ export default function ResumeTemplates() {
     }
   }
 
-  // What the user can see next: the active family's chosen variant, plus both neighbours'.
+  // The VISIBLE design renders first, alone — its request must never wait behind the
+  // neighbours'. They prefetch immediately after, so a swipe still lands on a warm image.
   function prefetchAround(idx: number, fams: Family[], sel: Record<string, string>) {
-    const wanted: string[] = [];
-    for (const j of [idx, idx + 1, idx - 1]) {
-      const f = fams[j];
-      if (f) wanted.push(sel[f.id] || f.id);
-    }
-    ensurePreviews(wanted);
+    const idOf = (j: number) => { const f = fams[j]; return f ? (sel[f.id] || f.id) : ''; };
+    const rest = [idOf(idx + 1), idOf(idx - 1)].filter(Boolean);
+    const cur = idOf(idx);
+    if (cur) ensurePreviews([cur]).then(() => { if (rest.length) ensurePreviews(rest); });
+    else if (rest.length) ensurePreviews(rest);
   }
 
   async function loadCatalogue() {

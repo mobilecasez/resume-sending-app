@@ -83,5 +83,22 @@ ok('it enters the builder auto lane', /autoBuild: true/.test(card));
 ok('animations obey the b126 rule', !/useNativeDriver:\s*true/.test(card));
 ok('low scores use amber, never red', /#F59E0B/.test(card) && !/#EF4444/.test(card));
 
+console.log('── preview speed: the cold start is paid once, not per request ──');
+// "Azure Sidebar takes forever" was the first render paying chromium launch + a live Google
+// Fonts download on EVERY request (fresh browser = empty cache). These pins keep that fixed.
+const rend = R('../../server/utils/resumeRenderer.js');
+ok('a warm browser is shared across preview requests', /getWarmBrowser/.test(rend) && /armWarmIdle/.test(rend));
+ok('…and renderPreviews no longer closes it', !/renderAll[\s\S]{0,2400}browser\.close/.test(rend.slice(rend.indexOf('async function renderPreviews'))));
+ok('it self-heals with one retry on a dead handle', /one clean retry on a fresh browser/.test(rend));
+ok('the idle timer never keeps the process alive', /warmTimer\.unref/.test(rend));
+ok('Google Fonts are served from an in-memory cache', /fontCache/.test(rend) && /route\(/.test(rend));
+ok('font interception applies to EVERY prepared page (previews and PDFs)', /await routeFonts\(page\)/.test(rend));
+ok('a font-network failure degrades to system fonts, never hangs', /route\.abort/.test(rend));
+ok('warmPreviews exists and never throws at the caller', /warmPreviews[\s\S]{0,1400}purely a head start/.test(rend));
+ok('the catalogue request pre-warms the pipeline', /listTemplates[\s\S]{0,400}warmPreviews\(\)/.test(ctl));
+ok('sharp photo crops are cached against the file mtime', /photoCache/.test(ctl) && /mtimeMs/.test(ctl));
+ok('the gallery renders the VISIBLE design first, neighbours after',
+  /ensurePreviews\(\[cur\]\)\.then\(/.test(tpl));
+
 console.log(`\nresume rebuild flow: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

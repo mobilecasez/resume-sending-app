@@ -6,7 +6,7 @@ const axios        = require('axios');
 const cheerio      = require('cheerio');
 const path         = require('path');
 const fs           = require('fs').promises;
-const { renderPdf, renderPreviews } = require('../utils/resumeRenderer');
+const { renderPdf, renderPreviews, warmPreviews } = require('../utils/resumeRenderer');
 const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion } = require('../utils/resumeTemplates');
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
@@ -474,6 +474,24 @@ async function getResume(req, res) {
     }
 }
 
+
+// Both photo shapes for one user, cached against the file's mtime — sharp was re-cropping and
+// re-encoding the same photo TWICE on every preview batch, and the gallery sends several batches
+// per visit. A re-upload changes the mtime, so staleness is impossible.
+const photoCache = new Map();   // userId → { key, photo, photoRect }
+async function photosFor(userId) {
+    const ppath = await resolvePhotoPath(userId);
+    if (!ppath) { photoCache.delete(userId); return { photo: null, photoRect: null }; }
+    let key = ppath;
+    try { key = ppath + ':' + (await fs.stat(ppath)).mtimeMs; } catch {}
+    const hit = photoCache.get(userId);
+    if (hit && hit.key === key) return hit;
+    const photo = await loadPhotoDataUri(ppath);
+    const photoRect = await loadPhotoDataUri(ppath, 'rect');
+    const entry = { key, photo, photoRect };
+    photoCache.set(userId, entry);
+    return entry;
+}
 
 // Resolve a user's stored profile photo to an on-disk path (or null).
 async function resolvePhotoPath(userId) {
@@ -991,9 +1009,7 @@ async function previewTemplates(req, res) {
             ? [...new Set(ids)].slice(0, 6).map(id => TEMPLATES.find(t => t.id === id)).filter(Boolean)
             : templatesForRegion(region);                 // legacy region mode (older app builds)
         if (!tpls.length) return res.status(400).json({ error: 'No valid template ids.' });
-        const ppath = await resolvePhotoPath(userId);
-        const photo = await loadPhotoDataUri(ppath);
-        const photoRect = await loadPhotoDataUri(ppath, 'rect');   // clean rectangular crop for German/Europass
+        const { photo, photoRect } = await photosFor(userId);
         const previews = await renderPreviews(row.resume_data, { photo, photoRect }, tpls);
         return res.json({ success: true, region: region || 'generic', previews });
     } catch (e) {
@@ -1007,6 +1023,9 @@ async function previewTemplates(req, res) {
 // swatches. The gallery shows ONE preview per family and recolors via swatch taps — previewing
 // all 37 as full images is the load pattern the ids-mode cap above exists to prevent.
 async function listTemplates(req, res) {
+    // The gallery is about to ask for previews — start chromium + the font download NOW, in
+    // parallel with the app's round trip, so the first render doesn't pay the cold start.
+    warmPreviews();
     return res.json({ success: true, families: FAMILIES, regions: REGIONS, count: TEMPLATES.length });
 }
 

@@ -42,8 +42,62 @@ async function launchBrowser(extraArgs = []) {
 // used for the PDF path, where --single-process can upset page.pdf().
 const PREVIEW_ARGS = ['--single-process', '--no-zygote', '--disable-gpu'];
 
+// ── Warm preview browser ──────────────────────────────────────────────────────
+// The gallery fires several small preview batches in a row (visible design first, neighbours
+// next, a swatch tap after that). Launching chromium PER REQUEST made every one of them pay the
+// spawn + semaphore + retry cost — the reported "Azure Sidebar takes forever", because azure is
+// simply the first render and eats the whole cold start. One shared browser, closed after 90s of
+// quiet, turns request 2..n into just newPage().
+let warmBrowser = null;
+let warmTimer = null;
+let warmLaunching = null;
+function armWarmIdle() {
+  if (warmTimer) clearTimeout(warmTimer);
+  warmTimer = setTimeout(() => {
+    const b = warmBrowser; warmBrowser = null;
+    if (b) b.close().catch(() => {});
+  }, 90_000);
+  if (warmTimer.unref) warmTimer.unref();
+}
+async function getWarmBrowser() {
+  if (warmBrowser && warmBrowser.isConnected()) { armWarmIdle(); return warmBrowser; }
+  warmBrowser = null;
+  if (!warmLaunching) {
+    warmLaunching = launchBrowser(PREVIEW_ARGS)
+      .then((b) => { warmBrowser = b; warmLaunching = null; armWarmIdle(); return b; })
+      .catch((e) => { warmLaunching = null; throw e; });
+  }
+  return warmLaunching;
+}
+
+// ── In-memory Google-Fonts cache ──────────────────────────────────────────────
+// Every template's <head> links Poppins/Lato from fonts.googleapis.com, and a fresh browser has
+// an empty cache — so every render re-downloaded fonts over the network, and on Railway that
+// fetch is the slowest, flakiest part of the render (the 12s setContent timeout exists for it).
+// Intercept font requests and serve repeats from memory: the FIRST render pays once, everything
+// after — previews and PDFs alike — gets fonts instantly, network down or not.
+const fontCache = new Map();   // url → { body: Buffer, contentType }
+async function routeFonts(page) {
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, async (route) => {
+    const url = route.request().url();
+    const hit = fontCache.get(url);
+    if (hit) return route.fulfill({ body: hit.body, contentType: hit.contentType });
+    try {
+      const resp = await route.fetch();
+      const body = await resp.body();
+      if (resp.ok()) fontCache.set(url, { body, contentType: resp.headers()['content-type'] || 'application/octet-stream' });
+      return route.fulfill({ response: resp, body });
+    } catch {
+      // Network truly down and nothing cached — let the page fall back to system fonts, exactly
+      // as the bounded font-settle race below already allows.
+      return route.abort().catch(() => {});
+    }
+  });
+}
+
 async function preparePage(browser, html) {
   const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H } });
+  await routeFonts(page).catch(() => {});
   // Render must NOT hang on slow/unreachable external web fonts (Google Fonts) —
   // a frequent failure on Railway, where 'networkidle' never settles within the
   // timeout and the whole preview throws "unable to load". Use 'load'; if even
@@ -141,34 +195,72 @@ async function renderPdf(templateId, resumeData, opts = {}) {
 // One-page render; a full-page screenshot captures the CSS sidebar band. Returns
 // { id, name, accent, image, width, height } so the app can size to the real aspect.
 async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
-  const browser = await launchBrowser(PREVIEW_ARGS);   // single-process → survives scraper contention
-  try {
+  // One attempt on the warm browser; if it died between requests (container pressure, crash),
+  // reset and pay one fresh launch — never fail the request on a stale handle.
+  const renderAll = async (browser) => {
     const results = [];
     for (const tpl of templates) {
       const html = renderResumeHtml(tpl.id, resumeData, { ...opts, mode: 'onepage' });
       const page = await preparePage(browser, html);
-      const h = await sheetHeight(page);
-      await page.setViewportSize({ width: A4_W, height: h });
-      const shot = await page.screenshot({
-        type: 'jpeg',
-        quality: 82,
-        clip: { x: 0, y: 0, width: A4_W, height: h },
-      });
-      await page.close().catch(() => {});
-      results.push({
-        id: tpl.id,
-        name: tpl.name,
-        accent: tpl.accent,
-        ats: tpl.ats || null,
-        image: `data:image/jpeg;base64,${shot.toString('base64')}`,
-        width: A4_W,
-        height: h,
-      });
+      try {
+        const h = await sheetHeight(page);
+        await page.setViewportSize({ width: A4_W, height: h });
+        const shot = await page.screenshot({
+          type: 'jpeg',
+          quality: 82,
+          clip: { x: 0, y: 0, width: A4_W, height: h },
+        });
+        results.push({
+          id: tpl.id,
+          name: tpl.name,
+          accent: tpl.accent,
+          ats: tpl.ats || null,
+          image: `data:image/jpeg;base64,${shot.toString('base64')}`,
+          width: A4_W,
+          height: h,
+        });
+      } finally {
+        await page.close().catch(() => {});
+      }
     }
     return results;
-  } finally {
-    await browser.close().catch(() => {});
+  };
+  try {
+    return await renderAll(await getWarmBrowser());
+  } catch (e) {
+    const b = warmBrowser; warmBrowser = null;
+    if (b) await b.close().catch(() => {});
+    return renderAll(await getWarmBrowser());   // one clean retry on a fresh browser
   }
 }
 
-module.exports = { renderPdf, renderPreviews };
+// Fire-and-forget pipeline warm-up, called when the user OPENS the gallery (the catalogue
+// request). The browser launches and the fonts download while the app is still doing its own
+// round trip + first paint — so the first real preview request finds both already hot. Never
+// throws, never blocks the caller; the idle timer tears it down like any other use.
+let warmingUp = false;
+async function warmPreviews() {
+  if (warmingUp) return;
+  warmingUp = true;
+  try {
+    const browser = await getWarmBrowser();
+    if (!fontCache.size) {
+      // Prime the font cache with the same <head> every template ships.
+      const page = await browser.newPage({ viewport: { width: 200, height: 100 } });
+      try {
+        await routeFonts(page);
+        await page.setContent(
+          `<html><head><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet"></head>` +
+          `<body style="font-family:'Poppins','Lato',sans-serif">warm</body></html>`,
+          { waitUntil: 'load', timeout: 10000 }).catch(() => {});
+        await page.evaluate(() => Promise.race([
+          (document.fonts ? document.fonts.ready : Promise.resolve()),
+          new Promise((r) => setTimeout(r, 3000)),
+        ])).catch(() => {});
+      } finally { await page.close().catch(() => {}); }
+    }
+  } catch { /* cold path still works; this is purely a head start */ }
+  finally { warmingUp = false; }
+}
+
+module.exports = { renderPdf, renderPreviews, warmPreviews };
