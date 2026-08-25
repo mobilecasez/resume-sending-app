@@ -40,7 +40,7 @@ type Preview = { id: string; name: string; accent: string; ats?: number | null; 
 type Mode = 'onepage' | 'a4';
 
 const REGION_FLAGS: Record<string, string> = {
-  generic: '🌐', us_ca: '🇺🇸', uk_au: '🇬🇧', india: '🇮🇳', dach: '🇩🇪', eu: '🇪🇺', sg: '🇸🇬',
+  all: '✨', generic: '🌐', us_ca: '🇺🇸', uk_au: '🇬🇧', india: '🇮🇳', dach: '🇩🇪', eu: '🇪🇺', sg: '🇸🇬',
 };
 
 const WIN = Dimensions.get('window').width;
@@ -57,7 +57,7 @@ export default function ResumeTemplates() {
   const scrollRef = useRef<ScrollView>(null);
   const [families, setFamilies] = useState<Family[]>([]);
   const [regions, setRegions]   = useState<Region[]>([]);
-  const [region, setRegion]     = useState('generic');
+  const [region, setRegion]     = useState('all');
   // family id → the variant currently chosen on that family's page (defaults to the base)
   const [chosen, setChosen]     = useState<Record<string, string>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
@@ -75,8 +75,6 @@ export default function ResumeTemplates() {
   const [pagerH, setPagerH]     = useState(0);
   const [downloading, setDownloading] = useState(false);
   const [isPaid, setIsPaid]     = useState(false);
-
-  const totalDesigns = useMemo(() => families.reduce((a, f) => a + f.variants.length, 0), [families]);
 
   // ── Lazy preview loader: small batches, deduped, merged into a cache ───────
   // Every batch carries its own 45s timeout and marks ITS ids as failed on any miss — the pager
@@ -164,21 +162,45 @@ export default function ResumeTemplates() {
   }
   useEffect(() => { loadCatalogue(); }, []);
 
-  const recommendedFams = useMemo(() => {
+  // ⚠️ THE REGION IS LEVEL ONE. The first ship of this screen used the chips as a cosmetic
+  // "Recommended" badge while the pager always showed every family — which read as "all designs
+  // are under Generic and the chips do nothing" (exactly the report). Now the chip decides WHICH
+  // families the pager holds; "All" shows the whole catalogue.
+  const visibleFams = useMemo(() => {
+    if (region === 'all') return families;
     const r = regions.find((x) => x.id === region);
-    if (!r) return new Set<string>();
-    const famOf = (tid: string) => families.find((f) => f.variants.some((v) => v.id === tid))?.id;
-    return new Set(r.templates.map(famOf).filter(Boolean) as string[]);
+    if (!r) return families;
+    const famOf = (tid: string) => families.find((f) => f.id === tid || f.variants.some((v) => v.id === tid));
+    const picked = r.templates.map(famOf).filter(Boolean) as Family[];
+    return picked.length ? [...new Set(picked)] : families;
   }, [region, regions, families]);
+
+  const totalDesigns = useMemo(() => visibleFams.reduce((a, f) => a + f.variants.length, 0), [visibleFams]);
+
+  function pickRegion(id: string) {
+    if (id === region) return;
+    setRegion(id);
+    setActive(0);
+    scrollRef.current?.scrollTo({ x: 0, animated: false });
+    // The new region's first family must start rendering immediately.
+    const fams = id === 'all' ? families : (() => {
+      const r = regions.find((x) => x.id === id);
+      if (!r) return families;
+      const famOf = (tid: string) => families.find((f) => f.id === tid || f.variants.some((v) => v.id === tid));
+      const picked = r.templates.map(famOf).filter(Boolean) as Family[];
+      return picked.length ? [...new Set(picked)] : families;
+    })();
+    prefetchAround(0, fams, chosen);
+  }
 
   function onScrollEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
     const idx = Math.round(e.nativeEvent.contentOffset.x / WIN);
-    if (idx !== active) { setActive(idx); prefetchAround(idx, families, chosen); }
+    if (idx !== active) { setActive(idx); prefetchAround(idx, visibleFams, chosen); }
   }
   function goTo(idx: number) {
     scrollRef.current?.scrollTo({ x: idx * WIN, animated: true });
     setActive(idx);
-    prefetchAround(idx, families, chosen);
+    prefetchAround(idx, visibleFams, chosen);
   }
   function pickVariant(famId: string, tplId: string) {
     const sel = { ...chosen, [famId]: tplId };
@@ -186,7 +208,7 @@ export default function ResumeTemplates() {
     ensurePreviews([tplId]);
   }
 
-  const activeFam = families[active];
+  const activeFam = visibleFams[active];
   const selectedId = activeFam ? (chosen[activeFam.id] || activeFam.id) : '';
   const selected = previews[selectedId];
   const selectedMeta = activeFam?.variants.find((v) => v.id === selectedId);
@@ -257,10 +279,10 @@ export default function ResumeTemplates() {
       {/* Region chips — a recommendation lens over the same 9 families, no reload */}
       <View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.regionRow}>
-          {regions.map((r) => {
+          {[{ id: 'all', label: 'All designs' } as Region, ...regions].map((r) => {
             const on = r.id === region;
             return (
-              <TouchableOpacity key={r.id} onPress={() => setRegion(r.id)} activeOpacity={0.85} style={[s.regionChip, on && s.regionChipOn]}>
+              <TouchableOpacity key={r.id} onPress={() => pickRegion(r.id)} activeOpacity={0.85} style={[s.regionChip, on && s.regionChipOn]}>
                 <Text style={s.regionFlag}>{REGION_FLAGS[r.id] || '🌐'}</Text>
                 <Text style={[s.regionLabel, on && s.regionLabelOn]}>{r.label}</Text>
               </TouchableOpacity>
@@ -306,7 +328,7 @@ export default function ResumeTemplates() {
                 onMomentumScrollEnd={onScrollEnd}
                 decelerationRate="fast"
               >
-                {families.map((f) => {
+                {visibleFams.map((f) => {
                   const tid = chosen[f.id] || f.id;
                   const p = previews[tid];
                   const accent = f.variants.find((v) => v.id === tid)?.accent || f.accent;
@@ -356,7 +378,7 @@ export default function ResumeTemplates() {
           {/* Family dots · name · recommended badge · ATS · variant swatches */}
           <View style={s.indicator}>
             <View style={s.dots}>
-              {families.map((f, i) => (
+              {visibleFams.map((f, i) => (
                 <TouchableOpacity key={f.id} onPress={() => goTo(i)} hitSlop={8}>
                   <View style={[s.dot, i === active && { width: 22, backgroundColor: selectedMeta?.accent || T.blue }]} />
                 </TouchableOpacity>
@@ -364,9 +386,7 @@ export default function ResumeTemplates() {
             </View>
             <View style={s.nameRow}>
               <Text style={s.designName}>{selectedMeta?.name || activeFam?.name || 'Resume'}</Text>
-              {activeFam && recommendedFams.has(activeFam.id) && (
-                <View style={s.recBadge}><Ionicons name="star" size={9} color="#fff" /><Text style={s.recBadgeText}>Recommended</Text></View>
-              )}
+              <Text style={s.famCount}>{visibleFams.length > 1 ? `${active + 1}/${visibleFams.length} layouts` : ''}</Text>
             </View>
             {!!activeFam?.ats && <AtsStars n={activeFam.ats} />}
             {activeFam && activeFam.variants.length > 1 && (
@@ -491,8 +511,7 @@ const s = StyleSheet.create({
   dot:          { width: 8, height: 8, borderRadius: 4, backgroundColor: 'rgba(11,15,34,0.18)' },
   nameRow:      { flexDirection: 'row', alignItems: 'center', gap: 8 },
   designName:   { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
-  recBadge:     { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: T.gold, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3 },
-  recBadgeText: { fontSize: 9.5, fontWeight: '800', color: '#fff', letterSpacing: 0.3 },
+  famCount:     { fontSize: 11, fontWeight: '700', color: T.faint },
   atsRow:       { flexDirection: 'row', alignItems: 'center', gap: 2 },
   atsLabel:     { fontSize: 10, fontWeight: '800', color: T.faint, letterSpacing: 1, marginRight: 4 },
   swatchRow:    { flexDirection: 'row', alignItems: 'center', gap: 10, paddingTop: 4 },

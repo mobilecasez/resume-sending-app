@@ -51,6 +51,12 @@ const PREVIEW_ARGS = ['--single-process', '--no-zygote', '--disable-gpu'];
 let warmBrowser = null;
 let warmTimer = null;
 let warmLaunching = null;
+// ⚠️ --single-process chromium CRASHES after ~4-5 consecutive setContent+screenshot cycles in
+// one session (reproduced deterministically with a 6-template loop; 1-3 are always fine). The
+// warm browser therefore RECYCLES itself after every 3 rendered pages — a relaunch costs a few
+// hundred ms, a mid-batch crash costs the whole request.
+let warmPages = 0;
+const WARM_PAGE_LIMIT = 3;
 function armWarmIdle() {
   if (warmTimer) clearTimeout(warmTimer);
   warmTimer = setTimeout(() => {
@@ -60,11 +66,13 @@ function armWarmIdle() {
   if (warmTimer.unref) warmTimer.unref();
 }
 async function getWarmBrowser() {
-  if (warmBrowser && warmBrowser.isConnected()) { armWarmIdle(); return warmBrowser; }
+  if (warmBrowser && warmBrowser.isConnected() && warmPages < WARM_PAGE_LIMIT) { armWarmIdle(); return warmBrowser; }
+  const old = warmBrowser;
   warmBrowser = null;
+  if (old) old.close().catch(() => {});
   if (!warmLaunching) {
     warmLaunching = launchBrowser(PREVIEW_ARGS)
-      .then((b) => { warmBrowser = b; warmLaunching = null; armWarmIdle(); return b; })
+      .then((b) => { warmBrowser = b; warmPages = 0; warmLaunching = null; armWarmIdle(); return b; })
       .catch((e) => { warmLaunching = null; throw e; });
   }
   return warmLaunching;
@@ -195,43 +203,51 @@ async function renderPdf(templateId, resumeData, opts = {}) {
 // One-page render; a full-page screenshot captures the CSS sidebar band. Returns
 // { id, name, accent, image, width, height } so the app can size to the real aspect.
 async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
-  // One attempt on the warm browser; if it died between requests (container pressure, crash),
-  // reset and pay one fresh launch — never fail the request on a stale handle.
-  const renderAll = async (browser) => {
-    const results = [];
-    for (const tpl of templates) {
-      const html = renderResumeHtml(tpl.id, resumeData, { ...opts, mode: 'onepage' });
-      const page = await preparePage(browser, html);
-      try {
-        const h = await sheetHeight(page);
-        await page.setViewportSize({ width: A4_W, height: h });
-        const shot = await page.screenshot({
-          type: 'jpeg',
-          quality: 82,
-          clip: { x: 0, y: 0, width: A4_W, height: h },
-        });
-        results.push({
-          id: tpl.id,
-          name: tpl.name,
-          accent: tpl.accent,
-          ats: tpl.ats || null,
-          image: `data:image/jpeg;base64,${shot.toString('base64')}`,
-          width: A4_W,
-          height: h,
-        });
-      } finally {
-        await page.close().catch(() => {});
-      }
+  // Per-TEMPLATE render with per-template recovery: getWarmBrowser() hands back a recycled
+  // browser every WARM_PAGE_LIMIT pages (see above), and a crashed render resets the browser and
+  // retries just that one template — a batch never redoes finished work or inherits a session
+  // that is already at the crash threshold.
+  const renderOne = async (tpl) => {
+    const browser = await getWarmBrowser();
+    const html = renderResumeHtml(tpl.id, resumeData, { ...opts, mode: 'onepage' });
+    const page = await preparePage(browser, html);
+    try {
+      const h = await sheetHeight(page);
+      await page.setViewportSize({ width: A4_W, height: h });
+      // ⚠️ Single-process chromium can screenshot BEFORE the resized region repaints, capturing
+      // stale texture from the previous render (a blue band from another template appeared at the
+      // bottom of a preview). Two rAFs guarantee a frame was composited at the new size first.
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))).catch(() => {});
+      const shot = await page.screenshot({
+        type: 'jpeg',
+        quality: 82,
+        clip: { x: 0, y: 0, width: A4_W, height: h },
+      });
+      warmPages += 1;
+      return {
+        id: tpl.id,
+        name: tpl.name,
+        accent: tpl.accent,
+        ats: tpl.ats || null,
+        image: `data:image/jpeg;base64,${shot.toString('base64')}`,
+        width: A4_W,
+        height: h,
+      };
+    } finally {
+      await page.close().catch(() => {});
     }
-    return results;
   };
-  try {
-    return await renderAll(await getWarmBrowser());
-  } catch (e) {
-    const b = warmBrowser; warmBrowser = null;
-    if (b) await b.close().catch(() => {});
-    return renderAll(await getWarmBrowser());   // one clean retry on a fresh browser
+  const results = [];
+  for (const tpl of templates) {
+    try {
+      results.push(await renderOne(tpl));
+    } catch (e) {
+      const b = warmBrowser; warmBrowser = null;
+      if (b) await b.close().catch(() => {});
+      results.push(await renderOne(tpl));   // one clean retry, fresh browser, this template only
+    }
   }
+  return results;
 }
 
 // Fire-and-forget pipeline warm-up, called when the user OPENS the gallery (the catalogue

@@ -936,6 +936,425 @@ function startupModern(d, opts = {}) {
   </div></body></html>`;
 }
 
+// ── TEMPLATE · BOLD BANNER (marketing-forward full-width accent header) ───────
+function boldBanner(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, soft, certs, langs, ach, role, name } = unpack(d);
+  const contact = contactInline(pi, '   ·   ');
+  const langLine = langs.map(l => { const { name: ln, level } = langParts(l); return level ? `${plain(ln)} — ${plain(level)}` : plain(ln); }).filter(Boolean).join('   ·   ');
+  const css = `
+  .sheet{padding:0;color:#2b3344;font-size:10.5pt;line-height:1.5}
+  .band{background:linear-gradient(120deg,#2563eb 0%,#1d4ed8 55%,#1e40af 100%);color:#fff;padding:16mm 16mm 14mm;display:flex;align-items:center;justify-content:space-between;gap:12mm;break-inside:avoid}
+  .band-name{font-family:'Poppins',sans-serif;font-weight:700;font-size:26pt;letter-spacing:-.3px;line-height:1.15;color:#fff}
+  .band-role{font-family:'Poppins',sans-serif;font-weight:600;font-size:11pt;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.92);margin-top:5px}
+  .band-contact{font-size:9pt;color:rgba(255,255,255,.88);margin-top:11px;letter-spacing:.2px}
+  .avatar{width:33mm;height:33mm;flex:0 0 33mm;border-radius:50%;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 3px rgba(255,255,255,.35)}
+  .avatar img{width:100%;height:100%;object-fit:cover}
+  .avatar svg{width:60%;height:60%}
+  .body{padding:11mm 16mm 15mm}
+  .sec{margin-top:15px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:700;font-size:11pt;text-transform:uppercase;letter-spacing:1.6px;color:#1d4ed8;padding-bottom:5px;border-bottom:2px solid #dbe7fe;margin-bottom:9px;position:relative}
+  .sec-h::after{content:"";position:absolute;left:0;bottom:-2px;width:36px;height:2px;background:#1d4ed8}
+  .summary{font-size:10.5pt;line-height:1.55;color:#3a4354;margin-bottom:5px}
+  .sum-bullets li,.exp ul li,.proj ul li{position:relative;padding-left:16px;font-size:10pt;line-height:1.5;margin-bottom:3px;color:#3a4354}
+  .sum-bullets li::before,.exp ul li::before,.proj ul li::before{content:"";position:absolute;left:3px;top:8px;width:5px;height:5px;background:#2563eb;border-radius:50%}
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .chip{font-size:9.5pt;background:#eff4ff;border:1px solid #c7d7fb;color:#1d4ed8;border-radius:14px;padding:4px 11px;font-weight:600}
+  .chips-soft .chip{background:#fff;color:#1e40af}
+  .exp,.edu,.proj{margin-bottom:11px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-family:'Poppins',sans-serif;font-weight:600;font-size:11pt;color:#1b1f27}
+  .exp-date{font-size:9pt;font-weight:700;color:#1e40af;white-space:nowrap}
+  .exp-co{font-size:9.7pt;font-weight:600;color:#2563eb;margin:1px 0 4px}
+  .proj-about{font-size:9.7pt;color:#3a4354;margin:2px 0 3px}
+  .proj-link{font-size:9pt;color:#2563eb}
+  .certs li{font-size:10pt;margin-bottom:3px}
+  .cert-name{font-weight:700;color:#1b1f27}
+  .cert-sub{color:#6a7385}
+  .langline{font-size:10pt;color:#3a4354}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — Bold Banner', css)}<body><div class="sheet">
+    <div class="band">
+      <div class="band-l">
+        <div class="band-name">${esc(name)}</div>
+        <div class="band-role">${role}</div>
+        ${contact ? `<div class="band-contact">${contact}</div>` : ''}
+      </div>
+      <div class="avatar">${avatarMarkup(opts.photo, name, '#1d4ed8')}</div>
+    </div>
+    <div class="body">
+      ${sec('Profile', summaryHtml(d))}
+      ${tech.length ? sec('Core Skills', chipsHtml(tech)) : ''}
+      ${exp.length ? sec('Experience', expHtml(exp)) : ''}
+      ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+      ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+      ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+      ${soft.length ? sec('Strengths', `<div class="chips chips-soft">${soft.map(s => `<span class="chip">${plain(s)}</span>`).join('')}</div>`) : ''}
+      ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+      ${langLine ? sec('Languages', `<div class="langline">${langLine}</div>`) : ''}
+    </div>
+  </div></body></html>`;
+}
+
+// ── TEMPLATE · RIGHT RAIL (main left, tinted sidebar right) ───────────────────
+function rightRail(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, soft, certs, langs, ach, role, name } = unpack(d);
+  const langsInner = langs.length ? langs.map(l => {
+    const p = langParts(l);
+    return p.name ? `<div class="lang"><div class="lt"><span>${plain(p.name)}</span>${p.level ? `<span class="lv">${plain(p.level)}</span>` : ''}</div><div class="track"><div class="fill" style="width:${levelPct(p.level)}%"></div></div></div>` : '';
+  }).join('') : '';
+  const css = `
+  html{background-color:#ffffff;background-image:linear-gradient(180deg,#e6f7f4,#e6f7f4);background-repeat:repeat-y;background-position:right top;background-size:78mm 10mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{background:transparent}
+  .sheet{background:transparent;color:#1f2937;font-size:10.5pt;line-height:1.5}
+  .cols{display:grid;grid-template-columns:1fr 78mm}
+  .main{padding:15mm 9mm 14mm 14mm;min-width:0}
+  .side{padding:15mm 10mm 14mm 10mm;min-width:0}
+  .head .name{font-family:'Poppins',sans-serif;font-weight:700;font-size:24pt;line-height:1.12;letter-spacing:-.3px;color:#0f172a}
+  .head .role{font-family:'Poppins',sans-serif;font-weight:600;font-size:10.5pt;letter-spacing:2px;text-transform:uppercase;color:#0f766e;margin-top:5px}
+  .head .rule{width:16mm;height:3px;border-radius:2px;background:#0f766e;margin-top:9px}
+  .main .sec{margin-top:15px}
+  .main .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:10pt;text-transform:uppercase;letter-spacing:1.8px;color:#0f766e;display:flex;align-items:center;gap:9px;margin-bottom:9px}
+  .main .sec-h::after{content:"";flex:1;height:2px;border-radius:2px;background:#99f6e4}
+  .summary{font-size:10.3pt;line-height:1.55;color:#334155;margin-bottom:5px}
+  .sum-bullets li,.exp ul li,.proj ul li{position:relative;padding-left:15px;font-size:10pt;line-height:1.5;margin-bottom:3px;color:#334155}
+  .sum-bullets li::before,.exp ul li::before,.proj ul li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:#0f766e}
+  .exp,.proj{margin-bottom:11px}
+  .exp-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .exp-role{font-family:'Poppins',sans-serif;font-weight:600;font-size:10.8pt;color:#0f172a}
+  .exp-date{font-size:8.8pt;font-weight:700;color:#0f766e;white-space:nowrap}
+  .exp-co{font-size:9.6pt;color:#64748b;font-style:italic;margin:1px 0 4px}
+  .proj-about{font-size:9.6pt;color:#475569;margin:2px 0 3px}
+  .proj-link{font-size:8.8pt;color:#0f766e}
+  .avatar{width:33mm;height:33mm;margin:0 auto;border-radius:50%;overflow:hidden;background:#ccfbf1;border:3px solid #0f766e;display:flex;align-items:center;justify-content:center}
+  .avatar img{width:100%;height:100%;object-fit:cover;display:block}
+  .avatar svg{width:58%;height:58%}
+  .side .sec{margin-top:14px}
+  .side .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:9pt;text-transform:uppercase;letter-spacing:2px;color:#115e59;border-bottom:2px solid #99f6e4;padding-bottom:4px;margin-bottom:9px}
+  .crow{display:flex;align-items:flex-start;gap:8px;font-size:8.8pt;line-height:1.4;color:#334155;margin-bottom:6px;word-break:break-word}
+  .crow svg{width:11px;height:11px;flex:0 0 11px;margin-top:1px;fill:#0f766e}
+  .chips{display:flex;flex-wrap:wrap;gap:5px}
+  .chip{font-size:8.6pt;font-weight:700;color:#115e59;background:#ffffff;border:1px solid #99f6e4;border-radius:6px;padding:3px 8px}
+  .chips.alt .chip{background:#ccfbf1;border-color:transparent}
+  .side .edu{margin-bottom:9px}
+  .side .exp-top{display:block}
+  .side .exp-role{display:block;font-family:'Poppins',sans-serif;font-weight:600;font-size:9.3pt;line-height:1.35;color:#0f172a}
+  .side .exp-date{display:inline-block;font-size:8pt;font-weight:700;color:#115e59;background:#ccfbf1;border-radius:8px;padding:1px 7px;margin-top:3px;white-space:normal}
+  .side .exp-co{font-size:8.8pt;color:#475569;font-style:normal;margin:2px 0 0}
+  .lang{margin-bottom:7px}
+  .lt{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:9pt;font-weight:700;color:#0f172a;margin-bottom:3px}
+  .lt .lv{font-weight:400;font-size:8.5pt;color:#475569}
+  .track{height:4px;border-radius:4px;background:#ffffff;overflow:hidden}
+  .fill{height:100%;border-radius:4px;background:#0f766e}
+  .certs li{font-size:8.8pt;line-height:1.4;margin-bottom:5px;color:#334155}
+  .cert-name{font-weight:700;color:#0f172a}
+  .cert-sub{color:#64748b}
+  .avatar,.crow,.lang,.chips{break-inside:avoid}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — Right Rail', css)}<body><div class="sheet"><div class="cols">
+    <div class="main">
+      <div class="head"><div class="name">${esc(name)}</div><div class="role">${role}</div><div class="rule"></div></div>
+      ${sec('Profile', summaryHtml(d))}
+      ${exp.length ? sec('Experience', expHtml(exp)) : ''}
+      ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+      ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+    </div>
+    <div class="side">
+      <div class="avatar">${avatarMarkup(opts.photo, name, '#0f766e')}</div>
+      ${sec('Contact', contactRows(pi, 'crow'))}
+      ${tech.length ? sec('Skills', chipsHtml(tech)) : ''}
+      ${soft.length ? sec('Strengths', `<div class="chips alt">${soft.map(s => `<span class="chip">${plain(s)}</span>`).join('')}</div>`) : ''}
+      ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+      ${langsInner ? sec('Languages', langsInner) : ''}
+      ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+    </div>
+  </div></div></body></html>`;
+}
+
+// ── TEMPLATE · TECH MONO (engineering / terminal) ─────────────────────────────
+// Single-column, ATS-clean. System monospace for headers/labels, Lato for prose.
+// Section headers render as "## experience" (accent ##), bullets use accent ">"
+// prompt glyphs, and each section block carries a thin accent left border.
+function techMono(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, soft, certs, langs, ach, role, name } = unpack(d);
+  const contact = contactInline(pi, ' <span class="sep">·</span> ');
+  const skillsInner = [
+    tech.length ? chipsHtml(tech) : '',
+    soft.length ? `<div class="soft-line"><span class="cmt">//</span> ${soft.map(s => plain(s)).join(' · ')}</div>` : '',
+  ].join('');
+  const langLine = langs.map(l => {
+    const { name: ln, level } = langParts(l);
+    return ln ? `<span class="lang"><b>${plain(ln)}</b>${level ? ` <span class="lvl">(${plain(level)})</span>` : ''}</span>` : '';
+  }).filter(Boolean).join(' <span class="sep">·</span> ');
+  const css = `
+  .sheet{padding:16mm;color:#1f2937;font-size:10.5pt;line-height:1.5}
+  .prompt,.name,.role,.contact,.sec-h,.exp-role,.exp-date,.exp-co,.chip,.cert-name,.cert-sub,.soft-line,.lang,.lvl,.proj-link{font-family:ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace}
+  .prompt{font-size:9pt;color:#9ca3af;letter-spacing:.5px}
+  .prompt .dollar{color:#16a34a;font-weight:700}
+  .name{font-weight:700;font-size:21pt;letter-spacing:-.5px;color:#111827;margin-top:3px}
+  .cursor{display:inline-block;width:9px;height:.72em;background:#16a34a;margin-left:8px;border-radius:1.5px}
+  .role{font-size:11pt;color:#374151;margin-top:4px}
+  .role .gt{color:#16a34a;font-weight:700}
+  .contact{font-size:8.8pt;color:#4b5563;margin-top:9px;line-height:1.8}
+  .sep{color:#16a34a;font-weight:700}
+  .hd{padding-bottom:12px;border-bottom:1px solid #e5e7eb}
+  .sec{margin-top:15px;border-left:2px solid #bbf7d0;padding-left:13px}
+  .sec-h{font-weight:700;font-size:10.5pt;letter-spacing:.5px;color:#111827;text-transform:lowercase;margin-bottom:8px}
+  .sec-h::before{content:"## ";color:#16a34a}
+  .summary{font-size:10.3pt;line-height:1.6;color:#374151;margin-bottom:5px}
+  .summary b,.exp ul li b,.proj ul li b,.sum-bullets li b{color:#15803d}
+  .sum-bullets li,.exp ul li,.proj ul li{position:relative;padding-left:16px;font-size:10pt;line-height:1.5;margin-bottom:3px;color:#374151}
+  .sum-bullets li::before,.exp ul li::before,.proj ul li::before{content:">";position:absolute;left:1px;top:0;color:#16a34a;font-family:ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;font-weight:700;font-size:9.5pt}
+  .exp,.edu,.proj{margin-bottom:11px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+  .exp-role{font-weight:700;font-size:10.5pt;color:#111827}
+  .exp-date{font-size:8.5pt;color:#6b7280;white-space:nowrap}
+  .exp-co{font-size:9pt;color:#15803d;margin:1px 0 4px}
+  .proj-about{font-size:10pt;color:#374151;margin:2px 0 3px}
+  .proj-link{font-size:8.8pt;color:#16a34a;margin-top:1px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:8.8pt;color:#15803d;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:3px 8px}
+  .soft-line{font-size:8.8pt;color:#4b5563;margin-top:8px;line-height:1.7}
+  .soft-line .cmt{color:#16a34a;font-weight:700}
+  .certs li{font-size:10pt;margin-bottom:3px;color:#374151}
+  .cert-name{font-weight:700;font-size:9.3pt;color:#111827}
+  .cert-sub{color:#6b7280;font-size:9.3pt}
+  .langs{font-size:9.3pt;color:#374151;line-height:1.8}
+  .langs .sep{margin:0 4px}
+  .lang b{color:#111827}
+  .lvl{color:#6b7280}
+  .cert-sub{margin-left:2px}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — Tech Mono', css)}<body><div class="sheet">
+    <header class="hd">
+      <div class="prompt"><span class="dollar">$</span> whoami</div>
+      <h1 class="name">${esc(name)}<span class="cursor"></span></h1>
+      <div class="role"><span class="gt">&gt;</span> ${role}</div>
+      ${contact ? `<div class="contact">${contact}</div>` : ''}
+    </header>
+    ${sec('Summary', summaryHtml(d))}
+    ${exp.length ? sec('Experience', expHtml(exp)) : ''}
+    ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+    ${skillsInner ? sec('Skills', skillsInner) : ''}
+    ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+    ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+    ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+    ${langLine ? sec('Languages', `<div class="langs">${langLine}</div>`) : ''}
+  </div></body></html>`;
+}
+
+function elegantSerif(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, soft, certs, langs, ach, role, name } = unpack(d);
+  const contact = contactInline(pi, '  ·  ');
+  const skillLine = (label, arr) => arr.length ? `<div class="skl"><span class="skl-h">${esc(label)}</span>${arr.map(s => plain(s)).join('  ·  ')}</div>` : '';
+  const skillsBlock = skillLine('Technical', tech) + skillLine('Soft Skills', soft);
+  const langLine = langs.map(l => { const p = langParts(l); return p.name ? (p.level ? `${plain(p.name)} (${plain(p.level)})` : plain(p.name)) : ''; }).filter(Boolean).join('  ·  ');
+  const css = `
+  .sheet{padding:19mm 18mm;color:#262626;font-family:Georgia,'Times New Roman',serif;font-size:10.5pt;line-height:1.55}
+  .masthead{text-align:center;padding-top:2mm}
+  .name{font-family:Georgia,'Times New Roman',serif;font-size:26pt;font-weight:400;letter-spacing:4px;text-transform:uppercase;color:#1b1b1b}
+  .role{font-size:11pt;font-style:italic;color:#4d4d4d;letter-spacing:.8px;margin-top:5px}
+  .contact{font-size:9.5pt;color:#555555;letter-spacing:.4px;margin-top:8px}
+  .orn{display:flex;align-items:center;gap:9px;margin-top:12px}
+  .orn-l{flex:1;height:1px;background:#7f1d1d}
+  .orn-d{width:5px;height:5px;background:#7f1d1d;transform:rotate(45deg);flex:none}
+  .sec{margin-top:15px}
+  .sec-h{display:flex;align-items:center;gap:12px;font-family:Georgia,'Times New Roman',serif;font-weight:400;font-variant:small-caps;font-size:12.5pt;letter-spacing:2.6px;color:#7f1d1d;margin-bottom:9px}
+  .sec-h::before,.sec-h::after{content:"";flex:1;height:1px;background:#dcc3c3}
+  .summary{text-align:justify;font-size:10.6pt;line-height:1.62;color:#2c2c2c;margin-bottom:5px}
+  .sum-bullets li,.exp ul li,.proj ul li{position:relative;padding-left:15px;font-size:10.3pt;line-height:1.52;margin-bottom:3px;color:#2c2c2c}
+  .sum-bullets li::before,.exp ul li::before,.proj ul li::before{content:"";position:absolute;left:2px;top:.52em;width:4px;height:4px;background:#8f8f8f;border-radius:50%}
+  .exp,.edu,.proj{margin-bottom:11px}
+  .exp-top{display:flex;justify-content:space-between;align-items:baseline;gap:14px}
+  .exp-role{font-weight:700;font-size:10.8pt;color:#1b1b1b}
+  .exp-date{font-size:9.3pt;font-style:italic;color:#6b6b6b;white-space:nowrap}
+  .exp-co{font-size:10pt;font-style:italic;color:#4d4d4d;margin:1px 0 4px}
+  .proj-about{font-size:10pt;color:#3a3a3a;margin:2px 0 3px}
+  .proj-link{font-size:9.3pt;font-style:italic;color:#6b6b6b}
+  .certs li{position:relative;padding-left:15px;font-size:10.2pt;line-height:1.52;margin-bottom:3px;color:#2c2c2c}
+  .certs li::before{content:"";position:absolute;left:2px;top:.52em;width:4px;height:4px;background:#8f8f8f;border-radius:50%}
+  .cert-name{font-weight:700}
+  .cert-sub{color:#5b5b5b}
+  .skl{text-align:center;font-size:10.2pt;color:#333333;line-height:1.7}
+  .skl + .skl{margin-top:3px}
+  .skl-h{font-variant:small-caps;letter-spacing:1.6px;color:#5f5f5f;margin-right:9px}
+  .lang-line{text-align:center;font-size:10.2pt;color:#333333}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — Elegant Serif', css)}<body><div class="sheet">
+    <header class="masthead">
+      <div class="name">${esc(name)}</div>
+      <div class="role">${role}</div>
+      ${contact ? `<div class="contact">${contact}</div>` : ''}
+      <div class="orn"><span class="orn-l"></span><span class="orn-d"></span><span class="orn-l"></span></div>
+    </header>
+    ${sec('Profile', summaryHtml(d))}
+    ${exp.length ? sec('Professional Experience', expHtml(exp)) : ''}
+    ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+    ${skillsBlock ? sec('Skills & Expertise', skillsBlock) : ''}
+    ${proj.length ? sec('Selected Projects', projHtml(proj)) : ''}
+    ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+    ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+    ${langLine ? sec('Languages', `<div class="lang-line">${langLine}</div>`) : ''}
+  </div></body></html>`;
+}
+
+function compactPro(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, soft, certs, langs, ach, role, name } = unpack(d);
+  const contactBits = [
+    raw(pi.email) && plain(pi.email),
+    raw(pi.phone) && plain(pi.phone),
+    raw(pi.location) && plain(pi.location),
+    raw(pi.linkedin_url) && plain(prettyUrl(pi.linkedin_url)),
+    raw(pi.portfolio_url) && plain(prettyUrl(pi.portfolio_url)),
+  ].filter(Boolean);
+  const contact = contactBits.map(c => `<div class="c-row">${c}</div>`).join('');
+  const langRows = langs.map(l => {
+    const { name: ln, level } = langParts(l);
+    return ln ? `<div class="lang"><span class="lang-n">${plain(ln)}</span>${level ? `<span class="lang-l">${plain(level)}</span>` : ''}</div>` : '';
+  }).join('');
+  const css = `
+  .sheet{padding:12mm 13mm 13mm;color:#23262e;font-size:9.5pt;line-height:1.35}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:10mm}
+  .name{font-family:'Poppins',sans-serif;font-weight:700;font-size:19pt;letter-spacing:-.3px;color:#14161c;line-height:1.15}
+  .title{font-family:'Poppins',sans-serif;font-weight:600;font-size:9.5pt;letter-spacing:1.2px;text-transform:uppercase;color:#4338ca;margin-top:3px}
+  .h-contact{text-align:right;font-size:8.5pt;color:#4b5058;line-height:1.55;padding-top:2px;flex-shrink:0}
+  .rule{height:2px;background:#4338ca;margin-top:8px}
+  .cols{display:grid;grid-template-columns:64fr 36fr;column-gap:8mm;align-items:start}
+  .sec{margin-top:11px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:8.5pt;text-transform:uppercase;letter-spacing:1.4px;color:#14161c;border-bottom:1px solid #e0e7ff;padding-bottom:3px;margin-bottom:7px}
+  .summary{font-size:9.5pt;line-height:1.4;color:#2c303a;margin-bottom:4px}
+  .sum-bullets li,.exp ul li,.proj ul li{position:relative;padding-left:12px;font-size:9.5pt;line-height:1.35;margin-bottom:2px;color:#2c303a}
+  .sum-bullets li::before,.exp ul li::before,.proj ul li::before{content:"";position:absolute;left:1px;top:6px;width:4px;height:4px;background:#4338ca;border-radius:1px}
+  .exp,.edu,.proj{margin-bottom:8px}
+  .exp-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+  .exp-role{font-weight:700;font-size:10pt;color:#14161c}
+  .exp-date{font-size:8pt;color:#6a707c;white-space:nowrap}
+  .exp-co{font-size:8.7pt;font-weight:600;color:#4338ca;margin:0 0 3px}
+  .proj-about{font-size:9pt;color:#3a3f4a;margin:1px 0 2px}
+  .proj-link{font-size:8pt;color:#4338ca;margin-top:1px}
+  .chips{display:flex;flex-wrap:wrap;gap:4px}
+  .chip{font-size:8.3pt;background:#eef2ff;border:1px solid #e0e7ff;color:#3730a3;border-radius:4px;padding:2px 7px;font-weight:600;line-height:1.3}
+  .side .exp-top{display:block}
+  .side .exp-date{white-space:normal;display:block;margin-top:1px}
+  .side .exp-role{font-size:9.3pt}
+  .side .exp-co{color:#3a3f4a;font-weight:400;font-size:8.7pt}
+  .soft-list li{position:relative;padding-left:11px;font-size:9.3pt;line-height:1.35;margin-bottom:2px;color:#2c303a}
+  .soft-list li::before{content:"";position:absolute;left:0;top:6px;width:4px;height:4px;background:#4338ca;border-radius:1px}
+  .certs li{font-size:9pt;line-height:1.35;margin-bottom:3px}
+  .cert-name{font-weight:700;color:#14161c}
+  .cert-sub{color:#6a707c;font-size:8.5pt}
+  .lang{display:flex;justify-content:space-between;gap:6px;font-size:9.3pt;margin-bottom:3px}
+  .lang-n{color:#23262e;font-weight:600}
+  .lang-l{color:#6a707c;font-size:8.5pt}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — Compact Pro', css)}<body><div class="sheet">
+    <div class="head">
+      <div><div class="name">${esc(name)}</div><div class="title">${role}</div></div>
+      ${contact ? `<div class="h-contact">${contact}</div>` : ''}
+    </div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="main">
+        ${sec('Profile', summaryHtml(d))}
+        ${exp.length ? sec('Experience', expHtml(exp)) : ''}
+        ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+        ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+      </div>
+      <div class="side">
+        ${tech.length ? sec('Technical Skills', chipsHtml(tech)) : ''}
+        ${soft.length ? sec('Strengths', `<ul class="soft-list">${soft.map(s => `<li>${plain(s)}</li>`).join('')}</ul>`) : ''}
+        ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+        ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+        ${langRows ? sec('Languages', langRows) : ''}
+      </div>
+    </div>
+  </div></body></html>`;
+}
+
+// ── TEMPLATE · CAREER TIMELINE (generic) ──────────────────────────────────────
+function careerTimeline(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, soft, certs, langs, ach, role, name } = unpack(d);
+  const lis = (arr) => (Array.isArray(arr) ? arr : []).filter(h => raw(h)).map(h => `<li>${fmt(h)}</li>`).join('');
+  const tlExp = exp.map(e => {
+    const co = [raw(e.company), raw(e.location)].filter(Boolean).join(' · ');
+    const hls = lis(e.highlights);
+    return `<div class="tl-item"><div class="tl-date">${plain(dateRange(e.start_date, e.end_date))}</div><div class="tl-body"><div class="tl-role">${plain(e.role)}</div>${co ? `<div class="tl-co">${plain(co)}</div>` : ''}${hls ? `<ul>${hls}</ul>` : ''}</div></div>`;
+  }).join('');
+  const tlEdu = edu.map(e => {
+    const deg = [raw(e.degree), raw(e.field_of_study)].filter(Boolean).join(', ');
+    const sub = [raw(e.institution), raw(e.grade) ? `Grade: ${raw(e.grade)}` : ''].filter(Boolean).join(' · ');
+    return `<div class="tl-item"><div class="tl-date">${plain(e.end_date)}</div><div class="tl-body"><div class="tl-role">${plain(deg || e.degree)}</div>${sub ? `<div class="tl-co">${plain(sub)}</div>` : ''}</div></div>`;
+  }).join('');
+  const langLine = langs.map(l => {
+    const p = langParts(l);
+    return p.name ? `<span class="lang"><b>${plain(p.name)}</b>${p.level ? ` — ${plain(p.level)}` : ''}</span>` : '';
+  }).filter(Boolean).join('<span class="lang-sep">·</span>');
+  const skills = [...tech, ...soft];
+  const contacts = contactRows(pi, 'crow');
+  const css = `
+  .sheet{padding:16mm 16mm 18mm;color:#2a3342;font-size:10.3pt;line-height:1.5}
+  .head{display:flex;justify-content:space-between;align-items:center;gap:12mm;padding-bottom:16px;border-bottom:2px solid #ffedd5}
+  .name{font-family:'Poppins',sans-serif;font-weight:700;font-size:25pt;letter-spacing:-.3px;color:#111827}
+  .title{font-family:'Poppins',sans-serif;font-weight:600;font-size:11.5pt;color:#ea580c;margin-top:2px;letter-spacing:.3px}
+  .contacts{display:flex;flex-wrap:wrap;gap:5px 16px;margin-top:10px}
+  .crow{display:inline-flex;align-items:center;gap:6px;font-size:9pt;color:#4b5563}
+  .crow svg{width:11px;height:11px;fill:#ea580c;flex:0 0 11px}
+  .avatar{width:33mm;height:33mm;flex:0 0 33mm;border-radius:50%;overflow:hidden;background:#fff7ed;border:3px solid #fdba74;display:flex;align-items:center;justify-content:center}
+  .avatar img{width:100%;height:100%;object-fit:cover}
+  .avatar svg{width:50%;height:50%}
+  .sec{margin-top:15px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:10.5pt;text-transform:uppercase;letter-spacing:1.6px;color:#111827;margin-bottom:10px;display:flex;align-items:center;gap:9px}
+  .sec-h::before{content:"";width:9px;height:9px;border-radius:50%;background:#ea580c;box-shadow:0 0 0 3px #ffedd5}
+  .sec-h::after{content:"";flex:1;height:2px;background:#ffedd5;border-radius:1px}
+  .summary{font-size:10.3pt;line-height:1.55;color:#333c4a;margin-bottom:5px}
+  .sum-bullets li{position:relative;padding-left:15px;font-size:10pt;line-height:1.5;margin-bottom:3px;color:#333c4a}
+  .sum-bullets li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:#ea580c}
+  .tl-item{display:flex;gap:14px;break-inside:avoid}
+  .tl-date{flex:0 0 27mm;width:27mm;text-align:right;font-size:8.8pt;font-weight:700;color:#ea580c;padding-top:2px;line-height:1.35}
+  .tl-body{flex:1;position:relative;border-left:2px solid #fdba74;padding-left:16px;padding-bottom:14px}
+  .tl-item:last-child .tl-body{padding-bottom:2px}
+  .tl-body::before{content:"";position:absolute;left:-6px;top:3px;width:10px;height:10px;border-radius:50%;background:#ea580c;box-shadow:0 0 0 3px #ffedd5}
+  .tl-role{font-family:'Poppins',sans-serif;font-weight:600;font-size:11pt;color:#111827}
+  .tl-co{font-size:9.6pt;font-weight:600;color:#c2410c;margin:1px 0 4px}
+  .tl-body ul{margin-top:3px}
+  .tl-body ul li,.proj ul li{position:relative;padding-left:14px;font-size:9.9pt;line-height:1.5;margin-bottom:3px;color:#3b4453}
+  .tl-body ul li::before,.proj ul li::before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;border-radius:50%;background:#fdba74}
+  .proj{margin-bottom:10px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-family:'Poppins',sans-serif;font-weight:600;font-size:10.5pt;color:#111827}
+  .exp-date{font-size:9pt;font-weight:700;color:#ea580c;white-space:nowrap}
+  .exp-co{font-size:9.5pt;color:#6b7280;font-style:italic;margin:1px 0 4px}
+  .proj-about{font-size:9.7pt;color:#414b5a;line-height:1.5;margin:2px 0 3px}
+  .proj-link{font-size:9pt;color:#c2410c}
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .chip{font-size:9.3pt;background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;border-radius:14px;padding:4px 11px;font-weight:600}
+  .certs li{position:relative;padding-left:14px;font-size:9.9pt;margin-bottom:3px;color:#333c4a}
+  .certs li::before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;border-radius:50%;background:#fdba74}
+  .cert-name{font-weight:700;color:#111827}
+  .cert-sub{color:#6b7280}
+  .langs{font-size:9.9pt;color:#333c4a;display:flex;flex-wrap:wrap;gap:5px 8px;align-items:center}
+  .lang b{color:#111827}
+  .lang-sep{color:#fdba74;font-weight:700}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — Career Timeline', css)}<body><div class="sheet">
+    <div class="head">
+      <div class="head-l">
+        <div class="name">${esc(name)}</div>
+        <div class="title">${role}</div>
+        ${contacts ? `<div class="contacts">${contacts}</div>` : ''}
+      </div>
+      <div class="avatar">${avatarMarkup(opts.photo, name, '#ea580c')}</div>
+    </div>
+    ${sec('Profile', summaryHtml(d))}
+    ${exp.length ? sec('Career Journey', `<div class="tl">${tlExp}</div>`) : ''}
+    ${edu.length ? sec('Education', `<div class="tl">${tlEdu}</div>`) : ''}
+    ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+    ${skills.length ? sec('Skills', chipsHtml(skills)) : ''}
+    ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+    ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+    ${langLine ? sec('Languages', `<div class="langs">${langLine}</div>`) : ''}
+  </div></body></html>`;
+}
+
 // ── Theme variants ────────────────────────────────────────────────────────────
 //
 // 37 designs from 9 layout families. Each family's CSS names its accent colors as literal
@@ -1021,6 +1440,12 @@ const FAMILY_ACCENTS = {
   germany:   ['#0f172a', '#1f2937', '#334155'],
   europass:  ['#2557a7', '#dbe6f5', '#eaf1fb'],
   startup:   ['#5b5bd6', '#e5e5f3', '#ececf6', '#f4f4fb', '#f7f7fd'],
+  banner   : ['#2563eb', '#1d4ed8', '#1e40af', '#dbe7fe', '#eff4ff', '#c7d7fb'],
+  rightrail: ['#0f766e', '#115e59', '#99f6e4', '#ccfbf1', '#e6f7f4'],
+  mono     : ['#16a34a', '#15803d', '#bbf7d0', '#f0fdf4'],
+  elegant  : ['#7f1d1d', '#dcc3c3'],
+  compact  : ['#4338ca', '#3730a3', '#e0e7ff', '#eef2ff'],
+  timeline : ['#ea580c', '#c2410c', '#fdba74', '#fed7aa', '#ffedd5', '#fff7ed'],
 };
 
 function recolorHtml(html, familyId, theme) {
@@ -1081,7 +1506,48 @@ const FAMILY_VARIANTS = {
     { suffix: 'amber',    name: 'Startup Amber',          theme: { hue: 38 } },
     { suffix: 'ocean',    name: 'Startup Ocean',          theme: { hue: 200 } },
   ],
-};
+  banner: [
+    { suffix: 'crimson', name: "Banner Crimson", theme: { hue: 350 } },
+    { suffix: 'teal', name: "Banner Teal", theme: { hue: 176 } },
+    { suffix: 'plum', name: "Banner Plum", theme: { hue: 283 } },
+    { suffix: 'ember', name: "Banner Ember", theme: { hue: 24 } },
+    { suffix: 'pine', name: "Banner Pine", theme: { hue: 150 } },
+  ],
+  rightrail: [
+    { suffix: 'sapphire', name: "Sapphire Rail", theme: { hue: 221 } },
+    { suffix: 'plum', name: "Plum Rail", theme: { hue: 283 } },
+    { suffix: 'crimson', name: "Crimson Rail", theme: { hue: 350 } },
+    { suffix: 'honey', name: "Honey Rail", theme: { hue: 40 } },
+    { suffix: 'stone', name: "Stone Rail", theme: { hue: 210, satMul: 0.14 } },
+  ],
+  mono: [
+    { suffix: 'amber', name: "Mono Amber", theme: { hue: 40 } },
+    { suffix: 'cobalt', name: "Mono Cobalt", theme: { hue: 220 } },
+    { suffix: 'cyan', name: "Mono Cyan", theme: { hue: 190 } },
+    { suffix: 'magenta', name: "Mono Magenta", theme: { hue: 320 } },
+    { suffix: 'graphite', name: "Mono Graphite", theme: { hue: 215, satMul: 0.1 } },
+  ],
+  elegant: [
+    { suffix: 'midnight', name: "Serif Midnight", theme: { hue: 226 } },
+    { suffix: 'hunter', name: "Serif Hunter", theme: { hue: 152 } },
+    { suffix: 'sepia', name: "Serif Sepia", theme: { hue: 26, satMul: 0.85 } },
+    { suffix: 'aubergine', name: "Serif Aubergine", theme: { hue: 288 } },
+    { suffix: 'charcoal', name: "Serif Charcoal", theme: { hue: 215, satMul: 0.12 } },
+  ],
+  compact: [
+    { suffix: 'sapphire', name: "Compact Sapphire", theme: { hue: 213 } },
+    { suffix: 'evergreen', name: "Compact Evergreen", theme: { hue: 152 } },
+    { suffix: 'garnet', name: "Compact Garnet", theme: { hue: 350 } },
+    { suffix: 'bronze', name: "Compact Bronze", theme: { hue: 30 } },
+    { suffix: 'charcoal', name: "Compact Charcoal", theme: { hue: 220, satMul: 0.14 } },
+  ],
+  timeline: [
+    { suffix: 'sky', name: "Timeline Sky", theme: { hue: 205 } },
+    { suffix: 'jade', name: "Timeline Jade", theme: { hue: 165 } },
+    { suffix: 'orchid', name: "Timeline Orchid", theme: { hue: 282 } },
+    { suffix: 'crimson', name: "Timeline Crimson", theme: { hue: 348 } },
+    { suffix: 'charcoal', name: "Timeline Charcoal", theme: { hue: 215, satMul: 0.12 } },
+  ],};
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 const TEMPLATES = [
@@ -1096,6 +1562,13 @@ const TEMPLATES = [
   { id: 'germany',   name: 'Germany Professional',   accent: '#334155', ats: 4, photo: true, build: germanyPro },
   { id: 'europass',  name: 'Europass Premium',       accent: '#2557a7', ats: 4, photo: true, build: europass },
   { id: 'startup',   name: 'Startup Modern',         accent: '#5b5bd6', ats: 4, build: startupModern },
+  // ── The 2026-08-25 expansion: six new layout families (authored + variant-themed) ──
+  { id: 'banner',   name: "Bold Banner",             accent: '#1d4ed8', ats: 4, photo: true, build: boldBanner },
+  { id: 'rightrail', name: "Right Rail",              accent: '#0f766e', ats: 3, photo: true, build: rightRail },
+  { id: 'mono',     name: "Tech Mono",               accent: '#16a34a', ats: 5, build: techMono },
+  { id: 'elegant',  name: "Elegant Serif",           accent: '#7f1d1d', ats: 4, build: elegantSerif },
+  { id: 'compact',  name: "Compact Pro",             accent: '#4338ca', ats: 4, build: compactPro },
+  { id: 'timeline', name: "Career Timeline",         accent: '#ea580c', ats: 4, photo: true, build: careerTimeline },
 ];
 
 // A4 sidebar-band geometry per FAMILY (moved here from resumeRenderer so variants can carry
@@ -1136,15 +1609,18 @@ const FAMILIES = TEMPLATES.filter(t => t.family === t.id).map(base => ({
 
 const TEMPLATE_IDS = TEMPLATES.map(t => t.id);
 
-// Region → recommended templates (the user's selection logic). 90% of job seekers.
+// Region → its LAYOUT FAMILIES (level one of the gallery: pick a region, page through its
+// families, restyle via variant swatches). Family ids only — the app expands variants itself.
+// ⚠️ Keep every list ≤4: app builds ≤194 still render a region's whole list in ONE request.
+// ⚠️ Unknown ids are dropped by templatesForRegion, so a list may name a family shipping later.
 const REGIONS = [
-  { id: 'generic', label: 'Generic',        sub: 'Any country',          templates: ['azure', 'executive', 'minimal'] },
-  { id: 'us_ca',   label: 'USA / Canada',   sub: 'United States · Canada', templates: ['ats', 'exec_pro', 'startup'] },
-  { id: 'uk_au',   label: 'UK / Australia', sub: 'United Kingdom · Australia', templates: ['ats', 'exec_pro'] },
-  { id: 'india',   label: 'India / South Asia', sub: 'India · Bangladesh · Nepal · Sri Lanka', templates: ['india'] },
-  { id: 'dach',    label: 'Germany / DACH', sub: 'Germany · Austria · Switzerland', templates: ['germany'] },
-  { id: 'eu',      label: 'Europe / EU',    sub: 'France · Spain · Italy · EU', templates: ['europass'] },
-  { id: 'sg',      label: 'Singapore',      sub: 'Singapore · APAC hubs', templates: ['exec_pro', 'startup'] },
+  { id: 'generic', label: 'Generic',        sub: 'Any country',          templates: ['azure', 'executive', 'minimal', 'startup'] },
+  { id: 'us_ca',   label: 'USA / Canada',   sub: 'United States · Canada', templates: ['ats', 'exec_pro', 'rightrail', 'mono'] },
+  { id: 'uk_au',   label: 'UK / Australia', sub: 'United Kingdom · Australia', templates: ['ats', 'exec_pro', 'elegant', 'banner'] },
+  { id: 'india',   label: 'India / South Asia', sub: 'India · Bangladesh · Nepal · Sri Lanka', templates: ['india', 'compact', 'azure', 'ats'] },
+  { id: 'dach',    label: 'Germany / DACH', sub: 'Germany · Austria · Switzerland', templates: ['germany', 'europass', 'elegant'] },
+  { id: 'eu',      label: 'Europe / EU',    sub: 'France · Spain · Italy · EU', templates: ['europass', 'germany', 'timeline', 'banner'] },
+  { id: 'sg',      label: 'Singapore',      sub: 'Singapore · APAC hubs', templates: ['exec_pro', 'startup', 'compact', 'timeline'] },
 ];
 
 function templatesForRegion(regionId) {

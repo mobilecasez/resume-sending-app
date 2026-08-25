@@ -89,7 +89,12 @@ console.log('── preview speed: the cold start is paid once, not per request 
 const rend = R('../../server/utils/resumeRenderer.js');
 ok('a warm browser is shared across preview requests', /getWarmBrowser/.test(rend) && /armWarmIdle/.test(rend));
 ok('…and renderPreviews no longer closes it', !/renderAll[\s\S]{0,2400}browser\.close/.test(rend.slice(rend.indexOf('async function renderPreviews'))));
-ok('it self-heals with one retry on a dead handle', /one clean retry on a fresh browser/.test(rend));
+ok('it self-heals with a per-template retry on a dead handle', /one clean retry, fresh browser, this template only/.test(rend));
+// --single-process chromium crashes after ~4-5 consecutive renders in one session (reproduced
+// with a 6-template loop) — the warm browser must recycle itself before that threshold.
+ok('the warm browser recycles every few pages, below the crash threshold',
+  /WARM_PAGE_LIMIT = 3/.test(rend) && /warmPages < WARM_PAGE_LIMIT/.test(rend));
+ok('a composited frame is forced between resize and screenshot', /requestAnimationFrame\(\(\) => requestAnimationFrame/.test(rend));
 ok('the idle timer never keeps the process alive', /warmTimer\.unref/.test(rend));
 ok('Google Fonts are served from an in-memory cache', /fontCache/.test(rend) && /route\(/.test(rend));
 ok('font interception applies to EVERY prepared page (previews and PDFs)', /await routeFonts\(page\)/.test(rend));
@@ -111,6 +116,16 @@ ok('a 404 (no built resume) gets its own full state with a way forward',
   /res\.status === 404[\s\S]{0,60}setNoResume\(true\)/.test(tpl) && /Build my resume/.test(tpl));
 ok('ids missing from a partial response are marked failed too', /missing\.length/.test(tpl));
 ok('a retry clears the failure before refetching', /for \(const id of need\) delete next\[id\]/.test(tpl));
+
+console.log('── region is LEVEL ONE of the gallery ──');
+// Field report: "all regions' designs show under Generic and changing region does nothing" —
+// the chips were a cosmetic Recommended badge while the pager always held every family.
+ok('the pager renders the REGION-FILTERED family list', /\{visibleFams\.map\(\(f\) =>/.test(tpl));
+ok('the dots follow the same list', /s\.dots[\s\S]{0,120}visibleFams\.map/.test(tpl));
+ok('picking a region resets the pager and starts rendering its first family',
+  /function pickRegion[\s\S]{0,900}prefetchAround\(0, fams, chosen\)/.test(tpl));
+ok('an All-designs chip exists for the full catalogue', /All designs/.test(tpl));
+ok('the cosmetic Recommended badge is gone', !/recommendedFams/.test(tpl) && !/Recommended</.test(tpl));
 
 console.log(`\nresume rebuild flow: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

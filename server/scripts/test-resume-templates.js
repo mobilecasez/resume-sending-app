@@ -19,17 +19,22 @@ const SAMPLE = {
 };
 
 console.log('── registry shape ──');
-ok('at least 30 designs (the ask was 30-40)', TEMPLATES.length >= 30, TEMPLATES.length);
-ok('exactly 9 layout families', FAMILIES.length === 9, FAMILIES.length);
+ok('at least 70 designs (37 + the six-family expansion)', TEMPLATES.length >= 70, TEMPLATES.length);
+ok('15 layout families', FAMILIES.length === 15, FAMILIES.length);
 ok('every family lists itself as its first variant', FAMILIES.every((f) => f.variants[0] && f.variants[0].id === f.id));
 ok('ids are unique', new Set(TEMPLATE_IDS).size === TEMPLATE_IDS.length);
 ok('every variant resolves in the registry', FAMILIES.every((f) => f.variants.every((v) => TEMPLATES.some((t) => t.id === v.id))));
-ok('regions still expose the 9 legacy ids only (old app builds)', REGIONS.every((r) => r.templates.every((id) => !id.includes('_') || ['exec_pro'].includes(id))));
+// Regions are level ONE of the gallery now: each names its layout FAMILIES (base ids only —
+// variants expand client-side). Old app builds render a region's whole list in one request,
+// so the lists stay capped at 4.
+ok('every region lists ≤4 families (old-client one-request cap)', REGIONS.every((r) => r.templates.length <= 4));
+ok('region lists never name a variant id', REGIONS.every((r) => r.templates.every((id) => !TEMPLATES.some((t) => t.id === id && t.family !== t.id))));
+ok('every LIVE family is reachable from some region', FAMILIES.every((f) => REGIONS.some((r) => r.templates.includes(f.id))));
 ok('base ids unchanged (saved template ids in the field must keep resolving)',
   ['azure', 'executive', 'minimal', 'ats', 'exec_pro', 'india', 'germany', 'europass', 'startup'].every((id) => TEMPLATES.some((t) => t.id === id)));
 
 console.log('── every design renders ──');
-const FAMILY_ACCENT_SEED = { azure: '#0a7aa6', executive: '#e0a64b', minimal: '#0e9f8e', ats: '#1f2937', exec_pro: '#7c6a45', india: '#0e7490', germany: '#334155', europass: '#2557a7', startup: '#5b5bd6' };
+const FAMILY_ACCENT_SEED = { azure: '#0a7aa6', executive: '#e0a64b', minimal: '#0e9f8e', ats: '#1f2937', exec_pro: '#7c6a45', india: '#0e7490', germany: '#334155', europass: '#2557a7', startup: '#5b5bd6', banner: '#1d4ed8', rightrail: '#0f766e', mono: '#16a34a', elegant: '#7f1d1d', compact: '#4338ca', timeline: '#ea580c' };
 for (const t of TEMPLATES) {
   let html = '';
   try { html = renderResumeHtml(t.id, SAMPLE, { photo: null }); } catch (e) { ok(`${t.id} renders`, false, e.message); continue; }
