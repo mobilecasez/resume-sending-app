@@ -7,7 +7,7 @@ const cheerio      = require('cheerio');
 const path         = require('path');
 const fs           = require('fs').promises;
 const { renderPdf, renderPreviews } = require('../utils/resumeRenderer');
-const { TEMPLATE_IDS, templatesForRegion } = require('../utils/resumeTemplates');
+const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion } = require('../utils/resumeTemplates');
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
 
@@ -50,6 +50,8 @@ async function ensureResumeTable() {
             UNIQUE (user_id)
         )
     `);
+    // Free-plan rule: one regeneration per built resume. Counted here, reset on a fresh build.
+    await dbConfig.run(`ALTER TABLE user_resumes ADD COLUMN IF NOT EXISTS regen_count INTEGER NOT NULL DEFAULT 0`).catch(() => {});
 }
 
 // ── URL extraction from free-form text ───────────────────────────────────────
@@ -306,15 +308,33 @@ PART 2 — CANDIDATE'S ROLE: The candidate's title/role in the project, then 2-3
 // POST /api/resume-builder/generate-ai
 async function generateAI(req, res) {
     const userId = req.user.id;
-    const { name, email, phone, location, rawText, includeUploadedResume } = req.body;
+    const { name, email, phone, location, rawText, includeUploadedResume, isRegenerate } = req.body;
 
     if (!rawText || rawText.trim().length < 20) {
         return res.status(400).json({ error: 'Please provide more detail about your experience.' });
     }
 
     try {
+        // ── Regenerate is its OWN lane, because the free plan's quota is 1 resume/30 days: the
+        // first build consumes it, so "regenerate once free" can only be true if that one
+        // regeneration BYPASSES the quota gate. Paid plans regenerate through their quota as a
+        // normal generation. The count lives on user_resumes and resets on every fresh build.
+        const sub = await entitlements.activeSubscription(userId).catch(() => null);
+        let freeRegen = false;
+        if (isRegenerate && !sub) {
+            await ensureResumeTable();
+            const rrow = await dbConfig.get('SELECT regen_count FROM user_resumes WHERE user_id = $1', [userId]);
+            if (!rrow) return res.status(404).json({ error: 'No resume to regenerate yet — generate one first.' });
+            if ((rrow.regen_count || 0) >= 1) {
+                return res.status(403).json({
+                    error: 'Your free plan includes one regeneration, and you have used it. Upgrade to keep refining your resume.',
+                    reason: 'regen_limit',
+                });
+            }
+            freeRegen = true;
+        }
         // GATE — plan/trial quota first, legacy credits fallback; deduct on success only (below).
-        const gate = await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        const gate = freeRegen ? { allowed: true } : await entitlements.canConsumeMany(userId, 'resume', 1, req);
         if (!gate.allowed) {
             return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
         }
@@ -379,7 +399,9 @@ async function generateAI(req, res) {
 
         try {
             // Deduct only now — the resume was actually generated. Pool + ledger via entitlements.
-            await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
+            // The free regeneration bypassed the gate, so it must not be counted against the quota
+            // either — its ledger is the regen_count bump below.
+            if (!freeRegen) await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
         } catch (e) { console.warn('[resumeBuilder] usage record failed:', e.message); }
 
         await ensureResumeTable();
@@ -391,6 +413,11 @@ async function generateAI(req, res) {
                  updated_at  = CURRENT_TIMESTAMP`,
             [userId, JSON.stringify(resumeData)]
         );
+        // A regenerate spends the allowance; a fresh build restores it.
+        await dbConfig.run(
+            isRegenerate ? 'UPDATE user_resumes SET regen_count = regen_count + 1 WHERE user_id = $1'
+                         : 'UPDATE user_resumes SET regen_count = 0 WHERE user_id = $1',
+            [userId]).catch(() => {});
 
         return res.json({ success: true, resumeData });
     } catch (e) {
@@ -432,9 +459,16 @@ async function getResume(req, res) {
     try {
         await ensureResumeTable();
         const row = await dbConfig.get(
-            'SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]
+            'SELECT resume_data, regen_count FROM user_resumes WHERE user_id = $1', [userId]
         );
-        return res.json({ resumeData: row ? row.resume_data : null });
+        // isPaid/regen ride along so the builder can label its buttons truthfully without a
+        // second round-trip; the server remains the authority when the buttons are pressed.
+        const sub = await entitlements.activeSubscription(userId).catch(() => null);
+        return res.json({
+            resumeData: row ? row.resume_data : null,
+            regen: { used: row ? (row.regen_count || 0) : 0, freeLimit: 1 },
+            isPaid: !!sub,
+        });
     } catch (e) {
         return res.status(500).json({ error: 'Failed to load resume.' });
     }
@@ -498,18 +532,24 @@ async function generatePDF(req, res) {
     const userId = req.user.id;
     const { template, mode } = req.body || {};
     try {
-        const DOWNLOAD_CREDIT_COST = await getEventCost('resume_download');   // admin-configurable
+        const DOWNLOAD_CREDIT_COST = 0;   // downloads are part of the paid plans now, not a per-file charge
         await ensureResumeTable();
         const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) {
             return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
         }
 
-        // Each download costs credits (previews are free).
-        const creditCheck = await checkUserCredits(userId, DOWNLOAD_CREDIT_COST);
-        if (!creditCheck.hasCredits) {
-            return res.status(402).json({ error: creditCheck.message, creditsRequired: DOWNLOAD_CREDIT_COST, creditsRemaining: creditCheck.remaining });
+        // ── Previewing every design is free; DOWNLOADING the file is a paid-plan feature. ──
+        // The credit charge this replaces punished exactly the users who engaged most; a plan
+        // gate is the product rule now (2026-08-25) and the app shows "See plans" on this 403.
+        const sub = await entitlements.activeSubscription(userId).catch(() => null);
+        if (!sub) {
+            return res.status(403).json({
+                error: 'Previewing every design is free — downloading the PDF is part of the paid plans.',
+                reason: 'paid_required',
+            });
         }
+        const creditCheck = { hasCredits: true, remaining: 0 };
 
         // Profile photo path
         let photoPath = null;
@@ -538,7 +578,6 @@ async function generatePDF(req, res) {
             const tDir  = path.join(__dirname, '../../temp');
             await fs.mkdir(tDir, { recursive: true });
             await fs.writeFile(path.join(tDir, tFile), pdfBuffer);
-            try { await deductCredits(userId, DOWNLOAD_CREDIT_COST, 'resume_download', { template: tplId, mode: mode || 'onepage' }); } catch (e) { console.warn('[resumeBuilder] credit deduction failed:', e.message); }
             return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(tFile)}`, template: tplId, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
         } catch (tplErr) {
             console.warn('[resumeBuilder] template render failed, falling back to PDFKit:', tplErr.message);
@@ -869,8 +908,6 @@ async function generatePDF(req, res) {
 
             doc.end();
         });
-
-        try { await deductCredits(userId, DOWNLOAD_CREDIT_COST, 'resume_download', { template: 'pdfkit_fallback' }); } catch (e) { console.warn('[resumeBuilder] credit deduction failed:', e.message); }
         return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(fileName)}`, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
     } catch (e) {
         console.error('[resumeBuilder] generatePDF error:', e.message);
@@ -882,18 +919,22 @@ async function generatePDF(req, res) {
 // Built programmatically with the `docx` library (docxBuilder) for clean Word
 // formatting — independent of the PDF design templates. Same credit cost.
 async function generateDocx(req, res) {
+    // Same rule as the PDF: the FILE is a paid-plan feature (see generatePDF).
+    {
+        const sub = await entitlements.activeSubscription(req.user.id).catch(() => null);
+        if (!sub) {
+            return res.status(403).json({
+                error: 'Previewing every design is free — downloading the file is part of the paid plans.',
+                reason: 'paid_required',
+            });
+        }
+    }
     const userId = req.user.id;
     try {
-        const DOWNLOAD_CREDIT_COST = await getEventCost('resume_download');   // admin-configurable
         await ensureResumeTable();
         const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) {
             return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
-        }
-
-        const creditCheck = await checkUserCredits(userId, DOWNLOAD_CREDIT_COST);
-        if (!creditCheck.hasCredits) {
-            return res.status(402).json({ error: creditCheck.message, creditsRequired: DOWNLOAD_CREDIT_COST, creditsRemaining: creditCheck.remaining });
         }
 
         // Optional profile photo — square (sidebar/banner) + rectangular (German/Europass header).
@@ -924,8 +965,7 @@ async function generateDocx(req, res) {
         await fs.mkdir(tempDir, { recursive: true });
         await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
 
-        try { await deductCredits(userId, DOWNLOAD_CREDIT_COST, 'resume_download', { format: 'docx' }); } catch (e) { console.warn('[resumeBuilder] credit deduction failed:', e.message); }
-        return res.json({ success: true, downloadUrl: `/api/download-resume-docx/${encodeURIComponent(fileName)}`, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
+        return res.json({ success: true, downloadUrl: `/api/download-resume-docx/${encodeURIComponent(fileName)}` });
     } catch (e) {
         console.error('[resumeBuilder] generateDocx error:', e.message);
         return res.status(500).json({ error: 'Failed to generate Word document. Please try again.' });
@@ -936,14 +976,21 @@ async function generateDocx(req, res) {
 // templates recommended for a region (free) so the user can pick before download.
 async function previewTemplates(req, res) {
     const userId = req.user.id;
-    const { region } = req.body || {};
+    const { region, ids } = req.body || {};
     try {
         await ensureResumeTable();
         const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) {
             return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
         }
-        const tpls  = templatesForRegion(region);                 // template objects for this region
+        // ── ids mode: the gallery asks for a small batch as the user scrolls/taps a swatch. ──
+        // Rendering all 37 designs in one request is exactly the shape that used to break the
+        // preview at NINE (multi-MB inline base64 + a serial chromium loop outliving the client
+        // timeout) — so the batch is capped, and unknown ids are dropped rather than 500ing.
+        const tpls = Array.isArray(ids) && ids.length
+            ? [...new Set(ids)].slice(0, 6).map(id => TEMPLATES.find(t => t.id === id)).filter(Boolean)
+            : templatesForRegion(region);                 // legacy region mode (older app builds)
+        if (!tpls.length) return res.status(400).json({ error: 'No valid template ids.' });
         const ppath = await resolvePhotoPath(userId);
         const photo = await loadPhotoDataUri(ppath);
         const photoRect = await loadPhotoDataUri(ppath, 'rect');   // clean rectangular crop for German/Europass
@@ -953,6 +1000,14 @@ async function previewTemplates(req, res) {
         console.error('[resumeBuilder] previewTemplates error:', e.message);
         return res.status(500).json({ error: 'Failed to render design previews. Please try again.' });
     }
+}
+
+// GET /api/resume-builder/templates — the design catalogue for the app's gallery.
+// Static metadata only (no rendering): 9 layout families, each with its recolored variants as
+// swatches. The gallery shows ONE preview per family and recolors via swatch taps — previewing
+// all 37 as full images is the load pattern the ids-mode cap above exists to prevent.
+async function listTemplates(req, res) {
+    return res.json({ success: true, families: FAMILIES, regions: REGIONS, count: TEMPLATES.length });
 }
 
 // Reusable: build a REGION-formatted resume PDF from the user's Resume-Builder resume.
@@ -984,4 +1039,4 @@ async function buildResumePdfForRegion(userId, region, mode) {
     return { filePath, fileName, template: tplId };
 }
 
-module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, buildResumePdfForRegion };
+module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, buildResumePdfForRegion };

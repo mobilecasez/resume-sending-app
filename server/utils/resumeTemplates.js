@@ -936,6 +936,153 @@ function startupModern(d, opts = {}) {
   </div></body></html>`;
 }
 
+// ── Theme variants ────────────────────────────────────────────────────────────
+//
+// 37 designs from 9 layout families. Each family's CSS names its accent colors as literal
+// hexes; a variant recolors exactly those hexes by hue-rotation in HSL space, leaving
+// LIGHTNESS untouched — so every contrast relationship (text on band, chip on card) survives
+// recoloring by construction. Neutral grays are deliberately NOT listed, so body text never
+// shifts. This is how design tools theme templates; it gives real visual variety without a
+// second copy of any layout's HTML.
+function hexToHsl(hexstr) {
+  const h6 = hexstr.length === 4 ? '#' + [...hexstr.slice(1)].map(c => c + c).join('') : hexstr;
+  const r = parseInt(h6.slice(1, 3), 16) / 255, g = parseInt(h6.slice(3, 5), 16) / 255, b = parseInt(h6.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return { h: h * 360, s, l };
+}
+function hslToHex(h, s, l) {
+  h = ((h % 360) + 360) % 360 / 360;
+  const f = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    r = f(p, q, h + 1 / 3); g = f(p, q, h); b = f(p, q, h - 1 / 3);
+  }
+  const to = (x) => Math.round(x * 255).toString(16).padStart(2, '0');
+  return '#' + to(r) + to(g) + to(b);
+}
+// WCAG-style relative luminance of a #rrggbb (linearized sRGB) — how BRIGHT a color reads.
+function relLum(hexstr) {
+  const c = (i) => {
+    const v = parseInt(hexstr.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * c(1) + 0.7152 * c(3) + 0.0722 * c(5);
+}
+
+// Re-hue one hex: hue → t.hue, saturation → max(s·satMul, satFloor).
+//
+// ⚠️ HSL lightness is NOT perceived brightness — green reads far brighter than blue at the same
+// L, so a naive re-hue turns a readable violet heading into a washed-out mint. For mid-range
+// accents (the ones used as text and fills) we therefore nudge L until the recolor's RELATIVE
+// LUMINANCE matches the source's, which is what actually preserves contrast against the paper
+// and against overlaid text. Near-white tints and near-black inks keep their L — matching those
+// would visibly darken backgrounds for no contrast benefit.
+function shiftHex(hexstr, t) {
+  const src = hexToHsl(hexstr);
+  const sat = Math.min(1, Math.max(src.s * (t.satMul != null ? t.satMul : 1), t.satFloor || 0));
+  const hue = t.hue != null ? t.hue : src.h;
+  let l = src.l;
+  if (l > 0.15 && l < 0.8) {
+    const target = relLum(hexstr);
+    for (let i = 0; i < 6; i++) {
+      const got = relLum(hslToHex(hue, sat, l));
+      const diff = target - got;
+      if (Math.abs(diff) < 0.004) break;
+      l = Math.min(0.85, Math.max(0.05, l + diff * 0.9));
+    }
+  }
+  return hslToHex(hue, sat, l);
+}
+
+// The hexes that ARE each family's accent scheme (from its own CSS — keep in sync when a
+// family's CSS changes). Everything else in that family is neutral and never recolored.
+const FAMILY_ACCENTS = {
+  azure:     ['#0a7aa6', '#0e6e93', '#13567a', '#3fb9e6', '#bfe9f8', '#dff1f8'],
+  executive: ['#e0a64b', '#f0c987'],
+  minimal:   ['#0b7d70', '#0e9f8e', '#d8e3e1', '#e7f6f3'],
+  ats:       ['#111827', '#1f2937'],
+  exec_pro:  ['#7c6a45', '#c9a96a'],
+  india:     ['#0e7490', '#a5f3fc', '#ecfeff'],
+  germany:   ['#0f172a', '#1f2937', '#334155'],
+  europass:  ['#2557a7', '#dbe6f5', '#eaf1fb'],
+  startup:   ['#5b5bd6', '#e5e5f3', '#ececf6', '#f4f4fb', '#f7f7fd'],
+};
+
+function recolorHtml(html, familyId, theme) {
+  let out = html;
+  for (const hx of FAMILY_ACCENTS[familyId] || []) {
+    const next = shiftHex(hx, theme);
+    out = out.split(hx).join(next).split(hx.toUpperCase()).join(next);
+  }
+  return out;
+}
+
+// Per-family variants: curated hue targets with product-quality names. `sf`/`sm` tune
+// saturation for near-neutral sources (ATS/Germany) and desaturated looks (Platinum).
+const FAMILY_VARIANTS = {
+  azure: [
+    { suffix: 'emerald',  name: 'Emerald Sidebar',        theme: { hue: 152 } },
+    { suffix: 'violet',   name: 'Violet Sidebar',         theme: { hue: 268 } },
+    { suffix: 'burgundy', name: 'Burgundy Sidebar',       theme: { hue: 345 } },
+    { suffix: 'amber',    name: 'Amber Sidebar',          theme: { hue: 28 } },
+  ],
+  executive: [
+    { suffix: 'platinum', name: 'Executive Platinum',     theme: { hue: 215, satMul: 0.12 } },
+    { suffix: 'emerald',  name: 'Executive Emerald',      theme: { hue: 150 } },
+    { suffix: 'copper',   name: 'Executive Copper',       theme: { hue: 18 } },
+  ],
+  minimal: [
+    { suffix: 'indigo',   name: 'Indigo Minimal',         theme: { hue: 243 } },
+    { suffix: 'rose',     name: 'Rose Minimal',           theme: { hue: 338 } },
+    { suffix: 'forest',   name: 'Forest Minimal',         theme: { hue: 140 } },
+  ],
+  ats: [
+    { suffix: 'navy',     name: 'ATS Navy',               theme: { hue: 218, satFloor: 0.45 } },
+    { suffix: 'green',    name: 'ATS Green',              theme: { hue: 155, satFloor: 0.40 } },
+    { suffix: 'maroon',   name: 'ATS Maroon',             theme: { hue: 348, satFloor: 0.45 } },
+  ],
+  exec_pro: [
+    { suffix: 'steel',    name: 'Steel Professional',     theme: { hue: 214 } },
+    { suffix: 'royal',    name: 'Royal Professional',     theme: { hue: 262 } },
+    { suffix: 'slate',    name: 'Slate Professional',     theme: { hue: 215, satMul: 0.15 } },
+  ],
+  india: [
+    { suffix: 'saffron',  name: 'India Saffron',          theme: { hue: 30 } },
+    { suffix: 'emerald',  name: 'India Emerald',          theme: { hue: 150 } },
+    { suffix: 'navy',     name: 'India Navy',             theme: { hue: 222 } },
+  ],
+  germany: [
+    { suffix: 'blue',     name: 'Germany Blue',           theme: { hue: 218, satFloor: 0.28 } },
+    { suffix: 'warm',     name: 'Germany Warm',           theme: { hue: 28, satFloor: 0.14 } },
+  ],
+  europass: [
+    { suffix: 'teal',     name: 'Europass Teal',          theme: { hue: 180 } },
+    { suffix: 'violet',   name: 'Europass Violet',        theme: { hue: 262 } },
+    { suffix: 'graphite', name: 'Europass Graphite',      theme: { hue: 215, satMul: 0.10 } },
+  ],
+  startup: [
+    { suffix: 'coral',    name: 'Startup Coral',          theme: { hue: 8 } },
+    { suffix: 'mint',     name: 'Startup Mint',           theme: { hue: 160 } },
+    { suffix: 'amber',    name: 'Startup Amber',          theme: { hue: 38 } },
+    { suffix: 'ocean',    name: 'Startup Ocean',          theme: { hue: 200 } },
+  ],
+};
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 const TEMPLATES = [
   // Generic visual styles (region: any)
@@ -950,6 +1097,42 @@ const TEMPLATES = [
   { id: 'europass',  name: 'Europass Premium',       accent: '#2557a7', ats: 4, photo: true, build: europass },
   { id: 'startup',   name: 'Startup Modern',         accent: '#5b5bd6', ats: 4, build: startupModern },
 ];
+
+// A4 sidebar-band geometry per FAMILY (moved here from resumeRenderer so variants can carry
+// their own recolored band — the renderer composites whatever the template entry declares).
+const FAMILY_BANDS = {
+  azure:     { side: 'left', widthMm: 75, top: '#0a7aa6', bottom: '#13567a' },
+  executive: { side: 'left', widthMm: 74, top: '#2c3742', bottom: '#222b34' },
+};
+for (const t of TEMPLATES) { t.family = t.id; if (FAMILY_BANDS[t.id]) t.band = FAMILY_BANDS[t.id]; }
+
+// Expand the registry with the recolored variants. Every variant is a full first-class
+// template: same layout engine, its own id/name/accent/band, `family` pointing home.
+for (const base of [...TEMPLATES]) {
+  for (const v of FAMILY_VARIANTS[base.id] || []) {
+    const build = (d, opts = {}) => recolorHtml(base.build(d, opts), base.id, v.theme);
+    const band = base.band
+      ? { ...base.band,
+          top:    FAMILY_ACCENTS[base.id].includes(base.band.top)    ? shiftHex(base.band.top, v.theme)    : base.band.top,
+          bottom: FAMILY_ACCENTS[base.id].includes(base.band.bottom) ? shiftHex(base.band.bottom, v.theme) : base.band.bottom }
+      : undefined;
+    TEMPLATES.push({
+      id: `${base.id}_${v.suffix}`, name: v.name, family: base.id,
+      accent: shiftHex(base.accent, v.theme),
+      region: base.region, ats: base.ats, photo: base.photo,
+      band, build,
+    });
+  }
+}
+
+// Family metadata for the app's template gallery: one preview per family, a swatch per
+// variant — the honest UI for "same layout, different palette" (previewing all 37 as full
+// images is what used to melt the preview endpoint).
+const FAMILIES = TEMPLATES.filter(t => t.family === t.id).map(base => ({
+  id: base.id, name: base.name, accent: base.accent,
+  ats: base.ats || null, photo: !!base.photo,
+  variants: TEMPLATES.filter(t => t.family === base.id).map(t => ({ id: t.id, name: t.name, accent: t.accent })),
+}));
 
 const TEMPLATE_IDS = TEMPLATES.map(t => t.id);
 
@@ -974,4 +1157,4 @@ function renderResumeHtml(templateId, resumeData, opts = {}) {
   return tpl.build(resumeData || {}, opts);
 }
 
-module.exports = { TEMPLATES, TEMPLATE_IDS, REGIONS, templatesForRegion, renderResumeHtml };
+module.exports = { TEMPLATES, TEMPLATE_IDS, REGIONS, FAMILIES, templatesForRegion, renderResumeHtml };

@@ -131,10 +131,14 @@ const chip = StyleSheet.create({
   text: { fontSize: 11, fontWeight: '600' },
 });
 
-function getInitials(name: string): string {
-  const parts = (name || '').trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  return (name[0] || '?').toUpperCase();
+function getInitials(name?: string | null): string {
+  // ⚠️ The last line used to read the RAW argument (`name[0]`) — with full_name undefined and no
+  // profile photo that TypeErrored and took the entire preview down. Everything reads the
+  // normalized copy now.
+  const safe = String(name || '').trim();
+  const parts = safe.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return ((parts[0][0] || '') + (parts[parts.length - 1][0] || '')).toUpperCase();
+  return (safe[0] || '?').toUpperCase();
 }
 
 function decodeEntities(s: string): string {
@@ -144,13 +148,16 @@ function decodeEntities(s: string): string {
 // still understands legacy **markdown**. A stack tokenizer supports nesting (e.g. bold + italic).
 function ContentText({ text, style, bulletVerb }: { text: string; style?: any; bulletVerb?: boolean }) {
   let src = String(text || '');
-  if (/<[a-z][\s\S]*>/i.test(src)) {
+  // Only REAL rich-text tags flip HTML mode. The old test (/<[a-z]…>/) matched any angle-bracket
+  // aside a user typed — "<3 years>", "&lt;placeholder&gt;" — and then silently deleted it as an
+  // "unknown tag". Unknown tags are also no longer stripped in HTML mode for the same reason.
+  if (/<\/?(h[1-6]|p|div|li|ul|ol|br|strong|b|em|i|u|span)\b[^>]*>/i.test(src)) {
     src = src.replace(/<h[1-6][^>]*>/gi, '⟦b⟧').replace(/<\/h[1-6]>/gi, '⟦/⟧\n')
              .replace(/<\/(p|div|li)>/gi, '\n').replace(/<(p|div|li)[^>]*>/gi, '').replace(/<br\s*\/?>/gi, '\n')
              .replace(/<(strong|b)\b[^>]*>/gi, '⟦b⟧').replace(/<\/(strong|b)>/gi, '⟦/⟧')
              .replace(/<(em|i)\b[^>]*>/gi, '⟦i⟧').replace(/<\/(em|i)>/gi, '⟦/⟧')
              .replace(/<u\b[^>]*>/gi, '⟦u⟧').replace(/<\/u>/gi, '⟦/⟧')
-             .replace(/<[^>]+>/g, '');
+             .replace(/<\/?(span|ul|ol)\b[^>]*>/gi, '');
     src = decodeEntities(src);
   } else {
     src = src.replace(/\*\*(.+?)\*\*/g, '⟦b⟧$1⟦/⟧').replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, '$1⟦i⟧$2⟦/⟧');
@@ -222,6 +229,7 @@ export default function ResumePreview() {
   // rich-text editor target: a path into draft + current value
   const [rich, setRich] = useState<{ title: string; value: string; apply: (md: string) => void } | null>(null);
 
+  const [regen, setRegen] = useState<{ used: number; freeLimit: number; isPaid: boolean }>({ used: 0, freeLimit: 1, isPaid: false });
   useEffect(() => {
     (async () => {
       // Manual-build seed: start from the sample template the index screen saved (ignore any
@@ -252,14 +260,23 @@ export default function ResumePreview() {
             fetch(`${API_BASE}/resume-builder`, { headers: { Authorization: `Bearer ${token}` } }),
             fetch(`${API_BASE}/users/profile`, { headers: { Authorization: `Bearer ${token}` } }),
           ]);
+          let gotServerCopy = false;
           if (resumeRes.ok) {
             const json = await resumeRes.json();
-            if (json.resumeData) { setData(json.resumeData); await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(json.resumeData)); }
+            if (json.resumeData) { gotServerCopy = true; setData(json.resumeData); await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(json.resumeData)); }
+            if (json.regen) setRegen({ used: Number(json.regen.used || 0), freeLimit: Number(json.regen.freeLimit || 1), isPaid: !!json.isPaid });
           }
           if (profileRes.ok) {
             const pj = await profileRes.json();
             const imgUrl = pj.profileImage || pj.profile_image || null;
             if (imgUrl) setProfileImage(imgUrl);
+          }
+          // ⚠️ A 5xx or an empty server row must NOT strand the user on "No resume data found"
+          // while a perfectly good local copy sits in AsyncStorage — that was the reported
+          // "preview is breaking". The cache is the fallback for EVERY miss, not only for
+          // no-token/threw.
+          if (!gotServerCopy) {
+            try { const cached = await AsyncStorage.getItem('resumeBuilderData'); if (cached) setData(JSON.parse(cached)); } catch {}
           }
           setLoading(false); return;
         }
@@ -552,16 +569,49 @@ export default function ResumePreview() {
         <View style={{ height: busy ? 32 : 96 }} />
       </ScrollView>
 
-      {/* Floating Regenerate (hidden while editing a card) */}
+      {/* Floating action bar (hidden while editing a card): Download · Regenerate · View PDF */}
       {!busy && (
         <View style={s.floatingBar}>
-          <TouchableOpacity style={s.regenOuter} activeOpacity={0.88} onPress={async () => { await AsyncStorage.setItem('resumeBuilderAction', 'regenerate').catch(() => {}); router.back(); }}>
-            <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.regenBtn}>
-              <Ionicons name="refresh-outline" size={16} color="#fff" /><Text style={s.regenText}>Regenerate Resume</Text>
-              <View style={s.regenBadge}><Ionicons name="diamond" size={9} color="#fff" /><Text style={s.regenBadgeText}>2</Text></View>
-            </LinearGradient>
+          <View style={s.actionRow}>
+            <TouchableOpacity style={s.actionHalf} activeOpacity={0.88} onPress={() => router.push('/(resume-builder)/templates')}>
+              <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.regenBtn}>
+                <Ionicons name="download-outline" size={16} color="#fff" /><Text style={s.regenText}>Download</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={s.actionHalf}
+              activeOpacity={0.88}
+              onPress={async () => {
+                // The free plan includes ONE regeneration. When it is spent, say so here — walking
+                // the user back through the AI form just to meet a 403 is the worse experience.
+                // The server enforces the same rule authoritatively.
+                if (!regen.isPaid && regen.used >= regen.freeLimit) {
+                  Alert.alert(
+                    'Regeneration used',
+                    'Your free plan includes one regeneration, and you have used it. Upgrade to keep refining your resume.',
+                    [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }],
+                  );
+                  return;
+                }
+                await AsyncStorage.setItem('resumeBuilderAction', 'regenerate').catch(() => {});
+                router.back();
+              }}
+            >
+              <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.regenBtn}>
+                <Ionicons name="refresh-outline" size={16} color="#fff" /><Text style={s.regenText}>Regenerate</Text>
+                {!regen.isPaid && (
+                  <View style={s.regenBadge}><Text style={s.regenBadgeText}>{Math.max(0, regen.freeLimit - regen.used)} free</Text></View>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity style={s.viewPdfBtn} activeOpacity={0.8} onPress={() => router.push('/(resume-builder)/templates')}>
+            <Ionicons name="eye-outline" size={15} color={T.blue} />
+            <Text style={s.viewPdfText}>View PDF — preview all designs free</Text>
           </TouchableOpacity>
-          <Text style={s.regenNote}>Uses 2 credits · re-runs AI with your saved story</Text>
+          <Text style={s.regenNote}>
+            {regen.isPaid ? 'Regenerate re-runs AI with your saved story' : 'Free plan: 1 regeneration · previews always free'}
+          </Text>
         </View>
       )}
 
@@ -685,6 +735,10 @@ const s = StyleSheet.create({
   expDates:     { fontSize: 11, color: T.faint, fontWeight: '600', flexShrink: 0 },
   floatingBar:    { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.select({ ios: 28, default: 16 }), gap: 6, shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
   regenOuter:     { borderRadius: 16, overflow: 'hidden' },
+  actionRow:      { flexDirection: 'row', gap: 10 },
+  actionHalf:     { flex: 1, borderRadius: 16, overflow: 'hidden' },
+  viewPdfBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, height: 42, borderRadius: 13, borderWidth: 1.5, borderColor: T.blue + '44', backgroundColor: T.blue + '0D' },
+  viewPdfText:    { fontSize: 13.5, fontWeight: '700', color: T.blue },
   regenBtn:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 50, borderRadius: 16 },
   regenText:      { fontSize: 14, fontWeight: '800', color: '#fff' },
   regenBadge:     { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3 },

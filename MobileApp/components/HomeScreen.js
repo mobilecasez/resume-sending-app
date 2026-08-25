@@ -3,6 +3,7 @@ import ReplyComposeModal from './ReplyComposeModal';
 import OnboardingChecklist from './OnboardingChecklist';
 import WelcomeExplainer from './WelcomeExplainer';
 import ResumeScoreModal from './ResumeScoreModal';
+import ResumeRebuildCard from './ResumeRebuildCard';
 import JourneyCoach from './JourneyCoach';
 import { fetchJourney } from '../services/journeyService';
 import { fetchResumeScore, markResumeScore, claimEnhancePass } from '../services/resumeScoreService';
@@ -1932,6 +1933,10 @@ export default function HomeScreen({
             onDismiss={dismissOnboarding}
           />
         )}
+
+        {/* ── RESUME REBUILD (score + AI-resume preview + CTA; self-contained, renders
+            nothing until the user has a score or a built resume) ──────────── */}
+        <ResumeRebuildCard />
 
         {/* ── EXPLORE LIVE JOBS (value-first feed) ──────────── */}
         <TouchableOpacity

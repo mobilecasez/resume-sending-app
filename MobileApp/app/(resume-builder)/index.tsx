@@ -132,6 +132,9 @@ export default function ResumeBuilderIndex() {
   // Set when the user arrived by tapping "Enhance My Résumé" on the score popup. It drives the
   // prefill + the "anything to add?" prompt, and nothing else — a normal visit is untouched.
   const [scoreEntry, setScoreEntry] = useState<{ score: number; free: boolean; improvements: string[] } | null>(null);
+  // The next POST is a REGENERATE (free plan: exactly one). A ref, not state — it is read inside
+  // an async handler right after being set, where state would still be stale.
+  const regenPendingRef = React.useRef(false);
   const [pulling, setPulling] = useState(false);
 
   // Runs every time screen gains focus
@@ -147,6 +150,50 @@ export default function ResumeBuilderIndex() {
         await AsyncStorage.removeItem('resume_builder_entry').catch(() => {});
         try {
           const e = JSON.parse(entryRaw);
+          // ── The Home card's one-tap lane: uploaded resume + photo → straight to a built
+          // resume. No uploaded resume → walk them to the upload first (the AI has nothing to
+          // rebuild from); missing photo is fine — most designs render initials instead.
+          if (e && e.autoBuild) {
+            setBuildMethod('ai');
+            setMode('ai');
+            await AsyncStorage.setItem('resumeBuilderMethod', 'ai').catch(() => {});
+            setPulling(true);
+            const [pulled, prof] = await Promise.all([
+              fetchResumeSourceText(),
+              (async () => {
+                try {
+                  const raw0 = await SecureStore.getItemAsync('userSession');
+                  const tok = JSON.parse(raw0 || '{}')?.token;
+                  if (!tok) return {} as any;
+                  const r0 = await fetch(`${API_BASE}/users/profile`, { headers: { Authorization: `Bearer ${tok}` } });
+                  return r0.ok ? await r0.json() : {};
+                } catch { return {}; }
+              })(),
+            ]);
+            setPulling(false);
+            if (!prof.resume || !pulled || pulled.trim().length < 30) {
+              Alert.alert(
+                'Upload your resume first',
+                'To build your new resume, upload your current one — the AI rebuilds it from there. A profile photo is optional but makes the designs shine.',
+                [
+                  { text: 'Not now', style: 'cancel' },
+                  { text: 'Upload resume', onPress: async () => {
+                      await AsyncStorage.setItem('onboarding_focus_target', 'resume').catch(() => {});
+                      router.back();
+                  } },
+                ],
+              );
+            } else {
+              if (typeof e.score === 'number') setScoreEntry({ score: Number(e.score) || 0, free: !!e.free, improvements: [] });
+              setRawText(pulled);
+              autoGenerate({
+                name: prof.fullName || '', email: prof.email || '',
+                phone: prof.phone || '', location: prof.address || '',
+                rawText: pulled, includeUploaded: true,
+              });
+            }
+            return;
+          }
           if (e && e.from === 'resume_score') {
             setScoreEntry({ score: Number(e.score) || 0, free: !!e.free, improvements: Array.isArray(e.improvements) ? e.improvements : [] });
             setBuildMethod('ai');
@@ -166,18 +213,29 @@ export default function ResumeBuilderIndex() {
       const action = await AsyncStorage.getItem('resumeBuilderAction').catch(() => null);
       if (action === 'regenerate') {
         await AsyncStorage.removeItem('resumeBuilderAction').catch(() => {});
+        regenPendingRef.current = true;   // the server counts this against the free allowance
         const formRaw = await AsyncStorage.getItem('resumeBuilderFormData').catch(() => null);
-        if (formRaw) {
-          const d = JSON.parse(formRaw);
-          if (d.name)     setName(d.name);
-          if (d.email)    setEmail(d.email);
-          // restore the saved country, then show just the bare number
-          if (d.countryDial || d.countryName) setCountry(findCountry(d.countryName, d.countryDial));
-          if (d.phone)    setPhone(stripDial(d.phone));
-          if (d.location) setLocation(d.location);
-          if (d.rawText)  setRawText(d.rawText);
+        const d = formRaw ? JSON.parse(formRaw) : {};
+        if (d.name)     setName(d.name);
+        if (d.email)    setEmail(d.email);
+        // restore the saved country, then show just the bare number
+        if (d.countryDial || d.countryName) setCountry(findCountry(d.countryName, d.countryDial));
+        if (d.phone)    setPhone(stripDial(d.phone));
+        if (d.location) setLocation(d.location);
+        if (d.rawText)  setRawText(d.rawText);
+        // "Regenerate" is ONE tap now: with a saved story we re-run immediately instead of
+        // re-showing the form the user already filled once. No story saved → the form.
+        if (d.rawText && String(d.rawText).trim().length >= 30) {
+          const dial = (d.countryDial || DEFAULT_COUNTRY.dial);
+          const bare = stripDial(d.phone || '');
+          autoGenerate({
+            name: d.name || '', email: d.email || '',
+            phone: bare ? `${dial} ${bare}` : '', location: d.location || '',
+            rawText: d.rawText, includeUploaded: false,
+          });
+        } else {
+          setMode('ai');
         }
-        setMode('ai');
         return;
       }
 
@@ -308,6 +366,63 @@ export default function ResumeBuilderIndex() {
     return iv;
   }
 
+  // Generation with EXPLICIT values — the auto lanes run before React state has settled, so
+  // reading component state here would post stale/empty fields.
+  async function autoGenerate(v: { name: string; email: string; phone: string; location: string; rawText: string; includeUploaded: boolean }) {
+    setMode('loading');
+    const iv = startLoadingAnim();
+    const controller = new AbortController();
+    const clientTimeout = setTimeout(() => controller.abort(), 120_000);
+    try {
+      const authHeader = await getAuthHeader();
+      let devHeaders: Record<string, string> = {};
+      try { devHeaders = await require('../../services/deviceId').deviceHeader(); } catch {}
+      const wasRegen = regenPendingRef.current;
+      const res = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader, ...devHeaders },
+        body: JSON.stringify({ name: v.name, email: v.email, phone: v.phone, location: v.location,
+          rawText: v.rawText, includeUploadedResume: v.includeUploaded, isRegenerate: wasRegen }),
+        signal: controller.signal,
+      });
+      clearTimeout(clientTimeout);
+      const data = await res.json();
+      clearInterval(iv);
+      if (res.status === 403 && data.reason === 'regen_limit') {
+        setMode('ai');
+        Alert.alert('Regeneration used', data.error || 'Your free plan includes one regeneration.',
+          [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
+        return;
+      }
+      if (res.status === 402) {
+        setMode('ai');
+        Alert.alert('Limit reached', data.error || 'You have used your included resume generations.',
+          [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
+        return;
+      }
+      if (!res.ok || !data.resumeData) throw new Error(data.error || 'Generation failed');
+      regenPendingRef.current = false;
+      await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(data.resumeData));
+      await AsyncStorage.setItem('resumeBuilderMethod', 'ai').catch(() => {});
+      await AsyncStorage.setItem('resumeBuilderFormData', JSON.stringify({
+        name: v.name, email: v.email, phone: stripDial(v.phone), location: v.location, rawText: v.rawText,
+      })).catch(() => {});
+      setBuildMethod('ai');
+      router.push('/(resume-builder)/preview');
+    } catch (e: any) {
+      clearTimeout(clientTimeout);
+      clearInterval(iv);
+      setMode('ai');
+      const isAbort = e?.name === 'AbortError';
+      Alert.alert(
+        isAbort ? 'Taking too long…' : 'Generation failed',
+        isAbort ? 'The AI is taking longer than usual. Please tap "Generate" again — it usually succeeds on the next try.'
+                : (e.message || 'Something went wrong. Please try again.'),
+        [{ text: 'Try Again', style: 'default' }],
+      );
+    }
+  }
+
   async function handleAIGenerate() {
     if (!rawText.trim() || rawText.trim().length < 30) {
       Alert.alert('More detail needed', 'Please share more about your experience (at least a few sentences).');
@@ -334,12 +449,18 @@ export default function ResumeBuilderIndex() {
       const res = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name, email, phone: fullPhone, location, rawText, includeUploadedResume: hasUploadedResume && includeUploadedResume }),
+        body: JSON.stringify({ name, email, phone: fullPhone, location, rawText, includeUploadedResume: hasUploadedResume && includeUploadedResume, isRegenerate: regenPendingRef.current }),
         signal: controller.signal,
       });
       clearTimeout(clientTimeout);
       const data = await res.json();
       clearInterval(iv);
+      if (res.status === 403 && data.reason === 'regen_limit') {
+        setMode('ai');
+        Alert.alert('Regeneration used', data.error || 'Your free plan includes one regeneration.',
+          [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
+        return;
+      }
       if (res.status === 402) {
         setMode('ai');
         // Quota exhausted (trial or plan) → route to Plans; legacy credit users see the same sheet.
@@ -354,6 +475,7 @@ export default function ResumeBuilderIndex() {
         return;
       }
       if (!res.ok || !data.resumeData) throw new Error(data.error || 'Generation failed');
+      regenPendingRef.current = false;
       await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(data.resumeData));
       await AsyncStorage.setItem('resumeBuilderMethod', 'ai').catch(() => {});
       setBuildMethod('ai');

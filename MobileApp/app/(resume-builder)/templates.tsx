@@ -1,5 +1,15 @@
-// Resume Builder — new feature. Safe to delete without affecting existing app.
-import React, { useEffect, useRef, useState } from 'react';
+// AI Hub — new feature. Safe to delete without affecting existing app.
+//
+// The design gallery: 9 layout families × recolored variants (37 designs) from
+// GET /resume-builder/templates. One full preview per FAMILY, recolors via swatch taps —
+// previews are fetched lazily in small batches because rendering every design in one request
+// is exactly what used to break this screen at nine designs (multi-MB base64 + a serial
+// chromium loop outliving the client timeout).
+//
+// Previews are free for everyone. DOWNLOADING the file is a paid-plan feature: the button is
+// shown to free users too, and tapping it explains + routes to the plans screen. The server
+// enforces the same rule with a 403 reason:'paid_required'.
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
   Alert, ActivityIndicator, Dimensions, Platform,
@@ -14,6 +24,7 @@ import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { API_BASE } from '../../config';
+import { fetchSubscriptionStatus } from '../../services/subscriptionService';
 
 const T = {
   bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
@@ -22,21 +33,16 @@ const T = {
   blue: '#4F8DFF', blueDeep: '#2563EB', cyan: '#06B6D4', gold: '#F5A623',
 };
 
+type Variant = { id: string; name: string; accent: string };
+type Family  = { id: string; name: string; accent: string; ats?: number | null; photo?: boolean; variants: Variant[] };
+type Region  = { id: string; label: string; sub?: string; templates: string[] };
 type Preview = { id: string; name: string; accent: string; ats?: number | null; image: string; width: number; height: number };
 type Mode = 'onepage' | 'a4';
 
-// Region ids MUST match server REGIONS (resumeTemplates.js).
-const REGIONS = [
-  { id: 'generic', label: 'Generic',        flag: '🌐' },
-  { id: 'us_ca',   label: 'USA / Canada',   flag: '🇺🇸' },
-  { id: 'uk_au',   label: 'UK / Australia', flag: '🇬🇧' },
-  { id: 'india',   label: 'India',          flag: '🇮🇳' },
-  { id: 'dach',    label: 'Germany / DACH', flag: '🇩🇪' },
-  { id: 'eu',      label: 'Europe / EU',    flag: '🇪🇺' },
-  { id: 'sg',      label: 'Singapore',      flag: '🇸🇬' },
-];
+const REGION_FLAGS: Record<string, string> = {
+  generic: '🌐', us_ca: '🇺🇸', uk_au: '🇬🇧', india: '🇮🇳', dach: '🇩🇪', eu: '🇪🇺', sg: '🇸🇬',
+};
 
-const DOWNLOAD_CREDITS = 2;
 const WIN = Dimensions.get('window').width;
 const SIDE_PAD = 12;
 const CARD_W = WIN - SIDE_PAD * 2;
@@ -49,77 +55,146 @@ async function getToken() {
 export default function ResumeTemplates() {
   const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
+  const [families, setFamilies] = useState<Family[]>([]);
+  const [regions, setRegions]   = useState<Region[]>([]);
   const [region, setRegion]     = useState('generic');
-  const [previews, setPreviews] = useState<Preview[]>([]);
+  // family id → the variant currently chosen on that family's page (defaults to the base)
+  const [chosen, setChosen]     = useState<Record<string, string>>({});
+  const [previews, setPreviews] = useState<Record<string, Preview>>({});
+  const inFlight = useRef<Set<string>>(new Set());
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
   const [active, setActive]     = useState(0);
   const [mode, setMode]         = useState<Mode>('onepage');
   const [pagerH, setPagerH]     = useState(0);
   const [downloading, setDownloading] = useState(false);
+  const [isPaid, setIsPaid]     = useState(false);
 
-  async function loadPreviews(regionId: string) {
-    setLoading(true);
-    setError(null);
-    setActive(0);
+  const totalDesigns = useMemo(() => families.reduce((a, f) => a + f.variants.length, 0), [families]);
+
+  // ── Lazy preview loader: small batches, deduped, merged into a cache ───────
+  async function ensurePreviews(ids: string[]) {
+    const need = [...new Set(ids)].filter((id) => id && !previews[id] && !inFlight.current.has(id));
+    if (!need.length) return;
+    need.forEach((id) => inFlight.current.add(id));
     try {
       const token = await getToken();
       if (!token) throw new Error('Not logged in');
-      const res = await fetch(`${API_BASE}/resume-builder/preview-templates`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region: regionId }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.previews?.length) throw new Error(json.error || 'Could not build previews');
-      setPreviews(json.previews);
-      scrollRef.current?.scrollTo({ x: 0, animated: false });
+      for (let i = 0; i < need.length; i += 3) {
+        const batch = need.slice(i, i + 3);
+        const res = await fetch(`${API_BASE}/resume-builder/preview-templates`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: batch }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Could not build previews');
+        const got: Preview[] = json.previews || [];
+        setPreviews((prev) => {
+          const next = { ...prev };
+          for (const p of got) next[p.id] = p;
+          return next;
+        });
+      }
     } catch (e: any) {
-      setPreviews([]);
-      setError(e.message || 'Something went wrong. Please try again.');
+      if (!Object.keys(previews).length) setError(e.message || 'Something went wrong. Please try again.');
     } finally {
-      setLoading(false);
+      need.forEach((id) => inFlight.current.delete(id));
     }
   }
 
-  useEffect(() => { loadPreviews('generic'); }, []);
-
-  function pickRegion(id: string) {
-    if (id === region || loading) return;
-    setRegion(id);
-    loadPreviews(id);
+  // What the user can see next: the active family's chosen variant, plus both neighbours'.
+  function prefetchAround(idx: number, fams: Family[], sel: Record<string, string>) {
+    const wanted: string[] = [];
+    for (const j of [idx, idx + 1, idx - 1]) {
+      const f = fams[j];
+      if (f) wanted.push(sel[f.id] || f.id);
+    }
+    ensurePreviews(wanted);
   }
+
+  async function loadCatalogue() {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error('Not logged in');
+      const res = await fetch(`${API_BASE}/resume-builder/templates`, { headers: { Authorization: `Bearer ${token}` } });
+      const json = await res.json();
+      if (!res.ok || !json.families?.length) throw new Error(json.error || 'Could not load designs');
+      setFamilies(json.families);
+      setRegions(json.regions || []);
+      const sel: Record<string, string> = {};
+      for (const f of json.families as Family[]) sel[f.id] = f.id;
+      setChosen(sel);
+      setLoading(false);
+      prefetchAround(0, json.families, sel);
+    } catch (e: any) {
+      setError(e.message || 'Something went wrong. Please try again.');
+      setLoading(false);
+    }
+    // Paid state decides only how the download tap is EXPLAINED; the server stays authoritative.
+    try {
+      const st = await fetchSubscriptionStatus();
+      setIsPaid(!!st?.subscription);
+    } catch {}
+  }
+  useEffect(() => { loadCatalogue(); }, []);
+
+  const recommendedFams = useMemo(() => {
+    const r = regions.find((x) => x.id === region);
+    if (!r) return new Set<string>();
+    const famOf = (tid: string) => families.find((f) => f.variants.some((v) => v.id === tid))?.id;
+    return new Set(r.templates.map(famOf).filter(Boolean) as string[]);
+  }, [region, regions, families]);
 
   function onScrollEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
     const idx = Math.round(e.nativeEvent.contentOffset.x / WIN);
-    if (idx !== active) setActive(idx);
+    if (idx !== active) { setActive(idx); prefetchAround(idx, families, chosen); }
   }
-
   function goTo(idx: number) {
     scrollRef.current?.scrollTo({ x: idx * WIN, animated: true });
     setActive(idx);
+    prefetchAround(idx, families, chosen);
+  }
+  function pickVariant(famId: string, tplId: string) {
+    const sel = { ...chosen, [famId]: tplId };
+    setChosen(sel);
+    ensurePreviews([tplId]);
+  }
+
+  const activeFam = families[active];
+  const selectedId = activeFam ? (chosen[activeFam.id] || activeFam.id) : '';
+  const selected = previews[selectedId];
+  const selectedMeta = activeFam?.variants.find((v) => v.id === selectedId);
+
+  function upsellDownload() {
+    Alert.alert(
+      'Downloads are part of the paid plans',
+      'Applying to jobs stays free on every plan — and previewing all designs is free too. To download your designed PDF or Word file, choose a paid plan.',
+      [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'View paid plans', onPress: () => router.push('/(subscription)/plans' as never) },
+      ],
+    );
   }
 
   async function handleDownload(fmt: 'pdf' | 'docx' = 'pdf') {
-    if (downloading || !previews[active]) return;
+    if (downloading || !selectedId) return;
+    if (!isPaid) { upsellDownload(); return; }
     setDownloading(true);
     try {
       const token = await getToken();
       if (!token) throw new Error('Not logged in');
-      const selected = previews[active];
-
-      // DOCX uses a clean Word-native layout and ignores the visual template/mode.
       const url = fmt === 'docx' ? `${API_BASE}/resume-builder/generate-docx` : `${API_BASE}/resume-builder/generate-pdf`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: selected.id, mode }),
+        body: JSON.stringify({ template: selectedId, mode }),
       });
       const json = await res.json();
-      if (res.status === 402) {
-        Alert.alert('Not enough credits', json.error || `You need ${DOWNLOAD_CREDITS} credits to download a resume. Please top up.`);
-        return;
-      }
+      // The server said no — its word beats our cached status (subscription may have lapsed).
+      if (res.status === 403 && json.reason === 'paid_required') { setIsPaid(false); upsellDownload(); return; }
       if (!res.ok || !json.downloadUrl) throw new Error(json.error || 'Failed to generate file');
 
       const cleanPath = json.downloadUrl.replace(/^\/api/, '');
@@ -144,8 +219,6 @@ export default function ResumeTemplates() {
     }
   }
 
-  const selected = previews[active];
-
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* Top bar */}
@@ -155,18 +228,17 @@ export default function ResumeTemplates() {
           <Text style={s.backPillText}>Back</Text>
         </TouchableOpacity>
         <Text style={s.topTitle}>Choose a Format</Text>
-        <View style={{ width: 64 }} />
+        <View style={s.countPill}><Text style={s.countPillText}>{totalDesigns || '…'} designs</Text></View>
       </View>
 
-      {/* Region selector */}
+      {/* Region chips — a recommendation lens over the same 9 families, no reload */}
       <View>
-        <Text style={s.regionHint}>Target country / region</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.regionRow}>
-          {REGIONS.map((r) => {
+          {regions.map((r) => {
             const on = r.id === region;
             return (
-              <TouchableOpacity key={r.id} onPress={() => pickRegion(r.id)} activeOpacity={0.85} style={[s.regionChip, on && s.regionChipOn]}>
-                <Text style={s.regionFlag}>{r.flag}</Text>
+              <TouchableOpacity key={r.id} onPress={() => setRegion(r.id)} activeOpacity={0.85} style={[s.regionChip, on && s.regionChipOn]}>
+                <Text style={s.regionFlag}>{REGION_FLAGS[r.id] || '🌐'}</Text>
                 <Text style={[s.regionLabel, on && s.regionLabelOn]}>{r.label}</Text>
               </TouchableOpacity>
             );
@@ -177,21 +249,20 @@ export default function ResumeTemplates() {
       {loading ? (
         <View style={s.center}>
           <ActivityIndicator size="large" color={T.blue} />
-          <Text style={s.loadingText}>Generating your previews…</Text>
-          <Text style={s.loadingSub}>Rendering each format — a few seconds</Text>
+          <Text style={s.loadingText}>Loading the design catalogue…</Text>
         </View>
-      ) : error ? (
+      ) : error && !families.length ? (
         <View style={s.center}>
           <Ionicons name="alert-circle-outline" size={46} color={T.faint} />
           <Text style={s.errTitle}>{error}</Text>
-          <TouchableOpacity onPress={() => loadPreviews(region)} style={s.retryBtn} activeOpacity={0.85}>
+          <TouchableOpacity onPress={loadCatalogue} style={s.retryBtn} activeOpacity={0.85}>
             <Ionicons name="refresh-outline" size={15} color="#fff" />
             <Text style={s.retryText}>Try Again</Text>
           </TouchableOpacity>
         </View>
       ) : (
         <>
-          <Text style={s.lead}>Swipe to compare · scroll &amp; pinch to zoom · preview is free</Text>
+          <Text style={s.lead}>Swipe layouts · tap a color to restyle · every preview is free</Text>
 
           <View style={s.pagerWrap} onLayout={(e) => setPagerH(e.nativeEvent.layout.height)}>
             {pagerH > 0 && (
@@ -203,30 +274,35 @@ export default function ResumeTemplates() {
                 onMomentumScrollEnd={onScrollEnd}
                 decelerationRate="fast"
               >
-                {previews.map((p) => {
-                  const imgH = Math.round(CARD_W * (p.height / p.width));
+                {families.map((f) => {
+                  const tid = chosen[f.id] || f.id;
+                  const p = previews[tid];
+                  const accent = f.variants.find((v) => v.id === tid)?.accent || f.accent;
+                  const imgH = p ? Math.round(CARD_W * (p.height / p.width)) : 0;
                   return (
-                    <View key={p.id} style={[s.page, { height: pagerH }]}>
-                      <View style={[s.cardShadow, { height: pagerH - 14, shadowColor: p.accent }]}>
+                    <View key={f.id} style={[s.page, { height: pagerH }]}>
+                      <View style={[s.cardShadow, { height: pagerH - 14, shadowColor: accent }]}>
                         <View style={s.cardClip}>
-                          <ScrollView
-                            style={s.zoomScroll}
-                            contentContainerStyle={s.zoomContent}
-                            maximumZoomScale={3}
-                            minimumZoomScale={1}
-                            bouncesZoom
-                            pinchGestureEnabled
-                            showsVerticalScrollIndicator={false}
-                            showsHorizontalScrollIndicator={false}
-                            nestedScrollEnabled
-                          >
-                            <Image
-                              source={{ uri: p.image }}
-                              style={{ width: CARD_W, height: imgH }}
-                              contentFit="cover"
-                              transition={160}
-                            />
-                          </ScrollView>
+                          {p ? (
+                            <ScrollView
+                              style={s.zoomScroll}
+                              contentContainerStyle={s.zoomContent}
+                              maximumZoomScale={3}
+                              minimumZoomScale={1}
+                              bouncesZoom
+                              pinchGestureEnabled
+                              showsVerticalScrollIndicator={false}
+                              showsHorizontalScrollIndicator={false}
+                              nestedScrollEnabled
+                            >
+                              <Image source={{ uri: p.image }} style={{ width: CARD_W, height: imgH }} contentFit="cover" transition={160} />
+                            </ScrollView>
+                          ) : (
+                            <View style={s.previewLoading}>
+                              <ActivityIndicator size="large" color={accent} />
+                              <Text style={s.previewLoadingText}>Rendering {f.variants.find((v) => v.id === tid)?.name || f.name}…</Text>
+                            </View>
+                          )}
                         </View>
                       </View>
                     </View>
@@ -236,25 +312,42 @@ export default function ResumeTemplates() {
             )}
           </View>
 
-          {/* Dots + template name + ATS score */}
+          {/* Family dots · name · recommended badge · ATS · variant swatches */}
           <View style={s.indicator}>
-            {previews.length > 1 && (
-              <View style={s.dots}>
-                {previews.map((p, i) => (
-                  <TouchableOpacity key={p.id} onPress={() => goTo(i)} hitSlop={8}>
-                    <View style={[s.dot, i === active && { width: 22, backgroundColor: selected?.accent || T.blue }]} />
-                  </TouchableOpacity>
-                ))}
+            <View style={s.dots}>
+              {families.map((f, i) => (
+                <TouchableOpacity key={f.id} onPress={() => goTo(i)} hitSlop={8}>
+                  <View style={[s.dot, i === active && { width: 22, backgroundColor: selectedMeta?.accent || T.blue }]} />
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={s.nameRow}>
+              <Text style={s.designName}>{selectedMeta?.name || activeFam?.name || 'Resume'}</Text>
+              {activeFam && recommendedFams.has(activeFam.id) && (
+                <View style={s.recBadge}><Ionicons name="star" size={9} color="#fff" /><Text style={s.recBadgeText}>Recommended</Text></View>
+              )}
+            </View>
+            {!!activeFam?.ats && <AtsStars n={activeFam.ats} />}
+            {activeFam && activeFam.variants.length > 1 && (
+              <View style={s.swatchRow}>
+                {activeFam.variants.map((v) => {
+                  const on = v.id === selectedId;
+                  return (
+                    <TouchableOpacity key={v.id} onPress={() => pickVariant(activeFam.id, v.id)} hitSlop={6} activeOpacity={0.8}>
+                      <View style={[s.swatch, { backgroundColor: v.accent }, on && s.swatchOn]}>
+                        {on && <Ionicons name="checkmark" size={13} color="#fff" />}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
-            <Text style={s.designName}>{selected?.name || 'Resume'}</Text>
-            {!!selected?.ats && <AtsStars n={selected.ats} />}
           </View>
         </>
       )}
 
-      {/* Sticky footer: page format + download */}
-      {!loading && !error && (
+      {/* Sticky footer: page format + downloads (paid) — previews above stay free */}
+      {!loading && families.length > 0 && (
         <View style={s.footer}>
           <View style={s.segWrap}>
             <SegBtn icon="document-outline"  label="One Page" active={mode === 'onepage'} onPress={() => setMode('onepage')} />
@@ -267,12 +360,9 @@ export default function ResumeTemplates() {
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="download-outline" size={17} color="#fff" />
+                  <Ionicons name={isPaid ? 'download-outline' : 'lock-closed'} size={17} color="#fff" />
                   <Text style={s.dlText}>Download PDF</Text>
-                  <View style={s.credBadge}>
-                    <Ionicons name="diamond" size={9} color="#fff" />
-                    <Text style={s.credBadgeText}>{DOWNLOAD_CREDITS}</Text>
-                  </View>
+                  {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
                 </>
               )}
             </LinearGradient>
@@ -283,18 +373,17 @@ export default function ResumeTemplates() {
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="document-text-outline" size={17} color="#fff" />
+                  <Ionicons name={isPaid ? 'document-text-outline' : 'lock-closed'} size={17} color="#fff" />
                   <Text style={s.dlText}>Download as Word</Text>
-                  <View style={s.credBadge}>
-                    <Ionicons name="diamond" size={9} color="#fff" />
-                    <Text style={s.credBadgeText}>{DOWNLOAD_CREDITS}</Text>
-                  </View>
+                  {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
                 </>
               )}
             </LinearGradient>
           </TouchableOpacity>
           <Text style={s.footerNote}>
-            {`${DOWNLOAD_CREDITS} credits per download · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`}
+            {isPaid
+              ? `Included in your plan · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`
+              : 'Previews are free · downloads are included in every paid plan'}
           </Text>
         </View>
       )}
@@ -328,9 +417,10 @@ const s = StyleSheet.create({
   backPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
   topTitle:     { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  countPill:    { backgroundColor: T.blue + '15', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5 },
+  countPillText:{ fontSize: 11, fontWeight: '800', color: T.blueDeep },
 
-  regionHint:   { fontSize: 11, fontWeight: '700', color: T.faint, letterSpacing: 0.6, textTransform: 'uppercase', paddingHorizontal: 16, marginTop: 2, marginBottom: 6 },
-  regionRow:    { paddingHorizontal: 12, gap: 8, paddingBottom: 4 },
+  regionRow:    { paddingHorizontal: 12, gap: 8, paddingBottom: 4, paddingTop: 2 },
   regionChip:   { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 13, borderWidth: 1, borderColor: T.border },
   regionChipOn: { backgroundColor: T.navy, borderColor: T.navy },
   regionFlag:   { fontSize: 14 },
@@ -339,7 +429,6 @@ const s = StyleSheet.create({
 
   center:       { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 32 },
   loadingText:  { fontSize: 15, fontWeight: '700', color: T.ink, marginTop: 6, textAlign: 'center' },
-  loadingSub:   { fontSize: 12, color: T.faint },
   errTitle:     { fontSize: 14, fontWeight: '600', color: T.muted, textAlign: 'center', marginTop: 4 },
   retryBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: T.blueDeep, borderRadius: 14, paddingHorizontal: 20, paddingVertical: 11, marginTop: 8 },
   retryText:    { color: '#fff', fontWeight: '700', fontSize: 14 },
@@ -351,13 +440,21 @@ const s = StyleSheet.create({
   cardClip:     { flex: 1, borderRadius: 16, overflow: 'hidden', backgroundColor: '#fff' },
   zoomScroll:   { flex: 1 },
   zoomContent:  { alignItems: 'center' },
+  previewLoading:     { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  previewLoadingText: { fontSize: 12.5, fontWeight: '600', color: T.muted },
 
   indicator:    { alignItems: 'center', gap: 6, paddingTop: 10 },
   dots:         { flexDirection: 'row', alignItems: 'center', gap: 7 },
   dot:          { width: 8, height: 8, borderRadius: 4, backgroundColor: 'rgba(11,15,34,0.18)' },
+  nameRow:      { flexDirection: 'row', alignItems: 'center', gap: 8 },
   designName:   { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
+  recBadge:     { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: T.gold, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3 },
+  recBadgeText: { fontSize: 9.5, fontWeight: '800', color: '#fff', letterSpacing: 0.3 },
   atsRow:       { flexDirection: 'row', alignItems: 'center', gap: 2 },
   atsLabel:     { fontSize: 10, fontWeight: '800', color: T.faint, letterSpacing: 1, marginRight: 4 },
+  swatchRow:    { flexDirection: 'row', alignItems: 'center', gap: 10, paddingTop: 4 },
+  swatch:       { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.9)', shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 4, elevation: 3 },
+  swatchOn:     { transform: [{ scale: 1.18 }], borderColor: '#fff' },
 
   footer:       { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.select({ ios: 28, default: 16 }), gap: 10, shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
   segWrap:      { flexDirection: 'row', backgroundColor: T.bgSoft, borderRadius: 12, padding: 4, gap: 4 },

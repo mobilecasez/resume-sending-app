@@ -117,7 +117,10 @@ async function renderPdf(templateId, resumeData, opts = {}) {
     const page = await preparePage(browser, html);
     if (mode === 'a4') {
       const pdfBuf = await page.pdf({ printBackground: true, preferCSSPageSize: true });
-      const band = BANDS[templateId];
+      // The registry entry carries the band (variants carry a RECOLORED one); the local BANDS
+      // table stays only as a fallback for the two base ids.
+      const tpl = TEMPLATES.find((t) => t.id === templateId);
+      const band = (tpl && tpl.band) || BANDS[templateId];
       return band ? await compositeBand(pdfBuf, band) : pdfBuf;
     }
     // One continuous page sized exactly to the content.
