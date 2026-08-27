@@ -12,7 +12,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  Alert, ActivityIndicator, Dimensions, Platform,
+  Alert, ActivityIndicator, Dimensions, Platform, Modal, Pressable,
   NativeSyntheticEvent, NativeScrollEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -74,6 +74,7 @@ export default function ResumeTemplates() {
   const [mode, setMode]         = useState<Mode>('onepage');
   const [pagerH, setPagerH]     = useState(0);
   const [downloading, setDownloading] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [isPaid, setIsPaid]     = useState(false);
 
   // ── Lazy preview loader: small batches, deduped, merged into a cache ───────
@@ -407,47 +408,64 @@ export default function ResumeTemplates() {
         </>
       )}
 
-      {/* Sticky footer: page format + downloads (paid) — previews above stay free */}
+      {/* Sticky footer: ONE button — the three-row footer ate the preview's space. Format and
+          page options live in the swipe-up sheet, like the filter sheet elsewhere in the app. */}
       {!loading && families.length > 0 && (
         <View style={s.footer}>
-          <View style={s.segWrap}>
-            <SegBtn icon="document-outline"  label="One Page" active={mode === 'onepage'} onPress={() => setMode('onepage')} />
-            <SegBtn icon="documents-outline" label="A4 Pages" active={mode === 'a4'}      onPress={() => setMode('a4')} />
-          </View>
-
-          <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} onPress={() => handleDownload('pdf')} disabled={downloading}>
+          <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} onPress={() => setSheetOpen(true)} disabled={downloading}>
             <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
               {downloading ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <>
-                  <Ionicons name={isPaid ? 'download-outline' : 'lock-closed'} size={17} color="#fff" />
-                  <Text style={s.dlText}>Download PDF</Text>
-                  {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
+                  <Ionicons name="download-outline" size={17} color="#fff" />
+                  <Text style={s.dlText}>Download</Text>
+                  {!isPaid && <View style={s.credBadge}><Ionicons name="lock-closed" size={10} color="#fff" /><Text style={s.credBadgeText}>Paid plans</Text></View>}
                 </>
               )}
             </LinearGradient>
           </TouchableOpacity>
-          <TouchableOpacity style={[s.dlOuter, { marginTop: 8 }]} activeOpacity={0.9} onPress={() => handleDownload('docx')} disabled={downloading}>
+        </View>
+      )}
+
+      {/* ── The download sheet: page format + file format, paid-gated ── */}
+      <Modal visible={sheetOpen} transparent animationType="slide" onRequestClose={() => setSheetOpen(false)}>
+        <Pressable style={s.sheetBackdrop} onPress={() => setSheetOpen(false)} />
+        <View style={s.sheet}>
+          <View style={s.sheetHandle} />
+          <Text style={s.sheetTitle}>Download “{selectedMeta?.name || activeFam?.name || 'Resume'}”</Text>
+
+          <Text style={s.sheetLabel}>Page layout</Text>
+          <View style={s.segWrap}>
+            <SegBtn icon="document-outline"  label="One Page" active={mode === 'onepage'} onPress={() => setMode('onepage')} />
+            <SegBtn icon="documents-outline" label="A4 Pages" active={mode === 'a4'}      onPress={() => setMode('a4')} />
+          </View>
+
+          <Text style={s.sheetLabel}>File format</Text>
+          <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} disabled={downloading}
+            onPress={() => { setSheetOpen(false); handleDownload('pdf'); }}>
+            <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
+              <Ionicons name={isPaid ? 'download-outline' : 'lock-closed'} size={17} color="#fff" />
+              <Text style={s.dlText}>PDF</Text>
+              {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
+            </LinearGradient>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.dlOuter, { marginTop: 8 }]} activeOpacity={0.9} disabled={downloading}
+            onPress={() => { setSheetOpen(false); handleDownload('docx'); }}>
             <LinearGradient colors={['#2B579A', '#1f407a']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
-              {downloading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name={isPaid ? 'document-text-outline' : 'lock-closed'} size={17} color="#fff" />
-                  <Text style={s.dlText}>Download as Word</Text>
-                  {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
-                </>
-              )}
+              <Ionicons name={isPaid ? 'document-text-outline' : 'lock-closed'} size={17} color="#fff" />
+              <Text style={s.dlText}>Word (.docx)</Text>
+              {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
             </LinearGradient>
           </TouchableOpacity>
+
           <Text style={s.footerNote}>
             {isPaid
               ? `Included in your plan · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`
               : 'Previews are free · downloads are included in every paid plan'}
           </Text>
         </View>
-      )}
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -518,7 +536,12 @@ const s = StyleSheet.create({
   swatch:       { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.9)', shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 4, elevation: 3 },
   swatchOn:     { transform: [{ scale: 1.18 }], borderColor: '#fff' },
 
-  footer:       { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.select({ ios: 28, default: 16 }), gap: 10, shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
+  footer:       { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.select({ ios: 26, default: 14 }), shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
+  sheetBackdrop:{ flex: 1, backgroundColor: 'rgba(11,15,34,0.45)' },
+  sheet:        { backgroundColor: T.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 18, paddingTop: 10, paddingBottom: Platform.select({ ios: 34, default: 20 }), gap: 10 },
+  sheetHandle:  { alignSelf: 'center', width: 40, height: 4.5, borderRadius: 3, backgroundColor: 'rgba(11,15,34,0.16)', marginBottom: 4 },
+  sheetTitle:   { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3, textAlign: 'center', marginBottom: 2 },
+  sheetLabel:   { fontSize: 11, fontWeight: '800', color: T.faint, letterSpacing: 0.6, textTransform: 'uppercase', marginTop: 4 },
   segWrap:      { flexDirection: 'row', backgroundColor: T.bgSoft, borderRadius: 12, padding: 4, gap: 4 },
   segBtn:       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, borderRadius: 9 },
   segBtnActive: { backgroundColor: T.navy },

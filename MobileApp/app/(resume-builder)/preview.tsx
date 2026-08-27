@@ -569,13 +569,14 @@ export default function ResumePreview() {
         <View style={{ height: busy ? 32 : 96 }} />
       </ScrollView>
 
-      {/* Floating action bar (hidden while editing a card): Download · Regenerate · View PDF */}
+      {/* Floating action bar (hidden while editing a card): TWO buttons, one row.
+          Download/Preview and View-PDF both led to the same gallery — one button covers both. */}
       {!busy && (
         <View style={s.floatingBar}>
           <View style={s.actionRow}>
             <TouchableOpacity style={s.actionHalf} activeOpacity={0.88} onPress={() => router.push('/(resume-builder)/templates')}>
               <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.regenBtn}>
-                <Ionicons name="download-outline" size={16} color="#fff" /><Text style={s.regenText}>Download</Text>
+                <Ionicons name="download-outline" size={16} color="#fff" /><Text style={s.regenText}>Download / Preview</Text>
               </LinearGradient>
             </TouchableOpacity>
             <TouchableOpacity
@@ -594,7 +595,11 @@ export default function ResumePreview() {
                   return;
                 }
                 await AsyncStorage.setItem('resumeBuilderAction', 'regenerate').catch(() => {});
-                router.back();
+                // ⚠️ PUSH the builder — never router.back(). Arriving from the Home card puts
+                // NO builder index in the stack, so back() landed on the HOME PAGE with the
+                // regenerate flag stranded ("Regenerate takes me to the home page"). An explicit
+                // push always opens Tell-us-your-story, whatever the stack looks like.
+                router.push('/(resume-builder)' as never);
               }}
             >
               <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.regenBtn}>
@@ -605,13 +610,6 @@ export default function ResumePreview() {
               </LinearGradient>
             </TouchableOpacity>
           </View>
-          <TouchableOpacity style={s.viewPdfBtn} activeOpacity={0.8} onPress={() => router.push('/(resume-builder)/templates')}>
-            <Ionicons name="eye-outline" size={15} color={T.blue} />
-            <Text style={s.viewPdfText}>View PDF — preview all designs free</Text>
-          </TouchableOpacity>
-          <Text style={s.regenNote}>
-            {regen.isPaid ? 'Regenerate re-runs AI with your saved story' : 'Free plan: 1 regeneration · previews always free'}
-          </Text>
         </View>
       )}
 
@@ -737,8 +735,6 @@ const s = StyleSheet.create({
   regenOuter:     { borderRadius: 16, overflow: 'hidden' },
   actionRow:      { flexDirection: 'row', gap: 10 },
   actionHalf:     { flex: 1, borderRadius: 16, overflow: 'hidden' },
-  viewPdfBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, height: 42, borderRadius: 13, borderWidth: 1.5, borderColor: T.blue + '44', backgroundColor: T.blue + '0D' },
-  viewPdfText:    { fontSize: 13.5, fontWeight: '700', color: T.blue },
   regenBtn:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 50, borderRadius: 16 },
   regenText:      { fontSize: 14, fontWeight: '800', color: '#fff' },
   regenBadge:     { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3 },

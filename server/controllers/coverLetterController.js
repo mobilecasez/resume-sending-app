@@ -1203,6 +1203,20 @@ async function previewCoverLetterTemplates(req, res) {
 
 // POST /api/cover-letter/generate-template-pdf  — PDF only (no rewriting), charge credits.
 // Generic = the byte-exact original letter (original PDFKit generator); others = HTML templates.
+// Downloads (PDF + Word) are paid-plan features, matching the resume rule (2026-08-26):
+// previews stay free, the FILE needs an active subscription. Replaces the per-download credit.
+async function requirePaidForDownload(userId, res) {
+    const sub = await entitlements.activeSubscription(userId).catch(() => null);
+    if (!sub) {
+        res.status(403).json({
+            error: 'Previewing every design is free — downloading the file is part of the paid plans.',
+            reason: 'paid_required',
+        });
+        return false;
+    }
+    return true;
+}
+
 async function generateCoverLetterTemplatePdf(req, res) {
     const userId = req.user.id;
     const { template, mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
@@ -1211,10 +1225,7 @@ async function generateCoverLetterTemplatePdf(req, res) {
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
-        const credit = await checkUserCredits(userId, CL_DOWNLOAD_CREDIT_COST);
-        if (!credit.hasCredits) {
-            return res.status(402).json({ error: credit.message, creditsRequired: CL_DOWNLOAD_CREDIT_COST, creditsRemaining: credit.remaining });
-        }
+        if (!(await requirePaidForDownload(userId, res))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
         const tplMeta = clTemplates.TEMPLATES.find(t => t.id === tplId);
 
@@ -1236,10 +1247,7 @@ async function generateCoverLetterTemplatePdf(req, res) {
             await fs.writeFile(path.join(tempDir, fileName), pdf);
         }
 
-        try { await deductCredits(userId, CL_DOWNLOAD_CREDIT_COST, 'cover_letter_download', { template: tplId, mode: mode || 'onepage' }); }
-        catch (e) { console.warn('[coverLetter] credit deduction failed:', e.message); }
-
-        return res.json({ success: true, downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`, template: tplId, creditsRemaining: Math.max(0, credit.remaining - CL_DOWNLOAD_CREDIT_COST) });
+        return res.json({ success: true, downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplatePdf error:', e.message);
         return res.status(500).json({ error: 'Failed to generate cover letter PDF. Please try again.' });
@@ -1258,10 +1266,7 @@ async function generateCoverLetterTemplateDocx(req, res) {
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
-        const credit = await checkUserCredits(userId, CL_DOWNLOAD_CREDIT_COST);
-        if (!credit.hasCredits) {
-            return res.status(402).json({ error: credit.message, creditsRequired: CL_DOWNLOAD_CREDIT_COST, creditsRemaining: credit.remaining });
-        }
+        if (!(await requirePaidForDownload(userId, res))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
         const sender = await buildCLSender(userId);
         const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
@@ -1276,10 +1281,7 @@ async function generateCoverLetterTemplateDocx(req, res) {
         await fs.mkdir(tempDir, { recursive: true });
         await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
 
-        try { await deductCredits(userId, CL_DOWNLOAD_CREDIT_COST, 'cover_letter_download', { template: tplId, format: 'docx' }); }
-        catch (e) { console.warn('[coverLetter] credit deduction failed:', e.message); }
-
-        return res.json({ success: true, downloadUrl: `/api/download-cover-letter-docx/${encodeURIComponent(fileName)}`, template: tplId, creditsRemaining: Math.max(0, credit.remaining - CL_DOWNLOAD_CREDIT_COST) });
+        return res.json({ success: true, downloadUrl: `/api/download-cover-letter-docx/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplateDocx error:', e.message);
         return res.status(500).json({ error: 'Failed to generate cover letter Word document. Please try again.' });

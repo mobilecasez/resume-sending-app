@@ -12,7 +12,6 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
-import { useEventCosts } from '../../hooks/useEventCosts';
 import { fetchResumeSourceText } from '../../services/resumeScoreService';
 
 const T = {
@@ -109,10 +108,29 @@ const SAMPLE_RESUME = {
   skills: { technical: ['Skill 1', 'Skill 2', 'Skill 3'], soft: ['Communication', 'Teamwork', 'Problem Solving'] },
 };
 
+// The story box is PLAIN TEXT. Pulled resume text and saved stories can carry **markdown**
+// emphasis from the AI's own resume fields — those markers must never reach the textarea.
+function plainStory(t?: string | null): string {
+  return String(t || '')
+    .replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*/g, '')
+    .replace(/^#+\s*/gm, '').replace(/^[-•]\s*/gm, '')
+    .replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export default function ResumeBuilderIndex() {
   const router = useRouter();
-  const { costs } = useEventCosts();
-  const genCost = costs['resume_ai_generate'] ?? 2;   // admin-configurable
+  // The model is SUBSCRIPTION COUNTS now, not credits — the button shows what the user has
+  // LEFT this period (server truth via /subscription/status), never a per-action price.
+  const [resumesLeft, setResumesLeft] = useState<number | null>(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { fetchSubscriptionStatus } = require('../../services/subscriptionService');
+        const st = await fetchSubscriptionStatus();
+        if (st && st.remaining && typeof st.remaining.resumes === 'number') setResumesLeft(Math.max(0, st.remaining.resumes));
+      } catch {}
+    })();
+  }, []);
   const [mode, setMode] = useState<'select' | 'ai' | 'loading'>('select');
   const [existingResume, setExistingResume] = useState<{ full_name?: string; email?: string } | null>(null);
   const [buildMethod, setBuildMethod] = useState<'ai' | 'manual'>('manual');
@@ -204,7 +222,7 @@ export default function ResumeBuilderIndex() {
             setPulling(false);
             // Only ever ADD to what is there. Overwriting text the user already typed would
             // destroy work in the one flow where they are most likely to have typed something.
-            if (pulled) setRawText((t) => (t && t.trim().length > 30 ? t : pulled));
+            if (pulled) setRawText((t) => (t && t.trim().length > 30 ? t : plainStory(pulled)));
           }
         } catch {}
       }
@@ -214,6 +232,10 @@ export default function ResumeBuilderIndex() {
       if (action === 'regenerate') {
         await AsyncStorage.removeItem('resumeBuilderAction').catch(() => {});
         regenPendingRef.current = true;   // the server counts this against the free allowance
+        // ⚠️ Regenerate SHOWS the Tell-us-your-story form, prefilled — it does not auto-run.
+        // The one-tap auto-regenerate shipped in b195 and was reverted on direct feedback: the
+        // user adjusts the story before the AI re-runs. isRegenerate stays armed so the server
+        // still counts the eventual Generate as the free regeneration.
         const formRaw = await AsyncStorage.getItem('resumeBuilderFormData').catch(() => null);
         const d = formRaw ? JSON.parse(formRaw) : {};
         if (d.name)     setName(d.name);
@@ -222,20 +244,18 @@ export default function ResumeBuilderIndex() {
         if (d.countryDial || d.countryName) setCountry(findCountry(d.countryName, d.countryDial));
         if (d.phone)    setPhone(stripDial(d.phone));
         if (d.location) setLocation(d.location);
-        if (d.rawText)  setRawText(d.rawText);
-        // "Regenerate" is ONE tap now: with a saved story we re-run immediately instead of
-        // re-showing the form the user already filled once. No story saved → the form.
-        if (d.rawText && String(d.rawText).trim().length >= 30) {
-          const dial = (d.countryDial || DEFAULT_COUNTRY.dial);
-          const bare = stripDial(d.phone || '');
-          autoGenerate({
-            name: d.name || '', email: d.email || '',
-            phone: bare ? `${dial} ${bare}` : '', location: d.location || '',
-            rawText: d.rawText, includeUploaded: false,
-          });
+        if (d.rawText) {
+          setRawText(plainStory(d.rawText));
         } else {
-          setMode('ai');
+          // A resume built through the auto lane may predate the saved-form write — pull the
+          // uploaded resume's text so the story box is never empty on a regenerate.
+          setPulling(true);
+          const pulled = await fetchResumeSourceText().catch(() => '');
+          setPulling(false);
+          if (pulled) setRawText(plainStory(pulled));
         }
+        setBuildMethod('ai');
+        setMode('ai');
         return;
       }
 
@@ -810,13 +830,14 @@ export default function ResumeBuilderIndex() {
             <LinearGradient colors={[T.cyan, T.blue]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.generateBtn}>
               <Ionicons name="flash" size={18} color="#fff" />
               <Text style={s.generateText}>Generate My Resume with AI</Text>
-              <View style={s.creditBadge}>
-                <Ionicons name="diamond" size={9} color="#fff" />
-                <Text style={s.creditBadgeText}>{genCost}</Text>
-              </View>
+              {resumesLeft != null && (
+                <View style={s.creditBadge}>
+                  <Text style={s.creditBadgeText}>{resumesLeft} left</Text>
+                </View>
+              )}
             </LinearGradient>
           </TouchableOpacity>
-          <Text style={s.creditNote}>{genCost > 0 ? `Uses ${genCost} credit${genCost === 1 ? '' : 's'} per generation` : 'Free'}</Text>
+          <Text style={s.creditNote}>{resumesLeft == null ? 'Included in your plan' : resumesLeft > 0 ? `${resumesLeft} generation${resumesLeft === 1 ? '' : 's'} left this period` : 'Limit reached — see plans for more'}</Text>
           <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>

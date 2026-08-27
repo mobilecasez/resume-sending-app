@@ -70,7 +70,7 @@ ok('no credit badges remain in the gallery', !/DOWNLOAD_CREDITS/.test(tpl));
 console.log('── app: one-tap auto flows ──');
 ok('an autoBuild entry generates without the form', /e\.autoBuild[\s\S]{0,2000}autoGenerate\(/.test(idx));
 ok('a missing uploaded resume walks the user to the upload', /onboarding_focus_target[\s\S]{0,40}'resume'/.test(idx) || /'onboarding_focus_target', 'resume'/.test(idx));
-ok('regenerate is one tap when the story is saved', /action === 'regenerate'[\s\S]{0,1400}autoGenerate\(/.test(idx));
+// (the one-tap auto-regenerate was reverted on user feedback — the form must show, prefilled)
 ok('the regen flag rides on BOTH generate paths', (idx.match(/isRegenerate: (wasRegen|regenPendingRef\.current)/g) || []).length === 2);
 ok('regen_limit is handled with a plans route', /regen_limit[\s\S]{0,300}\/\(subscription\)\/plans/.test(idx));
 
@@ -126,6 +126,44 @@ ok('picking a region resets the pager and starts rendering its first family',
   /function pickRegion[\s\S]{0,900}prefetchAround\(0, fams, chosen\)/.test(tpl));
 ok('an All-designs chip exists for the full catalogue', /All designs/.test(tpl));
 ok('the cosmetic Recommended badge is gone', !/recommendedFams/.test(tpl) && !/Recommended</.test(tpl));
+
+console.log('── the 2026-08-26 overnight round ──');
+const card2 = R('../components/ResumeRebuildCard.tsx');
+const clt = R('../app/(cover-letter)/templates.tsx');
+const clc = R('../../server/controllers/coverLetterController.js');
+const home2 = R('../components/HomeScreen.js');
+// Regenerate: PUSH the builder (back() landed on Home when the stack had no builder index),
+// and show the prefilled story form — never auto-run (explicit user feedback reverting b195).
+// Comments are commentary — only executable lines count for the negative half.
+const prevCode = prev.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+ok('regenerate PUSHES the builder, never router.back()',
+  /resumeBuilderAction', 'regenerate'\)[\s\S]{0,900}router\.push\('\/\(resume-builder\)' as never\)/.test(prev)
+  && !/resumeBuilderAction', 'regenerate'\)[\s\S]{0,600}router\.back\(\)/.test(prevCode));
+ok('regenerate prefills the form and stops (no autoGenerate)',
+  !/action === 'regenerate'[\s\S]{0,1600}autoGenerate\(/.test(idx));
+ok('an empty saved story falls back to the uploaded resume text',
+  /action === 'regenerate'[\s\S]{0,1800}fetchResumeSourceText/.test(idx));
+// The story box is plain text: no markdown markers survive prefill.
+ok('a plainStory sanitizer exists and strips ** markers', /function plainStory[\s\S]{0,300}replace\(\/\\\*/.test(idx));
+ok('every prefill path routes through it', (idx.match(/plainStory\(/g) || []).length >= 4);
+// Two buttons, one row, on the preview — View PDF merged into Download/Preview.
+ok('the preview bar is two buttons in one row', /Download \/ Preview/.test(prev) && !/viewPdfBtn/.test(prev));
+// Gallery: one Download button; options live in the swipe-up sheet.
+ok('the gallery footer is a single Download button', /setSheetOpen\(true\)/.test(tpl));
+ok('the sheet holds page layout + file format', /Page layout[\s\S]{0,900}File format/.test(tpl));
+ok('the sheet slides up like the filter sheet', /animationType="slide"/.test(tpl));
+// Subscription counts, not credits — across the app's action buttons.
+ok('the Generate button shows the REMAINING count, not a credit price',
+  /resumesLeft} left/.test(idx) && !/genCost/.test(idx));
+ok('cover-letter downloads are paid-gated server-side', (clc.match(/requirePaidForDownload/g) || []).length >= 3);
+ok('the cover-letter gallery shows Paid plans, not credit numbers',
+  /Paid plans/.test(clt) && !/credits per download/.test(clt));
+ok('the company-card credit stamp is retired', !/CREDIT\$\{clGenCost/.test(home2) && /stamp is retired/.test(home2));
+// The Home card shows the REAL rendered resume.
+ok('a cached home-thumb endpoint exists', /home-thumb/.test(routes) && /resume_thumb_/.test(ctl));
+ok('…rendered once per resume version (updated_at key)', /updated_at[\s\S]{0,300}resume_thumb_/.test(ctl));
+ok('the card prefers the real preview and keeps the mock as fallback',
+  /thumb \? \(/.test(card2) && /MiniResume name=\{name\}/.test(card2));
 
 console.log(`\nresume rebuild flow: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -10,7 +10,7 @@
 //
 // ⚠️ Animation rule (b126-128 crash): every Animated.Value here uses useNativeDriver:false.
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -89,6 +89,8 @@ export default function ResumeRebuildCard() {
   const [hasScore, setHasScore] = useState(false);
   const [hasBuilt, setHasBuilt] = useState(false);
   const [name, setName] = useState('');
+  // The REAL rendered preview of their built resume (cached server-side per version).
+  const [thumb, setThumb] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const lastFetch = useRef(0);
   const press = useRef(new Animated.Value(1)).current;
@@ -112,6 +114,14 @@ export default function ResumeRebuildCard() {
             setHasBuilt(!!j.resumeData);
             const n = j.resumeData?.personal_info?.full_name;
             if (n) setName(String(n));
+            if (j.resumeData) {
+              // The actual rendered resume beats any mock. Cached per version server-side, so
+              // this is a file read for every open except the first after a (re)generate.
+              try {
+                const tr = await fetch(`${API_BASE}/resume-builder/home-thumb`, { headers: { Authorization: `Bearer ${token}` } });
+                if (tr.ok) { const tj = await tr.json(); if (tj.image) setThumb(tj.image); }
+              } catch {}
+            }
           }
         }
       } catch {}
@@ -179,7 +189,14 @@ export default function ResumeRebuildCard() {
           <Text style={s.headline}>{headline}</Text>
           <Text style={s.sub}>{sub}</Text>
         </View>
-        <MiniResume name={name} tint={pal.tint} />
+        {thumb ? (
+          <View style={m.page}>
+            <Image source={{ uri: thumb }} style={m.thumbImg} resizeMode="cover" />
+            <View style={[m.newTag, { backgroundColor: pal.tint }]}><Text style={m.newTagText}>AI</Text></View>
+          </View>
+        ) : (
+          <MiniResume name={name} tint={pal.tint} />
+        )}
       </View>
       <Animated.View style={{ transform: [{ scale: press }] }}>
         <TouchableOpacity
@@ -228,6 +245,7 @@ const m = StyleSheet.create({
   band:       { flexDirection: 'row', alignItems: 'center', gap: 5, padding: 7, paddingVertical: 8 },
   avatar:     { width: 18, height: 18, borderRadius: 9, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
   avatarText: { fontSize: 8, fontWeight: '900' },
+  thumbImg:   { width: '100%', height: '100%' },
   chips:      { flexDirection: 'row', gap: 3, marginTop: 4 },
   chip:       { height: 7, borderRadius: 3.5 },
   newTag:     { position: 'absolute', top: 5, right: 5, borderRadius: 5, paddingHorizontal: 4, paddingVertical: 1.5 },

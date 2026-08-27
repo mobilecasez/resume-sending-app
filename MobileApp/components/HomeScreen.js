@@ -814,10 +814,8 @@ function CompanyCard({
       {/* Top row */}
       <View style={cardStyles.topRow}>
         <Text style={cardStyles.eyebrow}>{eyebrow}</Text>
-        <LinearGradient colors={[T.blue, T.purple]} style={cardStyles.creditStamp} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-          <Ionicons name="diamond" size={8} color="#fff" />
-          <Text style={cardStyles.creditStampText}>{` ${clGenCost} CREDIT${clGenCost === 1 ? '' : 'S'}`}</Text>
-        </LinearGradient>
+        {/* The per-card "N CREDITS" stamp is retired with the credit model — the hero already
+            shows the letters remaining on the plan, which is the number that matters now. */}
       </View>
 
       {/* Watermark */}

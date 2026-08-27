@@ -1029,6 +1029,49 @@ async function listTemplates(req, res) {
     return res.json({ success: true, families: FAMILIES, regions: REGIONS, count: TEMPLATES.length });
 }
 
+// GET /api/resume-builder/home-thumb — the Home card's real preview of the user's built
+// resume. Rendered ONCE per resume version and cached on disk (keyed by updated_at), then
+// downscaled: the Home screen loads on every app open, so this must never cost a chromium
+// render per view. 404 when no resume is built — the card falls back to its native mock.
+async function homeThumb(req, res) {
+    const userId = req.user.id;
+    try {
+        await ensureResumeTable();
+        const row = await dbConfig.get('SELECT resume_data, updated_at FROM user_resumes WHERE user_id = $1', [userId]);
+        if (!row || !row.resume_data) return res.status(404).json({ error: 'No resume yet.' });
+        const ver = new Date(row.updated_at || Date.now()).getTime();
+        const tDir = path.join(__dirname, '../../temp');
+        await fs.mkdir(tDir, { recursive: true });
+        const file = path.join(tDir, `resume_thumb_${userId}_${ver}.jpg`);
+        try {
+            const buf = await fs.readFile(file);
+            return res.json({ success: true, image: `data:image/jpeg;base64,${buf.toString('base64')}` });
+        } catch {}
+        const { photo, photoRect } = await photosFor(userId);
+        const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === 'banner'));
+        const full = Buffer.from(pv.image.split(',')[1], 'base64');
+        let thumb = full;
+        try {
+            const sharp = require('sharp');
+            thumb = await sharp(full).resize({ width: 480 }).jpeg({ quality: 80 }).toBuffer();
+        } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
+        await fs.writeFile(file, thumb).catch(() => {});
+        // Best-effort: drop stale versions so temp/ doesn't collect one file per regenerate.
+        try {
+            const names = await fs.readdir(tDir);
+            for (const nm of names) {
+                if (nm.startsWith(`resume_thumb_${userId}_`) && nm !== path.basename(file)) {
+                    fs.unlink(path.join(tDir, nm)).catch(() => {});
+                }
+            }
+        } catch {}
+        return res.json({ success: true, image: `data:image/jpeg;base64,${thumb.toString('base64')}` });
+    } catch (e) {
+        console.error('[resumeBuilder] homeThumb error:', e.message);
+        return res.status(500).json({ error: 'Could not render the preview.' });
+    }
+}
+
 // Reusable: build a REGION-formatted resume PDF from the user's Resume-Builder resume.
 // Returns { filePath, fileName } or null when no builder resume exists (caller then
 // falls back to the uploaded profile resume). Used by the email-send flow (point 4).
@@ -1058,4 +1101,4 @@ async function buildResumePdfForRegion(userId, region, mode) {
     return { filePath, fileName, template: tplId };
 }
 
-module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, buildResumePdfForRegion };
+module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, buildResumePdfForRegion };

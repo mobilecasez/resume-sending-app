@@ -54,7 +54,6 @@ async function getToken() {
 export default function CoverLetterTemplates() {
   const router = useRouter();
   const { costs } = useEventCosts();
-  const dlCost = costs['cover_letter_download'] ?? DOWNLOAD_CREDITS;   // admin-configurable
   const rating = useRatingPrompt();
   // Ask for a rating when leaving the previewed cover letter; complete the back nav after.
   const goBack = async () => { if (!(await rating.ask('cover_letter'))) router.back(); };
@@ -70,6 +69,27 @@ export default function CoverLetterTemplates() {
   const [mode, setMode]         = useState<Mode>('onepage');
   const [pagerH, setPagerH]     = useState(0);
   const [downloading, setDownloading] = useState(false);
+  // Downloads are paid-plan features now (the credit model is retired); previews stay free.
+  const [isPaid, setIsPaid] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { fetchSubscriptionStatus } = require('../../services/subscriptionService');
+        const st = await fetchSubscriptionStatus();
+        setIsPaid(!!st?.subscription);
+      } catch {}
+    })();
+  }, []);
+  function upsellDownload() {
+    Alert.alert(
+      'Downloads are part of the paid plans',
+      'Previewing every design is free. To download your designed PDF or Word file, choose a paid plan.',
+      [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'View paid plans', onPress: () => router.push('/(subscription)/plans' as never) },
+      ],
+    );
+  }
   // Which format the user chose on the Review screen — shown first/prominent in the footer.
   const [preferredFormat, setPreferredFormat] = useState<'pdf' | 'docx'>('pdf');
 
@@ -133,6 +153,7 @@ export default function CoverLetterTemplates() {
 
   async function handleDownload(fmt: 'pdf' | 'docx' = 'pdf') {
     if (downloading || !previews[active] || !ctx) return;
+    if (!isPaid) { upsellDownload(); return; }
     setDownloading(true);
     try {
       const token = await getToken();
@@ -145,8 +166,9 @@ export default function CoverLetterTemplates() {
         body: JSON.stringify({ template: selected.id, mode, coverLetterHtml: downloadHtml || ctx.coverLetterHtml, companyName: ctx.companyName, companyAddress: ctx.companyAddress }),
       });
       const json = await res.json();
+      if (res.status === 403 && json.reason === 'paid_required') { setIsPaid(false); upsellDownload(); return; }
       if (res.status === 402) {
-        Alert.alert('Not enough credits', json.error || `You need ${dlCost} credits to download.`);
+        Alert.alert('Limit reached', json.error || 'Downloads are part of the paid plans.');
         return;
       }
       if (!res.ok || !json.downloadUrl) throw new Error(json.error || 'Failed to generate file');
@@ -289,19 +311,18 @@ export default function CoverLetterTemplates() {
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
                   <>
-                    <Ionicons name={fmt === 'pdf' ? 'download-outline' : 'document-text-outline'} size={17} color="#fff" />
+                    <Ionicons name={isPaid ? (fmt === 'pdf' ? 'download-outline' : 'document-text-outline') : 'lock-closed'} size={17} color="#fff" />
                     <Text style={s.dlText}>{fmt === 'pdf' ? 'Download PDF' : 'Download as Word'}</Text>
-                    <View style={s.credBadge}>
-                      <Ionicons name="diamond" size={9} color="#fff" />
-                      <Text style={s.credBadgeText}>{dlCost}</Text>
-                    </View>
+                    {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
                   </>
                 )}
               </LinearGradient>
             </TouchableOpacity>
           ))}
           <Text style={s.footerNote}>
-            {`${dlCost} credits per download · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`}
+            {isPaid
+              ? `Included in your plan · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`
+              : 'Previews are free · downloads are included in every paid plan'}
           </Text>
         </View>
       )}
