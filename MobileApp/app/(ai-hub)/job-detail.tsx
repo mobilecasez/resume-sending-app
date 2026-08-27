@@ -6328,6 +6328,21 @@ export default function JobDetailScreen() {
   // `prefill` lets an apply-by-email (mailto:) link inject the recipient/subject the page specified;
   // existing callers pass nothing → today's contact-derived defaults.
   const openComposeModal = async (prefill?: { to?: string; cc?: string; bcc?: string; subject?: string }) => {
+    // ── Email applying is PAID (2026-08-27). The email attaches the resume/cover letter as
+    // files — an emailed PDF is a downloadable PDF, and file downloads are paid-plan only.
+    // Free users apply through the portal. The server enforces the same rule with a 403.
+    try {
+      const { fetchSubscriptionStatus } = require('../../services/subscriptionService');
+      const st = await fetchSubscriptionStatus();
+      if (!st?.subscription) {
+        Alert.alert(
+          'Email applying is a paid feature',
+          'Applying by email attaches your resume as a file, which is part of the paid plans. Applying through the employer\u2019s portal stays free — tap Apply to open it.',
+          [{ text: 'Not now', style: 'cancel' }, { text: 'View paid plans', onPress: () => router.push('/(subscription)/plans' as never) }],
+        );
+        return;
+      }
+    } catch {}
     // Contacts → To field
     const contactEmails = (contacts || []).map(c => c.email).filter(Boolean).join(', ');
     setComposeTo(prefill?.to || contactEmails);

@@ -1345,6 +1345,20 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
 
 // Send applications (bulk)
 const sendApplications = async (req, res) => {
+    // ── Email applying is a PAID feature (2026-08-27). The email carries the resume and cover
+    // letter as ATTACHED FILES — an emailed PDF is a downloaded PDF with extra steps, and file
+    // downloads are paid-plan only. Free users apply through the portal, where nothing leaves
+    // the app. Server-authoritative; the app explains and routes to plans on this 403.
+    {
+        const entitlements = require('../services/entitlements');
+        const sub = await entitlements.activeSubscription(req.user.id).catch(() => null);
+        if (!sub) {
+            return res.status(403).json({
+                error: 'Applying by email attaches your resume as a file, which is part of the paid plans. You can apply through the employer\u2019s portal for free.',
+                reason: 'paid_required',
+            });
+        }
+    }
     try {
         const userId = req.user.id;
         const { recipients } = req.body;
@@ -1670,6 +1684,20 @@ const sendApplications = async (req, res) => {
 const sendSingleApplication = async (req, res) => {
     const userId = req.user.id;
     const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName, coverLetterRegion, resumeRegion, includeResume = true, includeCoverLetter = true } = req.body;
+    // ── Email applying is a PAID feature (2026-08-27). The email carries the resume and cover
+    // letter as ATTACHED FILES — an emailed PDF is a downloaded PDF with extra steps, and file
+    // downloads are paid-plan only. Free users apply through the portal, where nothing leaves
+    // the app. Server-authoritative; the app explains and routes to plans on this 403.
+    {
+        const entitlements = require('../services/entitlements');
+        const sub = await entitlements.activeSubscription(req.user.id).catch(() => null);
+        if (!sub) {
+            return res.status(403).json({
+                error: 'Applying by email attaches your resume as a file, which is part of the paid plans. You can apply through the employer\u2019s portal for free.',
+                reason: 'paid_required',
+            });
+        }
+    }
     const useAsync = process.env.USE_ASYNC_JOBS !== 'false';
 
     console.log(`\n=== SEND SINGLE APPLICATION DEBUG (${useAsync ? 'ASYNC' : 'SYNC'}) ===`);

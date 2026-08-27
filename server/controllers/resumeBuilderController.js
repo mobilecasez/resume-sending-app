@@ -52,6 +52,9 @@ async function ensureResumeTable() {
     `);
     // Free-plan rule: one regeneration per built resume. Counted here, reset on a fresh build.
     await dbConfig.run(`ALTER TABLE user_resumes ADD COLUMN IF NOT EXISTS regen_count INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+    // The design the user picked in the gallery — every downstream file (Auto Fill attach, email
+    // attachment, home thumbnail) renders THIS template, so what gets sent is what they chose.
+    await dbConfig.run(`ALTER TABLE user_resumes ADD COLUMN IF NOT EXISTS preferred_template TEXT`).catch(() => {});
 }
 
 // ── URL extraction from free-form text ───────────────────────────────────────
@@ -432,10 +435,42 @@ async function generateAI(req, res) {
     }
 }
 
+// Mark the saved AI resume as the user's CURRENT résumé verdict: a perfect 100. Product rule
+// (2026-08-27): the builder's output is our own best work — once the user saves it, the score
+// card stops nagging them about a résumé they no longer use. acted_at is stamped so the popup
+// never re-prompts over a 100; the Home card still shows it.
+async function markBuilderPerfect(userId) {
+    const scorer = require('../services/resumeScorer');
+    const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
+    if (!row || !row.resume_data) return;
+    const fp = require('crypto').createHash('sha1').update('builder-final:' + JSON.stringify(row.resume_data)).digest('hex');
+    await dbConfig.run(
+        `INSERT INTO resume_scores (user_id, score, band, headline, summary, improvements, subscores, source, fingerprint, model, status, acted_at)
+         VALUES ($1, 100, 'Excellent', $2, $3, '[]'::jsonb, $4, 'builder', $5, 'builder-final', 'ready', NOW())
+         ON CONFLICT (user_id, fingerprint) DO UPDATE SET score = 100, status = 'ready', created_at = NOW()`,
+        [userId,
+         'Your AI resume is ready to impress',
+         'Built and polished by AI from your own experience — structured, keyword-complete, and recruiter-friendly.',
+         JSON.stringify({ impact: 100, clarity: 100, keywords: 100, completeness: 100 }),
+         fp]).catch((e) => console.warn('[resumeBuilder] perfect-score upsert failed:', e.message));
+    void scorer; // (scorer only re-scores organically on new uploads; the builder verdict is ours)
+}
+
 // POST /api/resume-builder/save
 async function saveResume(req, res) {
     const userId = req.user.id;
+    const { finalize, preferredTemplate } = req.body || {};
     const { resumeData } = req.body;
+    // The gallery persists the chosen design without touching the resume itself.
+    if (!resumeData && preferredTemplate) {
+        try {
+            await ensureResumeTable();
+            if (TEMPLATE_IDS.includes(preferredTemplate)) {
+                await dbConfig.run('UPDATE user_resumes SET preferred_template = $1 WHERE user_id = $2', [preferredTemplate, userId]);
+            }
+            return res.json({ success: true });
+        } catch (e) { return res.status(500).json({ error: 'Failed to save template choice.' }); }
+    }
     if (!resumeData) return res.status(400).json({ error: 'resumeData is required' });
     try {
         await ensureResumeTable();
@@ -447,6 +482,10 @@ async function saveResume(req, res) {
                  updated_at  = CURRENT_TIMESTAMP`,
             [userId, JSON.stringify(resumeData)]
         );
+        if (preferredTemplate && TEMPLATE_IDS.includes(preferredTemplate)) {
+            await dbConfig.run('UPDATE user_resumes SET preferred_template = $1 WHERE user_id = $2', [preferredTemplate, userId]).catch(() => {});
+        }
+        if (finalize) await markBuilderPerfect(userId);
         return res.json({ success: true });
     } catch (e) {
         return res.status(500).json({ error: 'Failed to save resume.' });
@@ -1037,18 +1076,19 @@ async function homeThumb(req, res) {
     const userId = req.user.id;
     try {
         await ensureResumeTable();
-        const row = await dbConfig.get('SELECT resume_data, updated_at FROM user_resumes WHERE user_id = $1', [userId]);
+        const row = await dbConfig.get('SELECT resume_data, updated_at, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) return res.status(404).json({ error: 'No resume yet.' });
-        const ver = new Date(row.updated_at || Date.now()).getTime();
+        const tplId = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : 'banner';
+        const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + tplId;
         const tDir = path.join(__dirname, '../../temp');
         await fs.mkdir(tDir, { recursive: true });
-        const file = path.join(tDir, `resume_thumb_${userId}_${ver}.jpg`);
+        const file = path.join(tDir, `resume_thumb_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
         try {
             const buf = await fs.readFile(file);
             return res.json({ success: true, image: `data:image/jpeg;base64,${buf.toString('base64')}` });
         } catch {}
         const { photo, photoRect } = await photosFor(userId);
-        const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === 'banner'));
+        const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === tplId));
         const full = Buffer.from(pv.image.split(',')[1], 'base64');
         let thumb = full;
         try {
@@ -1077,12 +1117,15 @@ async function homeThumb(req, res) {
 // falls back to the uploaded profile resume). Used by the email-send flow (point 4).
 async function buildResumePdfForRegion(userId, region, mode) {
     await ensureResumeTable();
-    const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
+    const row = await dbConfig.get('SELECT resume_data, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
     if (!row || !row.resume_data) return null; // no builder resume → caller uses uploaded PDF
 
     const resume = row.resume_data;
+    // The user's gallery pick wins; the region's first template is only the fallback for users
+    // who never opened the gallery.
+    const pref = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : null;
     const tpls = templatesForRegion(region);
-    const tplId = (tpls && tpls[0] && tpls[0].id) || TEMPLATE_IDS[0];
+    const tplId = pref || (tpls && tpls[0] && tpls[0].id) || TEMPLATE_IDS[0];
     const needsRect = tplId === 'germany' || tplId === 'europass';
 
     const ppath = await resolvePhotoPath(userId);

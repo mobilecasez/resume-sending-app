@@ -178,6 +178,29 @@ export default function ResumeTemplates() {
 
   const totalDesigns = useMemo(() => visibleFams.reduce((a, f) => a + f.variants.length, 0), [visibleFams]);
 
+  // ── The selection IS the choice: whatever design is on screen becomes the user's preferred
+  // template (debounced). Every downstream file — Auto Fill attach, email attachment, the Home
+  // thumbnail — renders THIS template, so what gets sent is exactly what they picked here.
+  const prefTimer = useRef<any>(null);
+  const activeFamForSave = visibleFams[active];
+  const selForSave = activeFamForSave ? (chosen[activeFamForSave.id] || activeFamForSave.id) : '';
+  useEffect(() => {
+    if (!selForSave) return;
+    if (prefTimer.current) clearTimeout(prefTimer.current);
+    prefTimer.current = setTimeout(async () => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        await fetch(`${API_BASE}/resume-builder/save`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ preferredTemplate: selForSave }),
+        });
+      } catch {}
+    }, 900);
+    return () => { if (prefTimer.current) clearTimeout(prefTimer.current); };
+  }, [selForSave]);
+
   function pickRegion(id: string) {
     if (id === region) return;
     setRegion(id);

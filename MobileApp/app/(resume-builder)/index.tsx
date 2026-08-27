@@ -114,7 +114,9 @@ function plainStory(t?: string | null): string {
   return String(t || '')
     .replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*/g, '')
     .replace(/^#+\s*/gm, '').replace(/^[-•]\s*/gm, '')
-    .replace(/\n{3,}/g, '\n\n').trim();
+    // Every paragraph change reads as one: a single newline becomes a blank line, so the story
+    // box shows clearly separated paragraphs instead of a cramped wall of lines.
+    .replace(/\n{2,}/g, '\n').replace(/\n/g, '\n\n').trim();
 }
 
 export default function ResumeBuilderIndex() {

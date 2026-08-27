@@ -364,9 +364,30 @@ export default function ResumePreview() {
           <Image source={require('../../assets/images/logo_img.png')} style={s.logoImg} resizeMode="contain" />
           <Text style={s.wordmarkText}>CV<Text style={s.wordmarkBlue}>Applyr</Text></Text>
         </View>
-        <TouchableOpacity onPress={() => router.push('/(resume-builder)/templates')} style={[s.exportBtn, busy && { opacity: 0.4 }]} activeOpacity={0.8} disabled={busy}>
-          <Ionicons name="download-outline" size={14} color={T.blue} />
-          <Text style={s.exportText}>Download</Text>
+        <TouchableOpacity
+          onPress={async () => {
+            // Save = "this is my resume now": persists the data and marks it the user's CURRENT
+            // résumé verdict — a perfect 100 (it is our own AI's best work). The Home card and
+            // score popup pick the 100 up on their next load.
+            if (!data) return;
+            try {
+              const raw = await SecureStore.getItemAsync('userSession');
+              const token = JSON.parse(raw || '{}')?.token;
+              if (!token) throw new Error('Not logged in');
+              const res = await fetch(`${API_BASE}/resume-builder/save`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ resumeData: data, finalize: true }),
+              });
+              if (!res.ok) throw new Error('Save failed');
+              Alert.alert('Saved ✓', 'This is now your resume — scored 100. It will be used when you apply.');
+            } catch {
+              Alert.alert('Could not save', 'Please check your connection and try again.');
+            }
+          }}
+          style={[s.exportBtn, busy && { opacity: 0.4 }]} activeOpacity={0.8} disabled={busy}>
+          <Ionicons name="checkmark-circle-outline" size={14} color={T.blue} />
+          <Text style={s.exportText}>Save</Text>
         </TouchableOpacity>
       </View>
 

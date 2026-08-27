@@ -52,7 +52,7 @@ ok('ContentText only enters HTML mode on real rich-text tags', /<\\\/\?\(h\[1-6\
 ok('the old strip-everything tail is gone', !/\.replace\(\/<\[\^>\]\+>\/g, ''\);/.test(prev.slice(prev.indexOf('function ContentText'))));
 
 console.log('── app: preview action bar ──');
-ok('Download + View PDF both route to the gallery', (prev.match(/router\.push\('\/\(resume-builder\)\/templates'\)/g) || []).length >= 2);
+ok('Download/Preview routes to the gallery', (prev.match(/router\.push\('\/\(resume-builder\)\/templates'\)/g) || []).length >= 1);
 ok('Regenerate knows the free allowance before navigating', /regen\.used >= regen\.freeLimit/.test(prev));
 ok('…and offers the plans screen', /Regeneration used[\s\S]{0,300}\/\(subscription\)\/plans/.test(prev));
 
@@ -164,6 +164,29 @@ ok('a cached home-thumb endpoint exists', /home-thumb/.test(routes) && /resume_t
 ok('…rendered once per resume version (updated_at key)', /updated_at[\s\S]{0,300}resume_thumb_/.test(ctl));
 ok('the card prefers the real preview and keeps the mock as fallback',
   /thumb \? \(/.test(card2) && /MiniResume name=\{name\}/.test(card2));
+
+console.log('── the 2026-08-27 round: Save→100, chosen template travels, email is paid ──');
+const emailc = R('../../server/controllers/emailController.js');
+const jd2 = R('../app/(ai-hub)/job-detail.tsx');
+// Save = "this is my resume now" → a perfect 100, acted-stamped so the popup never nags over it.
+ok('the preview top-right button SAVES (Download lives in the bottom bar)',
+  /<Text style=\{s\.exportText\}>Save<\/Text>/.test(prev) && !/<Text style=\{s\.exportText\}>Download<\/Text>/.test(prev));
+ok('Save finalizes', /finalize: true/.test(prev));
+ok('finalize marks the builder resume a perfect 100', /markBuilderPerfect/.test(ctl) && /VALUES \(\$1, 100,/.test(ctl));
+ok('…acted-stamped so the popup never re-prompts over a 100', /'ready', NOW\(\)\)/.test(ctl) && /acted_at\)/.test(ctl));
+// The chosen design travels: gallery pick → preferred_template → every rendered file.
+ok('preferred_template column exists (idempotent)', /ADD COLUMN IF NOT EXISTS preferred_template/.test(ctl));
+ok('the gallery persists the on-screen design (debounced)', /preferredTemplate: selForSave/.test(tpl));
+ok('a template-only save needs no resumeData', /!resumeData && preferredTemplate/.test(ctl));
+ok('the apply/email PDF renders the CHOSEN template', /pref \|\| \(tpls && tpls\[0\]/.test(ctl));
+ok('the Home thumbnail renders the chosen template too', /preferred_template[\s\S]{0,200}'banner'/.test(ctl));
+// Email applying is paid: the attachment IS a download.
+ok('both email-send endpoints carry the paid gate', (emailc.match(/paid_required/g) || []).length >= 2);
+ok('the compose modal explains and routes free users to plans',
+  /Email applying is a paid feature/.test(jd2) && /View paid plans/.test(jd2));
+ok('portal applying stays free (no gate on the apply WebView open)', !/openApplyWebView[\s\S]{0,400}paid_required/.test(jd2));
+// The story box: a paragraph change reads as one.
+ok('plainStory turns every newline into a blank line', /replace\(\/\\n\/g, '\\n\\n'\)/.test(idx));
 
 console.log(`\nresume rebuild flow: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
