@@ -19,17 +19,17 @@ const PACKAGE = 'com.cvapplyr.mobile';
 
 const AAB = process.argv[2];
 const TRACK = process.argv[3] || 'internal';
-const RELEASE_NAME = process.env.RELEASE_NAME || '3.8';
+const RELEASE_NAME = process.env.RELEASE_NAME || '4.5';
 
 // Play caps release notes at 500 chars per language — asserted below, not hoped for.
 const NOTES = [
-  'Know where you stand, and what to do next.',
+  'Your resume, rebuilt by AI — and everything that was on iOS 4.5.',
   '',
-  '• Résumé score: an honest score out of 100, the three changes that would lift it most, and a free AI rewrite.',
-  '• Guided setup that points at your next step, with five short videos.',
-  '• Thousands more jobs — Amazon, Google, SAP, Siemens, Allianz, Zalando, Revolut, Bolt, Personio.',
-  '• Results now sorted by résumé match, highest first, plus a new "Near me" sort.',
-  '• Search remembers what you last looked for.',
+  '• AI resume rebuild: one tap turns your uploaded resume into a designed, ATS-friendly one.',
+  '• 73 designs across 15 layouts, organised by country. Previewing every design is free.',
+  '• Your resume score on the home screen, with a live preview of your new resume.',
+  '• Smoother sign-in inside the in-app browser, without "open in app" interruptions.',
+  '• Faster design previews.',
 ].join('\n');
 
 async function main() {
