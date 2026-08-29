@@ -20,6 +20,7 @@ function grab(name) {
   return new Function('return `' + m[1] + '`;')();
 }
 const NO_EXIT_JS = grab('NO_EXIT_JS');
+const AUTH_FLOW_JS = grab('AUTH_FLOW_JS');
 const GOOGLE_AUTH_WATCH_JS = grab('GOOGLE_AUTH_WATCH_JS');
 const PASSKEY_GUARD_JS = grab('PASSKEY_GUARD_JS');
 const GD_EMAIL_ROUTE_JS = grab('GD_EMAIL_ROUTE_JS');
@@ -310,6 +311,42 @@ const PAGE = `<!doctype html><html><head>
   await gd.close();
   ok('a page without that button reports found:false so the app can explain instead',
     gdNone.some((m) => m.type === 'GD_ROUTE' && m.found === false), gdNone);
+
+  // ── A scripted app-scheme window.open must never reach the system ──────────────────────────
+  // Field report (v4.5 prod): "Open in Google popup on Search Results". Google's results page
+  // calls window.open('googleapp://…') from SCRIPT — no click for the interceptor to catch — and
+  // the old hook only claimed http(s), so the scheme fell through to the native shim, which hands
+  // what it cannot open to the OS: the "Open in Google?" sheet.
+  console.log('\napp-scheme window.open dies in the page, never at the OS');
+  const sw = await ctx.newPage();
+  await sw.route('https://www.google.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<html><body><h1>Results</h1></body></html>' }));
+  await sw.goto('https://www.google.com/search?q=jobs');
+  await sw.evaluate(BRIDGE);
+  const wo = await sw.evaluate((js) => {
+    let reachedReal = 0;
+    const orig = window.open;
+    window.open = function () { reachedReal++; return null; };   // stands in for the native shim
+    eval(js);                                                    // AUTH_FLOW_JS wraps the spy
+    const r1 = window.open('googleapp://open?url=x');
+    const r2 = window.open('intent://jobs#Intent;scheme=https;package=com.google.android.googlequicksearchbox;end');
+    const r3 = window.open('https://employer.example/jobs/1');
+    window.open('about:blank');
+    return { reachedReal, r1closed: r1 && r1.closed === true, r2closed: r2 && r2.closed === true,
+             r3stub: !!(r3 && r3.opener), msgs: window.__msgs.map((m) => m.type) };
+  }, AUTH_FLOW_JS);
+  await sw.close();
+  ok('googleapp:// and intent:// never reach the real window.open (only about:blank may)',
+    wo.reachedReal === 1, wo);
+  ok('the page gets a dead stub back, so its JS keeps working', wo.r1closed && wo.r2closed, wo);
+  ok('http(s) popups still enter the auth flow', wo.r3stub && wo.msgs.includes('AUTH_POPUP'), wo);
+  ok('the block is reported, not silent', wo.msgs.filter((t) => t === 'STAY_BLOCKED_SCHEME').length === 2, wo.msgs);
+
+  const bf2 = fs.readFileSync(path.join(__dirname, '../components/BrowseFetch.tsx'), 'utf8');
+  const jd3 = fs.readFileSync(path.join(__dirname, '../app/(ai-hub)/job-detail.tsx'), 'utf8');
+  ok('BrowseFetch onOpenWindow forwards http(s) only',
+    /onOpenWindow[\s\S]{0,400}\/\^https\?:\/i\.test\(target\)\) beginAuthFlow/.test(bf2));
+  ok('the apply view onOpenWindow forwards http(s) only (mailto keeps its compose)',
+    /onOpenWindow[\s\S]{0,600}\/\^https\?:\/i\.test\(target\)\) beginAuthFlow/.test(jd3));
 
   await browser.close();
   console.log(`\nno-exit + google-auth: ${pass} passed, ${fail} failed`);

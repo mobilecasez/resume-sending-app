@@ -52,6 +52,17 @@ export const AUTH_FLOW_JS = `(function(){
         };
         return stub;                              // never null → the site's JS keeps working
       }
+      // ⚠️ AN APP-SCHEME window.open MUST DIE HERE, not fall through. With popups disabled the
+      // native shim hands anything it cannot open to the SYSTEM — which is the "Open in Google?"
+      // sheet Google's results page triggers via script (googleapp://, intent://). The click
+      // interceptor never sees a scripted open, so this hook is the only line of defence. Only
+      // about:blank/javascript: (page plumbing) may still reach the real window.open.
+      if (abs && !/^(about:|javascript:)/i.test(abs)) {
+        post({ type:'STAY_BLOCKED_SCHEME', url: abs.slice(0,120) });
+        return { closed:true, close:function(){}, focus:function(){}, blur:function(){},
+                 postMessage:function(){}, addEventListener:function(){}, removeEventListener:function(){},
+                 document:{ write:function(){}, close:function(){} }, location:{ href: abs } };
+      }
     } catch(e){}
     try { return realOpen.apply(window, arguments); } catch(e){ return null; }
   };

@@ -7244,7 +7244,9 @@ export default function JobDetailScreen() {
               onOpenWindow={(e: any) => {
                 const target = e?.nativeEvent?.targetUrl || '';
                 if (/^mailto:/i.test(target)) { handleMailtoApply(target); return; }   // _blank mailto edge case
-                if (target) beginAuthFlow(target);   // remembers the form so we can come back
+                // ⚠️ http(s) ONLY — navigating an app-scheme target raises the OS "Open in <app>?"
+                // sheet (see BrowseFetch). Everything else is dropped, never handed onward.
+                if (/^https?:/i.test(target)) beginAuthFlow(target);   // remembers the form so we can come back
               }}
               // Intercept non-http(s) schemes so an "Apply by email" (mailto:) button opens OUR in-app
               // compose flow instead of bouncing out to Gmail; tel/sms hand off to the OS. Everything

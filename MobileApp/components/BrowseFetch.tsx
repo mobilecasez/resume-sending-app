@@ -1024,8 +1024,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         javaScriptCanOpenWindowsAutomatically
         setSupportMultipleWindows={false}
         onOpenWindow={(e: any) => {
-          const target = e?.nativeEvent?.targetUrl;
-          if (target) beginAuthFlow(target);   // remembers the page so we can come back
+          const target = e?.nativeEvent?.targetUrl || '';
+          // ⚠️ http(s) ONLY. An app-scheme target navigated here would make WKWebView raise the
+          // OS "Open in <app>?" sheet — the exact popup this browser exists to prevent.
+          if (/^https?:/i.test(target)) beginAuthFlow(target);   // remembers the page so we can come back
+          else if (target) console.log('[stay-in-app] dropped app-scheme popup:', target.slice(0, 80));
         }}
         // ⚠️ EVERY http(s) PAGE STAYS IN THIS WINDOW. Without an explicit decision here, a
         // navigation to an address the OS claims — google.com is the one that bit us, because the
