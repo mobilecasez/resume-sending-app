@@ -4,6 +4,8 @@ import OnboardingChecklist from './OnboardingChecklist';
 import WelcomeExplainer from './WelcomeExplainer';
 import ResumeScoreModal from './ResumeScoreModal';
 import ResumeRebuildCard from './ResumeRebuildCard';
+import EmployerHome from './employer-home/EmployerHome';
+import HomeBoundary from './employer-home/HomeBoundary';
 import JourneyCoach from './JourneyCoach';
 import { fetchJourney } from '../services/journeyService';
 import { fetchResumeScore, markResumeScore, claimEnhancePass } from '../services/resumeScoreService';
@@ -1670,6 +1672,10 @@ export default function HomeScreen({
   const hasPendingReady = recipients.some(r => r.email && r.website);
 
   // Chart tooltip state — lifted here so any tap on screen dismisses it
+  // ⚠️ HOME IS NOW THE EMPLOYER GENERATOR; the old dashboard lives one tap away.
+  // This MUST be local state — App.js's screen dispatch is a fixed if-chain ending in an
+  // unconditional `return <ReviewScreen/>`, so inventing a new screen key would render Letters.
+  const [showDashboard, setShowDashboard] = useState(false);
   const [chartTooltip, setChartTooltip] = useState(null);
   const [replyModalVisible, setReplyModalVisible] = useState(false);
   const [replyModalApp, setReplyModalApp]         = useState(null);
@@ -1841,6 +1847,18 @@ export default function HomeScreen({
         </View>
       </View>
 
+      {!showDashboard ? (
+        <HomeBoundary onFallback={() => setShowDashboard(true)}>
+          <EmployerHome
+            firstName={firstName}
+            unreadCount={unreadCount}
+            handleReview={handleReview}
+            onOpenDashboard={() => setShowDashboard(true)}
+            onOpenMenu={() => setShowSettings(true)}
+            onOpenNotifications={() => { setShowNotifications(true); loadNotifications?.(); }}
+          />
+        </HomeBoundary>
+      ) : (
       <ScrollView
         ref={mainScrollRef}
         style={styles.scroll}
@@ -2102,6 +2120,7 @@ export default function HomeScreen({
 
         <View style={{ height: 100 }} />
       </ScrollView>
+      )}
 
       {/* Dismiss chart tooltip when tapping anywhere outside the chart */}
       {chartTooltip !== null && (
@@ -2114,14 +2133,18 @@ export default function HomeScreen({
       <View style={tabStyles.wrapper}>
         <View style={tabStyles.bar}>
           {/* Home — active */}
-          <LinearGradient
-            colors={[T.blue, T.blueDeep]}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-            style={tabStyles.activeTab}
-          >
-            <Ionicons name="home" size={16} color="#fff" />
-            <Text style={tabStyles.activeLabel}>Home</Text>
-          </LinearGradient>
+          {/* ⚠️ This pill used to be inert. It is the ONLY way back from the Dashboard, so it
+              is now pressable and returns to the employer Home. */}
+          <TouchableOpacity activeOpacity={0.85} onPress={() => setShowDashboard(false)}>
+            <LinearGradient
+              colors={[T.blue, T.blueDeep]}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+              style={tabStyles.activeTab}
+            >
+              <Ionicons name="home" size={16} color="#fff" />
+              <Text style={tabStyles.activeLabel}>Home</Text>
+            </LinearGradient>
+          </TouchableOpacity>
 
           {/* Jobs */}
           <TouchableOpacity
@@ -2190,6 +2213,7 @@ export default function HomeScreen({
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 28 }}>
             {[
               { icon: 'settings-outline',   title: 'Account Settings',   sub: 'View your profile',          onPress: () => { setShowSettings(false); setScreen('profile'); } },
+              { icon: 'grid-outline',        title: 'Dashboard',          sub: 'Credits, activity, companies & replies', onPress: () => { setShowSettings(false); setShowDashboard(true); } },
               { icon: 'briefcase-outline',   title: 'Jobs Dashboard',     sub: 'AI-powered job search hub',  onPress: () => { setShowSettings(false); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } }); } },
               { icon: 'compass-outline',     title: 'Explore Jobs',       sub: 'Browse live openings worldwide', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } }); } },
               { icon: 'document-text-outline', title: 'Resume Builder',   sub: 'Build your AI-powered resume', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(resume-builder)'); } },

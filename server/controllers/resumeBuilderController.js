@@ -1072,6 +1072,47 @@ async function listTemplates(req, res) {
 // resume. Rendered ONCE per resume version and cached on disk (keyed by updated_at), then
 // downscaled: the Home screen loads on every app open, so this must never cost a chromium
 // render per view. 404 when no resume is built — the card falls back to its native mock.
+// One template → a downscaled JPEG data URI, cached on disk per (user, resume version,
+// template). The Home carousel shows several of these, and Home loads on every app open —
+// so a cache MISS must be the rare case, never the norm.
+const THUMB_W = 480;
+async function cachedThumb(userId, row, tplId) {
+    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + tplId;
+    const tDir = path.join(__dirname, '../../temp');
+    await fs.mkdir(tDir, { recursive: true });
+    const file = path.join(tDir, `resume_thumb_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
+    try {
+        const buf = await fs.readFile(file);
+        return { id: tplId, image: `data:image/jpeg;base64,${buf.toString('base64')}`, cached: true };
+    } catch {}
+    const { photo, photoRect } = await photosFor(userId);
+    const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === tplId));
+    const full = Buffer.from(pv.image.split(',')[1], 'base64');
+    let thumb = full;
+    try {
+        const sharp = require('sharp');
+        thumb = await sharp(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer();
+    } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
+    await fs.writeFile(file, thumb).catch(() => {});
+    return { id: tplId, image: `data:image/jpeg;base64,${thumb.toString('base64')}`,
+             width: pv.width, height: pv.height, cached: false };
+}
+
+// Drop every cached thumb for this user that is not in `keep` — one file per template per
+// resume version would otherwise accumulate in temp/ forever.
+async function pruneThumbs(userId, keep) {
+    try {
+        const tDir = path.join(__dirname, '../../temp');
+        const names = await fs.readdir(tDir);
+        const alive = new Set(keep.map((f) => path.basename(f)));
+        for (const nm of names) {
+            if (nm.startsWith(`resume_thumb_${userId}_`) && !alive.has(nm)) {
+                fs.unlink(path.join(tDir, nm)).catch(() => {});
+            }
+        }
+    } catch {}
+}
+
 async function homeThumb(req, res) {
     const userId = req.user.id;
     try {
@@ -1079,36 +1120,49 @@ async function homeThumb(req, res) {
         const row = await dbConfig.get('SELECT resume_data, updated_at, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) return res.status(404).json({ error: 'No resume yet.' });
         const tplId = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : 'banner';
-        const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + tplId;
-        const tDir = path.join(__dirname, '../../temp');
-        await fs.mkdir(tDir, { recursive: true });
-        const file = path.join(tDir, `resume_thumb_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
-        try {
-            const buf = await fs.readFile(file);
-            return res.json({ success: true, image: `data:image/jpeg;base64,${buf.toString('base64')}` });
-        } catch {}
-        const { photo, photoRect } = await photosFor(userId);
-        const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === tplId));
-        const full = Buffer.from(pv.image.split(',')[1], 'base64');
-        let thumb = full;
-        try {
-            const sharp = require('sharp');
-            thumb = await sharp(full).resize({ width: 480 }).jpeg({ quality: 80 }).toBuffer();
-        } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
-        await fs.writeFile(file, thumb).catch(() => {});
-        // Best-effort: drop stale versions so temp/ doesn't collect one file per regenerate.
-        try {
-            const names = await fs.readdir(tDir);
-            for (const nm of names) {
-                if (nm.startsWith(`resume_thumb_${userId}_`) && nm !== path.basename(file)) {
-                    fs.unlink(path.join(tDir, nm)).catch(() => {});
-                }
-            }
-        } catch {}
-        return res.json({ success: true, image: `data:image/jpeg;base64,${thumb.toString('base64')}` });
+        const card = await cachedThumb(userId, row, tplId);
+        return res.json({ success: true, image: card.image });
     } catch (e) {
         console.error('[resumeBuilder] homeThumb error:', e.message);
         return res.status(500).json({ error: 'Could not render the preview.' });
+    }
+}
+
+// GET /api/resume-builder/home-cards?ids=banner,rightrail,mono
+// The employer-Home carousel: the user's REAL resume rendered in several designs. Every card is
+// disk-cached per resume version, so the first open after a (re)generate pays the renders and
+// every open after that is a file read.
+//
+// ⚠️ Capped at 5 — the renderer recycles its browser every 3 pages (single-process chromium dies
+// after ~4-5 in a session), and Home must never be the screen that melts the preview pipeline.
+async function homeCards(req, res) {
+    const userId = req.user.id;
+    try {
+        await ensureResumeTable();
+        const row = await dbConfig.get('SELECT resume_data, updated_at, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
+        if (!row || !row.resume_data) return res.status(404).json({ error: 'No resume yet.', reason: 'no_resume' });
+        const asked = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
+        const pref = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : null;
+        // The user's own pick always leads; the rest fill up to 5 from the request (or a sensible
+        // default spread across visually distinct families).
+        const fallback = ['banner', 'rightrail', 'elegant', 'mono', 'timeline'];
+        const ids = [...new Set([pref, ...asked, ...fallback].filter((id) => id && TEMPLATE_IDS.includes(id)))].slice(0, 5);
+        const cards = [];
+        const files = [];
+        for (const id of ids) {
+            try {
+                const c = await cachedThumb(userId, row, id);
+                const meta = TEMPLATES.find((t) => t.id === id) || {};
+                cards.push({ id, name: meta.name || id, accent: meta.accent || '#4F8DFF', ats: meta.ats || null, image: c.image });
+                files.push(`resume_thumb_${userId}_${String(new Date(row.updated_at || Date.now()).getTime() + ':' + id).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
+            } catch (e) { console.warn('[resumeBuilder] homeCards render failed for', id, e.message); }
+        }
+        if (!cards.length) return res.status(500).json({ error: 'Could not render previews.' });
+        pruneThumbs(userId, files);
+        return res.json({ success: true, preferred: pref || cards[0].id, cards });
+    } catch (e) {
+        console.error('[resumeBuilder] homeCards error:', e.message);
+        return res.status(500).json({ error: 'Could not render previews.' });
     }
 }
 
@@ -1144,4 +1198,4 @@ async function buildResumePdfForRegion(userId, region, mode) {
     return { filePath, fileName, template: tplId };
 }
 
-module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, buildResumePdfForRegion };
+module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion };
