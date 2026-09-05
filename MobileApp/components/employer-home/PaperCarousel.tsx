@@ -12,16 +12,15 @@
 // ⚠️ React Native has NO translateZ. The mockup's translateZ(-|d|*50) depth is reproduced with
 // scale + a small translateY, which is what the eye actually reads at this size.
 import React, { useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Animated, Dimensions, Platform } from 'react-native';
+import { View, Text, StyleSheet, Animated, Platform } from 'react-native';
 import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import { E } from './theme';
 
-const WIN = Dimensions.get('window').width;
-export const CARD_W = 214;
+export const CARD_W = 158;
 const GAP = 18;
 export const STEP = CARD_W + GAP;
 const CARD_H = Math.round(CARD_W * (424 / 300));   // A4 ratio, same as the renderer
-const SIDE = (WIN - CARD_W) / 2;
 
 export type PaperCard = { id: string; name: string; accent?: string; image?: string | null };
 
@@ -32,18 +31,18 @@ function Card({ card, i, scrollX, ribbon }: {
   // Distance from centre, in card-steps.
   const d = Animated.divide(Animated.subtract(scrollX, i * STEP), STEP);
   const clamp = (out: [number, number, number]) =>
-    d.interpolate({ inputRange: [-1.6, 0, 1.6], outputRange: out, extrapolate: 'clamp' });
+    d.interpolate({ inputRange: [-1.4, 0, 1.4], outputRange: out, extrapolate: 'clamp' });
 
   return (
     <Animated.View
       style={{
         width: CARD_W, marginRight: GAP,
-        opacity: clamp([0.44, 1, 0.44]),
+        opacity: clamp([0.35, 1, 0.35]),
         transform: [
-          { perspective: 900 },
-          { rotateY: d.interpolate({ inputRange: [-1.6, 0, 1.6], outputRange: ['26deg', '0deg', '-26deg'], extrapolate: 'clamp' }) },
-          { scale: clamp([0.9, 1, 0.9]) },
-          { translateY: clamp([14, 0, 14]) },
+          { perspective: 700 },
+          { rotateY: d.interpolate({ inputRange: [-1.4, 0, 1.4], outputRange: ['38deg', '0deg', '-38deg'], extrapolate: 'clamp' }) },
+          { scale: clamp([0.82, 1, 0.82]) },
+          { translateY: clamp([18, 0, 18]) },
         ],
       }}
     >
@@ -53,6 +52,7 @@ function Card({ card, i, scrollX, ribbon }: {
         ) : (
           <View style={[s.img, s.imgEmpty]} />
         )}
+        <Glare />
         {!!ribbon && (
           <View style={s.ribbon}>
             <View style={[s.ribbonTile, { backgroundColor: ribbon.colors[0] }]}>
@@ -68,6 +68,34 @@ function Card({ card, i, scrollX, ribbon }: {
   );
 }
 
+// A slow highlight travelling across the page — the mockup's "glare". Transform-only, native
+// driver, same as everything else in this tree.
+function Glare() {
+  const x = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const l = Animated.loop(Animated.sequence([
+      Animated.delay(900),
+      Animated.timing(x, { toValue: 1, duration: 2200, useNativeDriver: true }),
+      Animated.delay(2600),
+    ]));
+    l.start();
+    return () => l.stop();
+  }, [x]);
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[s.glare, { transform: [{ translateX: x.interpolate({ inputRange: [0, 1], outputRange: [-90, CARD_W + 90] }) }, { rotate: '12deg' }] }]}
+    >
+      {/* soft-edged: a hard white block read as a bar across the page */}
+      <LinearGradient
+        colors={['transparent', 'rgba(255,255,255,0.42)', 'transparent']}
+        start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
+        style={StyleSheet.absoluteFill}
+      />
+    </Animated.View>
+  );
+}
+
 export default function PaperCarousel({ cards, index, onIndex, ribbon }: {
   cards: PaperCard[];
   index: number;
@@ -77,6 +105,8 @@ export default function PaperCarousel({ cards, index, onIndex, ribbon }: {
   const scrollX = useRef(new Animated.Value(0)).current;
   const ref = useRef<any>(null);
   const settled = useRef(index);
+  const [width, setWidth] = React.useState(0);
+  const side = width > CARD_W ? (width - CARD_W) / 2 : 16;
 
   // Drive the pager from outside (an employer chip tap re-centres it).
   useEffect(() => {
@@ -93,7 +123,8 @@ export default function PaperCarousel({ cards, index, onIndex, ribbon }: {
         showsHorizontalScrollIndicator={false}
         snapToInterval={STEP}
         decelerationRate="fast"
-        contentContainerStyle={{ paddingHorizontal: SIDE, paddingTop: 10 }}
+        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+        contentContainerStyle={{ paddingHorizontal: side, paddingTop: 10 }}
         scrollEventThrottle={16}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], { useNativeDriver: true })}
         onMomentumScrollEnd={(e) => {
@@ -123,6 +154,7 @@ const s = StyleSheet.create({
   },
   img: { width: '100%', height: '100%' },
   imgEmpty: { backgroundColor: '#EEF2F8' },
+  glare: { position: 'absolute', top: -30, bottom: -30, width: 60 },
   ribbon: {
     position: 'absolute', left: 8, top: 8, flexDirection: 'row', alignItems: 'center', gap: 5,
     paddingVertical: 4, paddingLeft: 5, paddingRight: 8, borderRadius: 100,
@@ -131,12 +163,12 @@ const s = StyleSheet.create({
   ribbonTile: { width: 14, height: 14, borderRadius: 4, alignItems: 'center', justifyContent: 'center' },
   ribbonTileTx: { fontSize: 8, fontWeight: '800', color: '#fff' },
   ribbonTx: { fontSize: 8.5, fontWeight: '800', color: '#fff', letterSpacing: 0.5, textTransform: 'uppercase' },
+  // ⚠️ NOT a blur — React Native has none. A thin tinted sliver directly under the page, which
+  // reads as the light it sits in. A taller/darker block read as a grey bar (b202 preview).
   reflect: {
-    height: 22, marginTop: 8, marginHorizontal: 18, borderRadius: 11,
-    backgroundColor: 'rgba(79,141,255,0.30)',
-    // A soft pool of light under the page. iOS renders the blur; Android approximates with the
-    // rounded translucent block, which reads correctly at this size.
-    ...Platform.select({ ios: { shadowColor: E.blue, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.7, shadowRadius: 14 }, default: {} }),
+    height: 6, marginTop: 7, marginHorizontal: 30, borderRadius: 3,
+    backgroundColor: 'rgba(79,141,255,0.22)',
+    ...Platform.select({ ios: { shadowColor: E.blue, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.5, shadowRadius: 10 }, default: {} }),
   },
   dots: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 5, marginTop: 6 },
   dot: { width: 6, height: 6, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.28)' },

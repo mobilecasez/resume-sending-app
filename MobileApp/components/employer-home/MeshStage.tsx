@@ -1,20 +1,31 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// The dark hero backdrop: three slowly drifting colour blobs over a faint grid, matching the
-// mockup's animated mesh. Pure decoration — it renders its children on top and never blocks a
-// touch.
+// The dark hero backdrop.
 //
-// ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): never mix native and JS drivers on ONE
-// view tree. Everything here animates transform ONLY and uses useNativeDriver:true throughout,
-// on views that contain no JS-driven animation — a self-contained tree, so the rule holds and
-// the drift stays smooth while the user scrolls.
+// ⚠️ THE FIRST VERSION OF THIS FILE SHIPPED VISIBLE RECTANGLES (b202). It drew "radial blobs" as
+// circular Views holding two LinearGradients — but a child gradient does not respect the parent's
+// borderRadius without `overflow: hidden`, so every blob painted as a hard-edged SQUARE across the
+// hero. Even fixed, a circle filled with a LINEAR gradient still has a hard rim: React Native has
+// no radial gradient, and expo-blur cannot be relied on to soften one on Android.
+//
+// So the mesh is built the way it can actually be built here: several FULL-BLEED translucent
+// gradients at different angles, layered over the base colour. Every layer covers the entire
+// stage, so there is no edge to see anywhere — the colour simply falls off toward transparent.
+// Overlapping them reproduces the mockup's soft colour field, identically on both platforms.
+//
+// ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): one driver per view tree. Everything here
+// animates transform/opacity with useNativeDriver:true and contains no JS-driven Animated.Value.
 import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet, Animated, Easing } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { E } from './theme';
 
-function Blob({ size, color, style, dur, dx, dy, delay = 0 }: {
-  size: number; color: string; style: any; dur: number; dx: number; dy: number; delay?: number;
+// One drifting wash. Deliberately oversized (150% of the stage) and offset, so its own bounds can
+// never enter frame however far it drifts.
+function Wash({ colors, locations, start, end, dur, dx, dy, delay = 0 }: {
+  colors: [string, string]; locations?: [number, number];
+  start: { x: number; y: number }; end: { x: number; y: number };
+  dur: number; dx: number; dy: number; delay?: number;
 }) {
   const t = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -29,31 +40,16 @@ function Blob({ size, color, style, dur, dx, dy, delay = 0 }: {
     <Animated.View
       pointerEvents="none"
       style={[
-        { position: 'absolute', width: size, height: size, borderRadius: size / 2, opacity: 0.75 },
-        style,
+        s.wash,
         {
           transform: [
             { translateX: t.interpolate({ inputRange: [0, 1], outputRange: [0, dx] }) },
             { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [0, dy] }) },
-            { scale: t.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] }) },
           ],
         },
       ]}
     >
-      {/* A radial glow, built from a linear gradient pair — expo-linear-gradient has no radial
-          mode, and the blur-and-fade reads the same at this scale. */}
-      <LinearGradient
-        colors={[color, 'transparent']}
-        start={{ x: 0.5, y: 0.5 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <LinearGradient
-        colors={[color, 'transparent']}
-        start={{ x: 0.5, y: 0.5 }}
-        end={{ x: 0, y: 0 }}
-        style={StyleSheet.absoluteFill}
-      />
+      <LinearGradient colors={colors} locations={locations} start={start} end={end} style={StyleSheet.absoluteFill} />
     </Animated.View>
   );
 }
@@ -62,25 +58,23 @@ export default function MeshStage({ children, style }: { children: React.ReactNo
   return (
     <View style={[s.stage, style]}>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-        <Blob size={300} color="rgba(79,141,255,0.75)"  style={{ left: -90, top: -60 }}   dur={9000}  dx={18}  dy={-14} />
-        <Blob size={300} color="rgba(124,107,255,0.70)" style={{ right: -110, top: 120 }} dur={11000} dx={-22} dy={16} delay={400} />
-        <Blob size={240} color="rgba(20,184,166,0.50)"  style={{ left: 120, bottom: -80 }} dur={13000} dx={14}  dy={-18} delay={900} />
-        {/* the faint grid, fading out toward the edges */}
-        <View style={s.grid}>
-          {Array.from({ length: 26 }).map((_, i) => (
-            <View key={'h' + i} style={[s.gline, { top: i * 26 }]} />
-          ))}
-          {Array.from({ length: 16 }).map((_, i) => (
-            <View key={'v' + i} style={[s.gline, s.gvert, { left: i * 26 }]} />
-          ))}
+        {/* blue, top-left, gone by 45% */}
+        <Wash colors={['rgba(79,141,255,0.85)', 'transparent']} locations={[0, 0.62]}
+              start={{ x: 0.05, y: 0 }} end={{ x: 0.9, y: 0.72 }} dur={9000} dx={16} dy={-12} />
+        {/* violet, right side, arriving late */}
+        <Wash colors={['transparent', 'rgba(124,107,255,0.72)']} locations={[0.3, 0.95]}
+              start={{ x: 0.05, y: 0.15 }} end={{ x: 1, y: 0.8 }} dur={11000} dx={-18} dy={14} delay={400} />
+        {/* teal, bottom, the smallest of the three */}
+        <Wash colors={['transparent', 'rgba(20,184,166,0.5)']} locations={[0.42, 0.95]}
+              start={{ x: 0.55, y: 0.25 }} end={{ x: 0.3, y: 1 }} dur={13000} dx={12} dy={-10} delay={900} />
+        {/* a faint grid, held well inside the edges so it never reads as a box */}
+        <View style={s.grid} pointerEvents="none">
+          {Array.from({ length: 22 }).map((_, i) => <View key={'h' + i} style={[s.gline, { top: i * 30 }]} />)}
+          {Array.from({ length: 14 }).map((_, i) => <View key={'v' + i} style={[s.gline, s.gvert, { left: i * 30 }]} />)}
         </View>
-        {/* vignette so the blobs never touch the rounded edge harshly */}
-        <LinearGradient
-          colors={['transparent', 'rgba(7,10,24,0.55)']}
-          style={StyleSheet.absoluteFill}
-          start={{ x: 0.5, y: 0.35 }}
-          end={{ x: 0.5, y: 1 }}
-        />
+        {/* settle the bottom into the light section below */}
+        <LinearGradient colors={['transparent', 'rgba(7,10,24,0.42)']} start={{ x: 0.5, y: 0.72 }} end={{ x: 0.5, y: 1 }}
+                        style={StyleSheet.absoluteFill} />
       </View>
       <View style={{ position: 'relative' }}>{children}</View>
     </View>
@@ -92,11 +86,12 @@ const s = StyleSheet.create({
     backgroundColor: E.stage,
     borderBottomLeftRadius: 34,
     borderBottomRightRadius: 34,
-    overflow: 'hidden',
-    paddingBottom: 22,
-    shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 30 }, shadowOpacity: 0.35, shadowRadius: 60, elevation: 16,
+    overflow: 'hidden',              // ⚠️ load-bearing: without it the washes paint past the radius
+    paddingBottom: 12,
   },
-  grid: { ...StyleSheet.absoluteFillObject, opacity: 0.10 },
-  gline: { position: 'absolute', left: 0, right: 0, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.14)' },
+  // 150% of the stage, offset by a quarter — its own rectangle is always outside the frame.
+  wash: { position: 'absolute', left: '-25%', right: '-25%', top: '-25%', bottom: '-25%' },
+  grid: { ...StyleSheet.absoluteFillObject, opacity: 0.07 },
+  gline: { position: 'absolute', left: 0, right: 0, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.5)' },
   gvert: { top: 0, bottom: 0, width: StyleSheet.hairlineWidth, height: undefined, right: undefined },
 });

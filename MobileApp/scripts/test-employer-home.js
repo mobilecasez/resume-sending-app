@@ -65,8 +65,14 @@ ok('…and reports the crash', /home_employer_crash/.test(boundary));
 
 console.log('── the design, as drawn in the mockup ──');
 ok('dark stage #070A18 with a 34pt rounded bottom', /stage: '#070A18'/.test(theme) && /borderBottomLeftRadius: 34/.test(mesh));
-ok('three drifting mesh blobs (blue, purple, teal)', (mesh.match(/<Blob/g) || []).length === 3);
-ok('the faint 26px grid is there', /i \* 26/.test(mesh));
+// ⚠️ b202 drew these as circular Views holding LinearGradients — with no overflow:hidden, each
+// painted a hard-edged SQUARE across the hero. They are full-bleed washes now: every layer
+// covers the whole stage, so there is no edge anywhere to see.
+ok('three drifting colour washes (blue, violet, teal)', (mesh.match(/<Wash/g) || []).length === 3);
+ok('every wash is oversized so its own bounds never enter frame', /left: '-25%', right: '-25%'/.test(mesh));
+ok('the stage clips to its radius', /overflow: 'hidden',\s+\/\/ ⚠️ load-bearing/.test(mesh));
+ok('the rectangle bug is written down where it happened', /painted as a hard-edged SQUARE/.test(mesh));
+ok('the faint grid is there', /i \* 30/.test(mesh));
 ok('the live pill + pulsing dot', /TAILORED PER EMPLOYER · LIVE/.test(home) && /function LiveDot/.test(home));
 ok('the headline splits into sans + serif-italic accent', /h1Accent/.test(home) && /fontStyle: 'italic'/.test(home));
 ok('the CTA shimmer sweep exists', /function Shimmer/.test(home) && /shimmer:/.test(home));
@@ -124,6 +130,23 @@ ok('no targets → a find-a-job prompt', /Find a job to design your resume aroun
 ok('loading shows chip skeletons', /chipSkeleton/.test(home));
 ok('pull-to-refresh is wired', /RefreshControl/.test(home));
 ok('bottom padding clears the floating tab bar', /paddingBottom: 108/.test(home));
+
+console.log('── the bugs the first on-screen look caught (b202) ──');
+// Every one of these was invisible to a type-check and obvious in a screenshot.
+ok('the dashboard top bar does NOT render on the new Home (two headers stacked)',
+  /\{showDashboard && \(\n      <View style=\{styles\.topBar\}>/.test(hs));
+ok('the mesh has no circular blobs left to paint as squares', !/<Blob/.test(mesh));
+ok('each glow stops before the far edge, so they stay three glows and not one flat field',
+  (mesh.match(/locations=\{\[/g) || []).length === 3);
+ok('the carousel centres from a MEASURED width, not module-load Dimensions',
+  /onLayout=\{\(e\) => setWidth/.test(carousel) && !/Dimensions/.test(carousel));
+ok('the reflection is a sliver, not a grey bar', /height: 6, marginTop: 7/.test(carousel));
+ok('the glare is a gradient, not a hard white block', /transparent', 'rgba\(255,255,255,0\.42\)', 'transparent/.test(carousel));
+ok('target cards cannot stretch when the count is odd', !/flexGrow: 1, backgroundColor: E\.surface/.test(home));
+ok('target thumbnails use expo-image (RN Image did not paint the data URI)', /ExpoImage source=\{\{ uri: image \}\}/.test(home));
+ok('a signed-out preview route exists for looking at this before shipping',
+  fs.existsSync(path.join(__dirname, '../app/(dev)/home-preview.tsx')));
+ok('…and nothing in the app links to it', !new RegExp('home-preview').test(home + hs));
 
 console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

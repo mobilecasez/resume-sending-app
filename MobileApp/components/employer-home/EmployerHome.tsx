@@ -23,6 +23,7 @@ import {
   ActivityIndicator, RefreshControl, Alert, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -40,6 +41,7 @@ type Mode = 'resume' | 'letter';
 
 export default function EmployerHome({
   firstName, onOpenDashboard, onOpenMenu, onOpenNotifications, unreadCount = 0, handleReview,
+  loaders,
 }: {
   firstName?: string;
   onOpenDashboard: () => void;
@@ -47,6 +49,13 @@ export default function EmployerHome({
   onOpenNotifications: () => void;
   unreadCount?: number;
   handleReview?: (tab?: number) => void;
+  // Injectable data sources, defaulting to the real services. The preview route passes fixtures
+  // so the design can be rendered and inspected without a signed-in account.
+  loaders?: {
+    targets: () => Promise<Target[]>;
+    cards: () => Promise<{ preferred: string | null; cards: HomeCard[] } | null>;
+    paid?: () => Promise<boolean>;
+  };
 }) {
   const [targets, setTargets] = useState<Target[]>([]);
   const [empIdx, setEmpIdx] = useState(0);
@@ -60,15 +69,19 @@ export default function EmployerHome({
   const [reshaping, setReshaping] = useState(false);
   const lastLoad = useRef(0);
 
+  const loadTargets = loaders?.targets || fetchTargets;
+  const loadCards = loaders?.cards || fetchHomeCards;
+  const loadPaid = loaders?.paid || (async () => { try { const st = await fetchSubscriptionStatus(); return !!st?.subscription; } catch { return false; } });
+
   const load = useCallback(async (force = false) => {
     if (!force && Date.now() - lastLoad.current < 60_000) return;
     lastLoad.current = Date.now();
-    const [t, c] = await Promise.all([fetchTargets(), fetchHomeCards()]);
+    const [t, c] = await Promise.all([loadTargets(), loadCards()]);
     setTargets(t);
     if (c) { setCards(c.cards); setNoResume(false); } else { setCards([]); setNoResume(true); }
     setLoading(false);
-    try { const st = await fetchSubscriptionStatus(); setIsPaid(!!st?.subscription); } catch {}
-  }, []);
+    setIsPaid(await loadPaid());
+  }, [loadTargets, loadCards, loadPaid]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -147,7 +160,7 @@ export default function EmployerHome({
         </View>
 
         {/* live pill + edit */}
-        <View style={[s.rowBetween, { paddingHorizontal: 16, paddingTop: 22 }]}>
+        <View style={[s.rowBetween, { paddingHorizontal: 16, paddingTop: 16 }]}>
           <View style={s.livePill}>
             <LiveDot />
             <Text style={s.livePillTx}>TAILORED PER EMPLOYER · LIVE</Text>
@@ -159,7 +172,7 @@ export default function EmployerHome({
         </View>
 
         {/* headline */}
-        <View style={{ paddingHorizontal: 16, paddingTop: 14 }}>
+        <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
           <Text style={s.h1}>{headline}</Text>
           <Text style={s.h1Accent}>
             {sweepWords(accent).map((p, i) => (
@@ -168,18 +181,18 @@ export default function EmployerHome({
           </Text>
           <Text style={s.sub}>
             {mode === 'resume'
-              ? 'One posting, one resume. Skills, wording and layout reshaped around what they ask for — so you get shortlisted more often.'
-              : 'Written from this posting and your experience — specific enough that it could only have been sent to them.'}
+              ? 'One posting, one resume — reshaped around what they ask for.'
+              : 'Written from this posting and your experience.'}
           </Text>
         </View>
 
         {/* mode toggle */}
-        <View style={{ paddingHorizontal: 16, paddingTop: 18 }}>
+        <View style={{ paddingHorizontal: 16, paddingTop: 14 }}>
           <ModeToggle mode={mode} onChange={switchMode} />
         </View>
 
         {/* employer chips */}
-        <View style={{ paddingTop: 18 }}>
+        <View style={{ paddingTop: 14 }}>
           <Text style={s.eyebrowDark}>Designing for</Text>
           {loading ? (
             <View style={s.chipsRow}><View style={s.chipSkeleton} /><View style={s.chipSkeleton} /></View>
@@ -310,7 +323,7 @@ export default function EmployerHome({
       {/* the old home, one tap away */}
       <TouchableOpacity style={s.dashLink} activeOpacity={0.8} onPress={onOpenDashboard}>
         <Ionicons name="grid-outline" size={15} color={E.textMuted} />
-        <Text style={s.dashLinkTx}>Open Dashboard</Text>
+        <Text style={s.dashLinkTx} numberOfLines={1}>Open Dashboard</Text>
         <Ionicons name="chevron-forward" size={14} color={E.textFaint} />
       </TouchableOpacity>
     </ScrollView>
@@ -393,7 +406,7 @@ function TargetCard({ t, image, onPress }: { t: Target; image?: string | null; o
     <TouchableOpacity style={s.tCard} activeOpacity={0.9} onPress={onPress}>
       <View style={s.tThumb}>
         {image ? (
-          <Animated.Image source={{ uri: image }} style={s.tThumbImg} resizeMode="cover" />
+          <ExpoImage source={{ uri: image }} style={s.tThumbImg} contentFit="cover" transition={160} />
         ) : (
           <View style={[s.tThumbImg, { backgroundColor: '#EEF2F8' }]} />
         )}
@@ -456,12 +469,14 @@ const s = StyleSheet.create({
   editBtn: { height: 30, paddingHorizontal: 11, borderRadius: 100, backgroundColor: E.glass, borderWidth: 1, borderColor: 'rgba(255,255,255,0.16)', flexDirection: 'row', alignItems: 'center', gap: 5 },
   editTx: { fontSize: 11.5, fontWeight: '700', color: '#fff' },
 
-  h1: { fontSize: 30, fontWeight: '800', color: '#fff', letterSpacing: -1.2, lineHeight: 32 },
-  h1Accent: { fontFamily: SERIF, fontStyle: 'italic', fontSize: 33, lineHeight: 40, letterSpacing: -0.6, marginTop: 2 },
-  sub: { fontSize: 13, fontWeight: '500', color: E.onDark, marginTop: 10, lineHeight: 19 },
+  h1: { fontSize: 26, fontWeight: '800', color: '#fff', letterSpacing: -1, lineHeight: 29 },
+  h1Accent: { fontFamily: SERIF, fontStyle: 'italic', fontSize: 26, lineHeight: 31, letterSpacing: -0.4, marginTop: 1 },
+  sub: { fontSize: 12.5, fontWeight: '500', color: E.onDark, marginTop: 8, lineHeight: 17.5 },
+  // the sub is context, not the message — never let it push the paper off screen
+
 
   toggle: { flexDirection: 'row', padding: 4, borderRadius: 16, backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder, gap: 4 },
-  toggleBtn: { flex: 1, height: 40, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  toggleBtn: { flex: 1, height: 42, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   toggleBtnOn: { backgroundColor: '#fff' },
   toggleTx: { fontSize: 13.5, fontWeight: '700', color: 'rgba(255,255,255,0.75)', letterSpacing: -0.2 },
   toggleTxOn: { color: E.ink },
@@ -500,7 +515,7 @@ const s = StyleSheet.create({
   moreTx: { fontSize: 12.5, fontWeight: '700', color: E.blueDeep },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
-  tCard: { width: '48%', flexGrow: 1, backgroundColor: E.surface, borderRadius: 18, borderWidth: 1, borderColor: E.border, padding: 8, shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 18, elevation: 2 },
+  tCard: { width: '48%', backgroundColor: E.surface, borderRadius: 18, borderWidth: 1, borderColor: E.border, padding: 8, shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 18, elevation: 2 },
   tThumb: { width: '100%', aspectRatio: 300 / 424, borderRadius: 11, overflow: 'hidden', backgroundColor: '#fff', borderWidth: 1, borderColor: E.border },
   tThumbImg: { width: '100%', height: '100%' },
   tBadge: { position: 'absolute', left: 6, top: 6, width: 22, height: 22, borderRadius: 7, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#fff' },
@@ -521,5 +536,5 @@ const s = StyleSheet.create({
   noResumeBtnTx: { fontSize: 14, fontWeight: '800', color: '#fff' },
 
   dashLink: { marginHorizontal: 16, marginTop: 26, height: 46, borderRadius: 14, backgroundColor: E.surface, borderWidth: 1, borderColor: E.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  dashLinkTx: { flex: 0, fontSize: 13, fontWeight: '700', color: E.textMuted },
+  dashLinkTx: { fontSize: 13, fontWeight: '700', color: E.textMuted },
 });

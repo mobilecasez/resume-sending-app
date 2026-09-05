@@ -1807,7 +1807,8 @@ export default function HomeScreen({
         onReplySent={() => setReplyModalVisible(false)}
       />
 
-      {/* ── TOP BAR ──────────────────────────────────────────── */}
+      {/* ── TOP BAR (dashboard only — the employer Home draws its own) ────────── */}
+      {showDashboard && (
       <View style={styles.topBar}>
         {/* Logo + wordmark */}
         <View style={styles.logoRow}>
@@ -1846,6 +1847,7 @@ export default function HomeScreen({
           </TouchableOpacity>
         </View>
       </View>
+      )}
 
       {!showDashboard ? (
         <HomeBoundary onFallback={() => setShowDashboard(true)}>
