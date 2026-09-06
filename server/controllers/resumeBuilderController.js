@@ -1108,15 +1108,27 @@ async function cachedThumb(userId, row, tplId) {
 
 // Drop every cached thumb for this user that is not in `keep` — one file per template per
 // resume version would otherwise accumulate in temp/ forever.
+// ⚠️ THIS USED TO DELETE EVERY THUMB NOT IN THE CURRENT RESPONSE. That was fine while Home showed
+// one fixed set of 5, but Home now pages a large catalogue through here a handful of ids at a time —
+// and under the old rule each wave deleted the previous wave's work, so nothing ever stayed cached
+// and every scroll paid a fresh chromium render. It is an LRU now: the caller's ids are protected,
+// and beyond that we keep the most recently used ones per user and drop only the oldest.
+const THUMB_KEEP = 90;
 async function pruneThumbs(userId, keep) {
     try {
         const tDir = path.join(__dirname, '../../temp');
         const names = await fs.readdir(tDir);
-        const alive = new Set(keep.map((f) => path.basename(f)));
-        for (const nm of names) {
-            if (nm.startsWith(`resume_thumb_${userId}_`) && !alive.has(nm)) {
-                fs.unlink(path.join(tDir, nm)).catch(() => {});
-            }
+        const prefix = `resume_thumb_${userId}_`;
+        const alive = new Set((keep || []).map((f) => path.basename(f)));
+        const mine = names.filter((nm) => nm.startsWith(prefix) && !alive.has(nm));
+        if (mine.length + alive.size <= THUMB_KEEP) return;
+        const stamped = await Promise.all(mine.map(async (nm) => {
+            try { return { nm, at: (await fs.stat(path.join(tDir, nm))).mtimeMs }; }
+            catch { return { nm, at: 0 }; }
+        }));
+        stamped.sort((a, b) => b.at - a.at);                     // newest first
+        for (const { nm } of stamped.slice(Math.max(0, THUMB_KEEP - alive.size))) {
+            fs.unlink(path.join(tDir, nm)).catch(() => {});
         }
     } catch {}
 }

@@ -19,7 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -54,6 +54,9 @@ async function getToken() {
 
 export default function ResumeTemplates() {
   const router = useRouter();
+  // Home opens this screen on the design the user tapped. Optional: with no param the gallery
+  // behaves exactly as before and starts on the first family.
+  const { template: wantTemplate } = useLocalSearchParams<{ template?: string }>();
   const scrollRef = useRef<ScrollView>(null);
   const [families, setFamilies] = useState<Family[]>([]);
   const [regions, setRegions]   = useState<Region[]>([]);
@@ -71,6 +74,8 @@ export default function ResumeTemplates() {
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
   const [active, setActive]     = useState(0);
+  // setActive alone does NOT move the pager — it is a paged ScrollView driven by scrollTo.
+  const landOn = useRef<number | null>(null);
   const [mode, setMode]         = useState<Mode>('onepage');
   const [pagerH, setPagerH]     = useState(0);
   const [downloading, setDownloading] = useState(false);
@@ -148,9 +153,20 @@ export default function ResumeTemplates() {
       setRegions(json.regions || []);
       const sel: Record<string, string> = {};
       for (const f of json.families as Family[]) sel[f.id] = f.id;
+      // If we were opened on a specific design, land on ITS family with THAT variant chosen —
+      // otherwise the user taps a design on Home and arrives on an unrelated one.
+      let start = 0;
+      const want = Array.isArray(wantTemplate) ? wantTemplate[0] : wantTemplate;
+      if (want) {
+        const fi = (json.families as Family[]).findIndex(
+          (f) => f.id === want || (f.variants || []).some((v: any) => v.id === want),
+        );
+        if (fi >= 0) { start = fi; sel[(json.families as Family[])[fi].id] = want; landOn.current = fi; }
+      }
       setChosen(sel);
+      setActive(start);
       setLoading(false);
-      prefetchAround(0, json.families, sel);
+      prefetchAround(start, json.families, sel);
     } catch (e: any) {
       setError(e.message || 'Something went wrong. Please try again.');
       setLoading(false);
@@ -233,6 +249,14 @@ export default function ResumeTemplates() {
   }
 
   const activeFam = visibleFams[active];
+
+  // One-shot: carry the pager to the design Home opened us on, once it exists to be scrolled.
+  useEffect(() => {
+    if (loading || landOn.current == null || !visibleFams.length) return;
+    const idx = Math.min(landOn.current, visibleFams.length - 1);
+    landOn.current = null;
+    if (idx > 0) requestAnimationFrame(() => scrollRef.current?.scrollTo({ x: idx * WIN, animated: false }));
+  }, [loading, visibleFams.length]);
   const selectedId = activeFam ? (chosen[activeFam.id] || activeFam.id) : '';
   const selected = previews[selectedId];
   const selectedMeta = activeFam?.variants.find((v) => v.id === selectedId);

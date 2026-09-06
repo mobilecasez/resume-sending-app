@@ -15,13 +15,21 @@ const mesh = R('../components/employer-home/MeshStage.tsx');
 const carousel = R('../components/employer-home/PaperCarousel.tsx');
 const theme = R('../components/employer-home/theme.ts');
 const boundary = R('../components/employer-home/HomeBoundary.tsx');
+const zoomSrc = R('../components/employer-home/PaperZoom.tsx');
+const sheetSrc = R('../components/employer-home/AddEmployerSheet.tsx');
 const svc = R('../services/employerHomeService.ts');
 const hs = R('../components/HomeScreen.js');
 const ctl = R('../../server/controllers/resumeBuilderController.js');
 const routes = R('../../server/routes/resumeBuilder.js');
+
+// Assertions run against COMMENT-STRIPPED source wherever the thing being tested is also NAMED in
+// a comment. Matching your own explanation proves nothing — that mistake has been made here more
+// than once (Dimensions, router.back(), and the 1.99 the design deliberately does NOT copy).
+const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
 const FILES = {
   'EmployerHome.tsx': home, 'MeshStage.tsx': mesh, 'PaperCarousel.tsx': carousel,
   'theme.ts': theme, 'HomeBoundary.tsx': boundary, 'employerHomeService.ts': svc, 'HomeScreen.js': hs,
+  'PaperZoom.tsx': zoomSrc, 'AddEmployerSheet.tsx': sheetSrc,
 };
 
 console.log('── every file parses (a JSX slip here white-screens the app) ──');
@@ -68,7 +76,8 @@ ok('the boundary falls back to the dashboard, not a dead screen', /getDerivedSta
 ok('…and reports the crash', /home_employer_crash/.test(boundary));
 
 console.log('── the design, as drawn in the mockup ──');
-ok('dark stage #070A18 with a 34pt rounded bottom', /stage: '#070A18'/.test(theme) && /borderBottomLeftRadius: 34/.test(mesh));
+ok('dark stage #070A18, full-bleed — the rounded bottom is GONE so it can melt into the grey',
+  /stage: '#070A18'/.test(theme) && !/borderBottomLeftRadius/.test(mesh) && /fadeFrom/.test(mesh));
 // ⚠️ b202 drew these as circular Views holding LinearGradients — with no overflow:hidden, each
 // painted a hard-edged SQUARE across the hero. They are full-bleed washes now: every layer
 // covers the whole stage, so there is no edge anywhere to see.
@@ -79,8 +88,10 @@ ok('the rectangle bug is written down where it happened', /painted as a hard-edg
 ok('the faint grid is there', /i \* 30/.test(mesh));
 ok('the live pill + pulsing dot', /TAILORED PER EMPLOYER · LIVE/.test(home) && /function LiveDot/.test(home));
 ok('the headline splits into sans + serif-italic accent', /h1Accent/.test(home) && /fontStyle: 'italic'/.test(home));
-ok('the CTA shimmer sweep exists', /function Shimmer/.test(home) && /shimmer:/.test(home));
-ok('employer chips carry initial, company, role and match', /chipTileTx/.test(home) && /chipRole/.test(home) && /chipPctTx/.test(home));
+ok('there is NO download button on Home — the actions live in the opened page',
+  !/function Shimmer/.test(home) && !/ctaTx:/.test(home) && !/Download for /.test(home));
+ok('employer chips are compact: initial, company, match — the role line is dropped',
+  /chipTileTx/.test(home) && /chipPctTx/.test(home) && !/chipRole/.test(home));
 ok('the carousel shows a "For <employer>" ribbon', /ribbon/.test(carousel) && /For \{ribbon\.short\}/.test(carousel));
 ok('dots widen for the active card', /dotOn: \{ width: 20/.test(carousel));
 ok('cards keep the A4 ratio the renderer uses', /424 \/ 300/.test(carousel));
@@ -125,12 +136,12 @@ console.log('── the pricing model is NOT changed by a mockup ──');
 const homeCode = home.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
 ok('no €1.99 / one-time-purchase checkout was copied in', !/1\.99|one-time purchase|Pay by card/.test(homeCode));
 ok('the conflict is documented where the CTA lives', /SUBSCRIPTION model/.test(home) && /pricing bug/.test(home));
-ok('the reassurance line is true for OUR model', /downloads are on paid plans/.test(home) && /downloads are on your plan/.test(home));
+ok('the mockup\u2019s one-off price is still nowhere near this screen', !/1\.99/.test(strip(home)));
 ok('paid state is read from the server, not guessed', /fetchSubscriptionStatus/.test(home));
 
 console.log('── it degrades gracefully ──');
 ok('no resume → a build-my-resume state, not an empty carousel', /function NoResume/.test(home) && /Build with AI/.test(home));
-ok('no targets → a find-a-job prompt', /Find a job to design your resume around/.test(home));
+ok('no targets \u2192 an ADD EMPLOYER prompt', /Add an employer to design your resume around/.test(home));
 ok('loading shows chip skeletons', /chipSkeleton/.test(home));
 ok('pull-to-refresh is wired', /RefreshControl/.test(home));
 ok('bottom padding clears the floating tab bar', /paddingBottom: 108/.test(home));
@@ -141,9 +152,10 @@ ok('the dashboard top bar does NOT render on the new Home (two headers stacked)'
   /\{showDashboard && \(\n      <View style=\{styles\.topBar\}>/.test(hs));
 ok('the mesh has no circular blobs left to paint as squares', !/<Blob/.test(mesh));
 ok('each glow stops before the far edge, so they stay three glows and not one flat field',
-  (mesh.match(/locations=\{\[/g) || []).length === 3);
-ok('the carousel centres from a MEASURED width, not module-load Dimensions',
-  /onLayout=\{\(e\) => setWidth/.test(carousel) && !/Dimensions/.test(carousel));
+  (mesh.match(/<Wash /g) || []).length === 3);
+ok('the carousel centres AND sizes from a MEASURED width, not module-load Dimensions',
+  /onLayout=\{\(e\) => setWidth/.test(carousel) && /cardWidthFor\(width\)/.test(carousel)
+  && !/Dimensions/.test(strip(carousel)));   // strip(): the rule is explained in a comment that names it
 ok('the reflection is a sliver, not a grey bar', /height: 6, marginTop: 7/.test(carousel));
 ok('the glare is a gradient, not a hard white block', /transparent', 'rgba\(255,255,255,0\.42\)', 'transparent/.test(carousel));
 ok('target cards cannot stretch when the count is odd', !/flexGrow: 1, backgroundColor: E\.surface/.test(home));
@@ -156,7 +168,6 @@ ok('…and nothing in the app links to it', !new RegExp('home-preview').test(hom
 // Every assertion below is a defect that survived adversarial verification. They are checked
 // against COMMENT-STRIPPED source: the fixes are documented in prose that repeats the very
 // tokens being tested, and an assertion that matches its own explanation proves nothing.
-const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
 const homeC = strip(home), svcC = strip(svc), hsC = strip(hs), carC = strip(carousel), ctlC = strip(ctl);
 
 console.log('── a failed request must NEVER read as "you have no resume" (it armed a paid rebuild) ──');
@@ -170,17 +181,22 @@ ok('…and offers a retry instead of spinning forever', /loadFailed \? \(/.test(
 
 console.log('── the dark hero must own the status bar (a light band sat above it on every notch) ──');
 ok('HomeScreen drops its top safe-area edge for the employer Home', /edges=\{showDashboard \? \['top', 'left', 'right', 'bottom'\] : \['left', 'right', 'bottom'\]\}/.test(hsC));
-ok('the hero pads itself by the real inset', /paddingTop: insets\.top \+ Platform\.select/.test(homeC) && /useSafeAreaInsets/.test(homeC));
+ok('the PINNED header owns the inset, and never scrolls under the clock',
+  /headerWrap: \{ position: 'absolute', top: 0/.test(homeC)
+  && /height: headerH, paddingTop: insets\.top/.test(homeC) && /useSafeAreaInsets/.test(homeC));
 ok('status-bar glyphs switch to light on the near-black hero', /barStyle=\{showDashboard \? 'dark-content' : 'light-content'\}/.test(hsC));
 
 console.log('── iOS clips a shadow drawn on the same view as overflow:hidden ──');
 ok('the paper shadow lives on a wrapper', /paperShadow: \{/.test(carC) && !/overflow: 'hidden'[^}]*shadowColor/.test(carC));
 ok('the clipped paper view carries no shadow of its own', !/paper: \{[^}]*shadowColor/s.test(carC));
-ok('the CTA glow lives on the touchable', /ctaShadow: \{/.test(homeC) && /onPress=\{onDownload\} style=\{s\.ctaShadow\}/.test(homeC));
+ok('the opened page keeps the shadow OFF the clipped view (the iOS trap)',
+  /page: \{[^}]*shadowColor/s.test(strip(zoomSrc)) && /pageClip: \{[^}]*overflow: 'hidden'/.test(zoomSrc));
 ok('the clipped CTA gradient carries no shadow of its own', !/  cta: \{[^}]*shadowColor/s.test(homeC));
 
 console.log('── the CTA label must give way, not push its icon out of the button ──');
-ok('ctaTx can shrink', /ctaTx: \{[^}]*flexShrink: 1/.test(homeC));
+ok('every label that can meet a long company name can shrink',
+  /chipName: \{[^}]*flexShrink: 1/.test(homeC) && /ghostTx: \{[^}]*flexShrink: 1/.test(strip(zoomSrc))
+  && /letterBtnTx: \{[^}]*flexShrink: 1/.test(homeC));
 
 console.log('── selection and screen state survive a refresh ──');
 ok('the picked employer is pinned by key, not by list position', /pickedKey = useRef<string \| null>\(null\)/.test(homeC));
@@ -194,6 +210,64 @@ ok('the key includes the photo version', /':' \+ pver \+ ':' \+ tplId/.test(ctlC
 ok('cachedThumb reports the filename it used', (ctlC.match(/file: path\.basename\(file\)/g) || []).length === 2);
 ok('…and homeCards never recomputes that key (pruneThumbs would delete every fresh thumb)',
   /files\.push\(c\.file\)/.test(ctlC) && !/files\.push\(`resume_thumb_/.test(ctlC));
+
+// ── Round 4: the reworked Home (pinned header, bigger paper, zoom, add-employer, letters) ──
+const gal = R('../app/(resume-builder)/templates.tsx');
+const hub = R('../app/(ai-hub)/index.tsx');
+const zoomC = strip(zoomSrc), sheetC = strip(sheetSrc), galC = strip(gal), hubC = strip(hub);
+
+console.log('── the header is pinned, and it is OUR mark ──');
+ok('the real logo asset is used, tinted to read on the hero',
+  /require\('\.\.\/\.\.\/assets\/images\/logo_img\.png'\)/.test(homeC) && /brandLogo: \{[^}]*tintColor: '#fff'/.test(homeC));
+ok('the header sits OUTSIDE the scroll view', /<\/Animated\.ScrollView>[\s\S]{0,400}headerWrap/.test(homeC));
+ok('its backdrop is transparent at rest, so it cannot read as a second background',
+  /scrollY\.interpolate\(\{ inputRange: \[0, 64\], outputRange: \[0, 1\]/.test(homeC));
+ok('the stage keeps its top band flat for the header to sit on', /rgba\(7,10,24,0\.92\)', 'transparent'/.test(strip(mesh)));
+
+console.log('── the first screenful is all gradient; grey is met on the way down ──');
+ok('the stage outruns the viewport', /rootH \* 1\.18/.test(homeC));
+ok('…and the melt starts below the fold', /\(rootH \* 0\.97\) \/ stageH/.test(homeC));
+
+console.log('── compact mode icons, glass employer chips ──');
+ok('the full-width tab pair is gone', !/toggleBtnOn/.test(home) && /function ModeSwitch/.test(homeC));
+ok('the switch rides the headline row', /<ModeSwitch mode=\{mode\} onChange=\{switchMode\} \/>/.test(homeC) && /headRow: \{/.test(homeC));
+ok('selection is glass, never a white pill', /chipOn: \{\s*backgroundColor: 'rgba\(79,141,255,0\.22\)'/.test(homeC) && !/chipOn: \{ backgroundColor: '#fff'/.test(homeC));
+
+console.log('── tapping a page opens it, and the two actions are the REAL screens ──');
+ok('the zoom grows from the tapped rectangle, measured', /measureInWindow/.test(strip(carousel)) && /onOpen\(i, w \? \{ x, y, w, h \}/.test(strip(carousel)));
+ok('the transition is transform-only (native driver, one tree)',
+  /translateX: lerp\(tx0, 0\)/.test(zoomC) && /scale: lerp\(scale0, 1\)/.test(zoomC) && !/useNativeDriver: false/.test(zoomC));
+ok('Customize opens the SECTION EDITOR', /nav\(\)\?\.push\?\.\('\/\(resume-builder\)\/preview'\)/.test(homeC));
+ok('⚠️ Customize NEVER arms the paid auto-build lane',
+  !/autoBuild[\s\S]{0,80}home_customize/.test(homeC) && (homeC.match(/autoBuild: true/g) || []).length === 1);
+ok('View PDF opens the gallery ON the tapped design', /pathname: '\/\(resume-builder\)\/templates', params: id \? \{ template: id \}/.test(homeC));
+ok('…and the gallery actually honours that param', /useLocalSearchParams<\{ template\?: string \}>/.test(galC) && /landOn\.current = fi/.test(galC));
+ok('…including scrolling its pager there', /scrollRef\.current\?\.scrollTo\(\{ x: idx \* WIN/.test(galC));
+
+console.log('── the whole catalogue, without a render stampede ──');
+ok('slots come from the metadata endpoint', /fetchTemplateCatalogue/.test(strip(svc)) && /'\/resume-builder\/templates'/.test(strip(svc)));
+ok('images are fetched only for cards near the one on screen', /const WINDOW = 6;/.test(homeC) && /want\.length < 5/.test(homeC));
+ok('two hydration waves can never run at once', /if \(hydrating\.current\) return;/.test(homeC));
+ok('a failing design is not retried forever', /dead\.current\[id\] = true/.test(homeC));
+ok('the server cache no longer evicts the previous wave', /THUMB_KEEP/.test(strip(ctl)) && /stamped\.sort\(\(a, b\) => b\.at - a\.at\)/.test(strip(ctl)));
+
+ok('the carousel NEVER renders a blank hole while it waits to be measured',
+  /PROVISIONAL_W/.test(strip(carousel)) && !/\{w > 0 && \(/.test(carousel) && !/height: 300 \}/.test(strip(carousel)));
+
+console.log('── add employer ──');
+ok('the button says what it does', /Add employer/.test(homeC) && !/Find a job/.test(homeC));
+ok('the sheet only SEARCHES — it never adds, because adding costs credits',
+  !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC) && /fetchDiscoverJobs/.test(sheetC));
+ok('…and hands the choice to the one audited add flow', /params: \{ tab: 'search', addCompany: value \}/.test(homeC));
+ok('the hub consumes it exactly once', /handedOver\.current = true;/.test(hubC) && /typeof explicit === 'string' \? explicit : inputValue/.test(hubC));
+ok('it can take a pasted careers URL as well as a name', /looksLikeUrl/.test(sheetC) && /Use this careers page/.test(sheetC));
+ok('region filters the search and suggests a design', /country: ctry \|\| ''/.test(sheetC) && /bestDesignForCountry/.test(strip(svc)));
+
+console.log('── cover letters ──');
+ok('letter mode does NOT borrow the resume carousel', /mode === 'letter' \? \(\s*<LetterPanel/.test(homeC));
+ok('⚠️ and NEVER generates on entry — generation spends the letter quota',
+  !/generate-cover-letter/.test(homeC) && /onWrite=\{\(\) => \{/.test(homeC));
+ok('the letter designs are listed from one place', /LETTER_DESIGNS/.test(homeC) && /LETTER_DESIGNS: Array/.test(strip(svc)));
 
 console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

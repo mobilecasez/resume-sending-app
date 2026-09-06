@@ -150,3 +150,65 @@ export const hashJobUrlId = (s: string) => {
   for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
   return 'gj_' + h.toString(36);
 };
+
+/**
+ * Which design family suits a country — mirrors the server's REGIONS table
+ * (server/utils/resumeTemplates.js), whose `sub` field lists the countries each region covers.
+ * Used only as a HINT in the Add-employer sheet; the gallery remains the source of truth.
+ */
+const REGION_PICK: Array<{ countries: string[]; id: string; name: string }> = [
+  { countries: ['india', 'bangladesh', 'nepal', 'sri lanka'], id: 'india', name: 'India Professional' },
+  { countries: ['germany', 'austria', 'switzerland'], id: 'germany', name: 'Germany Professional' },
+  { countries: ['france', 'spain', 'italy', 'netherlands', 'belgium', 'portugal', 'poland', 'sweden', 'norway', 'denmark', 'finland', 'ireland', 'czechia', 'romania'], id: 'europass', name: 'Europass Premium' },
+  { countries: ['united states', 'usa', 'canada', 'united kingdom', 'uk', 'australia', 'new zealand'], id: 'ats', name: 'ATS Modern' },
+  { countries: ['singapore', 'hong kong', 'malaysia', 'japan', 'south korea'], id: 'exec_pro', name: 'Executive Professional' },
+];
+
+export function bestDesignForCountry(country?: string | null): { id: string; name: string } | null {
+  const c = (country || '').trim().toLowerCase();
+  if (!c) return null;
+  for (const r of REGION_PICK) if (r.countries.includes(c)) return { id: r.id, name: r.name };
+  return null;
+}
+
+/**
+ * The whole design catalogue as SLOTS — id, name, accent — with no pixels.
+ *
+ * ⚠️ This endpoint renders NOTHING (it is metadata plus a warm-up), which is the only reason Home
+ * can offer the full set. Images arrive later, a few at a time, through fetchHomeCards(ids):
+ * rendering is serial and single-process chromium dies after ~4-5 pages in a session, so asking for
+ * all of them at once would take the preview pipeline down for everyone.
+ */
+export async function fetchTemplateCatalogue(): Promise<HomeCard[]> {
+  const j = await getJson('/resume-builder/templates', 20000);
+  const fams = j?.families;
+  if (!Array.isArray(fams)) return [];
+  const out: HomeCard[] = [];
+  for (const f of fams) {
+    const variants = Array.isArray(f?.variants) && f.variants.length ? f.variants : [f];
+    for (const v of variants) {
+      if (!v?.id) continue;
+      out.push({ id: v.id, name: v.name || f.name || v.id, accent: v.accent || f.accent || '#4F8DFF', image: null } as HomeCard);
+    }
+  }
+  return out;
+}
+
+/**
+ * The letter designs, mirroring server/utils/coverLetterTemplates.js.
+ *
+ * ⚠️ HARDCODED ON PURPOSE — unlike resumes there is no GET endpoint that lists letter templates,
+ * and there is no letter equivalent of /resume-builder/home-cards either: the only letter preview
+ * endpoint (POST /cover-letter/preview-templates) demands the letter HTML in the request, so it can
+ * render nothing until a letter has actually been written for that employer. That is why Home shows
+ * the letter designs by NAME and asks first, instead of a carousel of pages it cannot produce.
+ */
+export const LETTER_DESIGNS: Array<{ id: string; name: string; accent: string }> = [
+  { id: 'standard',        name: 'Original (Branded)',   accent: '#3a6cb5' },
+  { id: 'ats_pro',         name: 'ATS Professional',     accent: '#1f2937' },
+  { id: 'exec_leader',     name: 'Executive Leadership',  accent: '#b8995a' },
+  { id: 'technical',       name: 'Technical Specialist',  accent: '#0e7490' },
+  { id: 'german',          name: 'German Professional',   accent: '#334155' },
+  { id: 'euro_motivation', name: 'European Motivation',   accent: '#8a7a5e' },
+  { id: 'graduate',        name: 'Graduate / Entry Level', accent: '#5b5bd6' },
+];

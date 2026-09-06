@@ -20,7 +20,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Animated, Easing,
-  ActivityIndicator, RefreshControl, Alert, Platform,
+  ActivityIndicator, RefreshControl, Alert, Platform, Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image as ExpoImage } from 'expo-image';
@@ -32,7 +32,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { E, SERIF, sweepWords } from './theme';
 import MeshStage from './MeshStage';
 import PaperCarousel, { PaperCard } from './PaperCarousel';
-import { fetchTargets, fetchHomeCards, Target, HomeCard, HomeCards } from '../../services/employerHomeService';
+import PaperZoom, { OriginRect } from './PaperZoom';
+import AddEmployerSheet from './AddEmployerSheet';
+import { fetchTargets, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS, Target, HomeCard, HomeCards } from '../../services/employerHomeService';
 import { fetchSubscriptionStatus } from '../../services/subscriptionService';
 import { track } from '../../services/analytics';
 
@@ -62,9 +64,21 @@ export default function EmployerHome({
   // edge for this screen), so the hero owns that inset itself. Without this the notch band is
   // painted in the app's LIGHT background and sits as a grey strip above the near-black hero.
   const insets = useSafeAreaInsets();
+  const [rootH, setRootH] = useState(0);
+  const [zoom, setZoom] = useState<{ i: number; rect: OriginRect } | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const regionHint = useCallback((c: string) => bestDesignForCountry(c)?.name || null, []);
+  // Drives ONLY the pinned header's backdrop. Native driver, and the header is a sibling of the
+  // ScrollView — a separate view tree from the mesh, so the b126 one-driver-per-tree rule holds.
+  const scrollY = useRef(new Animated.Value(0)).current;
   const [targets, setTargets] = useState<Target[]>([]);
   const [empIdx, setEmpIdx] = useState(0);
   const [cards, setCards] = useState<HomeCard[]>([]);
+  // Every design in the catalogue, as a slot. Pixels arrive later and are merged in by id.
+  const [slots, setSlots] = useState<HomeCard[]>([]);
+  const [shots, setShots] = useState<Record<string, string>>({});
+  const dead = useRef<Record<string, true>>({});
+  const hydrating = useRef(false);
   const [cardIdx, setCardIdx] = useState(0);
   const [mode, setMode] = useState<Mode>('resume');
   const [loading, setLoading] = useState(true);
@@ -88,7 +102,12 @@ export default function EmployerHome({
   const load = useCallback(async (force = false) => {
     if (!force && Date.now() - lastLoad.current < 60_000) return;
     lastLoad.current = Date.now();
-    const [t, c] = await Promise.all([loadTargets(), loadCards()]);
+    const [t, c, cat] = await Promise.all([
+      loadTargets(),
+      loadCards(),
+      loaders ? Promise.resolve([] as HomeCard[]) : fetchTemplateCatalogue().catch(() => [] as HomeCard[]),
+    ]);
+    if (cat.length) setSlots(cat);
     setTargets(t);
     if (pickedKey.current) {
       const j = t.findIndex((x) => x.key === pickedKey.current);
@@ -110,7 +129,59 @@ export default function EmployerHome({
   const onRefresh = async () => { setRefreshing(true); await load(true); setRefreshing(false); };
 
   const target: Target | undefined = targets[empIdx];
-  const card: PaperCard | undefined = cards[cardIdx];
+  // What the carousel actually shows. With a catalogue we show EVERY design — the ones the server
+  // already rendered lead, the rest follow as slots and fill in on approach.
+  const deck: PaperCard[] = React.useMemo(() => {
+    if (!slots.length) return cards as PaperCard[];
+    const ready = new Map(cards.map((c) => [c.id, c] as const));
+    const lead = cards.map((c) => ({ ...c, image: shots[c.id] || c.image })) as PaperCard[];
+    const rest = slots
+      .filter((sl) => !ready.has(sl.id))
+      .map((sl) => ({ ...sl, image: shots[sl.id] || null })) as PaperCard[];
+    return [...lead, ...rest];
+  }, [cards, slots, shots]);
+
+  // Fill in the pages around the one being looked at, a few at a time and never two waves at once:
+  // renders are serial server-side and the preview browser recycles every 3 pages.
+  useEffect(() => {
+    if (!deck.length || noResume || loaders) return;
+    let cancelled = false;
+    const run = async () => {
+      if (hydrating.current) return;
+      // ⚠️ BOUNDED to the cards either side of the one on screen. An unbounded search would always
+      // find five more missing designs somewhere in the deck, so each wave would trigger the next
+      // and the whole catalogue would render itself off one glance at Home — exactly the stampede
+      // the 5-per-request cap exists to prevent. Nothing renders unless it is nearly in view.
+      const WINDOW = 6;
+      const want: string[] = [];
+      for (let k = 0; k <= WINDOW * 2 && want.length < 5; k++) {
+        const i = cardIdx + (k % 2 === 0 ? k / 2 : -((k + 1) / 2));
+        if (i < 0 || i >= deck.length) continue;
+        const d = deck[Math.round(i)];
+        if (d && !d.image && !dead.current[d.id] && !want.includes(d.id)) want.push(d.id);
+      }
+      if (!want.length) return;
+      hydrating.current = true;
+      try {
+        const got = await fetchHomeCards(want);
+        if (cancelled) return;
+        if (got && got !== 'none') {
+          const add: Record<string, string> = {};
+          for (const c of got.cards) if (c.image) add[c.id] = c.image;
+          for (const id of want) if (!add[id]) dead.current[id] = true;
+          if (Object.keys(add).length) setShots((p) => ({ ...p, ...add }));
+        } else {
+          for (const id of want) dead.current[id] = true;   // don't hammer a failing renderer
+        }
+      } finally {
+        hydrating.current = false;
+      }
+    };
+    const id = setTimeout(run, 260);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [cardIdx, deck, noResume, loaders]);
+
+  const card: PaperCard | undefined = deck[cardIdx];
 
   // Picking an employer "reshapes" the page — the scan pulse the mockup plays over the card.
   const pickEmployer = (i: number) => {
@@ -130,60 +201,31 @@ export default function EmployerHome({
     track('home_mode', { mode: m });
   };
 
-  // ── The one CTA. Downloads are a paid-plan feature (server enforces it too) ──
-  const onDownload = () => {
-    track('home_cta', { mode, paid: isPaid, hasTarget: !!target });
-    if (mode === 'letter') {
-      // A letter is written FOR a posting — send them to the job, where generation lives.
-      if (target?.jobId || target?.jobUrl) {
-        nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } });
-      } else {
-        handleReview?.(0);
-      }
-      return;
-    }
-    if (noResume) {
-      AsyncStorage.setItem('resume_builder_entry', JSON.stringify({ from: 'home_employer', autoBuild: true })).catch(() => {});
-      nav()?.push?.('/(resume-builder)');
-      return;
-    }
-    // Resume: the design gallery is where preview (free) and download (paid) live.
-    nav()?.push?.('/(resume-builder)/templates');
-  };
-
   const headline = mode === 'resume' ? 'Design your resume' : 'Write your cover letter';
   const accent = mode === 'resume' ? 'exclusively for the employer.' : 'for this exact posting.';
 
-  return (
-    <ScrollView
-      style={s.flex}
-      contentContainerStyle={{ paddingBottom: 108 }}
-      showsVerticalScrollIndicator={false}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={E.blue} />}
-    >
-      {/* ───────────────────────── DARK STAGE ───────────────────────── */}
-      <MeshStage>
-        {/* top bar */}
-        <View style={[s.topBar, { paddingTop: insets.top + Platform.select({ ios: 8, default: 12 })! }]}>
-          <View style={s.brandRow}>
-            <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.brandMark}>
-              <Ionicons name="document-text" size={15} color="#fff" />
-            </LinearGradient>
-            <Text style={s.brandTx}>cv<Text style={{ color: E.blue }}>applyr</Text></Text>
-          </View>
-          <View style={s.topActions}>
-            <TouchableOpacity onPress={onOpenNotifications} style={s.glassBtn} activeOpacity={0.8}>
-              <Ionicons name="notifications-outline" size={17} color="#fff" />
-              {unreadCount > 0 && <View style={s.badge}><Text style={s.badgeTx}>{unreadCount > 9 ? '9+' : unreadCount}</Text></View>}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={onOpenMenu} style={s.glassBtn} activeOpacity={0.8}>
-              <Ionicons name="menu" size={19} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        </View>
+  const headerH = insets.top + 52;
+  // The stage must outrun the viewport so the first screenful is ALL gradient and the fade into the
+  // grey is something you only meet on the way down (minHeight, so it still grows with content).
+  // Just past the fold — enough that screen one is unbroken gradient, not so much that scrolling
+  // drags through a dead field of it before the content resumes.
+  const stageH = rootH ? Math.round(rootH * 1.18) : 900;
+  const fadeFrom = rootH ? Math.min(0.88, (rootH * 0.97) / stageH) : 0.8;
 
+  return (
+    <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
+      <Animated.ScrollView
+        style={s.flex}
+        contentContainerStyle={{ paddingBottom: 108 }}
+        showsVerticalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={E.blue} progressViewOffset={headerH} />}
+      >
+      {/* ───────────────────────── DARK STAGE ───────────────────────── */}
+      <MeshStage style={{ minHeight: stageH, paddingTop: headerH }} fadeFrom={fadeFrom}>
         {/* live pill + edit */}
-        <View style={[s.rowBetween, { paddingHorizontal: 16, paddingTop: 16 }]}>
+        <View style={[s.rowBetween, { paddingHorizontal: 16, paddingTop: 14 }]}>
           <View style={s.livePill}>
             <LiveDot />
             <Text style={s.livePillTx}>TAILORED PER EMPLOYER · LIVE</Text>
@@ -194,9 +236,12 @@ export default function EmployerHome({
           </TouchableOpacity>
         </View>
 
-        {/* headline */}
+        {/* headline — the mode switch rides the free space on its right */}
         <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-          <Text style={s.h1}>{headline}</Text>
+          <View style={s.headRow}>
+            <Text style={[s.h1, s.headText]}>{headline}</Text>
+            <ModeSwitch mode={mode} onChange={switchMode} />
+          </View>
           <Text style={s.h1Accent}>
             {sweepWords(accent).map((p, i) => (
               <Text key={i} style={{ color: p.c }}>{p.w}{i < accent.split(' ').length - 1 ? ' ' : ''}</Text>
@@ -207,11 +252,6 @@ export default function EmployerHome({
               ? 'One posting, one resume — reshaped around what they ask for.'
               : 'Written from this posting and your experience.'}
           </Text>
-        </View>
-
-        {/* mode toggle */}
-        <View style={{ paddingHorizontal: 16, paddingTop: 14 }}>
-          <ModeToggle mode={mode} onChange={switchMode} />
         </View>
 
         {/* employer chips */}
@@ -227,20 +267,20 @@ export default function EmployerHome({
               <TouchableOpacity
                 style={s.chipAdd}
                 activeOpacity={0.85}
-                onPress={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } })}
+                onPress={() => { track('home_add_employer_open', { from: 'chips' }); setAddOpen(true); }}
               >
                 <Ionicons name="add" size={16} color="#fff" />
-                <Text style={s.chipAddTx}>Find a job</Text>
+                <Text style={s.chipAddTx}>Add employer</Text>
               </TouchableOpacity>
             </ScrollView>
           ) : (
             <TouchableOpacity
               style={[s.chipsRow, s.emptyTargets]}
               activeOpacity={0.85}
-              onPress={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } })}
+              onPress={() => { track('home_add_employer_open', { from: 'empty' }); setAddOpen(true); }}
             >
-              <Ionicons name="search" size={15} color="#fff" />
-              <Text style={s.emptyTargetsTx}>Find a job to design your resume around</Text>
+              <Ionicons name="add" size={15} color="#fff" />
+              <Text style={s.emptyTargetsTx}>Add an employer to design your resume around</Text>
               <Ionicons name="arrow-forward" size={14} color="rgba(255,255,255,0.6)" />
             </TouchableOpacity>
           )}
@@ -248,17 +288,30 @@ export default function EmployerHome({
 
         {/* the paper */}
         <View style={{ paddingTop: 10 }}>
-          {noResume ? (
+          {mode === 'letter' ? (
+            <LetterPanel
+              company={target?.company}
+              onWrite={() => {
+                track('home_letter_write', { hasTarget: !!target });
+                if (target?.jobId || target?.jobUrl) {
+                  nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } });
+                } else {
+                  setAddOpen(true);
+                }
+              }}
+            />
+          ) : noResume ? (
             <NoResume onBuild={() => {
               AsyncStorage.setItem('resume_builder_entry', JSON.stringify({ from: 'home_employer', autoBuild: true })).catch(() => {});
               nav()?.push?.('/(resume-builder)');
             }} />
-          ) : cards.length ? (
+          ) : deck.length ? (
             <PaperCarousel
-              cards={cards}
+              cards={deck}
               index={cardIdx}
               onIndex={setCardIdx}
               ribbon={target ? { letter: target.initial, short: target.company, colors: target.colors } : null}
+              onOpen={(i, rect) => { setCardIdx(i); setZoom({ i, rect }); track('home_paper_open', { i }); }}
             />
           ) : loadFailed ? (
             <TouchableOpacity style={s.paperLoading} activeOpacity={0.8} onPress={() => load(true)}>
@@ -271,6 +324,7 @@ export default function EmployerHome({
           )}
 
           {/* caption */}
+          {mode === 'resume' && (
           <View style={s.caption}>
             {reshaping ? (
               <View style={s.rowCenter}>
@@ -289,33 +343,9 @@ export default function EmployerHome({
               </View>
             )}
           </View>
+          )}
         </View>
       </MeshStage>
-
-      {/* ───────────────────────── CTA ───────────────────────── */}
-      <View style={{ paddingHorizontal: 16, paddingTop: 18 }}>
-        <TouchableOpacity activeOpacity={0.9} onPress={onDownload} style={s.ctaShadow}>
-          <LinearGradient
-            colors={[E.blue, E.purple, E.purpleLite]}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-            style={s.cta}
-          >
-            <Shimmer />
-            <Ionicons name={mode === 'letter' ? 'create' : (isPaid ? 'download-outline' : 'lock-closed')} size={17} color="#fff" />
-            <Text style={s.ctaTx} numberOfLines={1}>
-              {mode === 'letter'
-                ? (target ? `Write for ${target.company}` : 'Write a cover letter')
-                : (noResume ? 'Build my resume' : target ? `Download for ${target.company}` : 'Download my resume')}
-            </Text>
-          </LinearGradient>
-        </TouchableOpacity>
-        <View style={s.reassure}>
-          <Ionicons name="checkmark-circle" size={13} color={E.tealDeep} />
-          <Text style={s.reassureTx}>
-            {isPaid ? 'Preview every design free · downloads are on your plan' : 'Preview every design free · downloads are on paid plans'}
-          </Text>
-        </View>
-      </View>
 
       {/* ───────────────────────── SAMPLES ───────────────────────── */}
       {targets.length > 0 && (
@@ -355,7 +385,71 @@ export default function EmployerHome({
         <Text style={s.dashLinkTx} numberOfLines={1}>Open Dashboard</Text>
         <Ionicons name="chevron-forward" size={14} color={E.textFaint} />
       </TouchableOpacity>
-    </ScrollView>
+      </Animated.ScrollView>
+
+      {/* ── PINNED HEADER ───────────────────────────────────────────────────
+          It never scrolls, so it can no longer ride up under the clock and battery.
+          Its backdrop is TRANSPARENT at rest and fades in only once the page moves: at the top of
+          the screen there is literally nothing painted here, so it cannot read as a second
+          background — the stage's own flat top band shows through and the two are one surface. */}
+      <View style={[s.headerWrap, { height: headerH, paddingTop: insets.top }]} pointerEvents="box-none">
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { opacity: scrollY.interpolate({ inputRange: [0, 64], outputRange: [0, 1], extrapolate: 'clamp' }) }]}
+        >
+          <LinearGradient colors={['rgba(7,10,24,0.97)', 'rgba(7,10,24,0.90)']} style={StyleSheet.absoluteFill} />
+          <View style={s.headerHair} />
+        </Animated.View>
+        <View style={s.headerRow}>
+          <View style={s.brandRow}>
+            <Image source={require('../../assets/images/logo_img.png')} style={s.brandLogo} resizeMode="contain" />
+            <Text style={s.brandTx}>cv<Text style={{ color: E.blue }}>applyr</Text></Text>
+          </View>
+          <View style={s.topActions}>
+            <TouchableOpacity onPress={onOpenNotifications} style={s.glassBtn} activeOpacity={0.8}>
+              <Ionicons name="notifications-outline" size={17} color="#fff" />
+              {unreadCount > 0 && <View style={s.badge}><Text style={s.badgeTx}>{unreadCount > 9 ? '9+' : unreadCount}</Text></View>}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onOpenMenu} style={s.glassBtn} activeOpacity={0.8}>
+              <Ionicons name="menu" size={19} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+
+      {/* the page, full size, with the only two things you can do with a design */}
+      <AddEmployerSheet
+        visible={addOpen}
+        onClose={() => setAddOpen(false)}
+        regionHint={regionHint}
+        onPick={(value) => {
+          setAddOpen(false);
+          track('home_add_employer_pick', { url: /^https?:\/\//i.test(value) });
+          // The Job Hub owns this: it prechecks credits, spots job portals and recovers in-flight
+          // searches. Home only decides WHICH employer.
+          nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search', addCompany: value } });
+        }}
+      />
+
+      <PaperZoom
+        card={zoom ? deck[zoom.i] || null : null}
+        origin={zoom?.rect || null}
+        subtitle={target ? `Designed for ${target.company}` : undefined}
+        isPaid={isPaid}
+        onClose={() => setZoom(null)}
+        onCustomize={() => {
+          // ⚠️ Straight to the section editor. Writing 'resume_builder_entry' or
+          // 'resumeBuilderAction' here would arm a PAID regeneration — neither is touched.
+          track('home_customize', { mode });
+          nav()?.push?.('/(resume-builder)/preview');
+        }}
+        onViewPdf={() => {
+          const id = zoom ? deck[zoom.i]?.id : undefined;
+          track('home_view_pdf', { id });
+          nav()?.push?.({ pathname: '/(resume-builder)/templates', params: id ? { template: id } : {} });
+        }}
+      />
+    </View>
   );
 }
 
@@ -373,36 +467,28 @@ function LiveDot() {
   return <Animated.View style={[s.liveDot, { opacity: a.interpolate({ inputRange: [0, 1], outputRange: [1, 0.35] }), transform: [{ scale: a.interpolate({ inputRange: [0, 1], outputRange: [1, 0.7] }) }] }]} />;
 }
 
-function Shimmer() {
-  const x = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const l = Animated.loop(Animated.sequence([
-      Animated.delay(1200),
-      Animated.timing(x, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-    ]));
-    l.start(); return () => l.stop();
-  }, [x]);
-  return (
-    <Animated.View
-      pointerEvents="none"
-      style={[s.shimmer, { transform: [{ translateX: x.interpolate({ inputRange: [0, 1], outputRange: [-160, 420] }) }, { skewX: '-18deg' }] }]}
-    />
-  );
-}
-
-function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
-  const opts: Array<{ k: Mode; l: string; ic: any }> = [
-    { k: 'resume', l: 'Resume', ic: 'document-text-outline' },
-    { k: 'letter', l: 'Cover letter', ic: 'create-outline' },
+// Two icons, not two big tabs: the mode is a small, permanent control that sits in the space the
+// headline leaves on its right — the headline is what the screen is about, not the switch.
+function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
+  const opts: Array<{ k: Mode; ic: any; a11y: string }> = [
+    { k: 'resume', ic: 'document-text', a11y: 'Resume' },
+    { k: 'letter', ic: 'mail', a11y: 'Cover letter' },
   ];
   return (
-    <View style={s.toggle}>
+    <View style={s.mSwitch}>
       {opts.map((o) => {
         const on = mode === o.k;
         return (
-          <TouchableOpacity key={o.k} onPress={() => onChange(o.k)} activeOpacity={0.9} style={[s.toggleBtn, on && s.toggleBtnOn]}>
-            <Ionicons name={o.ic} size={15} color={on ? E.blue : 'rgba(255,255,255,0.75)'} />
-            <Text style={[s.toggleTx, on && s.toggleTxOn]}>{o.l}</Text>
+          <TouchableOpacity
+            key={o.k}
+            onPress={() => onChange(o.k)}
+            activeOpacity={0.9}
+            accessibilityRole="button"
+            accessibilityLabel={o.a11y}
+            accessibilityState={{ selected: on }}
+            style={[s.mBtn, on && s.mBtnOn]}
+          >
+            <Ionicons name={o.ic} size={16} color={on ? '#fff' : 'rgba(255,255,255,0.5)'} />
           </TouchableOpacity>
         );
       })}
@@ -410,19 +496,25 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
   );
 }
 
+// ⚠️ Selection is a GLASS state, never a white pill. A white chip on the dark hero was the single
+// loudest thing on the screen and fought every other surface; the selected chip should read as the
+// same material, lit. Dropping the role line is what makes it narrow enough to scan.
 function EmployerChip({ t, on, onPress }: { t: Target; on: boolean; onPress: () => void }) {
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={[s.chip, on && s.chipOn]}>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      accessibilityRole="button"
+      accessibilityState={{ selected: on }}
+      style={[s.chip, on && s.chipOn]}
+    >
       <LinearGradient colors={t.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.chipTile}>
         <Text style={s.chipTileTx}>{t.initial}</Text>
       </LinearGradient>
-      <View style={{ maxWidth: 132 }}>
-        <Text style={[s.chipName, on && { color: E.ink }]} numberOfLines={1}>{t.company}</Text>
-        <Text style={[s.chipRole, on && { color: E.textMuted }]} numberOfLines={1}>{t.role}</Text>
-      </View>
+      <Text style={[s.chipName, on && s.chipNameOn]} numberOfLines={1}>{t.company}</Text>
       {t.match != null && (
-        <View style={[s.chipPct, on && { backgroundColor: 'rgba(79,141,255,0.14)' }]}>
-          <Text style={[s.chipPctTx, on && { color: E.blueDeep }]}>{t.match}%</Text>
+        <View style={[s.chipPct, on && s.chipPctOn]}>
+          <Text style={[s.chipPctTx, on && s.chipPctTxOn]}>{t.match}%</Text>
         </View>
       )}
     </TouchableOpacity>
@@ -461,6 +553,40 @@ function TargetCard({ t, image, onPress }: { t: Target; image?: string | null; o
   );
 }
 
+// ⚠️ A letter is written FOR A POSTING, and no letter exists until one is generated — there is no
+// cached letter-thumbnail endpoint to page through the way the resume side does. So this shows the
+// designs by name and puts ONE explicit action in front of the user. It never generates on its own:
+// generation spends the cover-letter quota, and auto-spending on screen entry is the exact mistake
+// the letters auto-regen drain was.
+function LetterPanel({ company, onWrite }: { company?: string; onWrite: () => void }) {
+  return (
+    <View style={s.letterPanel}>
+      <View style={s.letterIcon}><Ionicons name="mail-open-outline" size={24} color={E.mint} /></View>
+      <Text style={s.letterTitle} numberOfLines={2}>
+        {company ? `Write a cover letter for ${company}` : 'Write a cover letter'}
+      </Text>
+      <Text style={s.letterSub} numberOfLines={3}>
+        A letter is written from one posting, so it starts with the employer — then you pick from
+        {' '}{LETTER_DESIGNS.length} formats.
+      </Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.letterRow}>
+        {LETTER_DESIGNS.map((d) => (
+          <View key={d.id} style={s.letterChip}>
+            <View style={[s.letterDot, { backgroundColor: d.accent }]} />
+            <Text style={s.letterChipTx} numberOfLines={1}>{d.name}</Text>
+          </View>
+        ))}
+      </ScrollView>
+      <TouchableOpacity onPress={onWrite} activeOpacity={0.9} style={{ marginTop: 16 }}>
+        <LinearGradient colors={[E.teal, E.blue]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.letterBtn}>
+          <Ionicons name="create" size={16} color="#fff" />
+          <Text style={s.letterBtnTx} numberOfLines={1}>{company ? `Write for ${company}` : 'Choose an employer'}</Text>
+        </LinearGradient>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 function NoResume({ onBuild }: { onBuild: () => void }) {
   return (
     <View style={s.noResume}>
@@ -479,13 +605,17 @@ function NoResume({ onBuild }: { onBuild: () => void }) {
 
 /* ── styles ─────────────────────────────────────────────────────────────── */
 const s = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: E.bg },
+  root: { flex: 1, backgroundColor: E.bg },
+  flex: { flex: 1 },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   rowCenter: { flexDirection: 'row', alignItems: 'center' },
 
-  topBar: { paddingHorizontal: 16, paddingTop: Platform.select({ ios: 8, default: 12 }), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerWrap: { position: 'absolute', top: 0, left: 0, right: 0 },
+  headerRow: { flex: 1, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerHair: { position: 'absolute', left: 0, right: 0, bottom: 0, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.10)' },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  brandMark: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  // the real mark, tinted: it is a single-colour glyph on transparency, so it reads on the hero
+  brandLogo: { width: 26, height: 26, tintColor: '#fff' },
   brandTx: { fontSize: 17, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
   topActions: { flexDirection: 'row', gap: 8 },
   glassBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder, alignItems: 'center', justifyContent: 'center' },
@@ -499,34 +629,53 @@ const s = StyleSheet.create({
   editTx: { fontSize: 11.5, fontWeight: '700', color: '#fff' },
 
   h1: { fontSize: 26, fontWeight: '800', color: '#fff', letterSpacing: -1, lineHeight: 29 },
+  headRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
+  headText: { flex: 1 },
   h1Accent: { fontFamily: SERIF, fontStyle: 'italic', fontSize: 26, lineHeight: 31, letterSpacing: -0.4, marginTop: 1 },
   sub: { fontSize: 12.5, fontWeight: '500', color: E.onDark, marginTop: 8, lineHeight: 17.5 },
   // the sub is context, not the message — never let it push the paper off screen
 
 
-  toggle: { flexDirection: 'row', padding: 4, borderRadius: 16, backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder, gap: 4 },
-  toggleBtn: { flex: 1, height: 42, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  toggleBtnOn: { backgroundColor: '#fff' },
-  toggleTx: { fontSize: 13.5, fontWeight: '700', color: 'rgba(255,255,255,0.75)', letterSpacing: -0.2 },
-  toggleTxOn: { color: E.ink },
+  mSwitch: { flexDirection: 'row', padding: 3, borderRadius: 13, backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder, gap: 3 },
+  mBtn: { width: 36, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  mBtnOn: { backgroundColor: 'rgba(79,141,255,0.34)', borderWidth: 1, borderColor: 'rgba(150,186,255,0.55)' },
 
   eyebrowDark: { fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)', paddingHorizontal: 16, paddingBottom: 8 },
   chipsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, alignItems: 'center' },
-  chip: { height: 46, paddingLeft: 6, paddingRight: 10, borderRadius: 14, borderWidth: 1, borderColor: E.glassBorder, backgroundColor: E.glass, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  chipOn: { backgroundColor: '#fff', borderColor: 'rgba(255,255,255,0.9)' },
-  chipTile: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
-  chipTileTx: { fontSize: 12.5, fontWeight: '800', color: '#fff' },
-  chipName: { fontSize: 12.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2 },
-  chipRole: { fontSize: 9.5, fontWeight: '600', color: 'rgba(255,255,255,0.6)', marginTop: 2 },
-  chipPct: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.16)' },
-  chipPctTx: { fontSize: 10, fontWeight: '800', color: '#fff' },
-  chipAdd: { height: 46, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.35)', flexDirection: 'row', alignItems: 'center', gap: 6 },
+  chip: {
+    height: 38, paddingLeft: 5, paddingRight: 9, borderRadius: 100, borderWidth: 1,
+    borderColor: E.glassBorder, backgroundColor: E.glass,
+    flexDirection: 'row', alignItems: 'center', gap: 7, maxWidth: 190,
+  },
+  chipOn: {
+    backgroundColor: 'rgba(79,141,255,0.22)', borderColor: 'rgba(150,186,255,0.6)',
+    ...Platform.select({ ios: { shadowColor: E.blue, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 12 }, default: { elevation: 4 } }),
+  },
+  chipTile: { width: 26, height: 26, borderRadius: 100, alignItems: 'center', justifyContent: 'center' },
+  chipTileTx: { fontSize: 11.5, fontWeight: '800', color: '#fff' },
+  chipName: { flexShrink: 1, fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.78)', letterSpacing: -0.2 },
+  chipNameOn: { color: '#fff', fontWeight: '800' },
+  chipPct: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.12)' },
+  chipPctOn: { backgroundColor: 'rgba(255,255,255,0.22)' },
+  chipPctTx: { fontSize: 9.5, fontWeight: '800', color: 'rgba(255,255,255,0.7)' },
+  chipPctTxOn: { color: '#fff' },
+  chipAdd: { height: 38, paddingHorizontal: 13, borderRadius: 100, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.32)', flexDirection: 'row', alignItems: 'center', gap: 6 },
   chipAddTx: { fontSize: 12, fontWeight: '700', color: '#fff' },
-  chipSkeleton: { width: 150, height: 46, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.07)' },
+  chipSkeleton: { width: 130, height: 38, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.07)' },
   emptyTargets: { marginHorizontal: 16, paddingHorizontal: 14, height: 48, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', gap: 8 },
   emptyTargetsTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: '#fff' },
 
   paperLoading: { height: 300, alignItems: 'center', justifyContent: 'center' },
+  letterPanel: { marginHorizontal: 16, marginTop: 6, padding: 18, borderRadius: 22, backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder, alignItems: 'center' },
+  letterIcon: { width: 52, height: 52, borderRadius: 18, backgroundColor: 'rgba(20,184,166,0.16)', alignItems: 'center', justifyContent: 'center' },
+  letterTitle: { marginTop: 12, fontSize: 17, fontWeight: '800', color: '#fff', letterSpacing: -0.4, textAlign: 'center' },
+  letterSub: { marginTop: 6, fontSize: 12.5, fontWeight: '600', color: E.onDark, textAlign: 'center', lineHeight: 18 },
+  letterRow: { gap: 7, paddingTop: 14, paddingHorizontal: 2 },
+  letterChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 30, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder },
+  letterDot: { width: 8, height: 8, borderRadius: 100 },
+  letterChipTx: { fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.8)' },
+  letterBtn: { height: 48, paddingHorizontal: 22, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  letterBtnTx: { fontSize: 14.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
   paperFailTx: { color: 'rgba(255,255,255,0.72)', fontSize: 13.5, fontWeight: '700', marginTop: 10 },
   paperFailSub: { color: 'rgba(255,255,255,0.42)', fontSize: 12, marginTop: 3 },
   caption: { alignItems: 'center', marginTop: 8, height: 18 },
@@ -537,10 +686,6 @@ const s = StyleSheet.create({
 
   // Same iOS trap as PaperCarousel.paper: the Shimmer needs overflow:'hidden', which would clip
   // the blue glow off the button. Glow on the touchable, clipping on the gradient.
-  ctaShadow: { borderRadius: 17, shadowColor: E.blue, shadowOffset: { width: 0, height: 14 }, shadowOpacity: 0.42, shadowRadius: 30, elevation: 10 },
-  cta: { height: 54, borderRadius: 17, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, overflow: 'hidden' },
-  ctaTx: { fontSize: 15.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
-  shimmer: { position: 'absolute', top: -10, bottom: -10, width: 70, backgroundColor: 'rgba(255,255,255,0.28)' },
   reassure: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 10 },
   reassureTx: { fontSize: 11.5, fontWeight: '600', color: E.textMuted },
 

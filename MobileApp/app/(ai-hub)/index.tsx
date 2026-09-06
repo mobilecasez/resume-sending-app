@@ -1297,7 +1297,7 @@ export default function AIHubScreen() {
   const { costs } = useEventCosts();
   // Deep-link support: /(ai-hub)?tab=myjobs lands on My Jobs (the "Jobs Dashboard" menu entry).
   // The DEFAULT is Search — tapping "Jobs" should land the user where they can look for a job.
-  const params = useLocalSearchParams<{ tab?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; addCompany?: string }>();
   const initialTab = params?.tab === 'search' || params?.tab === 'saved' || params?.tab === 'myjobs' ? params.tab : 'search';
   const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>(initialTab);   // unified Job Hub tabs
   const [interestAddOpen, setInterestAddOpen] = useState(false);   // + on the Jobs tab opens the interest form
@@ -1729,8 +1729,11 @@ export default function AIHubScreen() {
   }, [pills, removeEmployerCore]);
 
   const [liAddUrl, setLiAddUrl] = useState('');
-  const handleAddPill = useCallback(() => {
-    let trimmed = inputValue.trim();
+  const handleAddPill = useCallback((explicit?: unknown) => {
+    // ⚠️ This is also used directly as onPress={handleAddPill}, which would hand us a press event —
+    // only a real string is treated as a value.
+    const source = typeof explicit === 'string' ? explicit : inputValue;
+    let trimmed = source.trim();
     if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
     if (!/^https?:\/\//i.test(trimmed) && /\./.test(trimmed)) trimmed = `https://${trimmed}`;
 
@@ -1817,6 +1820,18 @@ export default function AIHubScreen() {
       })
       .finally(() => setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed)));
   }, [inputValue, costs]);
+
+  // Home's "Add employer" sheet hands the chosen name (or careers URL) over here rather than
+  // adding it itself: this is the one place that prechecks credits, detects job portals, handles
+  // LinkedIn URLs and persists an in-flight search, and a second copy of that would drift.
+  const handedOver = useRef(false);
+  useEffect(() => {
+    const v = typeof params?.addCompany === 'string' ? params.addCompany.trim() : '';
+    if (!v || handedOver.current) return;
+    handedOver.current = true;                    // one-shot: a re-render must not re-run the search
+    handleAddPill(v);
+  }, [params?.addCompany, handleAddPill]);
+
 
   const handleApply = useCallback((employer: Employer, job: Job) => {
     router.push({
