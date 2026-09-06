@@ -118,7 +118,13 @@ export async function fetchTargets(): Promise<Target[]> {
   return out.slice(0, 12);
 }
 
-export type HomeCards = { preferred: string | null; cards: HomeCard[] };
+export type HomeCards = {
+  preferred: string | null;
+  cards: HomeCard[];
+  /** True when these pages are a STAND-IN built from the account's name and email,
+   *  because no resume has been uploaded yet. The UI must say so. */
+  sample?: boolean;
+};
 
 /**
  * The carousel: the user's REAL resume rendered in several designs (server-side disk cache).
@@ -137,7 +143,7 @@ export async function fetchHomeCards(ids?: string[]): Promise<HomeCards | 'none'
   const j = await getJson(`/resume-builder/home-cards${q}`, 60000, meta);
   if (meta.status === 404) return 'none';
   if (!j || !Array.isArray(j.cards) || !j.cards.length) return null;
-  return { preferred: j.preferred || null, cards: j.cards };
+  return { preferred: j.preferred || null, cards: j.cards, sample: !!j.sample };
 }
 
 /** Which jobs already have a cover letter — keyed by UUID and by the gj_ URL alias. */

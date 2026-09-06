@@ -1076,7 +1076,7 @@ async function listTemplates(req, res) {
 // template). The Home carousel shows several of these, and Home loads on every app open —
 // so a cache MISS must be the rare case, never the norm.
 const THUMB_W = 480;
-async function cachedThumb(userId, row, tplId) {
+async function cachedThumb(userId, row, tplId, tag = '') {
     // ⚠️ The profile photo is rendered INTO the card but used to be absent from the key, so
     // replacing a photo never invalidated anything — Home kept serving the old face until the
     // resume itself was next saved. Its mtime is part of the version now.
@@ -1085,7 +1085,7 @@ async function cachedThumb(userId, row, tplId) {
         const ppath = await resolvePhotoPath(userId);
         if (ppath) pver = String((await fs.stat(ppath)).mtimeMs);
     } catch { /* no photo, or unreadable → 'none', which is itself a distinct version */ }
-    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tplId;
+    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tag + ':' + tplId;
     const tDir = path.join(__dirname, '../../temp');
     await fs.mkdir(tDir, { recursive: true });
     const file = path.join(tDir, `resume_thumb_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
@@ -1148,6 +1148,76 @@ async function homeThumb(req, res) {
     }
 }
 
+
+// ── A sample resume, for an account that has not uploaded one yet ────────────────────────────────
+// Home would otherwise be an empty screen for exactly the people who have never seen the product do
+// anything. This renders the SAME templates against a stand-in resume built from the only two facts
+// registration already gave us — their name and their email — with the rest invented.
+//
+// ⚠️ IT IS NEVER WRITTEN ANYWHERE. It is not saved to user_resumes, it is not used for applying or
+// attaching, and the response carries `sample: true` so the UI can label it. Nothing here may be
+// mistaken for the user's own resume, and nothing here may overwrite one.
+async function sampleResumeFor(userId) {
+    let name = 'Your Name';
+    let email = '';
+    try {
+        const u = await dbConfig.get('SELECT full_name, email FROM users WHERE id = $1', [userId]);
+        if (u) {
+            name = String(u.full_name || '').trim() || name;
+            email = String(u.email || '').trim();
+        }
+    } catch { /* a sample is better than no screen — fall back to the neutral name */ }
+
+    const data = {
+        personal_info: {
+            full_name: name,
+            title: 'Software Engineer',
+            email,
+            phone: '+00 000 000 000',
+            location: 'City, Country',
+            linkedin_url: '',
+        },
+        summary: 'Engineer with five years building and shipping web products end to end. Comfortable owning a feature from problem statement through to production, and happiest where design and delivery meet.',
+        experience: [
+            {
+                role: 'Senior Software Engineer', company: 'Northwind Technologies', location: 'Remote',
+                start_date: '2023-01', end_date: '',
+                highlights: [
+                    'Led the rebuild of the checkout flow, cutting drop-off by 18%.',
+                    'Introduced automated release checks that took deploys from weekly to daily.',
+                    'Mentored three engineers through their first year on the team.',
+                ],
+            },
+            {
+                role: 'Software Engineer', company: 'Bright Harbour Ltd', location: 'London, UK',
+                start_date: '2020-06', end_date: '2022-12',
+                highlights: [
+                    'Built the reporting service still used by every customer-facing dashboard.',
+                    'Reduced median API response time from 800ms to 180ms.',
+                ],
+            },
+        ],
+        education: [
+            { degree: 'BSc', field_of_study: 'Computer Science', institution: 'University of Somewhere', start_date: '2016-09', end_date: '2020-05' },
+        ],
+        projects: [
+            { name: 'Open-source CLI', description: 'A small tool for diffing API schemas, used by a few hundred developers.' },
+        ],
+        skills: {
+            technical: ['JavaScript', 'TypeScript', 'React', 'Node.js', 'PostgreSQL', 'Docker', 'AWS'],
+            soft: ['Mentoring', 'Written communication', 'Product sense'],
+        },
+        certifications: [],
+        languages: ['English'],
+        achievements: [],
+    };
+    // Stable per (name, email) so the cache survives restarts but re-renders if they change either.
+    let h = 0;
+    const k = name + '|' + email;
+    for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
+    return { data, tag: 'sample' + h.toString(36) };
+}
+
 // GET /api/resume-builder/home-cards?ids=banner,rightrail,mono
 // The employer-Home carousel: the user's REAL resume rendered in several designs. Every card is
 // disk-cached per resume version, so the first open after a (re)generate pays the renders and
@@ -1159,8 +1229,17 @@ async function homeCards(req, res) {
     const userId = req.user.id;
     try {
         await ensureResumeTable();
-        const row = await dbConfig.get('SELECT resume_data, updated_at, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
-        if (!row || !row.resume_data) return res.status(404).json({ error: 'No resume yet.', reason: 'no_resume' });
+        let row = await dbConfig.get('SELECT resume_data, updated_at, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
+        // No resume yet → show the designs against a clearly-labelled sample rather than an empty
+        // screen. `sample` rides the response all the way to the UI.
+        let sample = false;
+        let tag = '';
+        if (!row || !row.resume_data) {
+            const sm = await sampleResumeFor(userId);
+            row = { resume_data: sm.data, updated_at: new Date(0), preferred_template: null };
+            sample = true;
+            tag = sm.tag;
+        }
         const asked = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
         const pref = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : null;
         // The user's own pick always leads; the rest fill up to 5 from the request (or a sensible
@@ -1171,7 +1250,7 @@ async function homeCards(req, res) {
         const files = [];
         for (const id of ids) {
             try {
-                const c = await cachedThumb(userId, row, id);
+                const c = await cachedThumb(userId, row, id, tag);
                 const meta = TEMPLATES.find((t) => t.id === id) || {};
                 cards.push({ id, name: meta.name || id, accent: meta.accent || '#4F8DFF', ats: meta.ats || null, image: c.image });
                 files.push(c.file); // ⚠️ never recompute this key — pruneThumbs deletes anything not in the list
@@ -1179,7 +1258,7 @@ async function homeCards(req, res) {
         }
         if (!cards.length) return res.status(500).json({ error: 'Could not render previews.' });
         pruneThumbs(userId, files);
-        return res.json({ success: true, preferred: pref || cards[0].id, cards });
+        return res.json({ success: true, preferred: pref || cards[0].id, cards, sample });
     } catch (e) {
         console.error('[resumeBuilder] homeCards error:', e.message);
         return res.status(500).json({ error: 'Could not render previews.' });

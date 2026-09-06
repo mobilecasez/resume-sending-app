@@ -32,7 +32,7 @@ export type OriginRect = { x: number; y: number; w: number; h: number };
 const A4 = 424 / 300;
 
 export default function PaperZoom({
-  card, origin, subtitle, isPaid, onClose, onCustomize, onViewPdf,
+  card, origin, subtitle, isPaid, sample, onClose, onCustomize, onViewPdf,
 }: {
   /** null closes the sheet. */
   card: PaperCard | null;
@@ -40,6 +40,8 @@ export default function PaperZoom({
   subtitle?: string;
   /** Downloads are a paid-plan feature; say so here rather than at the download. */
   isPaid?: boolean;
+  /** These pages are a stand-in, so there is nothing to customise or download yet. */
+  sample?: boolean;
   onClose: () => void;
   onCustomize: () => void;
   onViewPdf: () => void;
@@ -139,18 +141,34 @@ export default function PaperZoom({
             },
           ]}
         >
-          <TouchableOpacity style={s.ghost} activeOpacity={0.85} onPress={() => { close(); setTimeout(onCustomize, 200); }}>
-            <Ionicons name="create-outline" size={17} color="#fff" />
-            <Text style={s.ghostTx} numberOfLines={1}>Customize</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.primaryWrap} activeOpacity={0.9} onPress={() => { close(); setTimeout(onViewPdf, 200); }}>
-            <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primary}>
-              <Ionicons name="document-text-outline" size={17} color="#fff" />
-              <Text style={s.primaryTx} numberOfLines={1}>View PDF</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-          <Text style={s.gate} numberOfLines={1}>
-            {isPaid ? 'Every design free to preview · downloads are on your plan' : 'Every design free to preview · downloads are on paid plans'}
+          {/* ⚠️ A sample has nothing behind it: Customize would land on the editor's "No resume data
+              found" dead end and a download would produce the placeholder. One honest action. */}
+          {sample ? (
+            <TouchableOpacity style={s.primaryWrap} activeOpacity={0.9} onPress={() => { close(); setTimeout(onCustomize, 200); }}>
+              <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primary}>
+                <Ionicons name="color-wand" size={17} color="#fff" />
+                <Text style={s.primaryTx} numberOfLines={1}>Build my resume</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity style={s.ghost} activeOpacity={0.85} onPress={() => { close(); setTimeout(onCustomize, 200); }}>
+                <Ionicons name="create-outline" size={17} color="#fff" />
+                <Text style={s.ghostTx} numberOfLines={1}>Customize</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.primaryWrap} activeOpacity={0.9} onPress={() => { close(); setTimeout(onViewPdf, 200); }}>
+                <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primary}>
+                  <Ionicons name="document-text-outline" size={17} color="#fff" />
+                  <Text style={s.primaryTx} numberOfLines={1}>View PDF</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </>
+          )}
+          <Text style={s.gate} numberOfLines={2}>
+            {sample
+              ? 'These pages are a sample — build yours to fill them with your details'
+              : isPaid ? 'Every design free to preview · downloads are on your plan'
+              : 'Every design free to preview · downloads are on paid plans'}
           </Text>
         </Animated.View>
       </View>

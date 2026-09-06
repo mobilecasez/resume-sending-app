@@ -58,6 +58,7 @@ export default function EmployerHome({
     targets: () => Promise<Target[]>;
     cards: () => Promise<HomeCards | 'none' | null>;
     paid?: () => Promise<boolean>;
+    catalogue?: () => Promise<HomeCard[]>;
   };
 }) {
   // The dark stage runs edge to edge under the status bar (HomeScreen drops its top safe-area
@@ -84,6 +85,8 @@ export default function EmployerHome({
   const [loading, setLoading] = useState(true);
   const [noResume, setNoResume] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  // These pages are a stand-in built from the account's name and email — say so.
+  const [sample, setSample] = useState(false);
   const [isPaid, setIsPaid] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reshaping, setReshaping] = useState(false);
@@ -105,7 +108,7 @@ export default function EmployerHome({
     const [t, c, cat] = await Promise.all([
       loadTargets(),
       loadCards(),
-      loaders ? Promise.resolve([] as HomeCard[]) : fetchTemplateCatalogue().catch(() => [] as HomeCard[]),
+      (loaders?.catalogue || fetchTemplateCatalogue)().catch(() => [] as HomeCard[]),
     ]);
     if (cat.length) setSlots(cat);
     setTargets(t);
@@ -118,7 +121,7 @@ export default function EmployerHome({
     // A transient failure leaves cards AND noResume exactly as they were: at worst the user sees
     // the retry state, never a CTA that would spend a generation rewriting a resume they have.
     if (c === 'none') { setCards([]); setNoResume(true); setLoadFailed(false); }
-    else if (c) { setCards(c.cards); setNoResume(false); setLoadFailed(false); }
+    else if (c) { setCards(c.cards); setNoResume(false); setSample(!!c.sample); setLoadFailed(false); }
     else { setLoadFailed(true); }
     setLoading(false);
     setIsPaid(await loadPaid());
@@ -344,6 +347,24 @@ export default function EmployerHome({
             )}
           </View>
           )}
+
+          {sample && mode === 'resume' && (
+            <TouchableOpacity
+              style={s.sampleBar}
+              activeOpacity={0.9}
+              onPress={() => {
+                track('home_sample_build', {});
+                AsyncStorage.setItem('resume_builder_entry', JSON.stringify({ from: 'home_sample' })).catch(() => {});
+                nav()?.push?.('/(resume-builder)');
+              }}
+            >
+              <Ionicons name="information-circle" size={15} color={E.mint} />
+              <Text style={s.sampleTx} numberOfLines={2}>
+                This is a sample so you can see the designs. Build yours to fill them with your own details.
+              </Text>
+              <Ionicons name="chevron-forward" size={15} color="rgba(255,255,255,0.55)" />
+            </TouchableOpacity>
+          )}
         </View>
       </MeshStage>
 
@@ -436,12 +457,13 @@ export default function EmployerHome({
         origin={zoom?.rect || null}
         subtitle={target ? `Designed for ${target.company}` : undefined}
         isPaid={isPaid}
+        sample={sample}
         onClose={() => setZoom(null)}
         onCustomize={() => {
-          // ⚠️ Straight to the section editor. Writing 'resume_builder_entry' or
-          // 'resumeBuilderAction' here would arm a PAID regeneration — neither is touched.
-          track('home_customize', { mode });
-          nav()?.push?.('/(resume-builder)/preview');
+          // ⚠️ Straight to the section editor. Writing 'resume_builder_entry' with autoBuild, or
+          // 'resumeBuilderAction', would arm a PAID regeneration — neither is touched.
+          track('home_customize', { mode, sample });
+          nav()?.push?.(sample ? '/(resume-builder)' : '/(resume-builder)/preview');
         }}
         onViewPdf={() => {
           const id = zoom ? deck[zoom.i]?.id : undefined;
@@ -566,17 +588,19 @@ function LetterPanel({ company, onWrite }: { company?: string; onWrite: () => vo
         {company ? `Write a cover letter for ${company}` : 'Write a cover letter'}
       </Text>
       <Text style={s.letterSub} numberOfLines={3}>
-        A letter is written from one posting, so it starts with the employer — then you pick from
-        {' '}{LETTER_DESIGNS.length} formats.
+        A letter is written from one posting, so it starts with the employer — then you pick from these {LETTER_DESIGNS.length} formats.
       </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.letterRow}>
+      {/* ⚠️ WRAPPED, NOT SCROLLED. A horizontal ScrollView inside this centre-aligned card took its
+          CONTENT width, so it overflowed the panel on both sides and the row began mid-word — and
+          the formats past the edge could not be read at all. Wrapping shows all seven. */}
+      <View style={s.letterRow}>
         {LETTER_DESIGNS.map((d) => (
           <View key={d.id} style={s.letterChip}>
             <View style={[s.letterDot, { backgroundColor: d.accent }]} />
             <Text style={s.letterChipTx} numberOfLines={1}>{d.name}</Text>
           </View>
         ))}
-      </ScrollView>
+      </View>
       <TouchableOpacity onPress={onWrite} activeOpacity={0.9} style={{ marginTop: 16 }}>
         <LinearGradient colors={[E.teal, E.blue]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.letterBtn}>
           <Ionicons name="create" size={16} color="#fff" />
@@ -666,14 +690,20 @@ const s = StyleSheet.create({
   emptyTargetsTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: '#fff' },
 
   paperLoading: { height: 300, alignItems: 'center', justifyContent: 'center' },
+  sampleBar: {
+    marginHorizontal: 16, marginTop: 12, padding: 11, borderRadius: 15,
+    flexDirection: 'row', alignItems: 'center', gap: 9,
+    backgroundColor: 'rgba(20,184,166,0.13)', borderWidth: 1, borderColor: 'rgba(94,234,212,0.32)',
+  },
+  sampleTx: { flex: 1, fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.86)', lineHeight: 16 },
   letterPanel: { marginHorizontal: 16, marginTop: 6, padding: 18, borderRadius: 22, backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder, alignItems: 'center' },
   letterIcon: { width: 52, height: 52, borderRadius: 18, backgroundColor: 'rgba(20,184,166,0.16)', alignItems: 'center', justifyContent: 'center' },
   letterTitle: { marginTop: 12, fontSize: 17, fontWeight: '800', color: '#fff', letterSpacing: -0.4, textAlign: 'center' },
   letterSub: { marginTop: 6, fontSize: 12.5, fontWeight: '600', color: E.onDark, textAlign: 'center', lineHeight: 18 },
-  letterRow: { gap: 7, paddingTop: 14, paddingHorizontal: 2 },
-  letterChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 30, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder },
+  letterRow: { alignSelf: 'stretch', flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 7, paddingTop: 14 },
+  letterChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 30, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder, maxWidth: '100%' },
   letterDot: { width: 8, height: 8, borderRadius: 100 },
-  letterChipTx: { fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.8)' },
+  letterChipTx: { flexShrink: 1, fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.8)' },
   letterBtn: { height: 48, paddingHorizontal: 22, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   letterBtnTx: { fontSize: 14.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
   paperFailTx: { color: 'rgba(255,255,255,0.72)', fontSize: 13.5, fontWeight: '700', marginTop: 10 },

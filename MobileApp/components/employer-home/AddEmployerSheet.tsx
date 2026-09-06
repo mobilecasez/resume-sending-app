@@ -25,7 +25,8 @@ import { E } from './theme';
 import { fetchDiscoverJobs } from '../../services/aiHubService';
 import { fetchCountryOptions } from '../../services/interestsService';
 
-export type EmployerHit = { name: string; country: string | null; jobs: number; sampleTitle: string };
+// Enough to tell two same-named companies apart: the site they hire from and where the role is.
+export type EmployerHit = { name: string; domain: string | null; location: string | null; jobs: number };
 
 const looksLikeUrl = (v: string) => /^https?:\/\//i.test(v) || /\.[a-z]{2,}(\/|$)/i.test(v.trim());
 
@@ -46,6 +47,8 @@ export default function AddEmployerSheet({
   const [countries, setCountries] = useState<string[]>([]);
   const [hits, setHits] = useState<EmployerHit[]>([]);
   const [busy, setBusy] = useState(false);
+  // Set when the user says "not in the list" — the same field then takes a careers URL.
+  const [urlMode, setUrlMode] = useState(false);
   const seq = useRef(0);
 
   useEffect(() => {
@@ -55,7 +58,7 @@ export default function AddEmployerSheet({
       easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.quad),
       useNativeDriver: true,
     }).start();
-    if (!visible) { setQ(''); setHits([]); }
+    if (!visible) { setQ(''); setHits([]); setUrlMode(false); }
   }, [visible, t]);
 
   useEffect(() => {
@@ -81,8 +84,18 @@ export default function AddEmployerSheet({
         if (!name) continue;
         const k = name.toLowerCase();
         const prev = by.get(k);
-        if (prev) { prev.jobs += 1; continue; }
-        by.set(k, { name, country: j.country || null, jobs: 1, sampleTitle: j.title || '' });
+        if (prev) {
+          prev.jobs += 1;
+          prev.domain = prev.domain || j.employer_domain || null;
+          prev.location = prev.location || j.location || j.country || null;
+          continue;
+        }
+        by.set(k, {
+          name,
+          domain: j.employer_domain || null,
+          location: j.location || j.country || null,
+          jobs: 1,
+        });
       }
       setHits([...by.values()].sort((a, b) => b.jobs - a.jobs).slice(0, 12));
     } catch {
@@ -126,7 +139,9 @@ export default function AddEmployerSheet({
               <Ionicons name="close" size={18} color={E.textMuted} />
             </TouchableOpacity>
           </View>
-          <Text style={s.sub}>Search by name, or paste their careers page.</Text>
+          <Text style={s.sub}>
+            {urlMode ? 'Paste the careers page you want us to watch.' : 'Type a name — we will look them up.'}
+          </Text>
 
           <View style={s.field}>
             <Ionicons name="search" size={16} color={E.textFaint} />
@@ -134,7 +149,7 @@ export default function AddEmployerSheet({
               style={s.input}
               value={q}
               onChangeText={setQ}
-              placeholder="Employer name or careers URL"
+              placeholder={urlMode ? "https://careers.company.com" : "Employer name or URL"}
               placeholderTextColor={E.textFaint}
               autoCapitalize="none"
               autoCorrect={false}
@@ -177,17 +192,35 @@ export default function AddEmployerSheet({
                 <View style={s.hitTile}><Text style={s.hitTileTx}>{h.name.charAt(0).toUpperCase()}</Text></View>
                 <View style={{ flex: 1 }}>
                   <Text style={s.hitName} numberOfLines={1}>{h.name}</Text>
-                  <Text style={s.hitSub} numberOfLines={1}>
-                    {h.jobs} open role{h.jobs === 1 ? '' : 's'}{h.country ? ` · ${h.country}` : ''}
-                  </Text>
+                  {!!h.domain && (
+                    <View style={s.hitLine}>
+                      <Ionicons name="globe-outline" size={11} color={E.textFaint} />
+                      <Text style={s.hitSub} numberOfLines={1}>{h.domain}</Text>
+                    </View>
+                  )}
+                  <View style={s.hitLine}>
+                    {!!h.location && <Ionicons name="location-outline" size={11} color={E.textFaint} />}
+                    <Text style={s.hitSub} numberOfLines={1}>
+                      {h.location ? `${h.location} · ` : ''}{h.jobs} open role{h.jobs === 1 ? '' : 's'}
+                    </Text>
+                  </View>
                 </View>
-                <Ionicons name="add-circle" size={20} color={E.blueDeep} />
+                <Ionicons name="add-circle" size={22} color={E.blueDeep} />
               </TouchableOpacity>
             ))}
-            {!hits.length && !busy && q.trim().length >= 2 && !looksLikeUrl(q) && (
-              <TouchableOpacity style={s.freeform} activeOpacity={0.85} onPress={() => take(q)}>
-                <Ionicons name="business-outline" size={15} color={E.textMuted} />
-                <Text style={s.freeformTx} numberOfLines={1}>Search for “{q.trim()}” anyway</Text>
+
+            {/* Always reachable once they have typed: the index only knows employers that already
+                have postings in it, so "not listed" is a normal outcome, not a failure. */}
+            {!urlMode && !looksLikeUrl(q) && q.trim().length >= 2 && !busy && (
+              <TouchableOpacity style={s.notListed} activeOpacity={0.85} onPress={() => { setUrlMode(true); setHits([]); setQ(''); }}>
+                <Ionicons name="link-outline" size={15} color={E.blueDeep} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.notListedTx} numberOfLines={1}>
+                    {hits.length ? 'Not the right one?' : `No match for “${q.trim()}”`}
+                  </Text>
+                  <Text style={s.notListedSub} numberOfLines={1}>Add their careers URL instead</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={15} color={E.textFaint} />
               </TouchableOpacity>
             )}
           </ScrollView>
@@ -246,13 +279,21 @@ const s = StyleSheet.create({
   urlTx: { fontSize: 13.5, fontWeight: '800', color: E.ink },
   urlSub: { fontSize: 11, fontWeight: '600', color: E.textMuted, marginTop: 1 },
   results: { marginTop: 12 },
-  hit: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 10 },
-  hitTile: { width: 34, height: 34, borderRadius: 11, backgroundColor: E.inputBg, alignItems: 'center', justifyContent: 'center' },
+  hit: {
+    flexDirection: 'row', alignItems: 'center', gap: 11, padding: 10, marginBottom: 8,
+    borderRadius: 14, borderWidth: 1, borderColor: E.border, backgroundColor: E.inputBg,
+  },
+  hitLine: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  hitTile: { width: 38, height: 38, borderRadius: 12, backgroundColor: E.surface, borderWidth: 1, borderColor: E.border, alignItems: 'center', justifyContent: 'center' },
   hitTileTx: { fontSize: 14, fontWeight: '800', color: E.textMuted },
   hitName: { fontSize: 14, fontWeight: '700', color: E.ink },
   hitSub: { fontSize: 11.5, fontWeight: '600', color: E.textMuted, marginTop: 2 },
-  freeform: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 },
-  freeformTx: { flexShrink: 1, fontSize: 13, fontWeight: '700', color: E.textMuted },
+  notListed: {
+    flexDirection: 'row', alignItems: 'center', gap: 9, padding: 11, marginTop: 2, marginBottom: 8,
+    borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(79,141,255,0.45)',
+  },
+  notListedTx: { fontSize: 13, fontWeight: '800', color: E.ink },
+  notListedSub: { fontSize: 11.5, fontWeight: '600', color: E.blueDeep, marginTop: 1 },
   note: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 10 },
   noteTx: { flexShrink: 1, fontSize: 11, fontWeight: '600', color: E.textFaint, lineHeight: 15 },
 });

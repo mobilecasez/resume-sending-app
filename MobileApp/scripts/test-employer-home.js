@@ -127,7 +127,10 @@ ok('every card is disk-cached per resume version', /async function cachedThumb/.
 ok('the batch is capped below the chromium crash threshold', /\.slice\(0, 5\)/.test(ctl) && /recycles its browser every 3/.test(ctl));
 ok('the user’s chosen design leads the carousel', /const fallback = \['banner'/.test(ctl) && /\[pref, \.\.\.asked/.test(ctl));
 ok('stale versions are pruned', /async function pruneThumbs/.test(ctl));
-ok('no resume yet is a clean 404, not a 500', /reason: 'no_resume'/.test(ctl));
+ok('the single-thumb endpoint still 404s cleanly when there is no resume',
+  /No resume yet\.'/.test(ctl));
+ok('…and the client still treats a 404 as the authoritative "none", defensively',
+  /meta\.status === 404/.test(strip(svc)) && /return 'none'/.test(strip(svc)));
 
 console.log('── the pricing model is NOT changed by a mockup ──');
 // The mockup sells one PDF for €1.99 ("no subscription"). This app shipped subscriptions to both
@@ -206,7 +209,7 @@ ok('the Dashboard survives a HomeScreen remount', /let _showDashboardCache = fal
 ok('…and every setter writes the cache', /_showDashboardCache = !!v/.test(hsC));
 
 console.log('── the thumbnail cache ──');
-ok('the key includes the photo version', /':' \+ pver \+ ':' \+ tplId/.test(ctlC));
+ok('the key includes the photo version', /':' \+ pver \+ ':' \+ tag \+ ':' \+ tplId/.test(ctlC));
 ok('cachedThumb reports the filename it used', (ctlC.match(/file: path\.basename\(file\)/g) || []).length === 2);
 ok('…and homeCards never recomputes that key (pruneThumbs would delete every fresh thumb)',
   /files\.push\(c\.file\)/.test(ctlC) && !/files\.push\(`resume_thumb_/.test(ctlC));
@@ -237,7 +240,8 @@ console.log('── tapping a page opens it, and the two actions are the REAL sc
 ok('the zoom grows from the tapped rectangle, measured', /measureInWindow/.test(strip(carousel)) && /onOpen\(i, w \? \{ x, y, w, h \}/.test(strip(carousel)));
 ok('the transition is transform-only (native driver, one tree)',
   /translateX: lerp\(tx0, 0\)/.test(zoomC) && /scale: lerp\(scale0, 1\)/.test(zoomC) && !/useNativeDriver: false/.test(zoomC));
-ok('Customize opens the SECTION EDITOR', /nav\(\)\?\.push\?\.\('\/\(resume-builder\)\/preview'\)/.test(homeC));
+ok('Customize opens the SECTION EDITOR (and the builder when it is only a sample)',
+  /'\/\(resume-builder\)' : '\/\(resume-builder\)\/preview'/.test(homeC));
 ok('⚠️ Customize NEVER arms the paid auto-build lane',
   !/autoBuild[\s\S]{0,80}home_customize/.test(homeC) && (homeC.match(/autoBuild: true/g) || []).length === 1);
 ok('View PDF opens the gallery ON the tapped design', /pathname: '\/\(resume-builder\)\/templates', params: id \? \{ template: id \}/.test(homeC));
@@ -268,6 +272,40 @@ ok('letter mode does NOT borrow the resume carousel', /mode === 'letter' \? \(\s
 ok('⚠️ and NEVER generates on entry — generation spends the letter quota',
   !/generate-cover-letter/.test(homeC) && /onWrite=\{\(\) => \{/.test(homeC));
 ok('the letter designs are listed from one place', /LETTER_DESIGNS/.test(homeC) && /LETTER_DESIGNS: Array/.test(strip(svc)));
+
+// ── Round 5: an empty account sees the product work; the catalogue is real; letters and the
+//    add-employer sheet are legible ──────────────────────────────────────────────────────────────
+const prev = R('../app/(dev)/home-preview.tsx');
+const prevC = strip(prev);
+
+console.log('── a brand-new account gets a SAMPLE, not an empty screen ──');
+ok('the server builds one from what registration already knows', /async function sampleResumeFor/.test(ctlC) && /SELECT full_name, email FROM users/.test(ctlC));
+ok('…and home-cards no longer dead-ends on "no resume"', !/reason: 'no_resume'/.test(ctlC.split('async function homeCards')[1] || ''));
+ok('…and says plainly that it IS a sample', /cards, sample \}\)/.test(ctlC));
+ok('⚠️ the sample is never written to the user’s resume', !/sampleResumeFor[\s\S]{0,400}INSERT INTO user_resumes/.test(ctlC));
+ok('…and cannot collide with real thumbnails in the cache', /cachedThumb\(userId, row, id, tag\)/.test(ctlC) && /':' \+ tag \+ ':'/.test(ctlC));
+ok('Home labels it', /sample && mode === 'resume'/.test(homeC) && /This is a sample so you can see the designs/.test(homeC));
+ok('⚠️ and a sample offers ONE honest action, not a dead-end Customize',
+  /sample \? \(/.test(strip(zoomSrc)) && /Build my resume/.test(strip(zoomSrc))
+  && /nav\(\)\?\.push\?\.\(sample \? '\/\(resume-builder\)' : '\/\(resume-builder\)\/preview'\)/.test(homeC));
+
+console.log('── the catalogue is the WHOLE catalogue ──');
+ok('the preview exercises all 15 families, not a handful', (prevC.match(/\{ id: '[a-z_]+', +name:/g) || []).length === 15);
+ok('…drawn as different LAYOUTS, not one design recoloured', (prevC.match(/shape: '/g) || []).length >= 15 && /type Shape =/.test(prevC));
+ok('a supplied catalogue loader is honoured', /\(loaders\?\.catalogue \|\| fetchTemplateCatalogue\)\(\)/.test(homeC));
+
+console.log('── the letter panel fits inside its own card ──');
+ok('the formats WRAP instead of scrolling out of the panel',
+  /letterRow: \{ alignSelf: 'stretch', flexDirection: 'row', flexWrap: 'wrap'/.test(homeC)
+  && !/<ScrollView horizontal[^>]*contentContainerStyle=\{s\.letterRow\}/.test(homeC));
+ok('…and a long format name shrinks rather than overflowing', /letterChipTx: \{ flexShrink: 1/.test(homeC));
+
+console.log('── add employer: recognisable results, and a way out when they are not listed ──');
+ok('the field says what it takes', /placeholder=\{urlMode \? "https:\/\/careers\.company\.com" : "Employer name or URL"\}/.test(sheetC));
+ok('a result is identifiable: name, website, location', /h\.domain/.test(sheetC) && /h\.location/.test(sheetC) && /globe-outline/.test(sheetC) && /location-outline/.test(sheetC));
+ok('…and results are cards, not bare rows', /hit: \{[\s\S]{0,180}borderRadius: 14/.test(sheetC));
+ok('not in the list → add their URL instead', /setUrlMode\(true\)/.test(sheetC) && /Add their careers URL instead/.test(sheetC));
+ok('…offered whether or not there were hits', /hits\.length \? 'Not the right one\?' :/.test(sheetC));
 
 console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
