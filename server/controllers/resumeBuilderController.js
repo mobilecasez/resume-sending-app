@@ -1077,13 +1077,21 @@ async function listTemplates(req, res) {
 // so a cache MISS must be the rare case, never the norm.
 const THUMB_W = 480;
 async function cachedThumb(userId, row, tplId) {
-    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + tplId;
+    // ⚠️ The profile photo is rendered INTO the card but used to be absent from the key, so
+    // replacing a photo never invalidated anything — Home kept serving the old face until the
+    // resume itself was next saved. Its mtime is part of the version now.
+    let pver = 'none';
+    try {
+        const ppath = await resolvePhotoPath(userId);
+        if (ppath) pver = String((await fs.stat(ppath)).mtimeMs);
+    } catch { /* no photo, or unreadable → 'none', which is itself a distinct version */ }
+    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tplId;
     const tDir = path.join(__dirname, '../../temp');
     await fs.mkdir(tDir, { recursive: true });
     const file = path.join(tDir, `resume_thumb_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
     try {
         const buf = await fs.readFile(file);
-        return { id: tplId, image: `data:image/jpeg;base64,${buf.toString('base64')}`, cached: true };
+        return { id: tplId, image: `data:image/jpeg;base64,${buf.toString('base64')}`, cached: true, file: path.basename(file) };
     } catch {}
     const { photo, photoRect } = await photosFor(userId);
     const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === tplId));
@@ -1095,7 +1103,7 @@ async function cachedThumb(userId, row, tplId) {
     } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
     await fs.writeFile(file, thumb).catch(() => {});
     return { id: tplId, image: `data:image/jpeg;base64,${thumb.toString('base64')}`,
-             width: pv.width, height: pv.height, cached: false };
+             width: pv.width, height: pv.height, cached: false, file: path.basename(file) };
 }
 
 // Drop every cached thumb for this user that is not in `keep` — one file per template per
@@ -1154,7 +1162,7 @@ async function homeCards(req, res) {
                 const c = await cachedThumb(userId, row, id);
                 const meta = TEMPLATES.find((t) => t.id === id) || {};
                 cards.push({ id, name: meta.name || id, accent: meta.accent || '#4F8DFF', ats: meta.ats || null, image: c.image });
-                files.push(`resume_thumb_${userId}_${String(new Date(row.updated_at || Date.now()).getTime() + ':' + id).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
+                files.push(c.file); // ⚠️ never recompute this key — pruneThumbs deletes anything not in the list
             } catch (e) { console.warn('[resumeBuilder] homeCards render failed for', id, e.message); }
         }
         if (!cards.length) return res.status(500).json({ error: 'Could not render previews.' });

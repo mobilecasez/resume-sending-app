@@ -46,6 +46,7 @@ function Card({ card, i, scrollX, ribbon }: {
         ],
       }}
     >
+      <View style={s.paperShadow}>
       <View style={s.paper}>
         {card.image ? (
           <Image source={{ uri: card.image }} style={s.img} contentFit="cover" transition={220} />
@@ -61,6 +62,7 @@ function Card({ card, i, scrollX, ribbon }: {
             <Text style={s.ribbonTx} numberOfLines={1}>For {ribbon.short}</Text>
           </View>
         )}
+      </View>
       </View>
       {/* the glow the card sits on */}
       <Animated.View style={[s.reflect, { opacity: clamp([0.3, 1, 0.3]) }]} />
@@ -148,9 +150,16 @@ export default function PaperCarousel({ cards, index, onIndex, ribbon }: {
 }
 
 const s = StyleSheet.create({
+  // ⚠️ The shadow CANNOT live on the same view as `overflow: 'hidden'` — iOS clips the shadow to
+  // the view's bounds, so the paper loses all its lift and sits flat on the hero. (Android draws
+  // elevation from the outline and survives, which is exactly how this hides in a web/Android
+  // check.) Shadow on the wrapper, clipping on the inner view.
+  paperShadow: {
+    borderRadius: 14, backgroundColor: '#fff',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 24 }, shadowOpacity: 0.5, shadowRadius: 40, elevation: 14,
+  },
   paper: {
     width: CARD_W, height: CARD_H, borderRadius: 14, overflow: 'hidden', backgroundColor: '#fff',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 24 }, shadowOpacity: 0.5, shadowRadius: 40, elevation: 14,
   },
   img: { width: '100%', height: '100%' },
   imgEmpty: { backgroundColor: '#EEF2F8' },

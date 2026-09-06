@@ -54,7 +54,11 @@ ok('…and RN has no translateZ, which is written down', /NO translateZ/.test(ca
 console.log('── Home is replaced; the dashboard is one tap away; App.js untouched ──');
 ok('HomeScreen renders EmployerHome by default', /\{!showDashboard \? \(/.test(hs));
 ok('the dashboard body is gated, not deleted', /\) : \(\n      <ScrollView\n        ref=\{mainScrollRef\}/.test(hs));
-ok('the toggle is LOCAL state, never a new App.js screen key', /const \[showDashboard, setShowDashboard\] = useState\(false\);/.test(hs) && !/setScreen\('employerHome'\)/.test(hs));
+ok('the toggle is LOCAL state, never a new App.js screen key',
+  /const \[showDashboard, _setShowDashboard\] = useState\(_showDashboardCache\);/.test(hs)
+  && /let _showDashboardCache/.test(hs)          // module-scoped IN THIS FILE, so it survives a remount
+  && !/setScreen\('employerHome'\)/.test(hs)     // …but still never an App.js screen key
+  && !/'employerHome'/.test(fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8')));
 ok('…and the reason is recorded', /unconditional `return <ReviewScreen\/>`/.test(hs));
 ok('a Dashboard menu item exists with a unique title', /title: 'Dashboard',/.test(hs) && (hs.match(/title: 'Dashboard',/g) || []).length === 1);
 ok('the Home tab pill is now pressable — the way BACK from the dashboard',
@@ -147,6 +151,49 @@ ok('target thumbnails use expo-image (RN Image did not paint the data URI)', /Ex
 ok('a signed-out preview route exists for looking at this before shipping',
   fs.existsSync(path.join(__dirname, '../app/(dev)/home-preview.tsx')));
 ok('…and nothing in the app links to it', !new RegExp('home-preview').test(home + hs));
+
+// ── Round 3: what a 72-agent preflight review found in the build that was about to ship ──
+// Every assertion below is a defect that survived adversarial verification. They are checked
+// against COMMENT-STRIPPED source: the fixes are documented in prose that repeats the very
+// tokens being tested, and an assertion that matches its own explanation proves nothing.
+const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+const homeC = strip(home), svcC = strip(svc), hsC = strip(hs), carC = strip(carousel), ctlC = strip(ctl);
+
+console.log('── a failed request must NEVER read as "you have no resume" (it armed a paid rebuild) ──');
+ok('the service can tell a 404 from a failure', /meta\.status === 404/.test(svcC) && /return 'none'/.test(svcC));
+ok('getJson reports the status back to its caller', /meta\?: \{ status\?: number \}/.test(svcC) && /if \(meta\) meta\.status = r\.status/.test(svcC));
+ok('fetchHomeCards still returns null when it could not find out', /\| 'none' \| null/.test(svcC));
+ok('ONLY the server-stated none arms the no-resume lane', /c === 'none'.*setNoResume\(true\)/s.test(homeC));
+ok('no other branch may set noResume true', (homeC.match(/setNoResume\(true\)/g) || []).length === 1);
+ok('a transient failure keeps whatever was already on screen', /else \{ setLoadFailed\(true\); \}/.test(homeC));
+ok('…and offers a retry instead of spinning forever', /loadFailed \? \(/.test(homeC) && /onPress=\{\(\) => load\(true\)\}/.test(homeC));
+
+console.log('── the dark hero must own the status bar (a light band sat above it on every notch) ──');
+ok('HomeScreen drops its top safe-area edge for the employer Home', /edges=\{showDashboard \? \['top', 'left', 'right', 'bottom'\] : \['left', 'right', 'bottom'\]\}/.test(hsC));
+ok('the hero pads itself by the real inset', /paddingTop: insets\.top \+ Platform\.select/.test(homeC) && /useSafeAreaInsets/.test(homeC));
+ok('status-bar glyphs switch to light on the near-black hero', /barStyle=\{showDashboard \? 'dark-content' : 'light-content'\}/.test(hsC));
+
+console.log('── iOS clips a shadow drawn on the same view as overflow:hidden ──');
+ok('the paper shadow lives on a wrapper', /paperShadow: \{/.test(carC) && !/overflow: 'hidden'[^}]*shadowColor/.test(carC));
+ok('the clipped paper view carries no shadow of its own', !/paper: \{[^}]*shadowColor/s.test(carC));
+ok('the CTA glow lives on the touchable', /ctaShadow: \{/.test(homeC) && /onPress=\{onDownload\} style=\{s\.ctaShadow\}/.test(homeC));
+ok('the clipped CTA gradient carries no shadow of its own', !/  cta: \{[^}]*shadowColor/s.test(homeC));
+
+console.log('── the CTA label must give way, not push its icon out of the button ──');
+ok('ctaTx can shrink', /ctaTx: \{[^}]*flexShrink: 1/.test(homeC));
+
+console.log('── selection and screen state survive a refresh ──');
+ok('the picked employer is pinned by key, not by list position', /pickedKey = useRef<string \| null>\(null\)/.test(homeC));
+ok('…and is re-resolved after every load', /t\.findIndex\(\(x\) => x\.key === pickedKey\.current\)/.test(homeC));
+ok('…and only after the user actually picks', /pickedKey\.current = targets\[i\]\?\.key/.test(homeC));
+ok('the Dashboard survives a HomeScreen remount', /let _showDashboardCache = false/.test(hsC) && /useState\(_showDashboardCache\)/.test(hsC));
+ok('…and every setter writes the cache', /_showDashboardCache = !!v/.test(hsC));
+
+console.log('── the thumbnail cache ──');
+ok('the key includes the photo version', /':' \+ pver \+ ':' \+ tplId/.test(ctlC));
+ok('cachedThumb reports the filename it used', (ctlC.match(/file: path\.basename\(file\)/g) || []).length === 2);
+ok('…and homeCards never recomputes that key (pruneThumbs would delete every fresh thumb)',
+  /files\.push\(c\.file\)/.test(ctlC) && !/files\.push\(`resume_thumb_/.test(ctlC));
 
 console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

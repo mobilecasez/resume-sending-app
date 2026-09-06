@@ -45,13 +45,17 @@ async function token(): Promise<string | undefined> {
     return JSON.parse(raw || '{}')?.token;
   } catch { return undefined; }
 }
-async function getJson(path: string, ms = 15000): Promise<any | null> {
+// `meta` reports the HTTP status back to the caller. It matters because a null here is ambiguous:
+// it can mean "the server says there is nothing" OR "we never got an answer". Callers that act on
+// the difference (see fetchHomeCards) must be able to tell them apart.
+async function getJson(path: string, ms = 15000, meta?: { status?: number }): Promise<any | null> {
   const t = await token();
   if (!t) return null;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), ms);
   try {
     const r = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${t}` }, signal: ctl.signal });
+    if (meta) meta.status = r.status;
     if (!r.ok) return null;
     return await r.json();
   } catch { return null; }
@@ -114,10 +118,24 @@ export async function fetchTargets(): Promise<Target[]> {
   return out.slice(0, 12);
 }
 
-/** The carousel: the user's REAL resume rendered in several designs (server-side disk cache). */
-export async function fetchHomeCards(ids?: string[]): Promise<{ preferred: string | null; cards: HomeCard[] } | null> {
+export type HomeCards = { preferred: string | null; cards: HomeCard[] };
+
+/**
+ * The carousel: the user's REAL resume rendered in several designs (server-side disk cache).
+ *
+ * ⚠️ THREE OUTCOMES, NEVER TWO. Home turns "no resume" into a CTA that AI-rebuilds the resume,
+ * spending a plan generation and overwriting what is stored — so "the user has no resume" must be
+ * something the SERVER said (404 + reason:'no_resume'), never something we inferred from a timeout,
+ * a 500 off a failed render, or a dropped connection. Collapsing those into one null is how a
+ * flaky network silently charges a paying user and replaces the resume they hand-edited.
+ *   'none' → the server positively says there is no resume yet.
+ *   null   → we could not find out. The caller must keep whatever it already had.
+ */
+export async function fetchHomeCards(ids?: string[]): Promise<HomeCards | 'none' | null> {
   const q = ids && ids.length ? `?ids=${encodeURIComponent(ids.join(','))}` : '';
-  const j = await getJson(`/resume-builder/home-cards${q}`, 60000);
+  const meta: { status?: number } = {};
+  const j = await getJson(`/resume-builder/home-cards${q}`, 60000, meta);
+  if (meta.status === 404) return 'none';
   if (!j || !Array.isArray(j.cards) || !j.cards.length) return null;
   return { preferred: j.preferred || null, cards: j.cards };
 }

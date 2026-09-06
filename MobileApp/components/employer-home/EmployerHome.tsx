@@ -28,10 +28,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { E, SERIF, sweepWords } from './theme';
 import MeshStage from './MeshStage';
 import PaperCarousel, { PaperCard } from './PaperCarousel';
-import { fetchTargets, fetchHomeCards, Target, HomeCard } from '../../services/employerHomeService';
+import { fetchTargets, fetchHomeCards, Target, HomeCard, HomeCards } from '../../services/employerHomeService';
 import { fetchSubscriptionStatus } from '../../services/subscriptionService';
 import { track } from '../../services/analytics';
 
@@ -53,10 +54,14 @@ export default function EmployerHome({
   // so the design can be rendered and inspected without a signed-in account.
   loaders?: {
     targets: () => Promise<Target[]>;
-    cards: () => Promise<{ preferred: string | null; cards: HomeCard[] } | null>;
+    cards: () => Promise<HomeCards | 'none' | null>;
     paid?: () => Promise<boolean>;
   };
 }) {
+  // The dark stage runs edge to edge under the status bar (HomeScreen drops its top safe-area
+  // edge for this screen), so the hero owns that inset itself. Without this the notch band is
+  // painted in the app's LIGHT background and sits as a grey strip above the near-black hero.
+  const insets = useSafeAreaInsets();
   const [targets, setTargets] = useState<Target[]>([]);
   const [empIdx, setEmpIdx] = useState(0);
   const [cards, setCards] = useState<HomeCard[]>([]);
@@ -64,10 +69,17 @@ export default function EmployerHome({
   const [mode, setMode] = useState<Mode>('resume');
   const [loading, setLoading] = useState(true);
   const [noResume, setNoResume] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [isPaid, setIsPaid] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reshaping, setReshaping] = useState(false);
   const lastLoad = useRef(0);
+  // The employer the user actually TAPPED, held by key. empIdx alone is a position into a list
+  // that is re-fetched and re-sorted by match on every focus, so a background refresh could slide
+  // a different company under the same index — the ribbon and the CTA would silently rename
+  // themselves to an employer the user never chose. Stays null until they pick, so the default
+  // (best match first) is still free to move.
+  const pickedKey = useRef<string | null>(null);
 
   const loadTargets = loaders?.targets || fetchTargets;
   const loadCards = loaders?.cards || fetchHomeCards;
@@ -78,7 +90,17 @@ export default function EmployerHome({
     lastLoad.current = Date.now();
     const [t, c] = await Promise.all([loadTargets(), loadCards()]);
     setTargets(t);
-    if (c) { setCards(c.cards); setNoResume(false); } else { setCards([]); setNoResume(true); }
+    if (pickedKey.current) {
+      const j = t.findIndex((x) => x.key === pickedKey.current);
+      setEmpIdx(j >= 0 ? j : 0);
+      if (j < 0) pickedKey.current = null; // their employer dropped off the list
+    }
+    // ⚠️ Only the server's own 'none' may arm the build-my-resume lane — see fetchHomeCards.
+    // A transient failure leaves cards AND noResume exactly as they were: at worst the user sees
+    // the retry state, never a CTA that would spend a generation rewriting a resume they have.
+    if (c === 'none') { setCards([]); setNoResume(true); setLoadFailed(false); }
+    else if (c) { setCards(c.cards); setNoResume(false); setLoadFailed(false); }
+    else { setLoadFailed(true); }
     setLoading(false);
     setIsPaid(await loadPaid());
   }, [loadTargets, loadCards, loadPaid]);
@@ -94,6 +116,7 @@ export default function EmployerHome({
   const pickEmployer = (i: number) => {
     if (i === empIdx) return;
     setEmpIdx(i);
+    pickedKey.current = targets[i]?.key || null;
     setReshaping(true);
     try { Haptics.selectionAsync(); } catch {}
     setTimeout(() => setReshaping(false), 950);
@@ -141,7 +164,7 @@ export default function EmployerHome({
       {/* ───────────────────────── DARK STAGE ───────────────────────── */}
       <MeshStage>
         {/* top bar */}
-        <View style={s.topBar}>
+        <View style={[s.topBar, { paddingTop: insets.top + Platform.select({ ios: 8, default: 12 })! }]}>
           <View style={s.brandRow}>
             <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.brandMark}>
               <Ionicons name="document-text" size={15} color="#fff" />
@@ -237,6 +260,12 @@ export default function EmployerHome({
               onIndex={setCardIdx}
               ribbon={target ? { letter: target.initial, short: target.company, colors: target.colors } : null}
             />
+          ) : loadFailed ? (
+            <TouchableOpacity style={s.paperLoading} activeOpacity={0.8} onPress={() => load(true)}>
+              <Ionicons name="cloud-offline-outline" size={22} color="rgba(255,255,255,0.5)" />
+              <Text style={s.paperFailTx}>Couldn't load your designs</Text>
+              <Text style={s.paperFailSub}>Tap to retry</Text>
+            </TouchableOpacity>
           ) : (
             <View style={s.paperLoading}><ActivityIndicator color="#fff" /></View>
           )}
@@ -265,7 +294,7 @@ export default function EmployerHome({
 
       {/* ───────────────────────── CTA ───────────────────────── */}
       <View style={{ paddingHorizontal: 16, paddingTop: 18 }}>
-        <TouchableOpacity activeOpacity={0.9} onPress={onDownload}>
+        <TouchableOpacity activeOpacity={0.9} onPress={onDownload} style={s.ctaShadow}>
           <LinearGradient
             colors={[E.blue, E.purple, E.purpleLite]}
             start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
@@ -498,14 +527,19 @@ const s = StyleSheet.create({
   emptyTargetsTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: '#fff' },
 
   paperLoading: { height: 300, alignItems: 'center', justifyContent: 'center' },
+  paperFailTx: { color: 'rgba(255,255,255,0.72)', fontSize: 13.5, fontWeight: '700', marginTop: 10 },
+  paperFailSub: { color: 'rgba(255,255,255,0.42)', fontSize: 12, marginTop: 3 },
   caption: { alignItems: 'center', marginTop: 8, height: 18 },
   captionName: { fontSize: 13, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
   capDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.35)', marginHorizontal: 8 },
   captionMeta: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)' },
   captionScan: { fontSize: 12, fontWeight: '600', color: '#C4BBFF' },
 
-  cta: { height: 54, borderRadius: 17, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, overflow: 'hidden', shadowColor: E.blue, shadowOffset: { width: 0, height: 14 }, shadowOpacity: 0.42, shadowRadius: 30, elevation: 10 },
-  ctaTx: { fontSize: 15.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2 },
+  // Same iOS trap as PaperCarousel.paper: the Shimmer needs overflow:'hidden', which would clip
+  // the blue glow off the button. Glow on the touchable, clipping on the gradient.
+  ctaShadow: { borderRadius: 17, shadowColor: E.blue, shadowOffset: { width: 0, height: 14 }, shadowOpacity: 0.42, shadowRadius: 30, elevation: 10 },
+  cta: { height: 54, borderRadius: 17, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, overflow: 'hidden' },
+  ctaTx: { fontSize: 15.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
   shimmer: { position: 'absolute', top: -10, bottom: -10, width: 70, backgroundColor: 'rgba(255,255,255,0.28)' },
   reassure: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 10 },
   reassureTx: { fontSize: 11.5, fontWeight: '600', color: E.textMuted },

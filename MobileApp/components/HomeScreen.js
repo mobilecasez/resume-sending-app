@@ -76,6 +76,11 @@ function weekDayLabel(offsetFromToday) {
 const _cardStateCache = {};
 // Generated counts per day: 'YYYY-MM-DD' → count (survives HomeScreen remounts)
 const _generatedCountsCache = {};
+// HomeScreen is remounted whenever App.js switches screens (Usage, Me, ...), which reset the
+// Home/Dashboard toggle back to Home — so 'Back' out of any Dashboard sub-screen dumped the user
+// on the employer Home instead of the Dashboard they were reading. Module-scoped like the caches
+// above, so it survives the remount without adding an App.js screen key.
+let _showDashboardCache = false;
 // Call this on logout to prevent stale state leaking across user sessions
 export function clearHomeScreenCache() {
   Object.keys(_cardStateCache).forEach(k => delete _cardStateCache[k]);
@@ -1675,7 +1680,8 @@ export default function HomeScreen({
   // ⚠️ HOME IS NOW THE EMPLOYER GENERATOR; the old dashboard lives one tap away.
   // This MUST be local state — App.js's screen dispatch is a fixed if-chain ending in an
   // unconditional `return <ReviewScreen/>`, so inventing a new screen key would render Letters.
-  const [showDashboard, setShowDashboard] = useState(false);
+  const [showDashboard, _setShowDashboard] = useState(_showDashboardCache);
+  const setShowDashboard = useCallback((v) => { _showDashboardCache = !!v; _setShowDashboard(!!v); }, []);
   const [chartTooltip, setChartTooltip] = useState(null);
   const [replyModalVisible, setReplyModalVisible] = useState(false);
   const [replyModalApp, setReplyModalApp]         = useState(null);
@@ -1793,8 +1799,18 @@ export default function HomeScreen({
   }
 
   return (
-    <SafeAreaViewContext style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor={T.bg} translucent={false} />
+    <SafeAreaViewContext
+      style={styles.container}
+      // The employer Home paints a near-black hero to the very top, so it must own the status-bar
+      // inset itself — padding it here fills that band with the light app background and leaves a
+      // grey strip above the hero on every notched device. The Dashboard still wants all edges.
+      edges={showDashboard ? ['top', 'left', 'right', 'bottom'] : ['left', 'right', 'bottom']}
+    >
+      <StatusBar
+        barStyle={showDashboard ? 'dark-content' : 'light-content'}
+        backgroundColor={showDashboard ? T.bg : '#070A18'}
+        translucent={false}
+      />
 
       {renderCompleteProfileModal && renderCompleteProfileModal()}
 
