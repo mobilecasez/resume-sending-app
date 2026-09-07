@@ -26,6 +26,7 @@ const routes = R('../../server/routes/resumeBuilder.js');
 // a comment. Matching your own explanation proves nothing — that mistake has been made here more
 // than once (Dimensions, router.back(), and the 1.99 the design deliberately does NOT copy).
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+const homeC = strip(home), svcC = strip(svc), hsC = strip(hs), carC = strip(carousel), ctlC = strip(ctl);
 const FILES = {
   'EmployerHome.tsx': home, 'MeshStage.tsx': mesh, 'PaperCarousel.tsx': carousel,
   'theme.ts': theme, 'HomeBoundary.tsx': boundary, 'employerHomeService.ts': svc, 'HomeScreen.js': hs,
@@ -90,8 +91,9 @@ ok('the live pill + pulsing dot', /TAILORED PER EMPLOYER · LIVE/.test(home) && 
 ok('the headline splits into sans + serif-italic accent', /h1Accent/.test(home) && /fontStyle: 'italic'/.test(home));
 ok('there is NO download button on Home — the actions live in the opened page',
   !/function Shimmer/.test(home) && !/ctaTx:/.test(home) && !/Download for /.test(home));
-ok('employer chips are compact: initial, company, match — the role line is dropped',
-  /chipTileTx/.test(home) && /chipPctTx/.test(home) && !/chipRole/.test(home));
+ok('a chip identifies a POSTING: company over role, plus the match',
+  /chipTileTx/.test(home) && /chipPctTx/.test(home) && /chipRole/.test(home)
+  && /\{!!t\.role && <Text style=\{\[s\.chipRole/.test(homeC));
 ok('the carousel shows a "For <employer>" ribbon', /ribbon/.test(carousel) && /For \{ribbon\.short\}/.test(carousel));
 ok('dots widen for the active card', /dotOn: \{ width: 20/.test(carousel));
 ok('cards keep the A4 ratio the renderer uses', /424 \/ 300/.test(carousel));
@@ -117,7 +119,10 @@ console.log('── real data, not a demo list ──');
 ok('employer chips come from the user’s OWN jobs', /ai-hub\/dashboard/.test(svc) && /discover\/saved-jobs/.test(svc));
 ok('the two stores’ different match fields are both handled', /matchScore/.test(svc) && /c\.match/.test(svc));
 ok('…and the disagreement is written down', /disagree on field names/.test(svc));
-ok('companies are deduped across the two stores', /seen\.has\(company\.toLowerCase\(\)\)/.test(svc));
+ok('POSTINGS are deduped across the two stores, on the URL the server calls identity',
+  /const seen = new Set\(out\.map\(\(t\) => cleanJobUrl\(t\.applyUrl\)\)/.test(strip(svc)));
+ok('…and a chip is keyed on that URL, never on a search-time id',
+  /key: 'job_' \+ \(cleanJobUrl\(j\.applyUrl \|\| j\.url\)/.test(strip(svc)));
 ok('best match leads', /out\.sort\(\(a, b\) => \(b\.match \?\? -1\) - \(a\.match \?\? -1\)\)/.test(svc));
 ok('the carousel shows the user’s REAL rendered resume', /resume-builder\/home-cards/.test(svc));
 
@@ -171,7 +176,6 @@ ok('…and nothing in the app links to it', !new RegExp('home-preview').test(hom
 // Every assertion below is a defect that survived adversarial verification. They are checked
 // against COMMENT-STRIPPED source: the fixes are documented in prose that repeats the very
 // tokens being tested, and an assertion that matches its own explanation proves nothing.
-const homeC = strip(home), svcC = strip(svc), hsC = strip(hs), carC = strip(carousel), ctlC = strip(ctl);
 
 console.log('── a failed request must NEVER read as "you have no resume" (it armed a paid rebuild) ──');
 ok('the service can tell a 404 from a failure', /meta\.status === 404/.test(svcC) && /return 'none'/.test(svcC));
@@ -198,7 +202,7 @@ ok('the clipped CTA gradient carries no shadow of its own', !/  cta: \{[^}]*shad
 
 console.log('── the CTA label must give way, not push its icon out of the button ──');
 ok('every label that can meet a long company name can shrink',
-  /chipName: \{[^}]*flexShrink: 1/.test(homeC) && /ghostTx: \{[^}]*flexShrink: 1/.test(strip(zoomSrc))
+  /chipText: \{ flexShrink: 1 \}/.test(homeC) && /ghostTx: \{[^}]*flexShrink: 1/.test(strip(zoomSrc))
   && /letterBtnTx: \{[^}]*flexShrink: 1/.test(homeC));
 
 console.log('── selection and screen state survive a refresh ──');
@@ -241,7 +245,7 @@ ok('the zoom grows from the tapped rectangle, measured', /measureInWindow/.test(
 ok('the transition is transform-only (native driver, one tree)',
   /translateX: lerp\(tx0, 0\)/.test(zoomC) && /scale: lerp\(scale0, 1\)/.test(zoomC) && !/useNativeDriver: false/.test(zoomC));
 ok('Customize opens the SECTION EDITOR (and the builder when it is only a sample)',
-  /'\/\(resume-builder\)' : '\/\(resume-builder\)\/preview'/.test(homeC));
+  /if \(sample\) armBuilderFor\(target\)/.test(homeC) && /nav\(\)\?\.push\?\.\('\/\(resume-builder\)\/preview'\)/.test(homeC));
 ok('⚠️ Customize NEVER arms the paid auto-build lane',
   !/autoBuild[\s\S]{0,80}home_customize/.test(homeC) && (homeC.match(/autoBuild: true/g) || []).length === 1);
 ok('View PDF opens the gallery ON the tapped design', /pathname: '\/\(resume-builder\)\/templates', params: id \? \{ template: id \}/.test(homeC));
@@ -262,7 +266,7 @@ console.log('── add employer ──');
 ok('the button says what it does', /Add employer/.test(homeC) && !/Find a job/.test(homeC));
 ok('the sheet only SEARCHES — it never adds, because adding costs credits',
   !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC) && /fetchDiscoverJobs/.test(sheetC));
-ok('…and hands the choice to the one audited add flow', /params: \{ tab: 'search', addCompany: value \}/.test(homeC));
+ok('…and hands the choice to the one audited add flow', /tab: 'search', addCompany: value/.test(homeC));
 ok('the hub consumes it exactly once', /handedOver\.current = true;/.test(hubC) && /typeof explicit === 'string' \? explicit : inputValue/.test(hubC));
 ok('it can take a pasted careers URL as well as a name', /looksLikeUrl/.test(sheetC) && /Use this careers page/.test(sheetC));
 ok('region filters the search and suggests a design', /country: ctry \|\| ''/.test(sheetC) && /bestDesignForCountry/.test(strip(svc)));
@@ -287,7 +291,7 @@ ok('…and cannot collide with real thumbnails in the cache', /cachedThumb\(user
 ok('Home labels it', /sample && mode === 'resume'/.test(homeC) && /This is a sample so you can see the designs/.test(homeC));
 ok('⚠️ and a sample offers ONE honest action, not a dead-end Customize',
   /sample \? \(/.test(strip(zoomSrc)) && /Build my resume/.test(strip(zoomSrc))
-  && /nav\(\)\?\.push\?\.\(sample \? '\/\(resume-builder\)' : '\/\(resume-builder\)\/preview'\)/.test(homeC));
+  && /if \(sample\) armBuilderFor\(target\)/.test(homeC));
 
 console.log('── the catalogue is the WHOLE catalogue ──');
 ok('the preview exercises all 15 families, not a handful', (prevC.match(/\{ id: '[a-z_]+', +name:/g) || []).length === 15);
@@ -306,6 +310,33 @@ ok('a result is identifiable: name, website, location', /h\.domain/.test(sheetC)
 ok('…and results are cards, not bare rows', /hit: \{[\s\S]{0,180}borderRadius: 14/.test(sheetC));
 ok('not in the list → add their URL instead', /setUrlMode\(true\)/.test(sheetC) && /Add their careers URL instead/.test(sheetC));
 ok('…offered whether or not there were hits', /hits\.length \? 'Not the right one\?' :/.test(sheetC));
+
+// ── Round 6: the posting the user is applying to, end to end ────────────────────────────────────
+const builder = strip(R('../app/(resume-builder)/index.tsx'));
+
+console.log('── the sheet asks for the listing, and asking stays free ──');
+ok('there is an optional listing disclosure', /Applying to a specific role\? Add the listing/.test(sheetC) && /optional/.test(sheetC));
+ok('…taking a link OR pasted text', /placeholder="Link to the job posting"/.test(sheetC) && /paste the job description here/.test(sheetC));
+ok('…and it still never searches or charges', !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC));
+
+console.log('── ⚠️ a pasted description never travels as a route param ──');
+ok('it goes through storage', /AsyncStorage\.setItem\('pending_job_listing'/.test(homeC));
+ok('…and the param only says there is one', /withListing: '1'/.test(homeC));
+ok('the hub reads it exactly once and clears it', /removeItem\('pending_job_listing'\)/.test(hubC) && /savePendingListing\(v, listing\)/.test(hubC));
+
+console.log('── the listing survives to generation ──');
+ok('it is stored per target, on the device', /export async function savePendingListing/.test(svcC) && /export async function loadJobListing/.test(svcC));
+ok('⚠️ …on the DEVICE, because the jobs row is shared between users',
+  /jobs\.job_url is globally unique/.test(svc) || /the row is\s*\n?\s*\* SHARED/.test(svc));
+ok('the store is capped', /LISTINGS_MAX/.test(svcC));
+ok('Home tells the builder which posting', /armBuilderFor/.test(homeC) && /target: t \? \{ company: t\.company, role: t\.role/.test(homeC));
+ok('⚠️ …without arming the paid auto-build lane', !/armBuilderFor[\s\S]{0,300}autoBuild/.test(homeC));
+ok('the builder sends it with BOTH generate calls', (builder.match(/job: jobForRequest\(\)/g) || []).length === 2);
+ok('…and a generic build sends nothing', /if \(!t && !l\) return undefined;/.test(builder));
+
+ok('cover letters pick the listing up too, without every caller threading it',
+  /loadJobListing\(\{ applyUrl: websiteUrl, company: companyName \}\)/.test(strip(R('../services/aiHubService.ts')))
+  && /body\.jobText = l\.jobText/.test(strip(R('../services/aiHubService.ts'))));
 
 console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

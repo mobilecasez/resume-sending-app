@@ -192,7 +192,7 @@ function universalWritingRules() {
 /**
  * Build the filled-in prompt text by substituting placeholders.
  */
-function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibilities = null, jobLocation = null) {
+function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibilities = null, jobLocation = null, listing = null) {
     let prompt = SYSTEM_PROMPT
         .replace('{user_metadata}', JSON.stringify(userMetadata, null, 2))
         .replace('{target_position}', targetPosition)
@@ -224,6 +224,20 @@ function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibi
             : responsibilities;
         const block = `\n\n---\n\nJOB RESPONSIBILITIES (use these to make the letter highly specific to this role):\n${list}\n\nUse these responsibilities to:\n- Reference 2–3 of them explicitly in Paragraph 2 (Skills & Domain Match) — show how the user's background directly covers each one\n- Use them in Paragraph 3 (Value Proposition) to demonstrate the user can hit the ground running on these specific tasks\n- Do NOT copy the responsibility text verbatim — paraphrase and connect it to the user's actual experience\n\n---`;
         prompt += block;
+    }
+
+    // ── THE ACTUAL POSTING ────────────────────────────────────────────────────────────────────────
+    // When the user gave us the real listing, it outranks anything inferred from the company's
+    // website: the site says what the company is, the posting says what THIS job is. Capped at
+    // 12000 chars to match the capture extractor — the whole resume_metadata row is already in this
+    // prompt, so this is the one input that could otherwise run the token bill away.
+    if (listing && (listing.text || listing.url)) {
+        const body = String(listing.text || '').slice(0, 12000);
+        prompt += `\n\n---\n\nTHE ACTUAL JOB POSTING — AUTHORITATIVE. Prefer it over anything you infer from the company website, and never state anything it does not support.\n`
+            + (listing.title ? `Role: ${listing.title}\n` : '')
+            + (listing.url ? `Link: ${listing.url}\n` : '')
+            + (body ? `\n---\n${body}\n---\n` : '')
+            + `\nUse it for the role's real duties, requirements, team and seniority in Paragraphs 2 and 3. Where it names a requirement the candidate genuinely meets, say so in the posting's own words. Where it names one they do not meet, stay silent about it — never imply it.\n\n---`;
     }
 
     // OUTPUT LANGUAGE — hard rule, last so it has the highest salience. Some job
@@ -433,7 +447,7 @@ function extractJsonFields(raw) {
  * @param {string} targetPosition  - Job position title
  * @returns {Promise<{to, employer_name, position, addresses, subject, cover_letter}>}
  */
-async function generateCoverLetter(userMetadata, employerUrl, targetPosition, responsibilities = null, jobLocation = null) {
+async function generateCoverLetter(userMetadata, employerUrl, targetPosition, responsibilities = null, jobLocation = null, listing = null) {
     if (!userMetadata || typeof userMetadata !== 'object') {
         throw new Error('userMetadata must be a non-null object');
     }
@@ -450,7 +464,7 @@ async function generateCoverLetter(userMetadata, employerUrl, targetPosition, re
 
     // Pass the URL directly — Gemini will research the employer itself
     // via Google Search grounding. No manual scraping required.
-    const prompt = buildPrompt(userMetadata, targetPosition, normalizedUrl, responsibilities, jobLocation);
+    const prompt = buildPrompt(userMetadata, targetPosition, normalizedUrl, responsibilities, jobLocation, listing);
 
     // Up to 3 attempts: an empty/truncated/unparseable AI response is retried
     // silently with the identical prompt (exactly what a user's manual retry did)
@@ -481,4 +495,4 @@ async function generateCoverLetter(userMetadata, employerUrl, targetPosition, re
     throw err;
 }
 
-module.exports = { generateCoverLetter };
+module.exports = { generateCoverLetter, buildPrompt };   // buildPrompt exported for tests only

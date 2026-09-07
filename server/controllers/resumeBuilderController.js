@@ -119,7 +119,7 @@ async function callGemini(prompt) {
 }
 
 // ── Build the structured Gemini prompt ───────────────────────────────────────
-function buildParsePrompt(name, email, phone, location, rawText, scrapedProjects, uploadedResumeContext = '') {
+function buildParsePrompt(name, email, phone, location, rawText, scrapedProjects, uploadedResumeContext = '', job = null) {
     const projectContext = scrapedProjects.length
         ? scrapedProjects.map(p =>
             `URL: ${p.url}\nTitle: ${p.title}\nDescription: ${p.description}`
@@ -128,6 +128,34 @@ function buildParsePrompt(name, email, phone, location, rawText, scrapedProjects
 
     const uploadedBlock = uploadedResumeContext
         ? `\n=== EXISTING UPLOADED RESUME (already on file — MERGE this with the career text above. Capture every job, project, skill, certification and education from BOTH sources; never drop anything, never invent anything) ===\n${uploadedResumeContext}\n`
+        : '';
+
+    // ── The posting this resume is FOR ───────────────────────────────────────────────────────────
+    // ⚠️ TAILORING IS ORDER AND EMPHASIS, NEVER FACTS. A resume that claims something the candidate
+    // did not say is worse than a generic one: it fails at the interview and it is our name on it.
+    // So this block may reorder, re-word and re-frame what the candidate already told us, and may
+    // adopt the posting's vocabulary where it describes the same thing — and nothing else.
+    const jobBlock = (job && (job.title || job.description))
+        ? `
+=== THE ROLE THIS RESUME IS BEING WRITTEN FOR ===
+Title:   ${job.title || '(not given)'}
+Company: ${job.company || '(not given)'}
+${job.url ? `Link:    ${job.url}\n` : ''}${job.description ? `Posting text:\n---\n${String(job.description).slice(0, 12000)}\n---\n` : ''}
+=== HOW TO USE IT (emphasis and ordering ONLY) ===
+- The ZERO-MISS rule above still applies in full. Tailoring never drops anything.
+- NEVER add a skill, tool, employer, qualification, certification or achievement the candidate did
+  not state. Never imply more years of experience than they wrote. If this posting asks for
+  something they do not have, simply do not mention it — do not soften it, do not imply it.
+- WITHIN each experience entry, order the highlights so the ones this posting actually asks about
+  come first. Do not delete the others.
+- Order \`skills.technical\` and \`skills.soft\` so the ones this posting names — AND the candidate
+  genuinely has — come first.
+- Where the candidate and the posting describe the SAME thing in different words, prefer the
+  posting's wording: an ATS matches on its vocabulary, not on synonyms. Only when it is the same
+  thing; this is a re-wording rule, not a licence to claim.
+- Write \`personal_info.title\` and \`summary\` for THIS role, using only what the candidate has
+  actually done.
+`
         : '';
 
     return `You are an expert executive resume writer AND veteran corporate recruiter. Your task is to parse the candidate information below and return a single, clean JSON object — NO markdown, NO code fences, NO conversational text, ONLY the raw JSON.
@@ -143,6 +171,7 @@ ${rawText}
 ${uploadedBlock}
 === SCRAPED PROJECT PAGES (enrichment context) ===
 ${projectContext}
+${jobBlock}
 
 === ⚠️ ZERO-MISS RULE (most important rule — read first) ===
 You MUST capture EVERY single piece of information the candidate has written.
@@ -311,7 +340,7 @@ PART 2 — CANDIDATE'S ROLE: The candidate's title/role in the project, then 2-3
 // POST /api/resume-builder/generate-ai
 async function generateAI(req, res) {
     const userId = req.user.id;
-    const { name, email, phone, location, rawText, includeUploadedResume, isRegenerate } = req.body;
+    const { name, email, phone, location, rawText, includeUploadedResume, isRegenerate, job } = req.body;
 
     if (!rawText || rawText.trim().length < 20) {
         return res.status(400).json({ error: 'Please provide more detail about your experience.' });
@@ -369,7 +398,27 @@ async function generateAI(req, res) {
             } catch (e) { console.warn('[resumeBuilder] uploaded resume merge failed:', e.message); }
         }
 
-        const prompt = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext);
+        // The posting the user is applying to, when they gave us one. A link with no text is
+        // fetched here — ⚠️ deliberately NOT by putting it in rawText, where extractUrls would
+        // treat it as one of the candidate's own project pages and describe it as their work.
+        let jobTarget = null;
+        if (job && (job.title || job.description || job.url)) {
+            jobTarget = {
+                title: job.title || '',
+                company: job.company || '',
+                url: job.url || '',
+                description: job.description || '',
+            };
+            if (!jobTarget.description && jobTarget.url) {
+                try {
+                    const page = await scrapePage(jobTarget.url);
+                    jobTarget.description = [page?.title, page?.description].filter(Boolean).join('\n');
+                } catch (e) { console.warn('[resumeBuilder] job page fetch failed:', e.message); }
+            }
+            console.log(`[resumeBuilder] tailoring for "${jobTarget.title || jobTarget.url}"`);
+        }
+
+        const prompt = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext, jobTarget);
 
         // Up to 3 attempts: a truncated or malformed AI response is retried silently
         // (identical prompt — exactly what a user's manual "try again" did) instead of
@@ -1297,4 +1346,4 @@ async function buildResumePdfForRegion(userId, region, mode) {
     return { filePath, fileName, template: tplId };
 }
 
-module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion };
+module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt };   // buildParsePrompt exported for tests only

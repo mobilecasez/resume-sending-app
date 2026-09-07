@@ -69,6 +69,17 @@ export default function EmployerHome({
   const [zoom, setZoom] = useState<{ i: number; rect: OriginRect } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const regionHint = useCallback((c: string) => bestDesignForCountry(c)?.name || null, []);
+  /**
+   * Tell the builder which posting this is for. The server tailors the resume to it — ordering and
+   * wording only, never invented facts.
+   * ⚠️ `autoBuild` is NOT set here: that lane generates immediately and spends a plan generation.
+   */
+  const armBuilderFor = useCallback(async (t?: Target) => {
+    await AsyncStorage.setItem('resume_builder_entry', JSON.stringify({
+      from: 'home_employer',
+      target: t ? { company: t.company, role: t.role, applyUrl: t.applyUrl || t.jobUrl || '' } : null,
+    })).catch(() => {});
+  }, []);
   // Drives ONLY the pinned header's backdrop. Native driver, and the header is a sibling of the
   // ScrollView — a separate view tree from the mesh, so the b126 one-driver-per-tree rule holds.
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -353,9 +364,8 @@ export default function EmployerHome({
               style={s.sampleBar}
               activeOpacity={0.9}
               onPress={() => {
-                track('home_sample_build', {});
-                AsyncStorage.setItem('resume_builder_entry', JSON.stringify({ from: 'home_sample' })).catch(() => {});
-                nav()?.push?.('/(resume-builder)');
+                track('home_sample_build', { hasTarget: !!target });
+                armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
               }}
             >
               <Ionicons name="information-circle" size={15} color={E.mint} />
@@ -443,12 +453,26 @@ export default function EmployerHome({
         visible={addOpen}
         onClose={() => setAddOpen(false)}
         regionHint={regionHint}
-        onPick={(value) => {
+        onPick={(value, extra) => {
           setAddOpen(false);
-          track('home_add_employer_pick', { url: /^https?:\/\//i.test(value) });
-          // The Job Hub owns this: it prechecks credits, spots job portals and recovers in-flight
-          // searches. Home only decides WHICH employer.
-          nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search', addCompany: value } });
+          const hasListing = !!(extra?.jobUrl || extra?.jobText);
+          track('home_add_employer_pick', { url: /^https?:\/\//i.test(value), listing: hasListing });
+          // ⚠️ A pasted job description NEVER travels as a route param — it can be thousands of
+          // characters and params end up in the URL. It goes through storage; the param only says
+          // that there is one to collect.
+          if (hasListing) {
+            AsyncStorage.setItem('pending_job_listing', JSON.stringify({
+              jobUrl: extra?.jobUrl || '', jobText: extra?.jobText || '',
+            })).catch(() => {});
+          }
+          // The Job Hub owns the add itself: it prechecks credits, spots job portals and recovers
+          // in-flight searches. Home only decides WHICH employer, and for WHICH posting.
+          nav()?.push?.({
+            pathname: '/(ai-hub)',
+            params: hasListing
+              ? { tab: 'search', addCompany: value, withListing: '1' }
+              : { tab: 'search', addCompany: value },
+          });
         }}
       />
 
@@ -463,7 +487,8 @@ export default function EmployerHome({
           // ⚠️ Straight to the section editor. Writing 'resume_builder_entry' with autoBuild, or
           // 'resumeBuilderAction', would arm a PAID regeneration — neither is touched.
           track('home_customize', { mode, sample });
-          nav()?.push?.(sample ? '/(resume-builder)' : '/(resume-builder)/preview');
+          if (sample) armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
+          else nav()?.push?.('/(resume-builder)/preview');
         }}
         onViewPdf={() => {
           const id = zoom ? deck[zoom.i]?.id : undefined;
@@ -533,7 +558,12 @@ function EmployerChip({ t, on, onPress }: { t: Target; on: boolean; onPress: () 
       <LinearGradient colors={t.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.chipTile}>
         <Text style={s.chipTileTx}>{t.initial}</Text>
       </LinearGradient>
-      <Text style={[s.chipName, on && s.chipNameOn]} numberOfLines={1}>{t.company}</Text>
+      {/* Two lines, because a chip identifies a POSTING: the same employer can appear twice and the
+          role underneath is the only thing telling the two apart. */}
+      <View style={s.chipText}>
+        <Text style={[s.chipName, on && s.chipNameOn]} numberOfLines={1}>{t.company}</Text>
+        {!!t.role && <Text style={[s.chipRole, on && s.chipRoleOn]} numberOfLines={1}>{t.role}</Text>}
+      </View>
       {t.match != null && (
         <View style={[s.chipPct, on && s.chipPctOn]}>
           <Text style={[s.chipPctTx, on && s.chipPctTxOn]}>{t.match}%</Text>
@@ -667,25 +697,28 @@ const s = StyleSheet.create({
   eyebrowDark: { fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)', paddingHorizontal: 16, paddingBottom: 8 },
   chipsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, alignItems: 'center' },
   chip: {
-    height: 38, paddingLeft: 5, paddingRight: 9, borderRadius: 100, borderWidth: 1,
+    height: 48, paddingLeft: 6, paddingRight: 10, borderRadius: 16, borderWidth: 1,
     borderColor: E.glassBorder, backgroundColor: E.glass,
-    flexDirection: 'row', alignItems: 'center', gap: 7, maxWidth: 190,
+    flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: 218,
   },
+  chipText: { flexShrink: 1 },
   chipOn: {
     backgroundColor: 'rgba(79,141,255,0.22)', borderColor: 'rgba(150,186,255,0.6)',
     ...Platform.select({ ios: { shadowColor: E.blue, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 12 }, default: { elevation: 4 } }),
   },
-  chipTile: { width: 26, height: 26, borderRadius: 100, alignItems: 'center', justifyContent: 'center' },
+  chipTile: { width: 30, height: 30, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   chipTileTx: { fontSize: 11.5, fontWeight: '800', color: '#fff' },
-  chipName: { flexShrink: 1, fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.78)', letterSpacing: -0.2 },
+  chipName: { fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.8)', letterSpacing: -0.2 },
+  chipRole: { fontSize: 10, fontWeight: '600', color: 'rgba(255,255,255,0.5)', marginTop: 1.5 },
+  chipRoleOn: { color: 'rgba(255,255,255,0.78)' },
   chipNameOn: { color: '#fff', fontWeight: '800' },
   chipPct: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.12)' },
   chipPctOn: { backgroundColor: 'rgba(255,255,255,0.22)' },
   chipPctTx: { fontSize: 9.5, fontWeight: '800', color: 'rgba(255,255,255,0.7)' },
   chipPctTxOn: { color: '#fff' },
-  chipAdd: { height: 38, paddingHorizontal: 13, borderRadius: 100, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.32)', flexDirection: 'row', alignItems: 'center', gap: 6 },
+  chipAdd: { height: 48, paddingHorizontal: 13, borderRadius: 100, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.32)', flexDirection: 'row', alignItems: 'center', gap: 6 },
   chipAddTx: { fontSize: 12, fontWeight: '700', color: '#fff' },
-  chipSkeleton: { width: 130, height: 38, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.07)' },
+  chipSkeleton: { width: 150, height: 48, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.07)' },
   emptyTargets: { marginHorizontal: 16, paddingHorizontal: 14, height: 48, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', gap: 8 },
   emptyTargetsTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: '#fff' },
 

@@ -709,7 +709,13 @@ const generateCoverLetterDetails = async (req, res) => {
     
     try {
         const userId = req.user.id;
-        let { recipientEmail, websiteUrl, position, responsibilities, jobLocation, jobId: sourceJobId, companyName: companyNameHint } = req.body;
+        let { recipientEmail, websiteUrl, position, responsibilities, jobLocation, jobId: sourceJobId, companyName: companyNameHint, jobUrl, jobText } = req.body;
+        // The real posting, when the user pasted one. It is context for the prompt only — it is
+        // never treated as the employer URL (that slot expects a company site, and a raw
+        // description dropped into it would be turned into "https://<text>").
+        const listing = (jobUrl || jobText)
+            ? { url: jobUrl || '', text: jobText || '', title: position || '', company: companyNameHint || '' }
+            : null;
 
         // Job-aware augmentation: the dashboard LIST payload trims responsibilities to 3 for
         // speed — when the client says which job this is, prefer the FULL stored list so the
@@ -775,7 +781,7 @@ const generateCoverLetterDetails = async (req, res) => {
         if (useAsync) {
             // ASYNC MODE: Create job and return immediately
             const jobId = await jobService.createJob(userId, 'generate_cover_letter', {
-                recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint
+                recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing
             });
             console.log(`🚀 [${requestId}] Async job created: ${jobId}`);
 
@@ -783,7 +789,7 @@ const generateCoverLetterDetails = async (req, res) => {
             res.status(202).json({ jobId, status: 'pending' });
 
             // Fire and forget — process in background
-            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint }).catch(err => {
+            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing }).catch(err => {
                 console.error(`❌ [${requestId}] Async job ${jobId} failed:`, err.message);
                 // The stored failure message is shown to the user by the poller —
                 // only deliberately user-facing text may pass through.
@@ -822,7 +828,7 @@ const generateCoverLetterDetails = async (req, res) => {
 // host, and researching THAT produced letters addressed to the job board instead of the company.
 const AGGREGATOR_HOST = /(instahyre|naukri|linkedin|indeed|glassdoor|monster|shine|timesjobs|foundit|wellfound|ziprecruiter|simplyhired|jooble|careerjet|adzuna|talent\.com|jobs?\.[a-z]+\.com)\b/i;
 
-async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null }) {
+async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null }) {
     console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}, hasResponsibilities=${!!(responsibilities && responsibilities.length)}, jobLocation=${jobLocation || 'none'}, companyHint=${companyNameHint || 'none'}`);
     // Normalize URL
     const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
@@ -866,14 +872,14 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     if (cached) {
         // Cache hit — run cover letter generation alone at full speed
         console.log(`🎨 [employer] Cache hit → color=${cached.brand_color}, font=${cached.font_name}`);
-        aiResult = await generateCoverLetterV2(resumeMetadata, researchSubject, position, responsibilities, jobLocation);
+        aiResult = await generateCoverLetterV2(resumeMetadata, researchSubject, position, responsibilities, jobLocation, listing);
         brandColor = cached.brand_color;
         fontName = cached.font_name;
     } else {
         // Cache miss — run cover letter generation + full employer research IN PARALLEL
         console.log(`🔍 [employer] Cache miss — running cover letter + employer research in parallel`);
         const [clResult, researchData] = await Promise.all([
-            generateCoverLetterV2(resumeMetadata, researchSubject, position, responsibilities, jobLocation),
+            generateCoverLetterV2(resumeMetadata, researchSubject, position, responsibilities, jobLocation, listing),
             researchEmployer(researchSubject),
         ]);
         aiResult = clResult;

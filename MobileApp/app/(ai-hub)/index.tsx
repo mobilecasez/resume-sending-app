@@ -40,6 +40,7 @@ import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { savePendingListing } from '../../services/employerHomeService';
 import { LoadingTips } from './LoadingTips';
 import MotivationProgress from '../../components/MotivationProgress';
 import CreditCostPill from '../../components/CreditCostPill';
@@ -1297,7 +1298,7 @@ export default function AIHubScreen() {
   const { costs } = useEventCosts();
   // Deep-link support: /(ai-hub)?tab=myjobs lands on My Jobs (the "Jobs Dashboard" menu entry).
   // The DEFAULT is Search — tapping "Jobs" should land the user where they can look for a job.
-  const params = useLocalSearchParams<{ tab?: string; addCompany?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; addCompany?: string; withListing?: string }>();
   const initialTab = params?.tab === 'search' || params?.tab === 'saved' || params?.tab === 'myjobs' ? params.tab : 'search';
   const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>(initialTab);   // unified Job Hub tabs
   const [interestAddOpen, setInterestAddOpen] = useState(false);   // + on the Jobs tab opens the interest form
@@ -1829,8 +1830,22 @@ export default function AIHubScreen() {
     const v = typeof params?.addCompany === 'string' ? params.addCompany.trim() : '';
     if (!v || handedOver.current) return;
     handedOver.current = true;                    // one-shot: a re-render must not re-run the search
+    // A posting came with it. Read it once and clear it, so a later unrelated add cannot inherit
+    // the last one's job description.
+    if (params?.withListing === '1') {
+      AsyncStorage.getItem('pending_job_listing')
+        .then((raw) => {
+          AsyncStorage.removeItem('pending_job_listing').catch(() => {});
+          let listing = null;
+          try { listing = raw ? JSON.parse(raw) : null; } catch {}
+          if (listing && (listing.jobUrl || listing.jobText)) savePendingListing(v, listing);
+          handleAddPill(v);
+        })
+        .catch(() => handleAddPill(v));
+      return;
+    }
     handleAddPill(v);
-  }, [params?.addCompany, handleAddPill]);
+  }, [params?.addCompany, params?.withListing, handleAddPill]);
 
 
   const handleApply = useCallback((employer: Employer, job: Job) => {

@@ -35,8 +35,12 @@ export default function AddEmployerSheet({
 }: {
   visible: boolean;
   onClose: () => void;
-  /** The employer name, or a pasted careers URL. The caller routes it to the add flow. */
-  onPick: (value: string, country?: string) => void;
+  /**
+   * The employer name or careers URL, plus — optionally — the actual posting they are applying
+   * to. The listing is what makes the resume and the letter specific to THIS job rather than
+   * generic to the company.
+   */
+  onPick: (value: string, extra?: { country?: string; jobUrl?: string; jobText?: string }) => void;
   /** Shown under the region picker: which design family suits the chosen country. */
   regionHint?: (country: string) => string | null;
 }) {
@@ -49,6 +53,10 @@ export default function AddEmployerSheet({
   const [busy, setBusy] = useState(false);
   // Set when the user says "not in the list" — the same field then takes a careers URL.
   const [urlMode, setUrlMode] = useState(false);
+  // The specific posting — optional, and free: it is prompt context, not another search.
+  const [showJob, setShowJob] = useState(false);
+  const [jobUrl, setJobUrl] = useState('');
+  const [jobText, setJobText] = useState('');
   const seq = useRef(0);
 
   useEffect(() => {
@@ -58,7 +66,7 @@ export default function AddEmployerSheet({
       easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.quad),
       useNativeDriver: true,
     }).start();
-    if (!visible) { setQ(''); setHits([]); setUrlMode(false); }
+    if (!visible) { setQ(''); setHits([]); setUrlMode(false); setShowJob(false); setJobUrl(''); setJobText(''); }
   }, [visible, t]);
 
   useEffect(() => {
@@ -112,7 +120,14 @@ export default function AddEmployerSheet({
   }, [q, country, visible, search]);
 
   const close = () => { Keyboard.dismiss(); onClose(); };
-  const take = (value: string) => { Keyboard.dismiss(); onPick(value.trim(), country || undefined); };
+  const take = (value: string) => {
+    Keyboard.dismiss();
+    onPick(value.trim(), {
+      country: country || undefined,
+      jobUrl: jobUrl.trim() || undefined,
+      jobText: jobText.trim() || undefined,
+    });
+  };
   const hint = country && regionHint ? regionHint(country) : null;
 
   return (
@@ -167,6 +182,43 @@ export default function AddEmployerSheet({
               <Region key={c} on={country === c} label={c} onPress={() => setCountry(country === c ? '' : c)} />
             ))}
           </ScrollView>
+          {/* ── the actual posting (optional) ─────────────────────────────────────────────────
+              A resume written against the real listing beats one written against a company's
+              home page, so this is worth asking for — but it stays optional, and supplying it
+              costs nothing extra: it is context for the prompt, not a second search. */}
+          <TouchableOpacity style={s.jobToggle} activeOpacity={0.8} onPress={() => setShowJob((v) => !v)}>
+            <Ionicons name={showJob ? 'chevron-down' : 'chevron-forward'} size={15} color={E.blueDeep} />
+            <Text style={s.jobToggleTx} numberOfLines={1}>
+              Applying to a specific role? Add the listing
+            </Text>
+            <Text style={s.jobOptional}>optional</Text>
+          </TouchableOpacity>
+          {showJob && (
+            <View style={s.jobBox}>
+              <TextInput
+                style={s.jobUrlInput}
+                value={jobUrl}
+                onChangeText={setJobUrl}
+                placeholder="Link to the job posting"
+                placeholderTextColor={E.textFaint}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TextInput
+                style={s.jobTextInput}
+                value={jobText}
+                onChangeText={setJobText}
+                placeholder="…or paste the job description here"
+                placeholderTextColor={E.textFaint}
+                multiline
+                textAlignVertical="top"
+              />
+              <Text style={s.jobNote} numberOfLines={2}>
+                We write the resume and the letter against this posting — its duties and its wording.
+              </Text>
+            </View>
+          )}
+
           {!!hint && (
             <View style={s.hint}>
               <Ionicons name="sparkles" size={12} color={E.blueDeep} />
@@ -269,6 +321,21 @@ const s = StyleSheet.create({
   regionOn: { backgroundColor: 'rgba(79,141,255,0.12)', borderColor: 'rgba(79,141,255,0.5)' },
   regionTx: { fontSize: 12, fontWeight: '700', color: E.textMuted },
   regionTxOn: { color: E.blueDeep },
+  jobToggle: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 14 },
+  jobToggleTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: E.ink },
+  jobOptional: { fontSize: 10, fontWeight: '800', color: E.textFaint, letterSpacing: 0.6, textTransform: 'uppercase' },
+  jobBox: { marginTop: 10, gap: 8 },
+  jobUrlInput: {
+    height: 44, borderRadius: 12, paddingHorizontal: 12, backgroundColor: E.inputBg,
+    borderWidth: 1, borderColor: E.border, fontSize: 13.5, fontWeight: '600', color: E.ink,
+    ...Platform.select({ web: { outlineStyle: 'none' as any }, default: {} }),
+  },
+  jobTextInput: {
+    minHeight: 88, borderRadius: 12, padding: 12, backgroundColor: E.inputBg,
+    borderWidth: 1, borderColor: E.border, fontSize: 13, fontWeight: '500', color: E.ink,
+    ...Platform.select({ web: { outlineStyle: 'none' as any }, default: {} }),
+  },
+  jobNote: { fontSize: 11, fontWeight: '600', color: E.textMuted, lineHeight: 15 },
   hint: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
   hintTx: { flexShrink: 1, fontSize: 11.5, fontWeight: '700', color: E.blueDeep },
   urlRow: {

@@ -855,6 +855,16 @@ export async function startJobCoverLetter(
   // The dashboard list ships a slimmed job (3 responsibilities) — sending the jobId lets the
   // server swap in the FULL stored list, so letter quality never depends on client hydration.
   if (jobId) body.jobId = jobId;
+  // The posting the user pasted when they added this employer, if there is one. It is the single
+  // biggest quality lever on a letter: the company's website says what the company IS, the listing
+  // says what THIS job is — and the server treats it as authoritative over the site.
+  // Looked up here rather than threaded through every caller, so the whole app benefits.
+  try {
+    const { loadJobListing } = require('./employerHomeService');
+    const l = await loadJobListing({ applyUrl: websiteUrl, company: companyName });
+    if (l?.jobUrl) body.jobUrl = l.jobUrl;
+    if (l?.jobText) body.jobText = l.jobText;
+  } catch { /* no listing is the normal case — never fail a generation over it */ }
   // x-device-id joins the request so the server's trial quota is per-DEVICE (one 7-day trial per
   // phone, not per email). Absent on failure → server falls back to per-user trial.
   let devHeaders: Record<string, string> = {};

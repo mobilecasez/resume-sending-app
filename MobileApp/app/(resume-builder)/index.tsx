@@ -10,6 +10,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { loadJobListing } from '../../services/employerHomeService';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
 import { fetchResumeSourceText } from '../../services/resumeScoreService';
@@ -155,6 +156,18 @@ export default function ResumeBuilderIndex() {
   // The next POST is a REGENERATE (free plan: exactly one). A ref, not state — it is read inside
   // an async handler right after being set, where state would still be stale.
   const regenPendingRef = React.useRef(false);
+  // The posting this build is for, and the listing the user pasted for it (device-local).
+  const jobTargetRef = React.useRef<any>(null);
+  const jobListingRef = React.useRef<any>(null);
+  /** The `job` block the server tailors against — undefined when this is a generic build. */
+  const jobForRequest = () => {
+    const t = jobTargetRef.current; const l = jobListingRef.current;
+    if (!t && !l) return undefined;
+    return {
+      title: t?.role || '', company: t?.company || '',
+      url: l?.jobUrl || t?.applyUrl || '', description: l?.jobText || '',
+    };
+  };
   const [pulling, setPulling] = useState(false);
 
   // Runs every time screen gains focus
@@ -170,6 +183,12 @@ export default function ResumeBuilderIndex() {
         await AsyncStorage.removeItem('resume_builder_entry').catch(() => {});
         try {
           const e = JSON.parse(entryRaw);
+          // The posting Home was pointing at. Held for the generate call so the resume is written
+          // against THIS job rather than against the company in general.
+          if (e && e.target && (e.target.company || e.target.role)) {
+            jobTargetRef.current = e.target;
+            loadJobListing(e.target).then((l) => { if (l) jobListingRef.current = l; }).catch(() => {});
+          }
           // ── The Home card's one-tap lane: uploaded resume + photo → straight to a built
           // resume. No uploaded resume → walk them to the upload first (the AI has nothing to
           // rebuild from); missing photo is fine — most designs render initials instead.
@@ -404,7 +423,8 @@ export default function ResumeBuilderIndex() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeader, ...devHeaders },
         body: JSON.stringify({ name: v.name, email: v.email, phone: v.phone, location: v.location,
-          rawText: v.rawText, includeUploadedResume: v.includeUploaded, isRegenerate: wasRegen }),
+          rawText: v.rawText, includeUploadedResume: v.includeUploaded, isRegenerate: wasRegen,
+          job: jobForRequest() }),
         signal: controller.signal,
       });
       clearTimeout(clientTimeout);
@@ -471,7 +491,7 @@ export default function ResumeBuilderIndex() {
       const res = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name, email, phone: fullPhone, location, rawText, includeUploadedResume: hasUploadedResume && includeUploadedResume, isRegenerate: regenPendingRef.current }),
+        body: JSON.stringify({ name, email, phone: fullPhone, location, rawText, includeUploadedResume: hasUploadedResume && includeUploadedResume, isRegenerate: regenPendingRef.current, job: jobForRequest() }),
         signal: controller.signal,
       });
       clearTimeout(clientTimeout);

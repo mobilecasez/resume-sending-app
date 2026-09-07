@@ -9,6 +9,7 @@
 // A user typically has one or the other; merging means the chips are never empty for someone who
 // has engaged with either surface.
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE } from '../config';
 
 export type Target = {
@@ -23,6 +24,8 @@ export type Target = {
   match: number | null;     // 0-100, null = not scored yet
   skills: string[];
   location?: string;
+  /** The posting's own URL — the identity the whole server agrees on. */
+  applyUrl?: string | null;
 };
 
 export type HomeCard = { id: string; name: string; accent?: string; ats?: number | null; image?: string | null };
@@ -37,6 +40,24 @@ const gradFor = (s?: string): [string, string] => {
   for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
   return AV[h % AV.length];
 };
+/** At most this many postings per employer in the chip row. */
+const PER_EMPLOYER = 3;
+
+/**
+ * The posting's identity. Byte-identical to the server's own cleaner
+ * (server/controllers/jobCaptureController.js cleanUrl, aiHubController.js) — do NOT 'improve' it,
+ * because jobs.job_url carries a UNIQUE index built on exactly this shape.
+ *
+ * ⚠️ Chips are keyed on this rather than on job.id: an id is a real UUID only once a job is
+ * persisted, and during an in-progress search the server hands back a synthetic
+ * `${employerDbId}-job-${n}` that RENUMBERS as results stream in — keying on it re-mounts every
+ * chip mid-search and drops the user's pinned selection.
+ */
+export const cleanJobUrl = (u?: string | null) => {
+  try { const x = new URL(String(u)); return (x.origin + x.pathname).replace(/\/+$/, ''); }
+  catch { return String(u || '').split('?')[0].split('#')[0].replace(/\/+$/, ''); }
+};
+
 const initialOf = (s?: string | null) => (s || '?').trim().charAt(0).toUpperCase();
 
 async function token(): Promise<string | undefined> {
@@ -70,41 +91,53 @@ export async function fetchTargets(): Promise<Target[]> {
   ]);
   const out: Target[] = [];
 
-  // (A) tracked employers — one chip per COMPANY, showing its best-matching role, because the
-  // headline promise is per-employer, not per-posting.
+  // (A) tracked employers — one chip per POSTING, not per company. Two roles at the same employer
+  // are two different applications: they want different resumes and different letters, so
+  // "Airbus · Senior Software Engineer" and "Airbus · Team Lead" have to be separately selectable.
+  // ⚠️ Capped per employer so one company with a large careers page cannot fill the whole row.
   for (const row of (dash?.dashboard || [])) {
     const e = row?.employer;
     if (!e || !Array.isArray(e.jobs) || !e.jobs.length) continue;
-    const best = [...e.jobs].sort((a: any, b: any) => (b?.matchScore ?? -1) - (a?.matchScore ?? -1))[0];
-    if (!best) continue;
     const colors: [string, string] = Array.isArray(e.logoColor) && e.logoColor.length >= 2
       ? [e.logoColor[0], e.logoColor[1]] : gradFor(e.name);
-    out.push({
-      key: 'emp_' + e.id,
-      jobId: best.id || null,
-      employerId: String(e.id),
-      company: e.name || 'Employer',
-      role: best.title || e.subInfo || 'Open role',
-      initial: e.logoInitial || initialOf(e.name),
-      colors,
-      match: typeof best.matchScore === 'number' && best.matchScore >= 0 ? best.matchScore : null,
-      skills: Array.isArray(best.skills) ? best.skills.slice(0, 3) : [],
-      location: best.location || '',
-    });
+    const ranked = [...e.jobs].sort((a: any, b: any) => (b?.matchScore ?? -1) - (a?.matchScore ?? -1));
+    for (const j of ranked.slice(0, PER_EMPLOYER)) {
+      if (!j) continue;
+      out.push({
+        key: 'job_' + (cleanJobUrl(j.applyUrl || j.url) || j.id || `${e.id}_${(j.title || '').toLowerCase()}`),
+        jobId: j.id || null,
+        employerId: String(e.id),
+        applyUrl: j.applyUrl || j.url || null,
+        company: e.name || 'Employer',
+        role: j.title || e.subInfo || 'Open role',
+        initial: e.logoInitial || initialOf(e.name),
+        colors,
+        match: typeof j.matchScore === 'number' && j.matchScore >= 0 ? j.matchScore : null,
+        skills: Array.isArray(j.skills) ? j.skills.slice(0, 3) : [],
+        location: j.location || '',
+      });
+    }
   }
 
-  // (B) saved live-search cards — deduped against the companies already present.
-  const seen = new Set(out.map((t) => t.company.toLowerCase()));
+  // (B) saved live-search cards — deduped by POSTING now, not by company, or a saved role would
+  // hide a tracked role at the same employer. Company+title is the only key the two stores share:
+  // tracked jobs carry a UUID and saved ones carry a URL, so there is nothing else to match on.
+  // Deduped on the CLEANED URL, which is what the server's UNIQUE index uses. Company+title looked
+  // reasonable but misses on capitalisation and on "Senior Engineer (m/w/d)" vs "Senior Engineer".
+  const seen = new Set(out.map((t) => cleanJobUrl(t.applyUrl)).filter(Boolean));
   for (const c of (saved?.jobs || [])) {
     const company = c.company || c.employer_name || '';
-    if (!company || seen.has(company.toLowerCase())) continue;
-    seen.add(company.toLowerCase());
+    const title = c.title || 'Open role';
+    const k = cleanJobUrl(c.job_url || c.id);
+    if (!company || (k && seen.has(k))) continue;
+    if (k) seen.add(k);
     out.push({
-      key: 'sav_' + (c.job_url || c.id),
+      key: 'job_' + (k || c.job_url || c.id),
       jobId: null,
       jobUrl: c.job_url || c.id || null,
+      applyUrl: c.job_url || c.id || null,
       company,
-      role: c.title || 'Open role',
+      role: title,
       initial: initialOf(company),
       colors: gradFor(company),
       match: typeof c.match === 'number' ? c.match : null,
@@ -218,3 +251,60 @@ export const LETTER_DESIGNS: Array<{ id: string; name: string; accent: string }>
   { id: 'euro_motivation', name: 'European Motivation',   accent: '#8a7a5e' },
   { id: 'graduate',        name: 'Graduate / Entry Level', accent: '#5b5bd6' },
 ];
+
+/* ── The posting a user is applying to ────────────────────────────────────────────────────────────
+ *
+ * When someone adds an employer they may paste the actual listing. That listing is what makes a
+ * resume specific to THIS job rather than generic to the company, so it has to survive the trip
+ * from the Add-employer sheet to whenever they generate.
+ *
+ * ⚠️ It lives on the device, not on the job row: `jobs` has no description column, and the row is
+ * SHARED — jobs.job_url is globally unique, so writing one user's pasted text onto it would put it
+ * in front of every other user who ever tracks the same posting.
+ *
+ * Keyed by whatever identifies the target we have at the time: the typed company, or the cleaned
+ * posting URL. Capped, newest first, so it cannot grow without bound.
+ */
+const LISTINGS_KEY = 'job_listings_v1';
+const LISTINGS_MAX = 24;
+
+export type JobListing = { jobUrl?: string; jobText?: string; at: number };
+
+const listingKey = (v?: string | null) => {
+  const raw = String(v || '').trim();
+  if (!raw) return '';
+  return (cleanJobUrl(raw) || raw).toLowerCase();
+};
+
+async function readListings(): Promise<Record<string, JobListing>> {
+  try {
+    const raw = await AsyncStorage.getItem(LISTINGS_KEY);
+    const j = raw ? JSON.parse(raw) : null;
+    return j && typeof j === 'object' ? j : {};
+  } catch { return {}; }
+}
+
+/** Remember the posting the user gave us for this employer or job. */
+export async function savePendingListing(forValue: string, l: { jobUrl?: string; jobText?: string }): Promise<void> {
+  const k = listingKey(forValue);
+  if (!k || (!l.jobUrl && !l.jobText)) return;
+  try {
+    const all = await readListings();
+    all[k] = { jobUrl: l.jobUrl || '', jobText: l.jobText || '', at: Date.now() };
+    const trimmed = Object.entries(all)
+      .sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0))
+      .slice(0, LISTINGS_MAX);
+    await AsyncStorage.setItem(LISTINGS_KEY, JSON.stringify(Object.fromEntries(trimmed)));
+  } catch { /* a lost listing costs tailoring, never correctness — never fail the add for it */ }
+}
+
+/** The posting for a target, looked up by its URL first and then by its company. */
+export async function loadJobListing(target?: { applyUrl?: string | null; jobUrl?: string | null; company?: string } | null): Promise<JobListing | null> {
+  if (!target) return null;
+  const all = await readListings();
+  for (const candidate of [target.applyUrl, target.jobUrl, target.company]) {
+    const k = listingKey(candidate);
+    if (k && all[k]) return all[k];
+  }
+  return null;
+}

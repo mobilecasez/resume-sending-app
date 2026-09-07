@@ -107,10 +107,14 @@ const CATALOGUE: HomeCard[] = FAMILIES.flatMap((f) =>
   })),
 );
 
+// ⚠️ Airbus appears TWICE on purpose: a chip identifies a posting, not a company, and two roles at
+// one employer are two different applications. If this ever collapses back to one Airbus chip, the
+// per-posting behaviour has regressed.
 const TARGETS: Target[] = [
-  { key: 't1', jobId: 'x1', company: 'iwell B.V.', role: 'Senior .NET Developer', initial: 'I', colors: ['#4F8DFF', '#7C6BFF'], match: 100, skills: ['.NET Core', 'Azure', 'React'], location: 'Amsterdam' },
-  { key: 't2', jobId: 'x2', company: 'ONTEC', role: 'Senior .NET Engineer', initial: 'O', colors: ['#7C6BFF', '#DB2777'], match: 92, skills: ['C#', 'CI/CD'], location: 'Vienna' },
-  { key: 't3', jobId: 'x3', company: 'Eneco', role: 'Platform Engineer', initial: 'E', colors: ['#10B981', '#06B6D4'], match: 78, skills: ['Azure', 'SAP'], location: 'Rotterdam' },
+  { key: 'job_a1', jobId: 'a1', company: 'Airbus', role: 'Senior Software Engineer', initial: 'A', colors: ['#4F8DFF', '#7C6BFF'], match: 100, skills: ['C++', 'Embedded', 'DO-178C'], location: 'Toulouse' },
+  { key: 'job_a2', jobId: 'a2', company: 'Airbus', role: 'Team Lead', initial: 'A', colors: ['#4F8DFF', '#7C6BFF'], match: 88, skills: ['Leadership', 'Agile'], location: 'Hamburg' },
+  { key: 'job_i1', jobId: 'i1', company: 'iwell B.V.', role: 'Senior .NET Developer', initial: 'I', colors: ['#7C6BFF', '#DB2777'], match: 94, skills: ['.NET Core', 'Azure', 'React'], location: 'Amsterdam' },
+  { key: 'job_e1', jobId: 'e1', company: 'Eneco', role: 'Platform Engineer', initial: 'E', colors: ['#10B981', '#06B6D4'], match: 78, skills: ['Azure', 'SAP'], location: 'Rotterdam' },
 ];
 
 export default function HomePreview() {
