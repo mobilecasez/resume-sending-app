@@ -20,6 +20,15 @@
         "buildType": "app-bundle",
         "credentialsSource": "local"
       }
+    },
+    "simulator": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      },
+      "android": {
+        "buildType": "apk"
+      }
     }
   },
   "submit": {
