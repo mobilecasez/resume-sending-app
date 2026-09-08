@@ -123,7 +123,7 @@ export default function PaperZoom({
               contentContainerStyle={{ width: pageW, height: pageH }}
             >
               {card?.image ? (
-                <Image source={{ uri: card.image }} style={s.img} contentFit="cover" transition={0} />
+                <Image source={{ uri: card.image }} style={s.img} contentFit="cover" contentPosition="top" transition={0} />
               ) : (
                 <View style={[s.img, { backgroundColor: '#EEF2F8' }]} />
               )}

@@ -338,5 +338,14 @@ ok('cover letters pick the listing up too, without every caller threading it',
   /loadJobListing\(\{ applyUrl: websiteUrl, company: companyName \}\)/.test(strip(R('../services/aiHubService.ts')))
   && /body\.jobText = l\.jobText/.test(strip(R('../services/aiHubService.ts'))));
 
+console.log('── ⚠️ a page is read from the top, so the crop comes off the BOTTOM ──');
+ok('the carousel page is top-anchored', /contentFit="cover" contentPosition="top"/.test(carC));
+ok('the opened page is too', /contentFit="cover" contentPosition="top"/.test(strip(zoomSrc)));
+ok('…and the target thumbnails', /contentFit="cover" contentPosition="top"/.test(homeC));
+ok('no cover-fitted resume image is left centred',
+  !/contentFit="cover"(?! contentPosition="top")/.test(carC + strip(zoomSrc) + homeC));
+ok('the preview contains pages TALLER than the card, or this could never be seen',
+  /function paper\(accent: string, shape: Shape, tall = false\)/.test(prevC) && /tall \? 760 : 424/.test(prevC));
+
 console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -31,7 +31,11 @@ const lines = (x: number, y: number, w: number, n: number, c = '#E7ECF4', gap = 
 const heading = (x: number, y: number, accent: string, w = 66) =>
   `<rect x="${x}" y="${y}" width="${w}" height="7" rx="3" fill="${accent}"/>`;
 
-function paper(accent: string, shape: Shape) {
+// ⚠️ SOME PAGES ARE TALLER THAN THE CARD, on purpose. A real resume rendered in A4 mode runs to
+// two pages, so its thumbnail is far taller than the card's own ratio and MUST be cropped to fit.
+// Fixtures that all happened to match the card exactly never exercised that, which is how a
+// centre-cropped page — losing the candidate's name off the top — went unnoticed here.
+function paper(accent: string, shape: Shape, tall = false) {
   const body = {
     banner: `
       <rect width="300" height="86" fill="${accent}"/>
@@ -73,8 +77,12 @@ function paper(accent: string, shape: Shape) {
         <rect x="22" y="${78 + b * 80}" width="46" height="7" rx="2" fill="${accent}"/>
         ${lines(22, 94 + b * 80, 256, 3, '#E3E8F0', 13)}`).join('')}`,
   }[shape];
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="424" viewBox="0 0 300 424">
-  <rect width="300" height="424" fill="#fff"/>${body}</svg>`;
+  const h = tall ? 760 : 424;
+  const tailBlocks = tall
+    ? [0, 1, 2, 3].map((b) => heading(22, 440 + b * 78, accent, 52) + lines(22, 456 + b * 78, 256, 3)).join('')
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="${h}" viewBox="0 0 300 ${h}">
+  <rect width="300" height="${h}" fill="#fff"/>${body}${tailBlocks}</svg>`;
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
 
@@ -98,12 +106,13 @@ const FAMILIES: Array<{ id: string; name: string; shape: Shape; tints: Array<[st
   { id: 'europass',  name: 'Europass Premium',      shape: 'rightrail', tints: [['', '#1e40af'], ['Teal', '#0f766e'], ['Violet', '#6d28d9'], ['Slate', '#334155']] },
 ];
 
-const CATALOGUE: HomeCard[] = FAMILIES.flatMap((f) =>
-  f.tints.map(([suffix, accent]) => ({
+const CATALOGUE: HomeCard[] = FAMILIES.flatMap((f, fi) =>
+  f.tints.map(([suffix, accent], vi) => ({
     id: suffix ? `${f.id}_${suffix.toLowerCase()}` : f.id,
     name: suffix ? `${f.name} · ${suffix}` : f.name,
     accent,
-    image: paper(accent, f.shape),
+    // Every third page runs long, so the deck contains both shapes the real one does.
+    image: paper(accent, f.shape, (fi + vi) % 3 === 0),
   })),
 );
 

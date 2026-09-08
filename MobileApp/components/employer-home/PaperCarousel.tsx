@@ -75,8 +75,10 @@ function Card({ card, i, scrollX, ribbon, m, onOpen }: {
     >
       <TouchableOpacity ref={box} activeOpacity={0.92} onPress={open} style={s.paperShadow}>
         <View style={[s.paper, { width: m.w, height: m.h }]}>
+          {/* ⚠️ TOP-ANCHORED. `cover` alone centres the page, so anything taller than the card loses
+              its head AND its foot — and the head is where the name is. Crop the tail instead. */}
           {card.image ? (
-            <Image source={{ uri: card.image }} style={s.img} contentFit="cover" transition={220} />
+            <Image source={{ uri: card.image }} style={s.img} contentFit="cover" contentPosition="top" transition={220} />
           ) : (
             <View style={[s.img, s.imgEmpty]} />
           )}

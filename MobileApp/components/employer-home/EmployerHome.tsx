@@ -579,7 +579,7 @@ function TargetCard({ t, image, onPress }: { t: Target; image?: string | null; o
     <TouchableOpacity style={s.tCard} activeOpacity={0.9} onPress={onPress}>
       <View style={s.tThumb}>
         {image ? (
-          <ExpoImage source={{ uri: image }} style={s.tThumbImg} contentFit="cover" transition={160} />
+          <ExpoImage source={{ uri: image }} style={s.tThumbImg} contentFit="cover" contentPosition="top" transition={160} />
         ) : (
           <View style={[s.tThumbImg, { backgroundColor: '#EEF2F8' }]} />
         )}
