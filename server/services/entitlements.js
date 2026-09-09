@@ -37,15 +37,15 @@ const { PRODUCTION, normalizeEnvironment, requestEnvironment } = require('./stor
 // never created on either store, and the app fetches its buyable SKUs from this very list, so the
 // wrong id here means fetchProducts returns nothing and the paywall has no buy button at all.
 const PLANS = [
-  { key: 'starter', label: 'Starter', priceUsd: 4.99,  letters: 30,   resumes: 5,
+  { key: 'starter', label: 'Starter', priceUsd: 4.99,  letters: 30,   resumes: 5, downloads: 20,
     productIos: 'com.cvapplyr.mobile.sub.starter', productAndroid: 'com.cvapplyr.mobile.sub.starter' },
-  { key: 'plus',    label: 'Plus',    priceUsd: 9.99,  letters: 100,  resumes: 10,
+  { key: 'plus',    label: 'Plus',    priceUsd: 9.99,  letters: 100,  resumes: 10, downloads: 40,
     productIos: 'com.cvapplyr.mobile.sub.plus', productAndroid: 'com.cvapplyr.mobile.sub.plus' },
-  { key: 'pro',     label: 'Pro',     priceUsd: 14.99, letters: 150,  resumes: 15,
+  { key: 'pro',     label: 'Pro',     priceUsd: 14.99, letters: 150,  resumes: 15, downloads: 60,
     productIos: 'com.cvapplyr.mobile.sub.pro', productAndroid: 'com.cvapplyr.mobile.sub.pro' },
-  { key: 'power',   label: 'Power',   priceUsd: 24.99, letters: 300,  resumes: 25,
+  { key: 'power',   label: 'Power',   priceUsd: 24.99, letters: 300,  resumes: 25, downloads: 100,
     productIos: 'com.cvapplyr.mobile.sub.power', productAndroid: 'com.cvapplyr.mobile.sub.power' },
-  { key: 'max',     label: 'Max',     priceUsd: 49.99, letters: 1000, resumes: 50,
+  { key: 'max',     label: 'Max',     priceUsd: 49.99, letters: 1000, resumes: 50, downloads: 200,
     productIos: 'com.cvapplyr.mobile.sub.max', productAndroid: 'com.cvapplyr.mobile.sub.max' },
 ];
 
@@ -71,7 +71,9 @@ try {
 // export would break those callers silently; the shape is unchanged, only days/resumes/label moved.
 // The in-flight 7-day trials convert on their own: the same started_at now anchors 30-day windows,
 // so nobody loses access at their old ends_at.
-const FREE = { key: 'free', label: 'Free plan', days: 30, letters: 5, resumes: 1 };
+// ⚠️ downloads: 0 is not a new restriction — downloads have ALWAYS been paid-only. A free
+// user buys a single-download pass or subscribes.
+const FREE = { key: 'free', label: 'Free plan', days: 30, letters: 5, resumes: 1, downloads: 0 };
 const TRIAL = FREE;
 const FREE_WINDOW_MS = FREE.days * 24 * 60 * 60 * 1000;
 
@@ -90,7 +92,7 @@ function freeWindowEnd(startedAt) {
 }
 const planByKey = (k) => PLANS.find((p) => p.key === k) || null;
 
-const KIND_QUOTA_FIELD = { cover_letter: 'letters', resume: 'resumes' };
+const KIND_QUOTA_FIELD = { cover_letter: 'letters', resume: 'resumes', download: 'downloads' };
 // Legacy credit price keys, for the fallback pool only.
 const KIND_LEGACY_EVENT = { cover_letter: 'cover_letter_generate', resume: 'resume_ai_generate' };
 
@@ -329,6 +331,17 @@ async function canConsumeMany(userId, kind, count, req) {
   }
 
   // Legacy pool: existing credit balances keep working at the old per-event price.
+  // ⚠️ NOT for downloads. Migration 028 deliberately took downloads out of the credit pool, and a
+  // download has no per-event price — reintroducing one here would silently start charging credits
+  // for something that has not cost credits since.
+  if (!KIND_LEGACY_EVENT[kind]) {
+    return {
+      allowed: false, via: null, reason: 'quota_exhausted',
+      message: sub
+        ? "You've used all the downloads in your plan this month. You can buy a single download, or upgrade in Plans & Usage."
+        : 'Downloads are on paid plans. You can buy a single download instead.',
+    };
+  }
   const price = await getEventCost(KIND_LEGACY_EVENT[kind]);
   try {
     const acct = await dbConfig.get('SELECT credits_remaining FROM user_credits WHERE user_id = ?', [userId]);

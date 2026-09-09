@@ -1555,6 +1555,36 @@ async function runPostgresMigrations(db) {
                    ON CONFLICT (key) DO NOTHING`);
         console.log('✅ Migration 041: resume_scores done (switch seeded OFF)');
 
+        // ── Migration 042: DOWNLOAD PASSES — one paid-for download, bought outright ─────────────
+        // A user who is not on a plan can buy a single download instead of subscribing. One pass
+        // covers ONE DESIGN in every format, so tapping Word after PDF is never a second charge.
+        //
+        // ⚠️ THE UNIQUE KEY IS THE STORE TRANSACTION, GLOBALLY — not (user_id, something). A receipt
+        // replayed against a second account must collide, and it only does if the constraint has no
+        // user_id in it. Migration 036 exists because a two-column store key let a SANDBOX
+        // transaction land on a paying customer's row, so `environment` is part of the key here too.
+        await col(`CREATE TABLE IF NOT EXISTS download_passes (
+            id               SERIAL PRIMARY KEY,
+            user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            store            TEXT NOT NULL,
+            environment      TEXT NOT NULL,
+            store_txn_id     TEXT NOT NULL,
+            product_id       TEXT NOT NULL,
+            kind             TEXT NOT NULL DEFAULT 'resume',
+            template_id      TEXT,
+            bound_at         TIMESTAMPTZ,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_download_passes_store_env_txn
+                     ON download_passes(store, environment, store_txn_id)`);
+        // The gate's hot query: "has this user an unbound pass, or one already bound to THIS design?"
+        await col(`CREATE INDEX IF NOT EXISTS idx_download_passes_user
+                     ON download_passes(user_id, kind, template_id, bound_at)`);
+        await col(`ALTER TABLE download_passes DROP CONSTRAINT IF EXISTS chk_download_passes_environment`);
+        await col(`ALTER TABLE download_passes ADD CONSTRAINT chk_download_passes_environment
+                     CHECK (environment IN ('production', 'sandbox'))`);
+        console.log('✅ Migration 042: download_passes done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
