@@ -4,10 +4,15 @@
 // take a plan. Shown when the download button is locked.
 //
 // ⚠️ THE ONE-OFF IS THE FIRST OPTION, AND IT STAYS REACHABLE. Sending someone to the plans screen
-// must not be a dead end for the person who only wanted one file: this sheet is a Modal in the
-// CALLING screen, so pushing the plans screen leaves it mounted underneath. Back out of plans
-// without subscribing and the sheet is still there, one-off still available. That is the whole
-// reason it is a Modal here rather than a route.
+// must not be a dead end for the person who only wanted one file: the sheet keeps its `visible`
+// state while the plans screen is open, so backing out without subscribing lands you right back
+// on it with the one-off still there.
+//
+// ⚠️ BUT IT MUST HIDE ITSELF WHILE ANOTHER SCREEN IS UP. A react-native Modal is not a view inside
+// this screen — it is a separate native window that floats ABOVE the whole navigator. So "leaving
+// it mounted underneath the plans screen" is not a thing that can happen: left visible, it covers
+// the plans screen the user just asked to see. Hence `visible && screenFocused` below. Staying
+// mounted (state preserved) and staying VISIBLE are different things, and only the first is wanted.
 //
 // ⚠️ PRICES COME FROM THE STORE, NEVER FROM US. `displayPrice` is Apple's / Google's own localised
 // string — ₹99 in India, $0.99 in the US. A hardcoded "$1" would be wrong in most of the world and
@@ -22,6 +27,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import { E } from '../employer-home/theme';
 import { buyDownloadPass, fetchPassPrice, fetchDownloadState } from '../../services/downloadPassService';
 
@@ -34,7 +40,7 @@ export default function DownloadPaywallSheet({
   onClose: () => void;
   /** Fired once the server confirms the user may now download. */
   onUnlocked: () => void;
-  /** Open the subscription screen. This sheet stays mounted underneath it. */
+  /** Open the subscription screen. The sheet hides while it is up and returns on the way back. */
   onSeePlans: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -42,6 +48,9 @@ export default function DownloadPaywallSheet({
   const [price, setPrice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // False the moment the calling screen is covered (the plans screen being the only route this
+  // sheet pushes). Keeps the native modal window off the top of whatever the user navigated to.
+  const screenFocused = useIsFocused();
 
   useEffect(() => {
     Animated.timing(t, {
@@ -81,7 +90,7 @@ export default function DownloadPaywallSheet({
   const who = employer ? employer : 'this employer';
 
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
+    <Modal visible={visible && screenFocused} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
       <View style={s.fill}>
         <Animated.View style={[StyleSheet.absoluteFill, { opacity: t }]}><View style={s.scrim} /></Animated.View>
         <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={busy ? undefined : onClose} />

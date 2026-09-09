@@ -717,6 +717,11 @@ const generateCoverLetterDetails = async (req, res) => {
         const listing = (jobUrl || jobText)
             ? { url: jobUrl || '', text: jobText || '', title: position || '', company: companyNameHint || '' }
             : null;
+        // The company a PASS attaches to, and whether one covers this generation. Resolved here and
+        // threaded into the worker (see the gate below).
+        const passEmployer = ((req.body || {}).employer || companyNameHint || '').trim() || null;
+        let passViaPass = false;
+        let passEnv = null;
 
         // Job-aware augmentation: the dashboard LIST payload trims responsibilities to 3 for
         // speed — when the client says which job this is, prefer the FULL stored list so the
@@ -744,7 +749,15 @@ const generateCoverLetterDetails = async (req, res) => {
         // GATE (always synchronous — fast DB check): plan/trial quota first, credits fallback.
         // Deduction is on SUCCESS only, further down.
         try {
-            const gate = await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
+            // A single-employer pass includes ONE AI cover letter for that company, so it is
+            // checked before the plan quota — a pass holder must not be told they are out of plan
+            // letters they never had. The decision is made HERE, where req exists, and carried
+            // into the worker: the charge happens after the response has already gone.
+            passEnv = downloads.envOf(req);
+            passViaPass = passEmployer
+                ? await downloads.passCoversGeneration(userId, 'cover_letter', passEmployer, passEnv).catch(() => false)
+                : false;
+            const gate = passViaPass ? { allowed: true } : await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
             if (!gate.allowed) {
                 return res.status(402).json({
                     error: gate.message,
@@ -782,7 +795,8 @@ const generateCoverLetterDetails = async (req, res) => {
         if (useAsync) {
             // ASYNC MODE: Create job and return immediately
             const jobId = await jobService.createJob(userId, 'generate_cover_letter', {
-                recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing
+                recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing,
+                passEmployer, passViaPass, passEnv
             });
             console.log(`🚀 [${requestId}] Async job created: ${jobId}`);
 
@@ -790,7 +804,7 @@ const generateCoverLetterDetails = async (req, res) => {
             res.status(202).json({ jobId, status: 'pending' });
 
             // Fire and forget — process in background
-            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing }).catch(err => {
+            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing, passEmployer, passViaPass, passEnv }).catch(err => {
                 console.error(`❌ [${requestId}] Async job ${jobId} failed:`, err.message);
                 // The stored failure message is shown to the user by the poller —
                 // only deliberately user-facing text may pass through.
@@ -829,7 +843,7 @@ const generateCoverLetterDetails = async (req, res) => {
 // host, and researching THAT produced letters addressed to the job board instead of the company.
 const AGGREGATOR_HOST = /(instahyre|naukri|linkedin|indeed|glassdoor|monster|shine|timesjobs|foundit|wellfound|ziprecruiter|simplyhired|jooble|careerjet|adzuna|talent\.com|jobs?\.[a-z]+\.com)\b/i;
 
-async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null }) {
+async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null, passEmployer = null, passViaPass = false, passEnv = null }) {
     console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}, hasResponsibilities=${!!(responsibilities && responsibilities.length)}, jobLocation=${jobLocation || 'none'}, companyHint=${companyNameHint || 'none'}`);
     // Normalize URL
     const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
@@ -956,7 +970,15 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     // DEDUCT — only now, after the letter was actually produced. entitlements picks the pool
     // (plan → trial → legacy credits) and writes the usage-ledger row for the Usage screen.
     try {
-        const used = await entitlements.consumeOnSuccess(userId, 'cover_letter', {
+        // ⚠️ Spend the PASS first when one covered this. Falls back to the plan if the claim did
+        // not land (another tap won the same pass) — losing that race must not mean a free letter.
+        let spentPass = false;
+        if (passViaPass && passEmployer) {
+            const claimed = await downloads.claimGeneration(userId, 'cover_letter', passEmployer, passEnv);
+            spentPass = !!claimed.charged;
+            if (spentPass) console.log(`✅ Cover letter covered by a download pass for ${passEmployer}`);
+        }
+        const used = spentPass ? { via: 'pass' } : await entitlements.consumeOnSuccess(userId, 'cover_letter', {
             companyName,
             position,
             recipientEmail,
@@ -1230,12 +1252,21 @@ async function requirePaidForDownload(userId, res, employer, req) {
 async function generateCoverLetterTemplatePdf(req, res) {
     const userId = req.user.id;
     const { template, mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
+    // The employer a PASS attaches to is not necessarily the name printed on the letter. The
+    // resume screen knows the company as the Home target's `target.company`; this screen knows it
+    // as the AI's `employer_name` (or the recipient's website when the AI found no name at all).
+    // Send both spellings and let downloads.resolveEmployer pick the one already paid for, so a
+    // pass bought via the resume covers this letter instead of demanding a second payment for the
+    // same company.
+    const passEmployer = await downloads.resolveEmployer(
+        userId, [(req.body || {}).employer, companyName], req,
+    ).catch(() => companyName || null);
     try {
         const CL_DOWNLOAD_CREDIT_COST = await getEventCost('cover_letter_download');   // admin-configurable
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
-        if (!(await requirePaidForDownload(userId, res, companyName, req))) return;
+        if (!(await requirePaidForDownload(userId, res, passEmployer, req))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
         const tplMeta = clTemplates.TEMPLATES.find(t => t.id === tplId);
 
@@ -1258,7 +1289,7 @@ async function generateCoverLetterTemplatePdf(req, res) {
         }
 
         // Charged only now — the file exists on this line.
-        await downloads.claimDownload(userId, { employer: companyName }, req);
+        await downloads.claimDownload(userId, { employer: passEmployer }, req);
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplatePdf error:', e.message);
@@ -1273,12 +1304,21 @@ async function generateCoverLetterTemplatePdf(req, res) {
 async function generateCoverLetterTemplateDocx(req, res) {
     const userId = req.user.id;
     const { template, mode, coverLetterHtml, companyName, companyAddress } = req.body || {};
+    // The employer a PASS attaches to is not necessarily the name printed on the letter. The
+    // resume screen knows the company as the Home target's `target.company`; this screen knows it
+    // as the AI's `employer_name` (or the recipient's website when the AI found no name at all).
+    // Send both spellings and let downloads.resolveEmployer pick the one already paid for, so a
+    // pass bought via the resume covers this letter instead of demanding a second payment for the
+    // same company.
+    const passEmployer = await downloads.resolveEmployer(
+        userId, [(req.body || {}).employer, companyName], req,
+    ).catch(() => companyName || null);
     try {
         const CL_DOWNLOAD_CREDIT_COST = await getEventCost('cover_letter_download');   // admin-configurable
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
-        if (!(await requirePaidForDownload(userId, res, companyName, req))) return;
+        if (!(await requirePaidForDownload(userId, res, passEmployer, req))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
         const sender = await buildCLSender(userId);
         const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
@@ -1294,7 +1334,7 @@ async function generateCoverLetterTemplateDocx(req, res) {
         await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
 
         // Charged only now — the file exists on this line.
-        await downloads.claimDownload(userId, { employer: companyName }, req);
+        await downloads.claimDownload(userId, { employer: passEmployer }, req);
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter-docx/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplateDocx error:', e.message);

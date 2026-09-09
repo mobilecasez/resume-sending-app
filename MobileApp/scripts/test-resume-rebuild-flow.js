@@ -34,8 +34,14 @@ ok('previewTemplates has NO plan/credit gate', !/previewTemplates[\s\S]{0,900}(a
 console.log('── server: free plan = one regeneration, in its own lane ──');
 ok('regenerate checks regen_count for free users', /isRegenerate && !sub[\s\S]{0,400}regen_count/.test(ctl));
 ok('the used-up case is a 403 with reason regen_limit', /regen_limit/.test(ctl));
-ok('the one free regen BYPASSES the quota gate', /freeRegen \? \{ allowed: true \} : await entitlements\.canConsumeMany/.test(ctl));
-ok('…and is not double-counted on success', /if \(!freeRegen\) await entitlements\.consumeOnSuccess/.test(ctl));
+ok('the one free regen BYPASSES the quota gate',
+  /\(freeRegen \|\| viaPass\) \? \{ allowed: true \} : await entitlements\.canConsumeMany/.test(ctl));
+ok('⚠️ …and so does a single-employer pass, which includes one AI resume',
+  /passCoversGeneration\(userId, 'resume', passEmployer, req\)/.test(ctl));
+ok('…and is not double-counted on success',
+  /if \(!spentPass && !freeRegen\) await entitlements\.consumeOnSuccess/.test(ctl));
+ok('⚠️ …and a pass is spent BEFORE the plan, never both',
+  ctl.indexOf("claimGeneration(userId, 'resume'") < ctl.indexOf('if (!spentPass && !freeRegen)'));
 ok('a fresh build resets the allowance', /regen_count = 0 WHERE user_id/.test(ctl));
 ok('a regenerate spends it', /regen_count = regen_count \+ 1/.test(ctl));
 ok('getResume reports regen state + plan', /regen: \{ used:[\s\S]{0,120}isPaid: !!sub/.test(ctl));

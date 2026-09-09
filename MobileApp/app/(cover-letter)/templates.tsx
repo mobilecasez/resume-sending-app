@@ -29,7 +29,19 @@ const T = {
 
 type Preview = { id: string; name: string; accent: string; image: string; width: number; height: number };
 type Mode = 'onepage' | 'a4';
-type Ctx = { coverLetterHtml: string; companyName?: string; companyAddress?: string; format?: 'pdf' | 'docx' };
+type Ctx = {
+  coverLetterHtml: string;
+  companyName?: string;
+  companyAddress?: string;
+  /**
+   * The company as the REST of the app knows it — the Home target's `target.company`, which is
+   * exactly what the resume screen sends. `companyName` is the AI's reading of the posting and can
+   * be a different string, or a bare URL when it found no name; using that for the pass is how a
+   * user ends up paying twice for one company. Optional: older stashed contexts will not have it.
+   */
+  employer?: string;
+  format?: 'pdf' | 'docx';
+};
 
 // Region ids MUST match server coverLetterTemplates.js REGIONS.
 const REGIONS = [
@@ -62,6 +74,8 @@ export default function CoverLetterTemplates() {
   const closeRating = () => { rating.close(); router.back(); };
   const scrollRef = useRef<ScrollView>(null);
   const [ctx, setCtx]           = useState<Ctx | null>(null);
+  // Prefer the shared identity; fall back to the AI's name so old contexts still work.
+  const passEmployer = ctx?.employer || ctx?.companyName || null;
   const [region, setRegion]     = useState('generic');
   const [downloadHtml, setDownloadHtml] = useState('');
   const [previews, setPreviews] = useState<Preview[]>([]);
@@ -91,10 +105,10 @@ export default function CoverLetterTemplates() {
   // a dead end for anyone who wanted a single letter.
   function upsellDownload() { setPayOpen(true); }
   const refreshDownloadState = React.useCallback(async () => {
-    const st = await fetchDownloadState(ctx?.companyName || null);
+    const st = await fetchDownloadState(passEmployer);
     setDlState(st);
     return st;
-  }, [ctx?.companyName]);
+  }, [passEmployer]);
   useEffect(() => { refreshDownloadState(); }, [refreshDownloadState]);
   const dlLabel = downloadButtonLabel(dlState);
   const dlBadge = dlState.ownsEmployer || dlState.passes > 0
@@ -177,7 +191,7 @@ export default function CoverLetterTemplates() {
       const res = await fetch(`${API_BASE}/cover-letter/${endpoint}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: selected.id, mode, coverLetterHtml: downloadHtml || ctx.coverLetterHtml, companyName: ctx.companyName, companyAddress: ctx.companyAddress }),
+        body: JSON.stringify({ template: selected.id, mode, coverLetterHtml: downloadHtml || ctx.coverLetterHtml, companyName: ctx.companyName, companyAddress: ctx.companyAddress, employer: passEmployer }),
       });
       const json = await res.json();
       if (res.status === 403 && (json.reason === 'paid_required' || json.reason === 'quota_exhausted')) {
@@ -346,7 +360,7 @@ export default function CoverLetterTemplates() {
       <RatingPromptModal visible={!!rating.trigger} trigger={rating.trigger} onClose={closeRating} />
       <DownloadPaywallSheet
         visible={payOpen}
-        employer={ctx?.companyName || null}
+        employer={passEmployer}
         onClose={() => { setPayOpen(false); setPendingFmt(null); }}
         onSeePlans={() => router.push('/(subscription)/plans' as never)}
         onUnlocked={async () => {

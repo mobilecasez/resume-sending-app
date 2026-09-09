@@ -107,6 +107,41 @@ const D = require(path.join(__dirname, '..', 'services', 'downloads.js'));
     { environment: 'production', storeTxnId: 'T3' },
   ]) ok('a purchase missing its identity grants nothing', (await D.grantPass(1, bad)) === false);
 
+  console.log('── ⚠️ a pass also buys ONE AI resume and ONE AI letter, tracked separately ──');
+  db.rows = [{ id: 11 }];
+  ok('an unused resume generation is covered', (await D.passCoversGeneration(1, 'resume', 'Airbus')) === true);
+  db.rows = [{ id: 11 }];
+  ok('…and the letter is its own entitlement', (await D.passCoversGeneration(1, 'cover_letter', 'Airbus')) === true);
+  db.rows = [null];
+  ok('a spent one is not covered again', (await D.passCoversGeneration(1, 'resume', 'Airbus')) === false);
+  ok('an unknown kind is never covered', (await D.passCoversGeneration(1, 'nonsense', 'Airbus')) === false);
+  db.mode = 'throw';
+  ok('⚠️ …and an unreadable pass FAILS CLOSED', (await D.passCoversGeneration(1, 'resume', 'Airbus')) === false);
+  db.mode = 'ok';
+
+  db.calls.length = 0; db.rows = [{ id: 11 }];
+  const genClaim = await D.claimGeneration(1, 'resume', 'Airbus');
+  ok('spending it marks the resume used', genClaim.charged === true);
+  const gsql = db.calls.map((c) => c.sql).join(' | ');
+  ok('⚠️ separate COLUMNS, not a shared counter — or both could go on resumes',
+    /SET resume_generated_at = NOW\(\)/.test(gsql) && !/generations_left/.test(gsql));
+  ok('⚠️ …claimed atomically under a lock', /FOR UPDATE SKIP LOCKED/.test(gsql) && /RETURNING id/.test(gsql));
+
+  db.calls.length = 0; db.rows = [null, { id: 12 }];
+  const onFree = await D.claimGeneration(1, 'cover_letter', 'Boeing');
+  ok('⚠️ generating with an UNSPENT pass binds it too (people generate before they download)',
+    onFree.charged === true && onFree.bound === true);
+  ok('…binding employer and timestamp in the SAME update',
+    /SET letter_generated_at = NOW\(\), employer_key = \$3, employer_name = \$4, bound_at = NOW\(\)/
+      .test(db.calls.map((c) => c.sql).join(' | ')));
+
+  db.rows = [null, null];
+  ok('no pass at all charges nothing', (await D.claimGeneration(1, 'resume', 'Nobody')).charged === false);
+
+  console.log('── the environment can be handed over explicitly (the letter worker has no req) ──');
+  ok('a plain environment string is accepted', D.envOf('Sandbox') === 'Sandbox' && D.envOf('Production') === 'Production');
+  ok('…and anything else resolves from the request', typeof D.envOf({}) === 'string');
+
   console.log('── ⚠️ the environment spelling must match the constraint, or every insert fails ──');
   const se = require(path.join(__dirname, '..', 'services', 'storeEnvironment.js'));
   const schema = require('fs').readFileSync(path.join(__dirname, '..', '..', 'db-init.js'), 'utf8');

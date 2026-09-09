@@ -5464,6 +5464,10 @@ export default function JobDetailScreen() {
         coverLetterHtml,
         companyName: companyNameCL || employer.name,
         companyAddress: companyAddressCL,
+        // The employer identity the REST of the app uses (the resume screen sends this exact
+        // value). companyName above is the AI's reading and can differ, or be a bare URL — and a
+        // download pass is bought PER EMPLOYER, so a second spelling means a second payment.
+        employer: (employer as any)?.name || companyNameCL || null,
       }));
       updateJobCLStatus(jid, 'downloaded');
       router.push('/(cover-letter)/templates');

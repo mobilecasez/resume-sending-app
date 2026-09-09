@@ -54,7 +54,13 @@ ok('⚠️ …and does NOT finish when verification fails, so the purchase can s
 ok('a PENDING payment grants nothing', /status === 'pending'/.test(svc) && /pending: true/.test(svc));
 
 console.log('── the one-off stays reachable from the plans screen ──');
-ok('the sheet is a Modal in the calling screen, so plans mounts OVER it', /<Modal visible=\{visible\}/.test(sheet));
+// ⚠️ THIS ASSERTION USED TO SAY THE OPPOSITE, AND IT WAS WRONG. A react-native Modal is a
+// separate NATIVE WINDOW above the whole navigator, not a view inside the screen — so pushing
+// the plans route does not cover it, and the sheet sat on top of the plans page the user had
+// just asked to see. Staying MOUNTED (state kept) and staying VISIBLE are different things.
+ok('⚠️ the sheet HIDES itself while another screen is up', /<Modal visible=\{visible && screenFocused\}/.test(sheet));
+ok('…driven by real navigation focus, not a guess', /useIsFocused\(\)/.test(sheet));
+ok('…while KEEPING its own visible state, so backing out returns to it', /visible: boolean;/.test(sheet) && !/setPayOpen/.test(sheet));
 ok('…and it re-checks on focus, which is how coming BACK is noticed', /useFocusEffect/.test(sheet));
 ok('…closing only when the user actually can download now', /onUnlocked\(\)/.test(sheet));
 ok('the plan option opens the real plans screen', /onSeePlans/.test(sheet) && /\(subscription\)\/plans/.test(gal) && /\(subscription\)\/plans/.test(let_));
@@ -69,8 +75,11 @@ for (const [what, src] of [['resume gallery', gal], ['cover letter', let_]]) {
 }
 ok('⚠️ the resume download sends the EMPLOYER, or the pass binds to nothing',
   /body: JSON\.stringify\(\{ template: selectedId, mode, employer \}\)/.test(gal));
-ok('⚠️ the letter download already sent companyName, and the sheet uses the SAME value',
-  /companyName: ctx\.companyName/.test(let_) && /employer=\{ctx\?\.companyName \|\| null\}/.test(let_));
+ok('⚠️ the letter screen prefers the SHARED employer identity over the AI\u2019s reading',
+  /const passEmployer = ctx\?\.employer \|\| ctx\?\.companyName \|\| null;/.test(let_)
+  && /employer=\{passEmployer\}/.test(let_));
+ok('…and sends both spellings so the server can pick the one already paid for',
+  /companyName: ctx\.companyName, companyAddress: ctx\.companyAddress, employer: passEmployer/.test(let_));
 
 console.log('── a server NO always wins over the cached state ──');
 for (const [what, src] of [['resume gallery', gal], ['cover letter', let_]]) {

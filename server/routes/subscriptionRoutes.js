@@ -6,6 +6,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken, authenticateAdmin } = require('../middleware/auth');
 const ents = require('../services/entitlements');
+const downloads = require('../services/downloads');
 
 // Plan catalog + the caller's current entitlement picture (plan/trial/remaining/used).
 router.get('/subscription/status', authenticateToken, async (req, res) => {
@@ -52,6 +53,45 @@ router.post('/admin/set-subscription', authenticateAdmin, async (req, res) => {
   } catch (e) {
     console.error('[subscription] admin set:', e.message);
     res.status(500).json({ error: 'Could not set subscription' });
+  }
+});
+
+// Admin: grant a download pass without a store purchase.
+//
+// WHY THIS HAS TO EXIST. The pass product (com.cvapplyr.mobile.download.single) was created by the
+// App Store Connect API but sits in MISSING_METADATA — the API is allowed to create the catalogue
+// entry and refused (403) on name, description and price schedule, so the rest is console work by
+// hand. A product in that state is invisible to fetchProducts, which means the app correctly shows
+// "not on sale yet" and NOTHING CAN BE BOUGHT, in sandbox either. Without this endpoint the entire
+// post-purchase experience — one employer unlocked, every design, every format, the letter too —
+// cannot be exercised at all until App Review has been and gone.
+//
+// It mirrors /admin/set-subscription exactly: admin-authenticated, for testing, and it grants
+// through the SAME services/downloads.grantPass() that a real receipt uses, so what is tested is
+// the real code path and not a special case that only exists for testing.
+//
+// The synthetic transaction id is prefixed `admin-` so these can be told apart from real receipts
+// in the table, and it stays idempotent on the store-transaction unique index.
+router.post('/admin/grant-download-pass', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const userId = parseInt(body.userId, 10);
+    if (!Number.isFinite(userId) || userId <= 0) return res.status(400).json({ error: 'Invalid userId' });
+
+    const count = Math.min(Math.max(parseInt(body.count, 10) || 1, 1), 10);
+    const environment = body.environment === 'production' ? 'production' : 'sandbox';
+    const store = body.store === 'google' ? 'google' : 'apple';
+
+    let granted = 0;
+    for (let i = 0; i < count; i++) {
+      const storeTxnId = `admin-${userId}-${body.label || 'test'}-${i}-${Date.now()}`;
+      if (await downloads.grantPass(userId, { store, environment, storeTxnId, productId: downloads.PASS_PRODUCT_ID })) granted++;
+    }
+    const state = await downloads.downloadState(userId, body.employer || null, req).catch(() => null);
+    res.json({ success: true, granted, requested: count, environment, store, state });
+  } catch (e) {
+    console.error('[subscription] admin grant pass:', e.message);
+    res.status(500).json({ error: 'Could not grant download pass' });
   }
 });
 

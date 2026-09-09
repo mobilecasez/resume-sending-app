@@ -1588,6 +1588,20 @@ async function runPostgresMigrations(db) {
                      CHECK (environment IN ('Sandbox','Production'))`);
         console.log('✅ Migration 042: download_passes done');
 
+        // ── Migration 043: a pass also buys the two AI CALLS for that employer ──────────────────
+        // The pass promise is "everything you need to apply to this one company": one AI resume,
+        // one AI cover letter, and then any design in any format, as often as they like.
+        //
+        // ⚠️ SEPARATE COLUMNS, NOT A COUNTER. Resume and letter are one each, independently — using
+        // a single "generations left = 2" would let someone spend both on resumes and never get
+        // the letter they paid for. A NULL means unused; the timestamp is the receipt.
+        //
+        // ⚠️ 042 IS ALREADY DEPLOYED, so this is additive. ADD COLUMN IF NOT EXISTS keeps it a
+        // no-op on a database that already has them.
+        await col(`ALTER TABLE download_passes ADD COLUMN IF NOT EXISTS resume_generated_at TIMESTAMPTZ`);
+        await col(`ALTER TABLE download_passes ADD COLUMN IF NOT EXISTS letter_generated_at TIMESTAMPTZ`);
+        console.log('✅ Migration 043: download_passes generation columns done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

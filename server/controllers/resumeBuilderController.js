@@ -367,7 +367,13 @@ async function generateAI(req, res) {
             freeRegen = true;
         }
         // GATE — plan/trial quota first, legacy credits fallback; deduct on success only (below).
-        const gate = freeRegen ? { allowed: true } : await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        // A single-employer pass includes ONE AI resume for that company. Checked before the plan
+        // quota so a pass holder is not told they are out of plan resumes they never had.
+        const passEmployer = (job && (job.company || '').trim()) || null;
+        const viaPass = passEmployer
+            ? await downloads.passCoversGeneration(userId, 'resume', passEmployer, req).catch(() => false)
+            : false;
+        const gate = (freeRegen || viaPass) ? { allowed: true } : await entitlements.canConsumeMany(userId, 'resume', 1, req);
         if (!gate.allowed) {
             return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
         }
@@ -454,7 +460,15 @@ async function generateAI(req, res) {
             // Deduct only now — the resume was actually generated. Pool + ledger via entitlements.
             // The free regeneration bypassed the gate, so it must not be counted against the quota
             // either — its ledger is the regen_count bump below.
-            if (!freeRegen) await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
+            // ⚠️ Spend the PASS first when one covered this, and only fall back to the plan if the
+            // claim did not land — two taps racing means the second must still be paid for by
+            // something, and silently generating for free is the wrong way to lose that race.
+            let spentPass = false;
+            if (viaPass) {
+                const claimed = await downloads.claimGeneration(userId, 'resume', passEmployer, req);
+                spentPass = !!claimed.charged;
+            }
+            if (!spentPass && !freeRegen) await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
         } catch (e) { console.warn('[resumeBuilder] usage record failed:', e.message); }
 
         await ensureResumeTable();
@@ -686,6 +700,15 @@ async function generatePDF(req, res) {
             const tDir  = path.join(__dirname, '../../temp');
             await fs.mkdir(tDir, { recursive: true });
             await fs.writeFile(path.join(tDir, tFile), pdfBuffer);
+            // ⚠️ CLAIM HERE TOO. This is the PREFERRED render path, so it is the one almost every
+            // real download takes — and it used to return without claiming, while only the PDFKit
+            // fallback below charged. A pass therefore stayed UNBOUND after the download it paid
+            // for, and the NEXT download bound it instead: buy a pass for Acme, download the Acme
+            // resume, then download anything for Beta, and the pass silently becomes Beta's while
+            // Acme goes back to locked. The user pays twice for the company they already bought.
+            // (Under DOWNLOADS_METERED it also meant plan downloads were never metered at all.)
+            // Same rule as the fallback: the bytes exist by this line, so charging is safe.
+            await downloads.claimDownload(userId, { employer }, req);
             return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(tFile)}`, template: tplId, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
         } catch (tplErr) {
             console.warn('[resumeBuilder] template render failed, falling back to PDFKit:', tplErr.message);
