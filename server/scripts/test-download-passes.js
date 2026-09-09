@@ -302,6 +302,46 @@ const sql = () => db.calls.map((c) => c.sql).join(' | ');
   ok('⚠️ a client that gave up is never charged for the answer it cannot receive',
     /req\.on\('close'[\s\S]{0,80}clientGone = true/.test(rb) && /if \(clientGone\) \{[\s\S]{0,200}\} else \{/.test(rb));
 
+  console.log('── ⚠️ THE HISTORY WRITE MUST MATCH THE TABLE, OR IT FAILS SILENTLY FOREVER ──');
+  // A download records its history best-effort: the file already exists and the user has already
+  // been charged, so a broken INSERT is swallowed with a warning and the download still succeeds.
+  // That is the right behaviour and it is also why a column-list drift would never surface — the
+  // library would simply stay empty for everyone, for good. This is the job_contacts schema-drift
+  // shape from the memory index, and it is checked against db-init.js rather than against a fake.
+  const initSrc = R('db-init.js');
+  const histSrc = R('server', 'services', 'downloadHistory.js');
+
+  const create = (initSrc.match(/CREATE TABLE IF NOT EXISTS download_history \(([\s\S]*?)\)`\)/) || [])[1] || '';
+  const tableCols = create.split('\n').map((l) => (l.trim().match(/^([a-z_]+)\s+[A-Z]/) || [])[1]).filter(Boolean);
+  ok('the table is defined at all', tableCols.length >= 10, tableCols);
+
+  const insList = (strip(histSrc).match(/INSERT INTO download_history\s*\(([\s\S]*?)\)\s*VALUES/) || [])[1] || '';
+  const insCols = insList.split(',').map((c) => c.trim()).filter(Boolean);
+  ok('⚠️ every column the INSERT names exists on the table',
+    insCols.length > 0 && insCols.every((c) => tableCols.includes(c)),
+    { insCols, missing: insCols.filter((c) => !tableCols.includes(c)) });
+  const placeholders = ((strip(histSrc).match(/VALUES \(([^)]*)\)/) || [])[1] || '').split(',').filter((x) => /\$\d+/.test(x)).length;
+  ok('…and there is exactly one value per column', placeholders === insCols.length, { placeholders, cols: insCols.length });
+
+  // The conflict target must be the unique index, exactly — a mismatch is not an error, it is a
+  // duplicate row for every download, which is the noise the upsert exists to prevent.
+  const uq = (initSrc.match(/uq_download_history_doc\s*\n?\s*ON download_history\(([^)]*)\)/) || [])[1] || '';
+  const uqCols = uq.split(',').map((c) => c.trim()).filter(Boolean);
+  const conflict = (strip(histSrc).match(/ON CONFLICT \(([^)]*)\)/) || [])[1] || '';
+  const conflictCols = conflict.split(',').map((c) => c.trim()).filter(Boolean);
+  ok('⚠️ the ON CONFLICT target IS the unique index, column for column',
+    uqCols.length > 0 && JSON.stringify(uqCols) === JSON.stringify(conflictCols), { uqCols, conflictCols });
+
+  // Postgres treats NULLs as distinct, so one nullable member of that tuple silently defeats the
+  // dedupe and grows the list without bound.
+  const inTuple = uqCols.filter((c) => c !== 'user_id');
+  const notNullable = inTuple.every((c) => new RegExp(c + "\\s+[A-Z]+[^,]*NOT NULL").test(create));
+  ok('⚠️ every column in that tuple is NOT NULL, or the dedupe silently stops working', notNullable, inTuple);
+
+  ok('the read path never hands out a temp filename', !/file_name/.test((strip(histSrc).match(/async function list[\s\S]*?^}/m) || [''])[0]));
+  ok('⚠️ a file is registered to its owner BEFORE anything that can fail',
+    /tempFiles\.own\(userId, entry\.fileName\);[\s\S]{0,400}dbConfig\.get\(/.test(strip(histSrc)));
+
   console.log(`\ndownload passes: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
