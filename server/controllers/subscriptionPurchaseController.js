@@ -12,9 +12,11 @@
 'use strict';
 
 const ents = require('../services/entitlements');
+const downloads = require('../services/downloads');
 const store = require('../services/storeSubscriptions');
 const apple = require('../services/appleStoreApi');
 const play = require('../services/playStoreApi');
+const { PRODUCTION, SANDBOX } = require('../services/storeEnvironment');
 
 const uidOf = (req) => parseInt((req.user && (req.user.id || req.user.userId)), 10);
 
@@ -170,4 +172,54 @@ async function accountToken(req, res) {
   }
 }
 
-module.exports = { verifyAppleSub, verifyGoogleSub, restorePurchases, accountToken };
+
+// ── POST /api/payment/verify-google-product ─────────────────────────────────────────────────────
+// Google's half of the single-download pass. There was no one-time-purchase endpoint on this
+// server at all: playStoreApi.getProductPurchase existed with zero callers, and /verify-google
+// only ever reads subscriptionsv2. Without this, the pass would be an iOS-only feature.
+//
+// The client sends a POINTER (purchaseToken), never a claim — the truth is re-read from Google,
+// exactly as the subscription path does.
+//
+// ⚠️ DO NOT consume or acknowledge here. On Android `finishTransaction({isConsumable:true})` in the
+// APP is both the acknowledgement and the consume, and it must run only after this endpoint has
+// answered yes — Google auto-refunds and revokes anything left unacknowledged for three days.
+async function verifyGoogleProduct(req, res) {
+  const userId = req.user.id;
+  const { productId, purchaseToken } = req.body || {};
+  if (!productId || !purchaseToken) {
+    return res.status(400).json({ error: 'productId and purchaseToken are required.' });
+  }
+  if (productId !== downloads.PASS_PRODUCT_ID) {
+    return res.status(400).json({ error: 'Unknown product ID', reason: 'unknown_product' });
+  }
+  let purchase;
+  try {
+    purchase = await play.getProductPurchase(productId, purchaseToken);
+  } catch (e) {
+    console.error('[verifyGoogleProduct] play lookup failed:', e.message);
+    // Retryable: the purchase may well be valid and we simply could not read it. Never finish a
+    // transaction off the back of this, or the user pays and Google revokes it three days later.
+    return res.status(503).json({
+      error: 'Purchase verification is temporarily unavailable. Your purchase is safe and will be applied automatically.',
+      retryable: true,
+    });
+  }
+  if (!purchase) return res.status(404).json({ error: 'Purchase not found.', reason: 'not_found' });
+
+  // purchaseState: 0 = purchased, 1 = cancelled, 2 = pending. Only 0 is money that has moved.
+  if (Number(purchase.purchaseState) !== 0) {
+    return res.status(409).json({ error: 'Purchase is not complete.', reason: 'not_purchased', state: purchase.purchaseState });
+  }
+  // A test purchase is free; scoping it to sandbox keeps it out of production downloads.
+  const environment = purchase.purchaseType === 0 ? SANDBOX : PRODUCTION;
+  const storeTxnId = String(purchase.orderId || purchaseToken);
+
+  const created = await downloads.grantPass(userId, {
+    store: 'google', environment, storeTxnId, productId,
+  });
+  console.log(`🤖 download pass ${created ? 'granted' : 'already recorded'} — user=${userId} order=${storeTxnId} env=${environment}`);
+  return res.json({ success: true, kind: 'download_pass', granted: created, environment });
+}
+
+module.exports = { verifyAppleSub, verifyGoogleSub, verifyGoogleProduct, restorePurchases, accountToken };

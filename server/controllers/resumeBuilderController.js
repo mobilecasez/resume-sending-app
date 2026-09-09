@@ -10,6 +10,7 @@ const { renderPdf, renderPreviews, warmPreviews } = require('../utils/resumeRend
 const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion } = require('../utils/resumeTemplates');
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
+const downloads = require('../services/downloads');
 
 // Fallback defaults; the live per-request cost is resolved via getEventCost() (admin-editable).
 const RESUME_CREDIT_COST   = 2; // credits charged per AI generation / regeneration
@@ -645,14 +646,15 @@ async function generatePDF(req, res) {
             return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
         }
 
-        // ── Previewing every design is free; DOWNLOADING the file is a paid-plan feature. ──
-        // The credit charge this replaces punished exactly the users who engaged most; a plan
-        // gate is the product rule now (2026-08-25) and the app shows "See plans" on this 403.
-        const sub = await entitlements.activeSubscription(userId).catch(() => null);
-        if (!sub) {
+        // ── Previewing every design is free; DOWNLOADING the file is paid. ──
+        // A plan covers it, and so does a single-employer pass bought outright. services/downloads
+        // owns that decision — see the note there about why it is not repeated per controller.
+        const employer = (req.body && req.body.employer) || null;
+        const gate = await downloads.canDownload(userId, { employer }, req);
+        if (!gate.allowed) {
             return res.status(403).json({
-                error: 'Previewing every design is free — downloading the PDF is part of the paid plans.',
-                reason: 'paid_required',
+                error: gate.message || 'Previewing every design is free — downloading the PDF is part of the paid plans.',
+                reason: gate.reason || 'paid_required',
             });
         }
         const creditCheck = { hasCredits: true, remaining: 0 };
@@ -1014,6 +1016,10 @@ async function generatePDF(req, res) {
 
             doc.end();
         });
+        // ⚠️ Charged HERE, not at the gate: the bytes exist by this line. The render can still fall
+        // through Playwright to PDFKit and either can throw, and "I paid and got an error" is the
+        // one outcome a paid download must never produce.
+        await downloads.claimDownload(userId, { employer }, req);
         return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(fileName)}`, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
     } catch (e) {
         console.error('[resumeBuilder] generatePDF error:', e.message);
@@ -1027,11 +1033,12 @@ async function generatePDF(req, res) {
 async function generateDocx(req, res) {
     // Same rule as the PDF: the FILE is a paid-plan feature (see generatePDF).
     {
-        const sub = await entitlements.activeSubscription(req.user.id).catch(() => null);
-        if (!sub) {
+        const employer = (req.body && req.body.employer) || null;
+        const gate = await downloads.canDownload(req.user.id, { employer }, req);
+        if (!gate.allowed) {
             return res.status(403).json({
-                error: 'Previewing every design is free — downloading the file is part of the paid plans.',
-                reason: 'paid_required',
+                error: gate.message || 'Previewing every design is free — downloading the file is part of the paid plans.',
+                reason: gate.reason || 'paid_required',
             });
         }
     }
@@ -1071,6 +1078,7 @@ async function generateDocx(req, res) {
         await fs.mkdir(tempDir, { recursive: true });
         await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
 
+        await downloads.claimDownload(req.user.id, { employer: (req.body && req.body.employer) || null }, req);
         return res.json({ success: true, downloadUrl: `/api/download-resume-docx/${encodeURIComponent(fileName)}` });
     } catch (e) {
         console.error('[resumeBuilder] generateDocx error:', e.message);

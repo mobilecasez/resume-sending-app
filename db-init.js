@@ -1555,9 +1555,10 @@ async function runPostgresMigrations(db) {
                    ON CONFLICT (key) DO NOTHING`);
         console.log('✅ Migration 041: resume_scores done (switch seeded OFF)');
 
-        // ── Migration 042: DOWNLOAD PASSES — one paid-for download, bought outright ─────────────
-        // A user who is not on a plan can buy a single download instead of subscribing. One pass
-        // covers ONE DESIGN in every format, so tapping Word after PDF is never a second charge.
+        // ── Migration 042: DOWNLOAD PASSES — one paid-for employer, bought outright ─────────────
+        // A user who is not on a plan can pay once instead of subscribing. The pass covers ONE
+        // EMPLOYER, and everything for them: every resume design, every format, and the cover
+        // letter too. So it binds to the employer it is first spent on, never to a file.
         //
         // ⚠️ THE UNIQUE KEY IS THE STORE TRANSACTION, GLOBALLY — not (user_id, something). A receipt
         // replayed against a second account must collide, and it only does if the constraint has no
@@ -1570,19 +1571,21 @@ async function runPostgresMigrations(db) {
             environment      TEXT NOT NULL,
             store_txn_id     TEXT NOT NULL,
             product_id       TEXT NOT NULL,
-            kind             TEXT NOT NULL DEFAULT 'resume',
-            template_id      TEXT,
+            employer_key     TEXT,
+            employer_name    TEXT,
             bound_at         TIMESTAMPTZ,
             created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )`);
         await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_download_passes_store_env_txn
                      ON download_passes(store, environment, store_txn_id)`);
-        // The gate's hot query: "has this user an unbound pass, or one already bound to THIS design?"
+        // The gate's hot query: "has this user a pass for THIS employer, or an unspent one?"
         await col(`CREATE INDEX IF NOT EXISTS idx_download_passes_user
-                     ON download_passes(user_id, kind, template_id, bound_at)`);
+                     ON download_passes(user_id, employer_key, bound_at)`);
         await col(`ALTER TABLE download_passes DROP CONSTRAINT IF EXISTS chk_download_passes_environment`);
+        // ⚠️ 'Sandbox' / 'Production' — CAPITALISED, matching services/storeEnvironment.js and the
+        // identical constraint on user_subscriptions. Lowercase here would reject every insert.
         await col(`ALTER TABLE download_passes ADD CONSTRAINT chk_download_passes_environment
-                     CHECK (environment IN ('production', 'sandbox'))`);
+                     CHECK (environment IN ('Sandbox','Production'))`);
         console.log('✅ Migration 042: download_passes done');
 
         console.log('✅ PostgreSQL migrations completed successfully');

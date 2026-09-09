@@ -36,6 +36,9 @@ router.post('/verify-apple-sub', authenticateToken, subs.verifyAppleSub);
 // never becomes an entitlement — so both paths stay live permanently.
 router.post('/verify-google', authenticateToken, subs.verifyGoogleSub);
 router.post('/verify-google-sub', authenticateToken, subs.verifyGoogleSub);
+// One-time (consumable) purchases on Play — the single-download pass. Apple's equivalent lives in
+// /verify-apple, which already handled consumables for the credit packs; Play had no such route.
+router.post('/verify-google-product', authenticateToken, subs.verifyGoogleProduct);
 router.post('/restore', authenticateToken, subs.restorePurchases);
 // The opaque per-user token the app attaches to a purchase so renewals can be attributed later.
 router.get('/account-token', authenticateToken, subs.accountToken);

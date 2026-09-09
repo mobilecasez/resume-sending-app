@@ -5,6 +5,7 @@ const { notifyCreditsAdded } = require('./notificationsController');
 // it is what stops a $0 TestFlight transaction from buying real credits.
 const STORE_ENV = require('../services/storeEnvironment');
 
+const downloads = require('../services/downloads');
 // Initialize Razorpay instance
 let razorpayInstance = null;
 if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
@@ -743,6 +744,30 @@ async function verifyApplePurchase(req, res, dbConfig) {
         }
         // (the Sandbox branch itself needs the resolved plan for payment_orders.package_id, so it
         //  sits just below the plan lookup)
+
+        // ── A SINGLE-DOWNLOAD PASS is not a credit pack ──────────────────────────────────────
+        // It grants an EMPLOYER, not a balance, so it never reaches the plans table below.
+        //
+        // ⚠️ THIS BRANCH MUST COME BEFORE THE UNKNOWN-PRODUCT 400. App.js routes every non-
+        // subscription transaction here, and on a 400 it calls finishTransaction — so without this,
+        // a user would pay, be rejected as "Unknown product ID", and have the receipt destroyed.
+        //
+        // Sandbox purchases ARE recorded and granted, unlike credits: a pass carries its
+        // environment and every read is scoped to it, so a sandbox pass only ever satisfies a
+        // sandbox download. Credits could not do that — they are one pooled integer.
+        if (verifiedProductId === downloads.PASS_PRODUCT_ID) {
+            const passTxn = verifiedTransactionId || transactionId;
+            const created = await downloads.grantPass(userId, {
+                store: 'apple',
+                environment: purchaseEnvironment,
+                storeTxnId: passTxn,
+                productId: verifiedProductId,
+            });
+            console.log(`🍎 download pass ${created ? 'granted' : 'already recorded'} — user=${userId} txId=${passTxn} env=${purchaseEnvironment}`);
+            // Success either way: a replayed receipt means the pass already exists, and the client
+            // must be told yes so it finishes the transaction rather than retrying forever.
+            return res.json({ success: true, kind: 'download_pass', granted: created });
+        }
 
         // Look up the plan from our database using the Apple product ID
         const planName = APPLE_PRODUCT_TO_PLAN[verifiedProductId];

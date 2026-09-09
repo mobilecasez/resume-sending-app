@@ -11,6 +11,7 @@ const clTemplates = require('../utils/coverLetterTemplates');
 const clRenderer  = require('../utils/coverLetterRenderer');
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
+const downloads = require('../services/downloads');
 const { emit } = require('../services/track');   // first-party analytics
 
 const CL_DOWNLOAD_CREDIT_COST = 2; // fallback; live cost via getEventCost('cover_letter_download')
@@ -1211,12 +1212,15 @@ async function previewCoverLetterTemplates(req, res) {
 // Generic = the byte-exact original letter (original PDFKit generator); others = HTML templates.
 // Downloads (PDF + Word) are paid-plan features, matching the resume rule (2026-08-26):
 // previews stay free, the FILE needs an active subscription. Replaces the per-download credit.
-async function requirePaidForDownload(userId, res) {
-    const sub = await entitlements.activeSubscription(userId).catch(() => null);
-    if (!sub) {
+// ⚠️ A pass bought for an employer covers their LETTER as well as their resume — one payment, one
+// company, everything for it. That is why the employer travels in here rather than the gate asking
+// only "is this a subscriber".
+async function requirePaidForDownload(userId, res, employer, req) {
+    const gate = await downloads.canDownload(userId, { employer: employer || null }, req);
+    if (!gate.allowed) {
         res.status(403).json({
-            error: 'Previewing every design is free — downloading the file is part of the paid plans.',
-            reason: 'paid_required',
+            error: gate.message || 'Previewing every design is free — downloading the file is part of the paid plans.',
+            reason: gate.reason || 'paid_required',
         });
         return false;
     }
@@ -1231,7 +1235,7 @@ async function generateCoverLetterTemplatePdf(req, res) {
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
-        if (!(await requirePaidForDownload(userId, res))) return;
+        if (!(await requirePaidForDownload(userId, res, companyName, req))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
         const tplMeta = clTemplates.TEMPLATES.find(t => t.id === tplId);
 
@@ -1253,6 +1257,8 @@ async function generateCoverLetterTemplatePdf(req, res) {
             await fs.writeFile(path.join(tempDir, fileName), pdf);
         }
 
+        // Charged only now — the file exists on this line.
+        await downloads.claimDownload(userId, { employer: companyName }, req);
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplatePdf error:', e.message);
@@ -1272,7 +1278,7 @@ async function generateCoverLetterTemplateDocx(req, res) {
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
-        if (!(await requirePaidForDownload(userId, res))) return;
+        if (!(await requirePaidForDownload(userId, res, companyName, req))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
         const sender = await buildCLSender(userId);
         const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
@@ -1287,6 +1293,8 @@ async function generateCoverLetterTemplateDocx(req, res) {
         await fs.mkdir(tempDir, { recursive: true });
         await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
 
+        // Charged only now — the file exists on this line.
+        await downloads.claimDownload(userId, { employer: companyName }, req);
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter-docx/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplateDocx error:', e.message);
