@@ -90,6 +90,14 @@ function asJob(type) {
             // Free the socket immediately.
             res.status(202).json({ jobId, status: 'pending' });
 
+            // ⚠️ THE HANDLER HAS TO BE ABLE TO SAY WHERE IT HAS GOT TO.
+            // Without this the wrapper is progress-blind: `progress` sits at 0 from createJob until
+            // completeJob slams it to 100, so a minute-long AI call looks identical to a hung one,
+            // and requeueStuckJobs (which fails any 'processing' row untouched for five minutes)
+            // kills a run that was merely slow. A handler that finds req.__jobId can report real
+            // stages; one that ignores it behaves exactly as before.
+            req.__jobId = jobId;
+
             // Run the real work detached from the request.
             (async () => {
                 const cap = makeCapturingRes(jobId);

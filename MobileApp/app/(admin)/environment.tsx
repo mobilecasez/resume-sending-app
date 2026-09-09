@@ -83,6 +83,8 @@ export const EXACT_KEYS_TO_CLEAR: string[] = [
   'aiHub_trigger_add_recipient',
   'coverLetterPickerContext',      // generated HTML + employer details in flight between screens
   'discover_recent_v1',
+  'dl_history_v1',                 // download-history SWR cache: server row ids, meaningless elsewhere
+  'resume_builder_employer',       // which company the builder was opened for
   'resumeBuilderData',
   'resumeBuilderFormData',         // gets POSTed to the NEW backend on the next save
   'resumeBuilderMethod',

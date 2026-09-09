@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const path = require('path');
+const tempFiles = require('./server/services/tempFiles');
 const fsSync = require('fs');
 
 // Load Razorpay credentials FIRST before any other imports
@@ -3513,7 +3514,13 @@ app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, r
         if (!filename || filename !== req.params.filename) {
             return res.status(400).json({ error: 'Invalid file name.' });
         }
-        const filePath = path.join(__dirname, 'temp', filename);
+                // ⚠️ AND IT MUST BE THEIRS. The traversal check above stops the caller escaping temp/;
+        // it does nothing about fetching a DIFFERENT USER'S document out of it. See
+        // server/services/tempFiles.js for why an unregistered file is still allowed.
+        if (!tempFiles.mayRead(req.user && req.user.id, filename)) {
+            return res.status(404).json({ error: 'File not found or expired.' });
+        }
+const filePath = path.join(__dirname, 'temp', filename);
 
         // Check if file exists
         try {
@@ -3542,7 +3549,13 @@ app.get('/api/download-resume/:filename', authenticateToken, async (req, res) =>
         if (!filename || filename !== req.params.filename) {
             return res.status(400).json({ error: 'Invalid file name.' });
         }
-        const filePath = path.join(__dirname, 'temp', filename);
+                // ⚠️ AND IT MUST BE THEIRS. The traversal check above stops the caller escaping temp/;
+        // it does nothing about fetching a DIFFERENT USER'S document out of it. See
+        // server/services/tempFiles.js for why an unregistered file is still allowed.
+        if (!tempFiles.mayRead(req.user && req.user.id, filename)) {
+            return res.status(404).json({ error: 'File not found or expired.' });
+        }
+const filePath = path.join(__dirname, 'temp', filename);
         try { await fs.access(filePath); } catch {
             return res.status(404).json({ error: 'Resume PDF not found or expired.' });
         }
@@ -3567,7 +3580,13 @@ app.get('/api/download-cover-letter-docx/:filename', authenticateToken, async (r
         if (!filename || filename !== req.params.filename) {
             return res.status(400).json({ error: 'Invalid file name.' });
         }
-        const filePath = path.join(__dirname, 'temp', filename);
+                // ⚠️ AND IT MUST BE THEIRS. The traversal check above stops the caller escaping temp/;
+        // it does nothing about fetching a DIFFERENT USER'S document out of it. See
+        // server/services/tempFiles.js for why an unregistered file is still allowed.
+        if (!tempFiles.mayRead(req.user && req.user.id, filename)) {
+            return res.status(404).json({ error: 'File not found or expired.' });
+        }
+const filePath = path.join(__dirname, 'temp', filename);
         try { await fs.access(filePath); } catch {
             return res.status(404).json({ error: 'Cover letter not found' });
         }
@@ -3591,7 +3610,13 @@ app.get('/api/download-resume-docx/:filename', authenticateToken, async (req, re
         if (!filename || filename !== req.params.filename) {
             return res.status(400).json({ error: 'Invalid file name.' });
         }
-        const filePath = path.join(__dirname, 'temp', filename);
+                // ⚠️ AND IT MUST BE THEIRS. The traversal check above stops the caller escaping temp/;
+        // it does nothing about fetching a DIFFERENT USER'S document out of it. See
+        // server/services/tempFiles.js for why an unregistered file is still allowed.
+        if (!tempFiles.mayRead(req.user && req.user.id, filename)) {
+            return res.status(404).json({ error: 'File not found or expired.' });
+        }
+const filePath = path.join(__dirname, 'temp', filename);
         try { await fs.access(filePath); } catch {
             return res.status(404).json({ error: 'Resume Word document not found or expired.' });
         }

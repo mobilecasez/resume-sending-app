@@ -1602,6 +1602,56 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE download_passes ADD COLUMN IF NOT EXISTS letter_generated_at TIMESTAMPTZ`);
         console.log('✅ Migration 043: download_passes generation columns done');
 
+        // ── Migration 044: DOWNLOAD HISTORY — every document you have already paid to download ───
+        // Home shows this back to the user so they can fetch a file again months later, on a new
+        // phone, without paying twice. It is a CONVENIENCE INDEX, never an entitlement: getting the
+        // file again still goes through services/downloads.canDownload, so a lapsed plan locks the
+        // row and a bought pass keeps it open forever. Recording a row must never be able to fail a
+        // download that already succeeded.
+        //
+        // ⚠️ ONE ROW PER DISTINCT DOCUMENT, NOT PER TAP. Someone who downloads the same design four
+        // times wants one entry that says "4 times, most recently Tuesday", not four identical
+        // cards. Hence the unique tuple + upsert, and why every part of it is NOT NULL with ''
+        // rather than NULL — Postgres treats NULLs as distinct, so a nullable column in a unique
+        // index would silently defeat the dedupe and grow the list without bound.
+        //
+        // ⚠️ THE PAYLOAD IS SELF-CONTAINED, ON PURPOSE. A cover letter could be edited or its job
+        // deleted after the fact; re-rendering from today's row would then hand back a different
+        // document than the one they paid for. So everything the renderer needs is frozen here.
+        await col(`CREATE TABLE IF NOT EXISTS download_history (
+            id               SERIAL PRIMARY KEY,
+            user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind             TEXT NOT NULL,
+            employer_key     TEXT NOT NULL DEFAULT '(none)',
+            employer_name    TEXT NOT NULL DEFAULT '',
+            template_id      TEXT NOT NULL DEFAULT '',
+            template_name    TEXT NOT NULL DEFAULT '',
+            format           TEXT NOT NULL DEFAULT 'pdf',
+            mode             TEXT NOT NULL DEFAULT '',
+            file_name        TEXT,
+            payload          JSONB,
+            times            INTEGER NOT NULL DEFAULT 1,
+            environment      TEXT NOT NULL DEFAULT 'Production',
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            downloaded_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`ALTER TABLE download_history DROP CONSTRAINT IF EXISTS chk_download_history_kind`);
+        await col(`ALTER TABLE download_history ADD CONSTRAINT chk_download_history_kind
+                     CHECK (kind IN ('resume','cover_letter'))`);
+        await col(`ALTER TABLE download_history DROP CONSTRAINT IF EXISTS chk_download_history_format`);
+        await col(`ALTER TABLE download_history ADD CONSTRAINT chk_download_history_format
+                     CHECK (format IN ('pdf','docx'))`);
+        // ⚠️ Same capitalisation as download_passes and user_subscriptions — see storeEnvironment.js.
+        await col(`ALTER TABLE download_history DROP CONSTRAINT IF EXISTS chk_download_history_environment`);
+        await col(`ALTER TABLE download_history ADD CONSTRAINT chk_download_history_environment
+                     CHECK (environment IN ('Sandbox','Production'))`);
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_download_history_doc
+                     ON download_history(user_id, kind, employer_key, template_id, format, mode, environment)`);
+        // The list query: one user's most recent downloads of one kind.
+        await col(`CREATE INDEX IF NOT EXISTS idx_download_history_user
+                     ON download_history(user_id, kind, downloaded_at DESC)`);
+        console.log('✅ Migration 044: download_history done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

@@ -11,6 +11,48 @@ const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion } = requi
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
 const downloads = require('../services/downloads');
+const history = require('../services/downloadHistory');
+const jobService = require('../services/jobService');
+
+/**
+ * Tell the client where a long generation has actually got to.
+ *
+ * ⚠️ THE STAGE NAME IS THE TRUTH; THE PERCENTAGE IS A COURTESY. Around 85-95% of a run's wall-clock
+ * is one non-streaming Gemini call that reports nothing, so a bar driven only by real server ticks
+ * would sit still for a minute and read as hung. The honest split is: the SERVER says which stage
+ * it is in and what that stage's ceiling is, and the client is free to creep toward that ceiling —
+ * so the bar always moves, and it never claims a stage that has not started.
+ *
+ * ⚠️ RIDES ON updateJobPartialResult, NOT A NEW COLUMN. async_jobs has no place for a label
+ * (db-init.js:301-315) and updateJobProgress takes a number only. `result` is already surfaced as
+ * `data` by both pollers while status is still 'processing', and completeJob overwrites it wholesale
+ * with the real payload — so the envelope is self-cleaning. The client tells them apart by looking
+ * for `resumeData`; anything with a `stage` is a progress tick.
+ *
+ * Every write also bumps updated_at, which is what keeps requeueStuckJobs (it fails any 'processing'
+ * row untouched for five minutes) from killing a run that is merely slow.
+ *
+ * A no-op in synchronous mode, where there is no job to report against.
+ */
+function makeReporter(req) {
+    const jobId = req && req.__jobId;
+    if (!jobId) return async () => {};
+    let last = 0;
+    return async (stage, label, pct) => {
+        if (pct < last) return;                       // a bar must never walk backwards
+        last = pct;
+        try {
+            await jobService.updateJobProgress(jobId, Math.round(pct));
+            await jobService.updateJobPartialResult(jobId, { stage, label, pct: Math.round(pct) });
+        } catch { /* progress is never worth failing the work for */ }
+    };
+}
+
+/** The design's human name, for the history card. Falls back to the id so a card is never blank. */
+const templateNameOf = (id) => {
+    const t = TEMPLATES.find((x) => x.id === id);
+    return (t && t.name) || String(id || '');
+};
 
 // Fallback defaults; the live per-request cost is resolved via getEventCost() (admin-editable).
 const RESUME_CREDIT_COST   = 2; // credits charged per AI generation / regeneration
@@ -402,9 +444,13 @@ async function generateAI(req, res) {
             return res.status(402).json({ error: creditCheck.message, creditsRequired: RESUME_CREDIT_COST, creditsRemaining: creditCheck.remaining });
         }
 
+        const report = makeReporter(req);
+        await report('reading', 'Reading what you gave us', 8);
+
         const urls = extractUrls(rawText);
         console.log(`[resumeBuilder] Found ${urls.length} URL(s):`, urls);
 
+        if (urls.length) await report('links', `Opening ${urls.length === 1 ? 'the link' : `${urls.length} links`} you mentioned`, 14);
         const scrapedProjects = urls.length
             ? await Promise.all(urls.map(scrapePage))
             : [];
@@ -412,6 +458,7 @@ async function generateAI(req, res) {
         // Point 5: optionally fold in the user's already-parsed uploaded resume.
         let uploadedResumeContext = '';
         if (includeUploadedResume) {
+            await report('resume', 'Going through your experience', 22);
             try {
                 const meta = await dbConfig.get('SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?', [userId, 'done']);
                 if (meta) {
@@ -429,6 +476,7 @@ async function generateAI(req, res) {
         // treat it as one of the candidate's own project pages and describe it as their work.
         let jobTarget = null;
         if (job && (job.title || job.description || job.url)) {
+            await report('posting', `Studying the ${job.company ? `${job.company} ` : ''}posting`, 30);
             jobTarget = {
                 title: job.title || '',
                 company: job.company || '',
@@ -452,6 +500,13 @@ async function generateAI(req, res) {
         let resumeData = null;
         let lastErr = null;
         for (let attempt = 1; attempt <= 3 && !resumeData; attempt++) {
+            // ⚠️ The retry loop used to be silent, which is exactly the case that overran the old
+            // client timeout: attempts two and three looked identical to the first from outside.
+            await report(
+                attempt === 1 ? 'writing' : 'retry',
+                attempt === 1 ? 'Writing your resume' : 'Taking another pass at it',
+                attempt === 1 ? 38 : 38 + attempt * 6,
+            );
             try {
                 const { text, finishReason } = await callGemini(prompt);
                 if (finishReason === 'MAX_TOKENS') throw new Error('TRUNCATED_OUTPUT');
@@ -468,6 +523,7 @@ async function generateAI(req, res) {
             throw new Error('AI_BAD_OUTPUT');
         }
 
+        await report('shaping', 'Shaping the sections', 88);
         if (name)     resumeData.personal_info.full_name = name;
         if (email)    resumeData.personal_info.email     = email;
         if (phone)    resumeData.personal_info.phone     = phone;
@@ -494,6 +550,7 @@ async function generateAI(req, res) {
             }
         } catch (e) { console.warn('[resumeBuilder] usage record failed:', e.message); }
 
+        await report('saving', 'Saving your resume', 95);
         await ensureResumeTable();
         await dbConfig.run(
             `INSERT INTO user_resumes (user_id, resume_data, updated_at)
@@ -732,6 +789,12 @@ async function generatePDF(req, res) {
             // (Under DOWNLOADS_METERED it also meant plan downloads were never metered at all.)
             // Same rule as the fallback: the bytes exist by this line, so charging is safe.
             await downloads.claimDownload(userId, { employer }, req);
+            // Home lists this back to them so the file can be fetched again later without paying
+            // twice. Best-effort: the download has already succeeded and been charged.
+            await history.record(userId, {
+                kind: 'resume', employer, templateId: tplId, templateName: templateNameOf(tplId),
+                format: 'pdf', mode, fileName: tFile, payload: { template: tplId, mode },
+            }, req).catch(() => {});
             return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(tFile)}`, template: tplId, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
         } catch (tplErr) {
             console.warn('[resumeBuilder] template render failed, falling back to PDFKit:', tplErr.message);
@@ -1066,6 +1129,10 @@ async function generatePDF(req, res) {
         // through Playwright to PDFKit and either can throw, and "I paid and got an error" is the
         // one outcome a paid download must never produce.
         await downloads.claimDownload(userId, { employer }, req);
+        await history.record(userId, {
+            kind: 'resume', employer, templateId: String(template || ''), templateName: templateNameOf(template),
+            format: 'pdf', mode, fileName, payload: { template: String(template || ''), mode },
+        }, req).catch(() => {});
         return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(fileName)}`, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
     } catch (e) {
         console.error('[resumeBuilder] generatePDF error:', e.message);
@@ -1125,6 +1192,12 @@ async function generateDocx(req, res) {
         await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
 
         await downloads.claimDownload(req.user.id, { employer: (req.body && req.body.employer) || null }, req);
+        await history.record(req.user.id, {
+            kind: 'resume', employer: (req.body && req.body.employer) || null,
+            templateId: String((req.body && req.body.template) || ''), templateName: templateNameOf(req.body && req.body.template),
+            format: 'docx', mode: String((req.body && req.body.mode) || ''), fileName,
+            payload: { template: String((req.body && req.body.template) || ''), mode: String((req.body && req.body.mode) || '') },
+        }, req).catch(() => {});
         return res.json({ success: true, downloadUrl: `/api/download-resume-docx/${encodeURIComponent(fileName)}` });
     } catch (e) {
         console.error('[resumeBuilder] generateDocx error:', e.message);

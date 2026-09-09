@@ -12,6 +12,7 @@ const clRenderer  = require('../utils/coverLetterRenderer');
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
 const downloads = require('../services/downloads');
+const history = require('../services/downloadHistory');
 const { emit } = require('../services/track');   // first-party analytics
 
 const CL_DOWNLOAD_CREDIT_COST = 2; // fallback; live cost via getEventCost('cover_letter_download')
@@ -1182,6 +1183,10 @@ const generateCoverLetterPdf = async (req, res) => {
                     await jobService.startJob(jobId);
                     const { filePath, fileName } = await generateRichPDF();
                     await downloads.claimDownload(userId, { employer: passEmployer }, req);
+                    await recordLetter(userId, req, {
+                        employer: passEmployer, tplId: 'standard', format: 'pdf', mode: '', fileName,
+                        coverLetterHtml, companyName, companyAddress, brandColor,
+                    });
                     const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
                     await jobService.completeJob(jobId, { success: true, downloadUrl, fileName });
                 } catch (err) {
@@ -1192,6 +1197,10 @@ const generateCoverLetterPdf = async (req, res) => {
             const { filePath, fileName } = await generateRichPDF();
             // Charged only now — the file exists on the line above.
             await downloads.claimDownload(userId, { employer: passEmployer }, req);
+            await recordLetter(userId, req, {
+                employer: passEmployer, tplId: 'standard', format: 'pdf', mode: '', fileName,
+                coverLetterHtml, companyName, companyAddress, brandColor,
+            });
             const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
             res.json({ success: true, downloadUrl, fileName });
         }
@@ -1301,6 +1310,22 @@ async function requirePaidForDownload(userId, res, employer, req) {
     return true;
 }
 
+/**
+ * Remember a downloaded letter so Home can offer it again.
+ *
+ * ⚠️ THE LETTER TEXT IS COPIED INTO THE ROW, not referenced. A cover letter can be regenerated or
+ * its job deleted afterwards; re-rendering from live data would then hand back a different document
+ * than the one they paid for.
+ */
+function recordLetter(userId, req, { employer, tplId, format, mode, fileName, coverLetterHtml, companyName, companyAddress, brandColor }) {
+    const tpl = (clTemplates.TEMPLATES || []).find((t) => t.id === tplId);
+    return history.record(userId, {
+        kind: 'cover_letter', employer, templateId: tplId || '', templateName: (tpl && tpl.name) || String(tplId || ''),
+        format, mode: mode || '', fileName,
+        payload: { template: tplId || '', mode: mode || '', coverLetterHtml, companyName, companyAddress, brandColor },
+    }, req).catch(() => {});
+}
+
 async function generateCoverLetterTemplatePdf(req, res) {
     const userId = req.user.id;
     const { template, mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
@@ -1342,6 +1367,10 @@ async function generateCoverLetterTemplatePdf(req, res) {
 
         // Charged only now — the file exists on this line.
         await downloads.claimDownload(userId, { employer: passEmployer }, req);
+        await recordLetter(userId, req, {
+            employer: passEmployer, tplId, format: 'pdf', mode, fileName,
+            coverLetterHtml, companyName, companyAddress, brandColor,
+        });
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplatePdf error:', e.message);
@@ -1387,6 +1416,10 @@ async function generateCoverLetterTemplateDocx(req, res) {
 
         // Charged only now — the file exists on this line.
         await downloads.claimDownload(userId, { employer: passEmployer }, req);
+        await recordLetter(userId, req, {
+            employer: passEmployer, tplId, format: 'docx', mode, fileName,
+            coverLetterHtml, companyName, companyAddress, brandColor: null,
+        });
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter-docx/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
         console.error('[coverLetter] generateCoverLetterTemplateDocx error:', e.message);

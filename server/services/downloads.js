@@ -458,6 +458,22 @@ async function grantPass(userId, { store, environment, storeTxnId, productId }) 
 }
 
 /**
+ * Every pass this user has spent, in one read.
+ *
+ * The download-history list has to say, for each of up to sixty rows, whether getting that file
+ * again is free. Asking canDownload per row would be sixty subscription lookups; this is one, and
+ * the caller matches rows against it with sameEmployer.
+ */
+async function boundPasses(userId, env = PRODUCTION) {
+  try {
+    return await dbConfig.query(
+      `SELECT id, employer_name, employer_key FROM download_passes
+        WHERE user_id = $1 AND environment = $2 AND bound_at IS NOT NULL AND employer_key <> $3`,
+      [userId, env, NONE]) || [];
+  } catch { return []; }
+}
+
+/**
  * Who a store transaction was already granted to. Used to log loudly when a receipt is replayed
  * under a SECOND account — the pending-purchase list on iOS is per device, not per user, so a
  * shared phone can hand one person's pass to whoever signs in next.
@@ -476,5 +492,5 @@ module.exports = {
   METERED, PASS_PRODUCT_ID, NONE, employerKeyOf, aliasKeysOf, sameEmployer,
   downloadState, canDownload, claimDownload, grantPass, passOwnerOf,
   passCoversGeneration, claimGeneration, envOf, resolveEmployer,
-  unboundPassCount, boundPassFor,
+  unboundPassCount, boundPassFor, boundPasses,
 };

@@ -83,6 +83,109 @@ async function getJson(path: string, ms = 15000, meta?: { status?: number }): Pr
   finally { clearTimeout(timer); }
 }
 
+/** Same auth and the same swallow-everything discipline as getJson, for the one call that writes. */
+async function postJson(path: string, body: any, ms = 60000): Promise<any | null> {
+  const t = await token();
+  if (!t) return null;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+      signal: ctl.signal,
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ...j, __status: r.status, __ok: r.ok };
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
+/* ── WHAT THEY HAVE ALREADY DOWNLOADED ──────────────────────────────────────────────────────────
+ *
+ * Home's lower half used to re-show the same resume designs the hero was already showing. This is
+ * what goes there instead: the documents this person has paid for, so they can have them again on a
+ * new phone, months later, without paying twice.
+ *
+ * ⚠️ `unlocked` IS THE SERVER'S ANSWER, NOT OURS. It is computed from the same subscription and the
+ * same passes that canDownload will consult when they actually tap, so the padlock the list draws
+ * and the answer the download gives cannot disagree. The client never decides that something is
+ * free — it only draws what it was told.
+ */
+export type DownloadHistoryItem = {
+  id: number;
+  kind: 'resume' | 'cover_letter';
+  employer: string;
+  templateId: string;
+  templateName: string;
+  format: 'pdf' | 'docx';
+  mode: string;
+  /** How many times this exact document has been downloaded. One row per document, not per tap. */
+  times: number;
+  downloadedAt: string;
+  /** A pass bought for this company covers it forever. */
+  ownsEmployer: boolean;
+  /** Free to fetch again right now — by a pass, or by a plan. */
+  unlocked: boolean;
+};
+
+export type DownloadHistory = { items: DownloadHistoryItem[]; unlimited: boolean };
+
+// ⚠️ Registered in app/(admin)/environment.tsx so switching environments clears it — it holds
+// server row ids, and ids from one database mean nothing in another.
+const HISTORY_KEY = 'dl_history_v1';
+
+/** The last answer, so the section paints instantly instead of showing a spinner on every open. */
+export async function cachedDownloadHistory(kind: 'resume' | 'cover_letter'): Promise<DownloadHistory | null> {
+  try {
+    const raw = await AsyncStorage.getItem(HISTORY_KEY);
+    const j = raw ? JSON.parse(raw) : null;
+    const hit = j && j[kind];
+    return hit && Array.isArray(hit.items) ? hit : null;
+  } catch { return null; }
+}
+
+/** The live list. Returns null on any failure, leaving whatever was already on screen alone. */
+export async function fetchDownloadHistory(kind: 'resume' | 'cover_letter'): Promise<DownloadHistory | null> {
+  const j = await getJson(`/downloads/history?kind=${encodeURIComponent(kind)}`, 20000);
+  if (!j || !Array.isArray(j.items)) return null;
+  const out: DownloadHistory = { items: j.items, unlimited: !!j.unlimited };
+  try {
+    const raw = await AsyncStorage.getItem(HISTORY_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify({ ...(all || {}), [kind]: out }));
+  } catch { /* a cache that will not write is still a working screen */ }
+  return out;
+}
+
+export type RedownloadResult =
+  | { ok: true; downloadUrl: string }
+  | { ok: false; locked?: boolean; gone?: boolean; message: string };
+
+/**
+ * Get the file again.
+ *
+ * ⚠️ THE SERVER RE-RENDERS; IT DOES NOT KEEP THE OLD FILE. temp/ is wiped on every deploy, so a
+ * stored filename is a dangling pointer within hours. For a resume that means the CURRENT resume in
+ * the design they chose; for a letter it is the exact text they downloaded, which the server froze.
+ *
+ * ⚠️ A 403 IS NOT AN ERROR TO SWALLOW. It means the plan that paid for this has ended, and the
+ * caller is expected to offer the paywall — the same sheet a first download offers.
+ */
+export async function redownload(id: number): Promise<RedownloadResult> {
+  const j = await postJson(`/downloads/history/${id}/again`, {});
+  if (!j) return { ok: false, message: 'We could not reach the server. Please try again.' };
+  if (j.__ok && j.downloadUrl) return { ok: true, downloadUrl: String(j.downloadUrl) };
+  if (j.__status === 403) {
+    return { ok: false, locked: true, message: j.error || 'Downloading this is part of the paid plans.' };
+  }
+  if (j.__status === 410) {
+    return { ok: false, gone: true, message: j.error || 'We no longer have the text of that letter.' };
+  }
+  return { ok: false, message: j.error || 'We could not produce that file. Please try again.' };
+}
+
 /** The employer chips: best-matching open role per company, strongest match first. */
 export async function fetchTargets(): Promise<Target[]> {
   const [dash, saved] = await Promise.all([
