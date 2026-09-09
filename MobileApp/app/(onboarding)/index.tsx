@@ -37,6 +37,7 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { E, SERIF, sweepWords } from '../../components/employer-home/theme';
+import MeshStage from '../../components/employer-home/MeshStage';
 import SignaturePad from '../../components/onboarding/SignaturePad';
 import {
   fetchProfileSnapshot, saveDetails, uploadPhoto, uploadSignature, uploadResumeFile,
@@ -252,13 +253,21 @@ export default function MakeYours() {
 
   return (
     <View style={s.root}>
-      <LinearGradient colors={['#070A18', '#0C1330', '#131A3C']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />
-      <View style={[StyleSheet.absoluteFill, s.veil]} pointerEvents="none" />
+      {/* ⚠️ AN ABSOLUTE SIBLING, NOT A PARENT. MeshStage wraps its children in a plain
+          <View style={{position:'relative'}}> with no flex:1, so content passed as children sizes
+          to itself and a pinned footer never reaches the bottom of the screen. As a sibling it
+          needs no change to a shipped hero component — and its three washes keep drifting through
+          the whole flow, on the same native driver everything here uses. */}
+      <MeshStage fade={false} style={StyleSheet.absoluteFill}><View /></MeshStage>
 
-      <View style={[s.head, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity onPress={step > 0 && !done ? () => goTo(step - 1) : leave} style={s.icon} activeOpacity={0.8}>
-          <Ionicons name={step > 0 && !done ? 'arrow-back' : 'close'} size={18} color="#fff" />
-        </TouchableOpacity>
+      {/* insets.top + 52 is Home's own header height, so the chrome on both screens sits on
+          exactly one line and the crossfade between them does not jump. */}
+      <View style={[s.head, { height: insets.top + 52, paddingTop: insets.top }]}>
+        {done ? <View style={s.icon} /> : (
+          <TouchableOpacity onPress={step > 0 ? () => goTo(step - 1) : leave} style={s.icon} activeOpacity={0.8}>
+            <Ionicons name={step > 0 ? 'chevron-back' : 'close'} size={19} color="#fff" />
+          </TouchableOpacity>
+        )}
         <View style={s.steps}>
           {STEPS.map((st, i) => (
             <TouchableOpacity
@@ -597,12 +606,12 @@ function Field({
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: E.stage },
   flex: { flex: 1 },
-  veil: { backgroundColor: 'rgba(7,10,24,0.28)' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  head: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingBottom: 10, gap: 10 },
+  head: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 10 },
+  // Home's glassBtn, byte for byte, so the two screens' chrome is the same object.
   icon: {
-    width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
     backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder,
   },
   steps: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },

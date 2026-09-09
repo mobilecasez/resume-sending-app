@@ -362,12 +362,13 @@ ok('…driven by the SAME mode switch the hero uses', /mode=\{mode\}/.test(homeC
 ok('…and it keeps the one affordance the old grid had', /onMoreJobs=/.test(homeC) && /tab: 'myjobs'/.test(homeC));
 
 ok('⚠️ free-ness is the SERVER\'s answer, never computed here',
-  /item\.unlocked \?/.test(histC) && !/ownsEmployer \|\| /.test(histC));
+  /const free = item\.unlocked;/.test(histC) && !/ownsEmployer/.test(histC));
 ok('…so a lapsed plan draws a padlock the download will agree with', /lock-closed/.test(histC));
 
 ok('⚠️ the library NEVER requests its own renders', !/fetch\(/.test(histC) && !/home-cards/.test(histC));
 ok('…it borrows an image Home already hydrated, or draws one',
-  /cards\.find\(\(c\) => c\.id === templateId\)/.test(homeC) && /function LetterMark/.test(histC));
+  /cards\.find\(\(c\) => c\.id === templateId\)/.test(homeC) && /function Letterpress/.test(histC));
+ok('…and the drawn page knows a letter from a resume', /LETTER_RULES/.test(histC) && /pAddr/.test(histC));
 
 ok('the section paints from cache BEFORE the network', /cachedDownloadHistory/.test(homeC));
 ok('…and a failed refresh leaves what is on screen alone', /if \(fresh\) setHistory/.test(homeC));

@@ -5,204 +5,460 @@
 // This is what now fills the space under the hero. What used to be there re-showed the SAME resume
 // page thumbnails the carousel above was already showing — `image={cards[i % cards.length]?.image}`
 // under a company badge — so scrolling revealed the same designs a second time and told the user
-// nothing new. This tells them something only they know: what they bought.
+// nothing new. This shows something only they know: what they bought.
+//
+// ⚠️ THE GLASS IS DRAWN FROM ITS EDGES, NOT FROM A BLUR. expo-blur is installed, and it is still
+// the wrong tool here: BlurView over a scrolling parent samples imperfectly on Android and costs
+// real frames, so the card would look like two different materials on two platforms. What actually
+// makes something read as glass is not the blur — it is the LIT TOP FACE, the bright compressed
+// edge where light refracts, the fall-off down the pane and the return light at the foot. All of
+// those are linear gradients, which render identically everywhere. The stack below is that, in
+// order, and the press animation slides the specular across the top edge: a static highlight is a
+// picture of glass, a highlight that moves is glass.
 //
 // ⚠️ THE PADLOCK IS THE SERVER'S ANSWER, NEVER OURS. `unlocked` is computed server-side from the
-// same subscription and the same passes that canDownload will consult the instant they tap, using
-// the same fuzzy employer match. If this component ever decided free-ness for itself — "they own
-// the employer, so it must be open" — it would draw an open padlock over a 403 the moment a plan
-// lapsed. It draws what it was told and nothing else.
+// same subscription and the same passes canDownload consults the instant they tap, using the same
+// fuzzy employer match. If this component decided free-ness for itself — "they own the employer, so
+// it must be open" — it would draw an open padlock over a 403 the moment a plan lapsed. That is
+// also why there is no `unlockedEmployers` set: a second source of truth for a money question is
+// how the two answers start to disagree.
 //
-// ⚠️ NO NEW PICTURES ARE FETCHED HERE. Resume thumbnails are BORROWED from the images Home already
-// hydrated for the carousel, matched by template id. Server-side rendering is serial and
+// ⚠️ NO NEW PICTURES ARE FETCHED HERE. Resume thumbnails are BORROWED from images Home already
+// hydrated for the carousel, matched by template id. Rendering is serial server-side and
 // single-process chromium dies after about five pages, which is why /home-cards is capped at five
-// ids and Home's own hydration runs behind a single-flight mutex. A history list that requested its
-// own renders would stampede the app's front door. A row with no already-loaded image gets the
-// letterpress mark instead, which costs nothing and still reads as a document.
+// ids. A library row that requested its own render would stampede the front door of the app. A row
+// with nothing loaded gets the letterpress page, which costs nothing and still reads as a document.
 //
-// ⚠️ A COVER LETTER HAS NO THUMBNAIL ANYWHERE IN THIS SYSTEM. The only letter preview endpoint
-// demands the letter's HTML in the request body and renders per request with no disk cache. So
-// letters get a drawn miniature — a page with its letterhead bar in the employer's own colour and
-// ruled lines — rather than a picture. It is honestly a representation, not a claim to be the file.
+// ⚠️ A COVER LETTER HAS NO THUMBNAIL ANYWHERE IN THIS SYSTEM — the only letter preview endpoint
+// demands the letter's HTML in the request body and renders per request with no disk cache. So in
+// letter mode the drawn page is the NORMAL case, not a failure, and it draws itself as a letter:
+// a right-aligned address block where a resume has its headline.
 //
-// ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): one driver per view tree. This section is
-// rendered INSIDE Home's outer Animated.ScrollView, whose onScroll already drives a native-driven
-// value — so everything here is useNativeDriver:true on transform/opacity only, and there is not a
-// single JS-driven Animated.Value. No width, height, margin or colour is ever animated.
-import React, { useCallback, useEffect, useRef } from 'react';
+// ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): one driver per view tree. This section is a
+// child of Home's outer Animated.ScrollView, whose onScroll already drives a native value — so
+// every animation here is useNativeDriver:true on transform and opacity ONLY. Nothing animates
+// width, height, margin, borderRadius or colour, and there is no JS-driven Animated.Value.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Animated, Easing, ActivityIndicator, Platform,
+  View, Text, StyleSheet, Pressable, TouchableOpacity, Animated, Easing, ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image as ExpoImage } from 'expo-image';
-import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { E } from './theme';
 import { gradFor, DownloadHistoryItem } from '../../services/employerHomeService';
 
-/** A page's proportions, the same 300:424 the renderer itself uses. */
-const MARK_W = 52;
-const MARK_H = Math.round(MARK_W * (424 / 300));
+/** 48 x 68 is the renderer's own A4 ratio (68 * 300/424 = 48.1). */
+const CHIP_W = 48;
+const CHIP_H = 68;
+const ROW_H = 90;
 
-/** How many rows Home shows before it offers the rest. Home is a hero surface, not a list screen. */
-export const HISTORY_PREVIEW = 4;
+/** Home is a hero surface, not a list screen. */
+const PREVIEW_ROWS = 3;
+const MAX_ROWS = 12;
 
-/**
- * Frosted white, which is what "glass" means on a light ground.
- *
- * ⚠️ THE GLASS IS POSITIONAL. On the dark hero, glass is rgba(255,255,255,0.08) over a 1px
- * rgba(255,255,255,0.14) border — that recipe is invisible down here, below the stage's melt into
- * E.bg, and mixing the two across the fade line is the "two surfaces" seam this design already
- * fought once. So this is the light-family version of the same material: a real blur where the
- * platform gives us one, a translucent white body, and a bright hairline along the top edge only,
- * which is where light would actually catch.
- *
- * ⚠️ ANDROID GETS THE SOLID FALLBACK ON PURPOSE. BlurView over a scrolling parent is expensive
- * there and samples imperfectly; on a flat #E5EAF3 ground the difference between a blur and a
- * near-opaque white is almost nothing, and a smooth list is worth more than a sampling artefact.
- */
-function Glass({ children, style }: { children: React.ReactNode; style?: any }) {
-  return (
-    <View style={[s.glassOuter, style]}>
-      <View style={s.glassClip}>
-        {Platform.OS === 'ios'
-          ? <BlurView intensity={26} tint="light" style={StyleSheet.absoluteFill} />
-          : <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255,255,255,0.96)' }]} />}
-        <View style={[StyleSheet.absoluteFill, s.glassBody]} pointerEvents="none" />
-        <LinearGradient
-          colors={['rgba(255,255,255,0.85)', 'rgba(255,255,255,0)']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 0, y: 1 }}
-          style={s.glassTopLight}
-          pointerEvents="none"
-        />
-        {children}
-      </View>
-    </View>
-  );
-}
+/** Every colour in the employer palette is 6-digit hex. */
+const rgba = (hex: string, a: number) =>
+  `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`;
 
-/** The drawn stand-in for a document we have no picture of. Ruled lines under a coloured head. */
-function LetterMark({ accent }: { accent: [string, string] }) {
-  return (
-    <View style={s.markPage}>
-      <LinearGradient colors={accent} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.markHead} />
-      <View style={s.markLines}>
-        {[1, 0.72, 0.9, 0.55, 0.84, 0.4].map((w, i) => (
-          <View key={i} style={[s.markLine, { width: `${w * 100}%` }]} />
-        ))}
-      </View>
-    </View>
-  );
-}
-
-/** "Tuesday", "12 Mar", "12 Mar 2025" — near dates read as words, older ones as dates. */
-function friendlyDate(iso: string): string {
+/** TODAY / YESTERDAY / 4 DAYS AGO / 12 AUG / 12 AUG 2025. Never an ISO string, never a clock time. */
+function stamp(iso: string): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
   const d = new Date(t);
   const now = Date.now();
-  const days = Math.floor((now - t) / 86400000);
-  if (days <= 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  const h = (now - t) / 3600000;
+  if (h < 24) return 'TODAY';
+  if (h < 48) return 'YESTERDAY';
+  const days = Math.floor(h / 24);
+  if (days < 7) return `${days} DAYS AGO`;
+  const m = d.toLocaleDateString('en-GB', { month: 'short' }).toUpperCase();
   const sameYear = new Date(now).getFullYear() === d.getFullYear();
-  return d.toLocaleDateString(undefined, sameYear
-    ? { day: 'numeric', month: 'short' }
-    : { day: 'numeric', month: 'short', year: 'numeric' });
+  return sameYear ? `${d.getDate()} ${m}` : `${d.getDate()} ${m} ${d.getFullYear()}`;
 }
 
+/* ── the material ───────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The lit faces of a pane, bottom to top. `rim` slides on press; everything else is static.
+ *
+ * The order is the whole point and must not be shuffled: the wash is what is BEHIND the glass, the
+ * refraction band is where that compresses and goes bright at the thick edge, the sheen is the
+ * light across the face, and the rim / falloff / shade / return-light are the four surfaces of the
+ * pane itself, top to bottom.
+ */
+function Facets({
+  pair, dim, rim, sheenOpacity,
+}: {
+  pair: [string, string];
+  dim: boolean;
+  rim: Animated.AnimatedInterpolation<number> | Animated.Value;
+  sheenOpacity: Animated.AnimatedInterpolation<number> | Animated.Value;
+}) {
+  // The amber/red pair drifts warm enough under white to read as a warning state at full strength.
+  const warm = pair[0] === '#F59E0B';
+  const a0 = dim ? 0.13 : (warm ? 0.15 : 0.22);
+  const a1 = dim ? 0.04 : 0.06;
+  return (
+    <>
+      <View style={s.wash} pointerEvents="none">
+        <LinearGradient
+          colors={[rgba(pair[0], a0), rgba(pair[1], a1), 'transparent']}
+          locations={[0, 0.55, 1]}
+          start={{ x: 0, y: 0.15 }}
+          end={{ x: 1, y: 0.85 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </View>
+      <View style={s.refract} pointerEvents="none">
+        <LinearGradient
+          colors={['rgba(255,255,255,0.58)', 'rgba(255,255,255,0)']}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </View>
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: sheenOpacity }]} pointerEvents="none">
+        <LinearGradient
+          colors={['rgba(255,255,255,0.50)', 'rgba(255,255,255,0.06)', 'transparent']}
+          locations={[0, 0.40, 1]}
+          start={{ x: 0.10, y: 0 }}
+          end={{ x: 0.72, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
+      {/* The specular. 1.5pt, not a hairline: a hairline reads as a border, this reads as a lit
+          face. Oversized so its own ends can never enter the clip when it slides. */}
+      <Animated.View style={[s.rim, { transform: [{ translateX: rim }] }]} pointerEvents="none">
+        <LinearGradient
+          colors={['rgba(255,255,255,0.30)', 'rgba(255,255,255,1)', 'rgba(255,255,255,0.50)']}
+          locations={[0, 0.32, 1]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
+      <View style={s.falloff} pointerEvents="none">
+        <LinearGradient colors={['rgba(255,255,255,0.40)', 'transparent']} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={StyleSheet.absoluteFill} />
+      </View>
+      <View style={s.shade} pointerEvents="none">
+        <LinearGradient colors={['rgba(11,15,34,0)', 'rgba(11,15,34,0.06)']} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={StyleSheet.absoluteFill} />
+      </View>
+      {/* Dark, then bright, in two points. That reversal at the foot is what reads as an object
+          made of a material rather than a rectangle with a gradient in it. */}
+      <View style={s.returnLight} pointerEvents="none" />
+    </>
+  );
+}
+
+/* ── the page ───────────────────────────────────────────────────────────────────────────────── */
+
+const RESUME_RULES = [
+  { top: 21, w: '86%' }, { top: 27, w: '72%' }, { top: 33, w: '80%' },
+  { top: 41, w: '64%' }, { top: 47, w: '84%' }, { top: 53, w: '48%' },
+];
+const LETTER_RULES = [
+  { top: 33, w: '80%' }, { top: 41, w: '64%' }, { top: 47, w: '84%' }, { top: 53, w: '48%' },
+];
+
+/** Drawn in RN, costing nothing. The accent is what makes one design look unlike another. */
+function Letterpress({ accent, letter }: { accent: string; letter: boolean }) {
+  return (
+    <>
+      <View style={[s.pAccent, { backgroundColor: accent }]} />
+      {letter ? (
+        // A letter is not a resume and must not draw like one: the head of a letter is the
+        // recipient's address, set to the right.
+        <View style={s.pAddr}>
+          {['44%', '38%', '30%'].map((w, i) => <View key={i} style={[s.pRule, { width: w as any, alignSelf: 'flex-end', marginTop: i ? 4 : 0 }]} />)}
+        </View>
+      ) : (
+        <View style={s.pName} />
+      )}
+      {(letter ? LETTER_RULES : RESUME_RULES).map((r, i) => (
+        <View key={i} style={[s.pRule, s.pRuleAbs, { top: r.top, width: r.w as any }]} />
+      ))}
+    </>
+  );
+}
+
+/* ── one row ────────────────────────────────────────────────────────────────────────────────── */
+
 function Row({
-  item, image, index, busy, onAgain,
+  item, image, accent, index, busy, onAgain, onPay,
 }: {
   item: DownloadHistoryItem;
   image?: string | null;
+  accent: string;
   index: number;
   busy: boolean;
   onAgain: (it: DownloadHistoryItem) => void;
+  onPay: (employer: string | null) => void;
 }) {
-  const t = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    // Staggered so the list assembles rather than appearing. Transform + opacity, native driver.
-    Animated.timing(t, {
-      toValue: 1,
-      duration: 320,
-      delay: Math.min(index, 6) * 55,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [t, index]);
+  const a = useRef(new Animated.Value(0)).current;
+  const p = useRef(new Animated.Value(0)).current;
+  const [justDone, setJustDone] = useState(false);
+  const wasBusy = useRef(false);
 
-  const accent = gradFor(item.employer || item.templateName);
-  const who = item.employer || 'No employer';
+  useEffect(() => {
+    // Capped at index 3 so an expanded twelve-row list never cascades for two seconds.
+    Animated.timing(a, {
+      toValue: 1, duration: 300, delay: Math.min(index, 3) * 70,
+      easing: Easing.out(Easing.cubic), useNativeDriver: true,
+    }).start();
+  }, [a, index]);
+
+  useEffect(() => {
+    if (wasBusy.current && !busy) {
+      setJustDone(true);
+      const t = setTimeout(() => setJustDone(false), 1500);
+      return () => clearTimeout(t);
+    }
+    wasBusy.current = busy;
+    return undefined;
+  }, [busy]);
+
+  const spring = (to: number) =>
+    Animated.spring(p, { toValue: to, damping: 18, stiffness: 320, mass: 0.8, useNativeDriver: true }).start();
+
+  const free = item.unlocked;
+  const pair = gradFor(item.employer || item.templateName);
+  const shims = Math.min(2, Math.max(0, (item.times || 1) - 1));
+
+  const tap = useCallback(() => {
+    if (busy) return;
+    try {
+      if (free) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      else Haptics.selectionAsync();
+    } catch {}
+    if (free) onAgain(item); else onPay(item.employer || null);
+  }, [busy, free, item, onAgain, onPay]);
 
   return (
     <Animated.View
       style={{
-        opacity: t,
-        transform: [{ translateY: t.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+        opacity: a,
+        transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
       }}
     >
-      <Glass style={s.row}>
-        <TouchableOpacity
-          style={s.rowInner}
-          activeOpacity={0.86}
-          onPress={() => onAgain(item)}
-          disabled={busy}
-          accessibilityLabel={`${item.unlocked ? 'Download again' : 'Unlock'} ${item.templateName} for ${who}`}
+      <Pressable
+        onPress={tap}
+        onPressIn={() => spring(1)}
+        onPressOut={() => spring(0)}
+        accessibilityRole="button"
+        accessibilityLabel={
+          busy ? 'Getting your file'
+            : justDone ? 'Saved'
+            : free ? `Download ${item.templateName} for ${item.employer || 'this employer'} again`
+            : `${item.templateName} for ${item.employer || 'this employer'} is locked because your plan ended`
+        }
+      >
+        <Animated.View
+          style={[s.shell, { transform: [{ scale: p.interpolate({ inputRange: [0, 1], outputRange: [1, 0.982] }) }] }]}
         >
-          <View style={s.markWrap}>
-            {image
-              ? (
-                <View style={s.markPage}>
-                  <ExpoImage
-                    source={{ uri: image }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="cover"
-                    contentPosition="top"
-                    transition={180}
-                  />
+          <View style={s.clip}>
+            <Facets
+              pair={pair}
+              dim={!free}
+              rim={p.interpolate({ inputRange: [0, 1], outputRange: [0, -28] })}
+              sheenOpacity={p.interpolate({ inputRange: [0, 1], outputRange: [1, 0.60] })}
+            />
+
+            <View style={s.content}>
+              {/* ── the paper ── */}
+              <View style={s.chipWrap}>
+                {/* Honest data, never decoration: `times` is a real count, because a download is
+                    upserted on document identity rather than appended per tap. */}
+                {shims >= 2 && <View style={[s.shim, s.shim2]} />}
+                {shims >= 1 && <View style={[s.shim, s.shim1]} />}
+                <View style={s.chipLift}>
+                  <View style={s.chipClip}>
+                    {image ? (
+                      <ExpoImage
+                        source={{ uri: image }}
+                        style={s.chipImg}
+                        contentFit="cover"
+                        contentPosition="top"
+                        transition={200}
+                      />
+                    ) : (
+                      <Letterpress accent={accent} letter={item.kind === 'cover_letter'} />
+                    )}
+                    <View style={[s.stamp, item.format === 'docx' ? s.stampDoc : s.stampPdf]}>
+                      <Text style={s.stampTx} allowFontScaling={false}>{item.format === 'docx' ? 'WORD' : 'PDF'}</Text>
+                    </View>
+                  </View>
+                  <LinearGradient colors={pair} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.badge}>
+                    <Text style={s.badgeTx} allowFontScaling={false}>
+                      {(item.employer || '?').trim().charAt(0).toUpperCase()}
+                    </Text>
+                  </LinearGradient>
                 </View>
-              )
-              : <LetterMark accent={accent} />}
-            <View style={[s.fmt, item.format === 'docx' && s.fmtDocx]}>
-              <Text style={s.fmtTx}>{item.format === 'docx' ? 'DOC' : 'PDF'}</Text>
-            </View>
-          </View>
-
-          <View style={s.rowMid}>
-            <Text style={s.who} numberOfLines={1}>{who}</Text>
-            <Text style={s.what} numberOfLines={1}>{item.templateName || 'Your design'}</Text>
-            <View style={s.metaRow}>
-              <Ionicons name="time-outline" size={11} color={E.textFaint} />
-              <Text style={s.meta} numberOfLines={1}>
-                {friendlyDate(item.downloadedAt)}
-                {item.times > 1 ? `  ·  ${item.times} times` : ''}
-              </Text>
-            </View>
-          </View>
-
-          <View style={s.actionWrap}>
-            {busy ? (
-              <ActivityIndicator size="small" color={E.blueDeep} />
-            ) : item.unlocked ? (
-              <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.action}>
-                <Ionicons name="arrow-down" size={16} color="#fff" />
-              </LinearGradient>
-            ) : (
-              <View style={s.actionLocked}>
-                <Ionicons name="lock-closed" size={14} color={E.textMuted} />
               </View>
-            )}
+
+              {/* ── who, what, when ── */}
+              <View style={s.mid}>
+                <Text style={s.who} numberOfLines={1} allowFontScaling={false}>
+                  {item.employer || 'No employer'}
+                </Text>
+                <View style={s.l2}>
+                  <Text style={s.what} numberOfLines={1} allowFontScaling={false}>
+                    {item.templateName || 'Your design'}
+                  </Text>
+                  <View style={s.capDot} />
+                  {!free ? (
+                    <View style={s.planPill}>
+                      <Text style={s.planPillTx} allowFontScaling={false}>PLAN ENDED</Text>
+                    </View>
+                  ) : item.times > 1 ? (
+                    <Text style={s.times} allowFontScaling={false}>{item.times} times</Text>
+                  ) : null}
+                </View>
+                <Text style={s.when} numberOfLines={1} allowFontScaling={false}>{stamp(item.downloadedAt)}</Text>
+              </View>
+
+              {/* ── the action, same geometry in every state so nothing shifts ── */}
+              <View style={[s.act, free ? s.actFree : s.actLocked]}>
+                {busy ? <ActivityIndicator size="small" color={E.blueDeep} />
+                  : justDone ? <Ionicons name="checkmark" size={17} color={E.emerald} />
+                  : free ? <Ionicons name="arrow-down" size={17} color={E.blueDeep} />
+                  : <Ionicons name="lock-closed" size={14} color={E.textFaint} />}
+              </View>
+            </View>
+
+            {/* Above the content so nothing crosses it. RN cannot colour a border per side, so one
+                even rim plus the directional gradients above is the closest honest approximation. */}
+            <View style={s.innerRim} pointerEvents="none" />
           </View>
-        </TouchableOpacity>
-      </Glass>
+        </Animated.View>
+      </Pressable>
     </Animated.View>
   );
 }
 
+/* ── loading ────────────────────────────────────────────────────────────────────────────────── */
+
+function SkeletonRow({ index }: { index: number }) {
+  const g = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(Animated.sequence([
+      Animated.delay(index * 300),
+      Animated.timing(g, { toValue: 1, duration: 1100, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      Animated.timing(g, { toValue: 0, duration: 0, useNativeDriver: true }),
+      Animated.delay(500),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [g, index]);
+  const still = useRef(new Animated.Value(0)).current;
+  return (
+    <View style={s.shell}>
+      <View style={s.clip}>
+        {/* The material is not what we are waiting for, so it is already here — nothing reflows
+            when the data lands. */}
+        <Facets pair={[E.blue, E.purple]} dim rim={still} sheenOpacity={1 as any} />
+        <View style={s.content}>
+          <View style={s.skPaper} />
+          <View style={s.mid}>
+            <View style={[s.skBar, { width: 112, height: 10, borderRadius: 5 }]} />
+            <View style={[s.skBar, { width: 74, height: 8, borderRadius: 4, marginTop: 6 }]} />
+            <View style={[s.skBar, { width: 52, height: 7, borderRadius: 3.5, marginTop: 5 }]} />
+          </View>
+          <View style={s.skAct} />
+        </View>
+        <Animated.View
+          style={[s.glare, { transform: [{ translateX: g.interpolate({ inputRange: [0, 1], outputRange: [-220, 420] }) }] }]}
+          pointerEvents="none"
+        >
+          <LinearGradient
+            colors={['transparent', 'rgba(255,255,255,0.55)', 'transparent']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            style={StyleSheet.absoluteFill}
+          />
+        </Animated.View>
+        <View style={s.innerRim} pointerEvents="none" />
+      </View>
+    </View>
+  );
+}
+
+/* ── empty ──────────────────────────────────────────────────────────────────────────────────── */
+
+const FAN = [
+  { rot: '-9deg', tx: -6, ty: 5 },
+  { rot: '0deg', tx: 0, ty: 0 },
+  { rot: '9deg', tx: 6, ty: 5 },
+];
+
+function EmptyState({ mode, onScrollToTop }: { mode: 'resume' | 'letter'; onScrollToTop: () => void }) {
+  const f = useRef(FAN.map(() => new Animated.Value(0))).current;
+  useEffect(() => {
+    // rotate and translate are both transforms, so the fan-out is native-driver legal — and the
+    // fan-out IS the animation. Nothing else on this card moves.
+    Animated.stagger(70, f.map((v) =>
+      Animated.spring(v, { toValue: 1, damping: 15, stiffness: 160, mass: 1, useNativeDriver: true }))).start();
+  }, [f]);
+  const still = useRef(new Animated.Value(0)).current;
+
+  return (
+    <View style={[s.shell, s.emptyShell]}>
+      <View style={s.clip}>
+        <View style={s.wash} pointerEvents="none">
+          <LinearGradient
+            colors={['rgba(79,141,255,0.16)', 'rgba(124,107,255,0.05)', 'transparent']}
+            locations={[0, 0.55, 1]}
+            start={{ x: 0, y: 0.15 }} end={{ x: 1, y: 0.85 }}
+            style={StyleSheet.absoluteFill}
+          />
+        </View>
+        <Facets pair={[E.blue, E.purple]} dim rim={still} sheenOpacity={1 as any} />
+        <View style={s.emptyBody}>
+          <View style={s.fanRow}>
+            {FAN.map((cfg, i) => (
+              <Animated.View
+                key={i}
+                style={[
+                  s.blank,
+                  {
+                    transform: [
+                      { rotate: f[i].interpolate({ inputRange: [0, 1], outputRange: ['0deg', cfg.rot] }) },
+                      { translateX: f[i].interpolate({ inputRange: [0, 1], outputRange: [0, cfg.tx] }) },
+                      { translateY: f[i].interpolate({ inputRange: [0, 1], outputRange: [0, cfg.ty] }) },
+                    ],
+                  },
+                ]}
+              >
+                {[{ t: 14, w: '76%' }, { t: 20, w: '86%' }, { t: 26, w: '64%' }, { t: 34, w: '42%' }].map((r, j) => (
+                  <View key={j} style={[s.pRule, s.pRuleAbs, { top: r.t, width: r.w as any, backgroundColor: 'rgba(11,15,34,0.06)' }]} />
+                ))}
+              </Animated.View>
+            ))}
+          </View>
+          <Text style={s.emptyH}>Nothing downloaded yet</Text>
+          <Text style={s.emptyTx}>
+            {mode === 'letter'
+              ? 'Every cover letter you download lands here, ready to send again.'
+              : 'Every resume you download lands here, so you can get the same file again without paying twice.'}
+          </Text>
+          {/* Not a gradient CTA and not a navigation: the designs are on this same screen, straight
+              up. Sending someone somewhere else for something already here would be a small lie. */}
+          <TouchableOpacity style={s.emptyLink} activeOpacity={0.85} onPress={onScrollToTop}>
+            <Ionicons name="arrow-up" size={13} color={E.blueDeep} />
+            <Text style={s.emptyLinkTx}>Pick a design above</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={s.innerRim} pointerEvents="none" />
+      </View>
+    </View>
+  );
+}
+
+/* ── the section ────────────────────────────────────────────────────────────────────────────── */
+
 export default function DownloadHistory({
-  mode, items, loading, expanded, busyId, thumbFor, onAgain, onExpand, onMoreJobs,
+  mode, items, loading, expanded, busyId, thumbFor, accentFor, onAgain, onPay, onExpand,
+  onScrollToTop, onMoreJobs,
 }: {
   mode: 'resume' | 'letter';
   items: DownloadHistoryItem[];
@@ -210,158 +466,238 @@ export default function DownloadHistory({
   expanded: boolean;
   /** The row currently being produced, so only that one shows a spinner. */
   busyId: number | null;
-  /** An already-loaded page image for this design, or nothing. Never triggers a fetch. */
+  /** An already-loaded page image for this design, or nothing. NEVER triggers a fetch. */
   thumbFor: (templateId: string) => string | null | undefined;
+  /** The design's accent from the catalogue Home already loaded. */
+  accentFor: (templateId: string) => string;
   onAgain: (it: DownloadHistoryItem) => void;
+  onPay: (employer: string | null) => void;
   onExpand: () => void;
+  onScrollToTop: () => void;
+  /** The one affordance the section this replaced had, and the only route to the jobs tab from
+   *  Home in resume mode. Losing it would quietly lose the targets entry point. */
   onMoreJobs: () => void;
 }) {
-  const shown = expanded ? items : items.slice(0, HISTORY_PREVIEW);
-  const noun = mode === 'letter' ? 'cover letters' : 'resumes';
+  const shown = expanded ? items.slice(0, MAX_ROWS) : items.slice(0, PREVIEW_ROWS);
+  const lockedCount = items.filter((i) => !i.unlocked).length;
 
-  const renderEmpty = useCallback(() => (
-    <Glass style={s.empty}>
-      <View style={s.emptyIcon}>
-        <Ionicons name={mode === 'letter' ? 'mail-outline' : 'document-text-outline'} size={19} color={E.blueDeep} />
-      </View>
-      <Text style={s.emptyH}>Nothing downloaded yet</Text>
-      <Text style={s.emptyTx}>
-        {mode === 'letter'
-          ? 'Cover letters you download will collect here, ready to send again.'
-          : 'Resumes you download will collect here, so you can get them again on any phone.'}
-      </Text>
-    </Glass>
-  ), [mode]);
+  // The list cross-fades on a mode change; the header and the title never move.
+  const m = useRef(new Animated.Value(1)).current;
+  const [view, setView] = useState<{ mode: string; rows: DownloadHistoryItem[] }>({ mode, rows: shown });
+  const firstRun = useRef(true);
+
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; setView({ mode, rows: shown }); return; }
+    if (view.mode === mode) { setView({ mode, rows: shown }); return; }
+    Animated.timing(m, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver: true })
+      .start(() => {
+        setView({ mode, rows: shown });
+        Animated.timing(m, { toValue: 1, duration: 240, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      });
+    // `shown` is derived from items/expanded and is intentionally read at effect time only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, items, expanded]);
+
+  // A fast answer should still read as a load rather than as a flicker.
+  const [floor, setFloor] = useState(true);
+  useEffect(() => { const t = setTimeout(() => setFloor(false), 350); return () => clearTimeout(t); }, [mode]);
+  const showSkeletons = (loading || floor) && !items.length;
+
+  const title = useMemo(
+    () => (mode === 'letter' ? 'Letters you have saved' : 'Yours to download again'),
+    [mode],
+  );
 
   return (
     <View style={s.wrap}>
       <View style={s.head}>
         <View style={{ flex: 1 }}>
-          <Text style={s.eyebrow}>Your library</Text>
-          <Text style={s.title} numberOfLines={1}>
-            {items.length ? `${items.length} ${items.length === 1 ? noun.slice(0, -1) : noun}, yours to keep` : `Your ${noun}`}
-          </Text>
+          <Text style={s.eyebrow}>Downloaded</Text>
+          <Text style={s.title} numberOfLines={1}>{title}</Text>
         </View>
-        {/* The only affordance worth keeping from the section this replaced. */}
-        <TouchableOpacity style={s.moreBtn} activeOpacity={0.8} onPress={onMoreJobs}>
-          <Text style={s.moreTx}>More jobs </Text>
+        <TouchableOpacity style={s.seeAll} activeOpacity={0.8} onPress={onMoreJobs}>
+          <Text style={s.seeAllTx}>More jobs </Text>
           <Ionicons name="arrow-forward" size={12} color={E.blueDeep} />
         </TouchableOpacity>
       </View>
 
-      {loading && !items.length ? (
-        <View style={s.skeletons}>
-          {[0, 1, 2].map((i) => <View key={i} style={s.skeleton} />)}
-        </View>
+      {showSkeletons ? (
+        <View style={s.list}>{[0, 1, 2].map((i) => <SkeletonRow key={i} index={i} />)}</View>
       ) : !items.length ? (
-        renderEmpty()
+        <EmptyState mode={mode} onScrollToTop={onScrollToTop} />
       ) : (
-        <View style={s.list}>
-          {shown.map((it, i) => (
-            <Row
-              key={`${it.id}`}
-              item={it}
-              index={i}
-              image={mode === 'letter' ? null : thumbFor(it.templateId)}
-              busy={busyId === it.id}
-              onAgain={onAgain}
-            />
-          ))}
-          {!expanded && items.length > HISTORY_PREVIEW && (
-            <TouchableOpacity style={s.seeAll} activeOpacity={0.8} onPress={onExpand}>
-              <Text style={s.seeAllTx}>See all {items.length}</Text>
+        <Animated.View
+          style={{
+            opacity: m.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0, 1, 1] }),
+            transform: [{ translateY: m.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
+          }}
+        >
+          <View style={s.list}>
+            {view.rows.map((it, i) => (
+              <Row
+                key={`${view.mode}-${it.id}`}
+                item={it}
+                index={i}
+                image={view.mode === 'letter' ? null : thumbFor(it.templateId)}
+                accent={accentFor(it.templateId)}
+                busy={busyId === it.id}
+                onAgain={onAgain}
+                onPay={onPay}
+              />
+            ))}
+          </View>
+
+          {items.length > PREVIEW_ROWS && !expanded && (
+            <TouchableOpacity style={s.expand} activeOpacity={0.85} onPress={onExpand}>
+              <Text style={s.expandTx}>See all {items.length}</Text>
               <Ionicons name="chevron-down" size={14} color={E.blueDeep} />
             </TouchableOpacity>
           )}
+
+          {lockedCount > 0 && (
+            // ⚠️ LOAD-BEARING COPY. It says what happened and what fixes it, and it must never
+            // imply they are being charged twice for the same thing — they are not; a pass buys the
+            // employer and everything for that employer comes back. No date is named because the
+            // endpoint returns none, and an invented one would be a lie.
+            <View style={s.lockedStrip}>
+              <Ionicons name="information-circle" size={15} color={E.purple} style={{ marginTop: 1 }} />
+              <Text style={s.lockedTx}>
+                {lockedCount === 1 ? '1 file is' : `${lockedCount} files are`} locked because your plan
+                ended. Nothing was deleted — your designs and your details are exactly as you left
+                them. One payment for a company, or a plan, brings them back.
+              </Text>
+            </View>
+          )}
+
           {mode === 'resume' && (
-            // Said plainly because it is true and would otherwise surprise: there is one resume
-            // record per person, so a design re-rendered today carries today's wording.
             <Text style={s.footnote}>Re-downloads use your latest resume in that design.</Text>
           )}
-        </View>
+        </Animated.View>
       )}
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  wrap: { paddingHorizontal: 16, paddingTop: 24 },
+  wrap: { paddingHorizontal: 16, paddingTop: 26 },
 
-  head: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: 14 },
-  eyebrow: { fontSize: 10.5, fontWeight: '800', letterSpacing: 1.4, color: E.textFaint, textTransform: 'uppercase' },
-  title: { fontSize: 19, fontWeight: '800', color: E.ink, letterSpacing: -0.5, marginTop: 3, flexShrink: 1 },
-  moreBtn: { flexDirection: 'row', alignItems: 'center', paddingBottom: 3 },
-  moreTx: { fontSize: 12.5, fontWeight: '800', color: E.blueDeep, flexShrink: 1 },
+  head: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: 12 },
+  // The same values the section this replaced used, so it reads as its sibling.
+  eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: E.textFaint },
+  title: { fontSize: 19, fontWeight: '800', color: E.ink, letterSpacing: -0.7, marginTop: 3, flexShrink: 1 },
+  seeAll: { flexDirection: 'row', alignItems: 'center', paddingBottom: 3 },
+  seeAllTx: { fontSize: 12.5, fontWeight: '700', color: E.blueDeep, flexShrink: 1 },
 
   list: { gap: 10 },
 
-  // ⚠️ The shadow lives on the OUTER view and the clipping on the INNER one. iOS drops a shadow
-  // drawn on the same view as overflow:'hidden' — this exact trap has been hit three times here.
-  glassOuter: {
-    borderRadius: 20,
-    shadowColor: '#0B0F22',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.07,
-    shadowRadius: 18,
+  // ⚠️ Shadow and clipping never share a view: iOS drops a shadow drawn on an overflow:'hidden'
+  // view. The white is opaque because iOS derives the shadow from the alpha channel — a transparent
+  // card casts nothing — and because the row must still be a card if every gradient fails to draw.
+  shell: {
+    height: ROW_H, borderRadius: 20, backgroundColor: '#FFFFFF',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: E.border,
+    shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.07, shadowRadius: 20,
     elevation: 3,
   },
-  glassClip: {
-    borderRadius: 20,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.72)',
-    backgroundColor: Platform.OS === 'ios' ? 'transparent' : 'rgba(255,255,255,0.96)',
+  // 19 and not 20: absolute children position against the padding box, so matching radii leave a
+  // sub-pixel seam of shell colour at each corner.
+  clip: { ...StyleSheet.absoluteFillObject, borderRadius: 19, overflow: 'hidden' },
+  content: { flex: 1, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 12 },
+
+  wash: { position: 'absolute', left: 0, top: 0, bottom: 0, width: '42%' },
+  refract: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 26 },
+  rim: { position: 'absolute', top: 0, left: '-20%', width: '140%', height: 1.5 },
+  falloff: { position: 'absolute', top: 1.5, left: 0, right: 0, height: 16 },
+  shade: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 22 },
+  returnLight: { position: 'absolute', bottom: 0, left: 10, right: 10, height: 1, backgroundColor: 'rgba(255,255,255,0.60)' },
+  innerRim: { ...StyleSheet.absoluteFillObject, borderRadius: 19, borderWidth: 1, borderColor: 'rgba(255,255,255,0.62)' },
+
+  chipWrap: { width: CHIP_W, height: CHIP_H },
+  shim: {
+    position: 'absolute', width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: '#FFFFFF',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(11,15,34,0.10)',
   },
-  glassBody: { backgroundColor: 'rgba(255,255,255,0.52)' },
-  glassTopLight: { position: 'absolute', left: 0, right: 0, top: 0, height: 22 },
-
-  row: {},
-  rowInner: { flexDirection: 'row', alignItems: 'center', gap: 13, padding: 11 },
-
-  markWrap: { width: MARK_W, height: MARK_H },
-  markPage: {
-    width: MARK_W, height: MARK_H, borderRadius: 7, overflow: 'hidden',
-    backgroundColor: '#EEF2F8', borderWidth: 1, borderColor: 'rgba(11,15,34,0.07)',
+  shim1: { opacity: 0.62, transform: [{ rotate: '-4deg' }, { translateX: -3 }] },
+  shim2: { opacity: 0.40, transform: [{ rotate: '-7.5deg' }, { translateX: -5.5 }, { translateY: 2 }] },
+  chipLift: {
+    width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: '#fff',
+    shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.16, shadowRadius: 7, elevation: 3,
   },
-  markHead: { height: 15 },
-  markLines: { paddingHorizontal: 6, paddingTop: 7, gap: 4 },
-  markLine: { height: 2.5, borderRadius: 2, backgroundColor: 'rgba(11,15,34,0.13)' },
-  fmt: {
-    position: 'absolute', right: -5, bottom: -4,
-    paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5,
-    backgroundColor: E.ink,
+  chipClip: { width: CHIP_W, height: CHIP_H, borderRadius: 6, overflow: 'hidden', backgroundColor: '#fff' },
+  chipImg: { width: '100%', height: '100%' },
+
+  pAccent: { position: 'absolute', left: 0, right: 0, top: 0, height: 4 },
+  pName: { position: 'absolute', left: 6, top: 11, width: '58%', height: 4, borderRadius: 2, backgroundColor: 'rgba(11,15,34,0.22)' },
+  pAddr: { position: 'absolute', left: 6, right: 6, top: 11 },
+  pRule: { height: 2, borderRadius: 1, backgroundColor: 'rgba(11,15,34,0.075)' },
+  pRuleAbs: { position: 'absolute', left: 6, right: 6 },
+
+  stamp: { position: 'absolute', right: 3, bottom: 3, height: 13, paddingHorizontal: 4, borderRadius: 4, alignItems: 'center', justifyContent: 'center' },
+  stampPdf: { backgroundColor: 'rgba(11,15,34,0.72)' },
+  stampDoc: { backgroundColor: 'rgba(37,99,235,0.90)' },
+  stampTx: { fontSize: 7.5, fontWeight: '800', letterSpacing: 0.6, color: '#fff' },
+
+  // A sibling of the clip so it can bleed outside it — the same badge the hero uses, at 82%.
+  badge: {
+    position: 'absolute', left: -5, bottom: -5, width: 18, height: 18, borderRadius: 6,
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#fff',
   },
-  fmtDocx: { backgroundColor: E.blueDeep },
-  fmtTx: { fontSize: 7.5, fontWeight: '900', color: '#fff', letterSpacing: 0.6 },
+  badgeTx: { fontSize: 9, fontWeight: '800', color: '#fff' },
 
-  rowMid: { flex: 1, minWidth: 0 },
-  who: { fontSize: 15, fontWeight: '800', color: E.ink, letterSpacing: -0.3, flexShrink: 1 },
-  what: { fontSize: 12, fontWeight: '600', color: E.textMuted, marginTop: 2, flexShrink: 1 },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
-  meta: { fontSize: 11, fontWeight: '600', color: E.textFaint, flexShrink: 1 },
-
-  actionWrap: { width: 40, alignItems: 'flex-end' },
-  action: { width: 34, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  actionLocked: {
-    width: 34, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: E.inputBg, borderWidth: 1, borderColor: E.border,
+  mid: { flex: 1, minWidth: 0 },
+  // Never dimmed on a locked row: greying the name is what makes people believe their work is gone.
+  who: { fontSize: 14, fontWeight: '800', color: E.ink, letterSpacing: -0.3, flexShrink: 1 },
+  l2: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
+  what: { fontSize: 11.5, fontWeight: '600', color: E.textMuted, flexShrink: 1 },
+  capDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: 'rgba(11,15,34,0.20)' },
+  times: { fontSize: 11, fontWeight: '600', color: E.textFaint, flexShrink: 1 },
+  // Amber, never red: red says you did something wrong, amber says paused.
+  planPill: {
+    height: 16, paddingHorizontal: 6, borderRadius: 5, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(245,158,11,0.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.28)',
   },
+  planPillTx: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4, color: '#B45309' },
+  // The hero's caption metric, recoloured. The type scale crossing the dark/light boundary is the
+  // clearest tell that the two halves of this screen are one design.
+  when: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: E.textFaint, marginTop: 5, flexShrink: 1 },
 
-  seeAll: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
-    paddingVertical: 11, marginTop: 2,
+  act: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderWidth: 1 },
+  actFree: { backgroundColor: 'rgba(37,99,235,0.10)', borderColor: 'rgba(37,99,235,0.20)' },
+  actLocked: { backgroundColor: 'rgba(11,15,34,0.05)', borderColor: 'rgba(11,15,34,0.07)' },
+
+  skPaper: { width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: 'rgba(11,15,34,0.055)' },
+  skBar: { backgroundColor: 'rgba(11,15,34,0.055)' },
+  skAct: { width: 34, height: 34, borderRadius: 11, backgroundColor: 'rgba(11,15,34,0.04)' },
+  glare: { position: 'absolute', top: 0, bottom: 0, width: 160 },
+
+  emptyShell: { height: 150 },
+  emptyBody: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 22 },
+  fanRow: { flexDirection: 'row', alignItems: 'center' },
+  blank: {
+    width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: '#FFFFFF',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(11,15,34,0.10)', marginHorizontal: -12,
   },
-  seeAllTx: { fontSize: 13, fontWeight: '800', color: E.blueDeep, flexShrink: 1 },
-  footnote: { fontSize: 11, fontWeight: '600', color: E.textFaint, textAlign: 'center', marginTop: 6, flexShrink: 1 },
-
-  skeletons: { gap: 10 },
-  skeleton: { height: 96, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.6)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)' },
-
-  empty: { paddingVertical: 22, paddingHorizontal: 18, alignItems: 'center' },
-  emptyIcon: {
-    width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(79,141,255,0.12)', marginBottom: 10,
+  emptyH: { marginTop: 13, fontSize: 15, fontWeight: '800', color: E.ink, letterSpacing: -0.3, flexShrink: 1 },
+  emptyTx: { marginTop: 5, fontSize: 12.5, fontWeight: '600', color: E.textMuted, textAlign: 'center', lineHeight: 18, maxWidth: 262, flexShrink: 1 },
+  emptyLink: {
+    marginTop: 12, height: 34, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14,
+    borderRadius: 11, backgroundColor: 'rgba(37,99,235,0.10)', borderWidth: 1, borderColor: 'rgba(37,99,235,0.20)',
   },
-  emptyH: { fontSize: 15, fontWeight: '800', color: E.ink, flexShrink: 1 },
-  emptyTx: { fontSize: 12.5, fontWeight: '600', color: E.textMuted, textAlign: 'center', marginTop: 5, lineHeight: 18, flexShrink: 1 },
+  emptyLinkTx: { fontSize: 12.5, fontWeight: '700', color: E.blueDeep, flexShrink: 1 },
+
+  expand: {
+    marginTop: 10, height: 42, borderRadius: 14, flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', gap: 5,
+    backgroundColor: 'rgba(37,99,235,0.07)', borderWidth: 1, borderColor: 'rgba(37,99,235,0.16)',
+  },
+  expandTx: { fontSize: 13, fontWeight: '700', color: E.blueDeep, flexShrink: 1 },
+
+  lockedStrip: {
+    marginTop: 10, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 14,
+    backgroundColor: 'rgba(124,107,255,0.07)', borderWidth: 1, borderColor: 'rgba(124,107,255,0.18)',
+    flexDirection: 'row', alignItems: 'flex-start', gap: 9,
+  },
+  lockedTx: { flex: 1, fontSize: 11.5, fontWeight: '600', color: E.textMuted, lineHeight: 16 },
+
+  footnote: { fontSize: 11, fontWeight: '600', color: E.textFaint, textAlign: 'center', marginTop: 8, flexShrink: 1 },
 });

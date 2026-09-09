@@ -101,6 +101,9 @@ export default function EmployerHome({
   // Drives ONLY the pinned header's backdrop. Native driver, and the header is a sibling of the
   // ScrollView — a separate view tree from the mesh, so the b126 one-driver-per-tree rule holds.
   const scrollY = useRef(new Animated.Value(0)).current;
+  // The library's empty state points back UP at the carousel rather than pushing a route: the
+  // designs are 800pt straight up on this same screen.
+  const scrollRef = useRef<any>(null);
   const [targets, setTargets] = useState<Target[]>([]);
   const [empIdx, setEmpIdx] = useState(0);
   const [cards, setCards] = useState<HomeCard[]>([]);
@@ -250,6 +253,12 @@ export default function EmployerHome({
     return (hit && hit.image) || shots[templateId] || null;
   }, [cards, shots]);
 
+  /** The design's accent, from the catalogue already in hand. Never a fetch. */
+  const accentFor = useCallback((templateId: string): string => {
+    const hit = slots.find((c) => c.id === templateId) || cards.find((c) => c.id === templateId);
+    return (hit && hit.accent) || E.blue;
+  }, [slots, cards]);
+
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const onRefresh = async () => { setRefreshing(true); await load(true); setRefreshing(false); };
@@ -341,6 +350,7 @@ export default function EmployerHome({
   return (
     <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
       <Animated.ScrollView
+        ref={scrollRef}
         style={s.flex}
         contentContainerStyle={{ paddingBottom: 108 }}
         showsVerticalScrollIndicator={false}
@@ -476,33 +486,48 @@ export default function EmployerHome({
               a CTA that has to be seen "right below the slider" cannot live down there.
               It shows only while the profile is unfinished, which is also the only time the
               library below is empty, so the two never compete for the same space. */}
-          {setup && !setup.complete && (
-            <TouchableOpacity
-              style={s.makeWrap}
-              activeOpacity={0.9}
-              onPress={() => {
-                try { Haptics.selectionAsync(); } catch {}
-                track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join('') });
-                nav()?.push?.('/(onboarding)');
-              }}
-            >
-              <LinearGradient
-                colors={[E.blue, E.purple, E.purpleLite]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={s.makeBtn}
-              >
-                <Ionicons name="sparkles" size={16} color="#fff" />
-                <Text style={s.makeTx} numberOfLines={1}>Make yours</Text>
-                <Ionicons name="arrow-forward" size={15} color="rgba(255,255,255,0.9)" />
-              </LinearGradient>
-            </TouchableOpacity>
-          )}
-          {setup && !setup.complete && (
-            <Text style={s.makeSub} numberOfLines={2}>
-              A few details and we will build your real resume into every design above.
-            </Text>
-          )}
+          {setup && !setup.complete && (() => {
+            // ⚠️ NAME WHAT IS ACTUALLY LEFT. `setup` carries four real booleans from the server, so
+            // saying "Make yours" to someone who finished two steps last week tells them their work
+            // is gone. In wizard order, so the sentence matches the screens they will see.
+            const left = ([
+              [setup.profile, 'your details'], [setup.photo, 'a photo'],
+              [setup.signature, 'your signature'], [setup.resume, 'your experience'],
+            ] as Array<[boolean, string]>).filter(([done]) => !done).map(([, n]) => n);
+            const started = setup.profile || setup.photo || setup.signature || setup.resume;
+            const sub = !started
+              ? 'A few details and we will build your real resume into every design above.'
+              : left.length === 1
+                ? `One thing left — ${left[0]}.`
+                : `${left.length} things left — ${left.slice(0, -1).join(', ')} and ${left[left.length - 1]}.`;
+            return (
+              <>
+                <TouchableOpacity
+                  style={s.makeWrap}
+                  activeOpacity={0.9}
+                  onPress={() => {
+                    try { Haptics.selectionAsync(); } catch {}
+                    track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join('') });
+                    nav()?.push?.('/(onboarding)');
+                  }}
+                >
+                  <LinearGradient
+                    colors={[E.blue, E.purple, E.purpleLite]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.makeBtn}
+                  >
+                    <Ionicons name="sparkles" size={16} color="#fff" />
+                    <Text style={s.makeTx} numberOfLines={1}>
+                      {started ? 'Pick up where you left off' : 'Make yours'}
+                    </Text>
+                    <Ionicons name="arrow-forward" size={15} color="rgba(255,255,255,0.9)" />
+                  </LinearGradient>
+                </TouchableOpacity>
+                <Text style={s.makeSub} numberOfLines={2}>{sub}</Text>
+              </>
+            );
+          })()}
 
           {sample && mode === 'resume' && (
             <TouchableOpacity
@@ -535,8 +560,11 @@ export default function EmployerHome({
         expanded={histOpen}
         busyId={againId}
         thumbFor={thumbFor}
+        accentFor={accentFor}
         onAgain={doAgain}
+        onPay={(employer) => { againItem.current = null; setPayFor(employer); }}
         onExpand={() => { try { Haptics.selectionAsync(); } catch {} setHistOpen(true); }}
+        onScrollToTop={() => scrollRef.current?.scrollTo?.({ y: 0, animated: true })}
         onMoreJobs={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } })}
       />
 
