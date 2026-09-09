@@ -131,12 +131,17 @@ const DAY = 86400000;
 // Fixed offsets from a fixed epoch: a fixture that used Date.now() would render differently on
 // every run and make a visual diff of this screen worthless.
 const T0 = Date.parse('2026-09-09T10:00:00Z');
+// ⚠️ THREE DIFFERENT COLOUR PAIRS IN THE TOP THREE, DELIBERATELY. gradFor hashes the company name
+// into one of seven pairs, so real companies collide often — Airbus, Zalando and Siemens all land on
+// the same amber. A fixture that shows one colour three times cannot tell you whether the wash is
+// working, which is the whole reason this harness exists. The locked row is kept inside the visible
+// three for the same reason: the padlock is the state most worth looking at.
 const RESUME_HISTORY: DownloadHistoryItem[] = [
-  { id: 1, kind: 'resume', employer: 'Airbus', templateId: CATALOGUE[0].id, templateName: CATALOGUE[0].name, format: 'pdf', mode: 'a4', times: 3, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 2, kind: 'resume', employer: 'Zalando SE', templateId: CATALOGUE[2].id, templateName: CATALOGUE[2].name, format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 3, kind: 'resume', employer: 'Siemens', templateId: CATALOGUE[4].id, templateName: CATALOGUE[4].name, format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
-  { id: 4, kind: 'resume', employer: 'Revolut', templateId: 'not-in-the-deck', templateName: 'Berlin Serif', format: 'pdf', mode: 'a4', times: 2, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 5, kind: 'resume', employer: 'Klarna', templateId: CATALOGUE[1].id, templateName: CATALOGUE[1].name, format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 400 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+  { id: 1, kind: 'resume', employer: 'Klarna', templateId: CATALOGUE[0].id, templateName: CATALOGUE[0].name, format: 'pdf', mode: 'a4', times: 3, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 2, kind: 'resume', employer: 'Revolut', templateId: CATALOGUE[2].id, templateName: CATALOGUE[2].name, format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 3, kind: 'resume', employer: 'Airbus', templateId: CATALOGUE[4].id, templateName: CATALOGUE[4].name, format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+  { id: 4, kind: 'resume', employer: 'Zalando SE', templateId: 'not-in-the-deck', templateName: 'Berlin Serif', format: 'pdf', mode: 'a4', times: 2, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 5, kind: 'resume', employer: 'Siemens', templateId: CATALOGUE[1].id, templateName: CATALOGUE[1].name, format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 400 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
 ];
 const LETTER_HISTORY: DownloadHistoryItem[] = [
   { id: 11, kind: 'cover_letter', employer: 'Airbus', templateId: 'ats_pro', templateName: 'ATS Professional', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - DAY).toISOString(), ownsEmployer: true, unlocked: true },

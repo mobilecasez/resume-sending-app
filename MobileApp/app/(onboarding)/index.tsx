@@ -31,7 +31,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
@@ -60,6 +60,11 @@ const GENDERS = ['Male', 'Female', 'Prefer Not to Say'];
 export default function MakeYours() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  // ⚠️ DEV ONLY, AND IT MUST STAY THAT WAY. Four of the five steps are unreachable in the preview
+  // harness without a signed-in session, and a screen nobody can look at is a screen nobody checks.
+  // __DEV__ is compiled out of a release bundle, so this cannot skip a step for a real user.
+  const params = useLocalSearchParams<{ step?: string }>();
+  const devStep = __DEV__ && params.step != null ? Math.max(0, Math.min(4, Number(params.step) || 0)) : null;
 
   const [step, setStep] = useState(0);
   const [snap, setSnap] = useState<ProfileSnapshot | null>(null);
@@ -105,13 +110,15 @@ export default function MakeYours() {
         setAddress(s.address || '');
         setGender(GENDERS.includes(s.gender) ? s.gender : '');
         const first = !s.setup.profile ? 0 : !s.setup.photo ? 1 : !s.setup.signature ? 2 : !s.setup.resume ? 3 : 3;
-        setStep(first);
+        setStep(devStep ?? first);
+      } else if (devStep != null) {
+        setStep(devStep);
       }
       setBooting(false);
       track('onboarding_open', { resumedAt: s ? String(s.setup.complete) : 'unknown' });
     })();
     return () => { alive = false; };
-  }, []);
+  }, [devStep]);
 
   /* ── motion ──────────────────────────────────────────────────────────────────────────────── */
   const goTo = useCallback((next: number) => {
@@ -263,7 +270,7 @@ export default function MakeYours() {
       {/* insets.top + 52 is Home's own header height, so the chrome on both screens sits on
           exactly one line and the crossfade between them does not jump. */}
       <View style={[s.head, { height: insets.top + 52, paddingTop: insets.top }]}>
-        {done ? <View style={s.icon} /> : (
+        {done ? <View style={s.iconSpacer} /> : (
           <TouchableOpacity onPress={step > 0 ? () => goTo(step - 1) : leave} style={s.icon} activeOpacity={0.8}>
             <Ionicons name={step > 0 ? 'chevron-back' : 'close'} size={19} color="#fff" />
           </TouchableOpacity>
@@ -281,7 +288,7 @@ export default function MakeYours() {
             </TouchableOpacity>
           ))}
         </View>
-        <View style={s.icon} />
+        <View style={s.iconSpacer} />
       </View>
 
       {/* ⚠️ scaleX, not width: an animated width forces the JS driver, and this tree is native. */}
@@ -614,6 +621,9 @@ const s = StyleSheet.create({
     width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
     backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder,
   },
+  // Balances the row so the dots stay centred. It must NOT carry the glass fill, or it paints an
+  // empty button nobody can press.
+  iconSpacer: { width: 38, height: 38 },
   steps: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   stepDotWrap: { paddingVertical: 8 },
   stepDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.22)' },

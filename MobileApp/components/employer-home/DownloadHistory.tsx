@@ -481,22 +481,23 @@ export default function DownloadHistory({
   const shown = expanded ? items.slice(0, MAX_ROWS) : items.slice(0, PREVIEW_ROWS);
   const lockedCount = items.filter((i) => !i.unlocked).length;
 
-  // The list cross-fades on a mode change; the header and the title never move.
+  /**
+   * The list fades in on a mode change; the header and the title never move.
+   *
+   * ⚠️ THE ROWS ARE RENDERED STRAIGHT FROM PROPS AND ARE NEVER HELD BEHIND AN ANIMATION CALLBACK.
+   * The first version swapped them inside the completion handler of a fade-OUT, which deadlocked:
+   * flipping the mode also refetches, so `items` changes a moment after `mode` does, the effect ran
+   * a second time, the second Animated.timing cancelled the first — and a cancelled animation still
+   * calls its callback, so the fade-in fired while the newer fade-out was driving the value back
+   * down. The list settled at opacity 0 and the whole section went blank on the app's front door.
+   * Snapping to 0 and animating up has no callback, cannot race, and reads the same: the old rows
+   * are gone the instant the mode changes, which is what the user asked for anyway.
+   */
   const m = useRef(new Animated.Value(1)).current;
-  const [view, setView] = useState<{ mode: string; rows: DownloadHistoryItem[] }>({ mode, rows: shown });
-  const firstRun = useRef(true);
-
   useEffect(() => {
-    if (firstRun.current) { firstRun.current = false; setView({ mode, rows: shown }); return; }
-    if (view.mode === mode) { setView({ mode, rows: shown }); return; }
-    Animated.timing(m, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver: true })
-      .start(() => {
-        setView({ mode, rows: shown });
-        Animated.timing(m, { toValue: 1, duration: 240, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-      });
-    // `shown` is derived from items/expanded and is intentionally read at effect time only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, items, expanded]);
+    m.setValue(0);
+    Animated.timing(m, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [m, mode]);
 
   // A fast answer should still read as a load rather than as a flicker.
   const [floor, setFloor] = useState(true);
@@ -528,17 +529,18 @@ export default function DownloadHistory({
       ) : (
         <Animated.View
           style={{
+            // Opaque a quarter of the way in rather than ghosting the whole distance.
             opacity: m.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0, 1, 1] }),
             transform: [{ translateY: m.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
           }}
         >
           <View style={s.list}>
-            {view.rows.map((it, i) => (
+            {shown.map((it, i) => (
               <Row
-                key={`${view.mode}-${it.id}`}
+                key={`${mode}-${it.id}`}
                 item={it}
                 index={i}
-                image={view.mode === 'letter' ? null : thumbFor(it.templateId)}
+                image={mode === 'letter' ? null : thumbFor(it.templateId)}
                 accent={accentFor(it.templateId)}
                 busy={busyId === it.id}
                 onAgain={onAgain}

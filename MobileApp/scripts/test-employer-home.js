@@ -376,6 +376,16 @@ ok('re-download goes through the server, which re-runs the same gate', /redownlo
 ok('⚠️ a locked row opens the SAME purchase sheet a first download offers',
   /r\.locked/.test(homeC) && /<DownloadPaywallSheet/.test(homeC));
 ok('the resume asymmetry is stated rather than hidden', /latest resume in that design/.test(histSrc));
+// ⚠️ THIS ONE COST A BLANK SECTION ON THE APP'S FRONT DOOR, CAUGHT IN THE PREVIEW HARNESS.
+// The rows used to be swapped inside the completion callback of a fade-OUT. Flipping the mode also
+// refetches, so `items` changed a moment after `mode` did, the effect ran twice, the second
+// Animated.timing cancelled the first — and a cancelled animation STILL calls its callback, so the
+// fade-in fired while the newer fade-out drove the value back to zero. The list rendered at
+// opacity 0 with its locked strip and title still visible underneath it.
+ok('⚠️ the rows are rendered straight from props, never held behind an animation callback',
+  /\{shown\.map\(\(it, i\) => \(/.test(histC));
+ok('…so no animation completion handler can decide whether the list exists',
+  !/\.start\(\(\) => \{[\s\S]{0,200}setView/.test(histC) && !/const \[view, setView\]/.test(histC));
 
 console.log('── ⚠️ MAKE YOURS: above the fold, or it does not exist ──');
 // stageH = rootH * 1.18, so the hero is TALLER than the viewport — anything placed after
@@ -404,6 +414,11 @@ ok('the resume picker is restricted to PDF, which is what the parser can read',
 ok('⚠️ generating is behind an explicit tap, never on step entry',
   /onPress=\{onStart\}/.test(wiz) && !/useEffect\([\s\S]{0,120}build\(\)/.test(wiz));
 ok('it resumes at the first unfinished step', /!s\.setup\.profile \? 0 :/.test(wiz));
+ok('⚠️ the step override is __DEV__ ONLY, so it cannot skip a step for a real user',
+  /__DEV__ && params\.step != null/.test(wiz));
+ok('…and it is clamped, so a hand-typed url cannot land off the end', /Math\.min\(4,/.test(wiz));
+ok('the header spacer paints nothing — an empty glass button is a button nobody can press',
+  /iconSpacer: \{ width: 38, height: 38 \}/.test(wiz));
 
 console.log('── ⚠️ the progress bar reports the SERVER\'s stages ──');
 ok('generation runs as a background job', /__async: true/.test(psvc));
