@@ -24,6 +24,8 @@ import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { API_BASE } from '../../config';
+import DownloadPaywallSheet from '../../components/downloads/DownloadPaywallSheet';
+import { fetchDownloadState, downloadButtonLabel, type DownloadState } from '../../services/downloadPassService';
 import { fetchSubscriptionStatus } from '../../services/subscriptionService';
 
 const T = {
@@ -56,7 +58,10 @@ export default function ResumeTemplates() {
   const router = useRouter();
   // Home opens this screen on the design the user tapped. Optional: with no param the gallery
   // behaves exactly as before and starts on the first family.
-  const { template: wantTemplate } = useLocalSearchParams<{ template?: string }>();
+  const { template: wantTemplate, employer: wantEmployer } = useLocalSearchParams<{ template?: string; employer?: string }>();
+  // The company this download is for. A pass is bought per EMPLOYER, so it has to travel with
+  // the request or the payment attaches to nothing.
+  const employer = (Array.isArray(wantEmployer) ? wantEmployer[0] : wantEmployer) || null;
   const scrollRef = useRef<ScrollView>(null);
   const [families, setFamilies] = useState<Family[]>([]);
   const [regions, setRegions]   = useState<Region[]>([]);
@@ -81,6 +86,9 @@ export default function ResumeTemplates() {
   const [downloading, setDownloading] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [isPaid, setIsPaid]     = useState(false);
+  const [dlState, setDlState]   = useState<DownloadState>({ metered: false, paid: false, unlimited: false, remaining: null, passes: 0, ownsEmployer: false, employer: null });
+  const [payOpen, setPayOpen]   = useState(false);
+  const [pendingFmt, setPendingFmt] = useState<'pdf' | 'docx' | null>(null);
 
   // ── Lazy preview loader: small batches, deduped, merged into a cache ───────
   // Every batch carries its own 45s timeout and marks ITS ids as failed on any miss — the pager
@@ -249,6 +257,13 @@ export default function ResumeTemplates() {
   }
 
   const activeFam = visibleFams[active];
+  const dlLabel = downloadButtonLabel(dlState);
+  // The badge says what the tap will actually do: nothing when it is simply included.
+  const dlBadge = dlState.ownsEmployer || dlState.passes > 0
+    ? null
+    : dlLabel.locked
+      ? 'Locked'
+      : (dlState.metered && dlState.paid && dlState.remaining != null ? `${dlState.remaining} left` : null);
 
   // One-shot: carry the pager to the design Home opened us on, once it exists to be scrolled.
   useEffect(() => {
@@ -261,20 +276,23 @@ export default function ResumeTemplates() {
   const selected = previews[selectedId];
   const selectedMeta = activeFam?.variants.find((v) => v.id === selectedId);
 
-  function upsellDownload() {
-    Alert.alert(
-      'Downloads are part of the paid plans',
-      'Applying to jobs stays free on every plan — and previewing all designs is free too. To download your designed PDF or Word file, choose a paid plan.',
-      [
-        { text: 'Not now', style: 'cancel' },
-        { text: 'View paid plans', onPress: () => router.push('/(subscription)/plans' as never) },
-      ],
-    );
-  }
+  // ⚠️ Not an Alert any more. An alert could only offer PLANS — there was nowhere to put the
+  // one-off — and its "View paid plans" was a dead end for someone who wanted a single file.
+  function upsellDownload() { setPayOpen(true); }
+
+  const refreshDownloadState = React.useCallback(async () => {
+    const st = await fetchDownloadState(employer);
+    setDlState(st);
+    return st;
+  }, [employer]);
+  useEffect(() => { refreshDownloadState(); }, [refreshDownloadState]);
 
   async function handleDownload(fmt: 'pdf' | 'docx' = 'pdf') {
     if (downloading || !selectedId) return;
-    if (!isPaid) { upsellDownload(); return; }
+    // The server is authoritative; this is only about not opening a purchase sheet needlessly.
+    const st = dlState;
+    const allowed = st.ownsEmployer || st.passes > 0 || st.unlimited || (st.paid && (st.remaining ?? 1) > 0);
+    if (!allowed) { setPendingFmt(fmt); upsellDownload(); return; }
     setDownloading(true);
     try {
       const token = await getToken();
@@ -283,11 +301,13 @@ export default function ResumeTemplates() {
       const res = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: selectedId, mode }),
+        body: JSON.stringify({ template: selectedId, mode, employer }),
       });
       const json = await res.json();
       // The server said no — its word beats our cached status (subscription may have lapsed).
-      if (res.status === 403 && json.reason === 'paid_required') { setIsPaid(false); upsellDownload(); return; }
+      if (res.status === 403 && (json.reason === 'paid_required' || json.reason === 'quota_exhausted')) {
+        setIsPaid(false); await refreshDownloadState(); setPendingFmt(fmt); upsellDownload(); return;
+      }
       if (!res.ok || !json.downloadUrl) throw new Error(json.error || 'Failed to generate file');
 
       const cleanPath = json.downloadUrl.replace(/^\/api/, '');
@@ -305,6 +325,9 @@ export default function ResumeTemplates() {
       } else {
         Alert.alert('Downloaded', `Resume ${fmt === 'docx' ? 'Word document' : 'PDF'} saved successfully.`);
       }
+      // The pass is now bound to this employer, or a plan download has been spent — either way the
+      // button's label is stale until we re-read it.
+      refreshDownloadState();
     } catch (e: any) {
       Alert.alert('Download failed', e.message || 'Please try again.');
     } finally {
@@ -492,27 +515,43 @@ export default function ResumeTemplates() {
           <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} disabled={downloading}
             onPress={() => { setSheetOpen(false); handleDownload('pdf'); }}>
             <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
-              <Ionicons name={isPaid ? 'download-outline' : 'lock-closed'} size={17} color="#fff" />
+              <Ionicons name={dlLabel.locked ? 'lock-closed' : 'download-outline'} size={17} color="#fff" />
               <Text style={s.dlText}>PDF</Text>
-              {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
+              {!!dlBadge && <View style={s.credBadge}><Text style={s.credBadgeText}>{dlBadge}</Text></View>}
             </LinearGradient>
           </TouchableOpacity>
           <TouchableOpacity style={[s.dlOuter, { marginTop: 8 }]} activeOpacity={0.9} disabled={downloading}
             onPress={() => { setSheetOpen(false); handleDownload('docx'); }}>
             <LinearGradient colors={['#2B579A', '#1f407a']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
-              <Ionicons name={isPaid ? 'document-text-outline' : 'lock-closed'} size={17} color="#fff" />
+              <Ionicons name={dlLabel.locked ? 'lock-closed' : 'document-text-outline'} size={17} color="#fff" />
               <Text style={s.dlText}>Word (.docx)</Text>
-              {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
+              {!!dlBadge && <View style={s.credBadge}><Text style={s.credBadgeText}>{dlBadge}</Text></View>}
             </LinearGradient>
           </TouchableOpacity>
 
           <Text style={s.footerNote}>
-            {isPaid
-              ? `Included in your plan · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`
-              : 'Previews are free · downloads are included in every paid plan'}
+            {dlState.ownsEmployer
+              ? `Unlocked for ${dlState.employer || 'this employer'} · every design and the cover letter`
+              : dlState.passes > 0
+                ? 'You have a download ready to use · it unlocks this employer'
+                : dlLabel.locked
+                  ? 'Previews are free · buy this one, or take a plan'
+                  : `Included in your plan · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`}
           </Text>
         </View>
       </Modal>
+      <DownloadPaywallSheet
+        visible={payOpen}
+        employer={employer}
+        onClose={() => { setPayOpen(false); setPendingFmt(null); }}
+        onSeePlans={() => router.push('/(subscription)/plans' as never)}
+        onUnlocked={async () => {
+          setPayOpen(false);
+          await refreshDownloadState();
+          const fmt = pendingFmt; setPendingFmt(null);
+          if (fmt) handleDownload(fmt);          // carry on with what they were doing
+        }}
+      />
     </SafeAreaView>
   );
 }

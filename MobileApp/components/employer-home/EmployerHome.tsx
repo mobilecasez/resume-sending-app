@@ -493,7 +493,15 @@ export default function EmployerHome({
         onViewPdf={() => {
           const id = zoom ? deck[zoom.i]?.id : undefined;
           track('home_view_pdf', { id });
-          nav()?.push?.({ pathname: '/(resume-builder)/templates', params: id ? { template: id } : {} });
+          // The employer travels too: a download pass is bought PER EMPLOYER, so without this the
+          // payment would have nothing to attach to.
+          nav()?.push?.({
+            pathname: '/(resume-builder)/templates',
+            params: {
+              ...(id ? { template: id } : {}),
+              ...(target?.company ? { employer: target.company } : {}),
+            },
+          });
         }}
       />
     </View>

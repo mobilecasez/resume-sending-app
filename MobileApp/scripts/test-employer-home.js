@@ -248,8 +248,12 @@ ok('Customize opens the SECTION EDITOR (and the builder when it is only a sample
   /if \(sample\) armBuilderFor\(target\)/.test(homeC) && /nav\(\)\?\.push\?\.\('\/\(resume-builder\)\/preview'\)/.test(homeC));
 ok('⚠️ Customize NEVER arms the paid auto-build lane',
   !/autoBuild[\s\S]{0,80}home_customize/.test(homeC) && (homeC.match(/autoBuild: true/g) || []).length === 1);
-ok('View PDF opens the gallery ON the tapped design', /pathname: '\/\(resume-builder\)\/templates', params: id \? \{ template: id \}/.test(homeC));
-ok('…and the gallery actually honours that param', /useLocalSearchParams<\{ template\?: string \}>/.test(galC) && /landOn\.current = fi/.test(galC));
+ok('View PDF opens the gallery ON the tapped design',
+  /pathname: '\/\(resume-builder\)\/templates'/.test(homeC) && /\.\.\.\(id \? \{ template: id \} : \{\}\)/.test(homeC));
+ok('⚠️ …and carries the EMPLOYER, or a download pass has nothing to attach to',
+  /\.\.\.\(target\?\.company \? \{ employer: target\.company \} : \{\}\)/.test(homeC));
+ok('…and the gallery actually honours both params',
+  /useLocalSearchParams<\{ template\?: string; employer\?: string \}>/.test(galC) && /landOn\.current = fi/.test(galC));
 ok('…including scrolling its pager there', /scrollRef\.current\?\.scrollTo\(\{ x: idx \* WIN/.test(galC));
 
 console.log('── the whole catalogue, without a render stampede ──');

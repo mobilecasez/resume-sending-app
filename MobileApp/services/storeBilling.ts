@@ -407,3 +407,143 @@ export async function openManageSubscriptions(): Promise<boolean> {
     return false;
   }
 }
+
+/* ── ONE-TIME PURCHASES: the single-download pass ─────────────────────────────────────────────────
+ *
+ * A consumable, not a subscription, and the two differ in ways that cost real money if confused:
+ *   • fetched and bought with type 'in-app', not 'subs';
+ *   • finished with isConsumable TRUE — on Android that is a CONSUME, not just an acknowledgement,
+ *     and it is what makes the same sku buyable a second time. Without it the user can never buy
+ *     another pass;
+ *   • no offer token: Play only requires those for subscription base plans.
+ *
+ * ⚠️ THE TWO PLATFORMS ARE DELIBERATELY ASYMMETRIC HERE.
+ *
+ * iOS: App.js holds a GLOBAL purchaseUpdatedListener for the legacy credit packs, and StoreKit
+ * delivers this purchase to it too. That listener already does the right thing — it POSTs to
+ * /payment/verify-apple, which now recognises the pass, and only then finishes the transaction.
+ * Registering a SECOND listener here would race it and double-finish. So on iOS we open the sheet
+ * and let that audited path settle it; the caller then re-reads the pass from the server.
+ *
+ * Android: there is no global listener anywhere in the app, so this owns the whole transaction —
+ * observe, verify server-side, and only then finish.
+ */
+export type OneTimeProduct = { sku: string; displayPrice: string; currency: string | null; title: string | null };
+
+/** The store's own localised price — this is what shows ₹99 in India rather than "$0.99". */
+export async function fetchOneTimeProducts(skus: string[]): Promise<OneTimeProduct[]> {
+  const m = iap();
+  if (!m || skus.length === 0) return [];
+  if (!(await initStoreBilling())) return [];
+  try {
+    const raw = (await m.fetchProducts({ skus, type: 'in-app' })) || [];
+    const want = new Set(skus);
+    const out: OneTimeProduct[] = [];
+    for (const item of raw as any[]) {
+      // Same rule as subscriptions: a sku the store did not price is NOT purchasable, and must
+      // never be shown with a hardcoded US price behind a Buy button that can only fail.
+      if (!item || !item.id || !want.has(item.id) || !item.displayPrice) continue;
+      out.push({
+        sku: item.id,
+        displayPrice: item.displayPrice,
+        currency: item.currency ?? null,
+        title: item.title ?? item.displayName ?? null,
+      });
+    }
+    return out;
+  } catch (e: any) {
+    console.log('[storeBilling] fetchProducts(in-app) failed:', e?.message || e);
+    return [];
+  }
+}
+
+export type OneTimeOutcome =
+  | { status: 'purchased'; purchase: Purchase | null; settledElsewhere: boolean }
+  | { status: 'cancelled' }
+  | { status: 'pending' }
+  | { status: 'failed'; message: string };
+
+export async function purchaseOneTime(sku: string): Promise<OneTimeOutcome> {
+  const m = iap();
+  if (!m) return { status: 'failed', message: 'In-app purchases are not available in this build.' };
+  if (!(await initStoreBilling())) return { status: 'failed', message: 'The store is unavailable right now.' };
+
+  // iOS — open the sheet and stand back; App.js's listener verifies and finishes it.
+  if (Platform.OS === 'ios') {
+    try {
+      await m.requestPurchase({
+        type: 'in-app',
+        request: { apple: { sku, andDangerouslyFinishTransactionAutomatically: false } },
+      });
+      return { status: 'purchased', purchase: null, settledElsewhere: true };
+    } catch (e: any) {
+      const o = fromError(e);
+      return o.status === 'purchased'
+        ? { status: 'purchased', purchase: null, settledElsewhere: true }
+        : (o as OneTimeOutcome);
+    }
+  }
+
+  // Android — nothing else is listening, so own it end to end.
+  let settled = false;
+  let resolveRace: (o: OneTimeOutcome) => void = () => {};
+  const race = new Promise<OneTimeOutcome>((res) => { resolveRace = res; });
+  const settle = (o: OneTimeOutcome) => { if (!settled) { settled = true; resolveRace(o); } };
+
+  inFlightSku = sku;
+  const subs: { remove(): void }[] = [];
+  try {
+    subs.push(m.purchaseUpdatedListener((purchase: Purchase) => {
+      if (purchase?.productId !== sku) return;
+      if (purchase.purchaseState === 'pending') { settle({ status: 'pending' }); return; }
+      settle({ status: 'purchased', purchase, settledElsewhere: false });
+    }));
+    subs.push(m.purchaseErrorListener((err: PurchaseError) => {
+      if (err?.productId && err.productId !== sku) return;
+      settle(fromError(err) as OneTimeOutcome);
+    }));
+  } catch (e: any) {
+    subs.forEach((s) => { try { s.remove(); } catch {} });
+    inFlightSku = null;
+    return { status: 'failed', message: e?.message || 'Could not start the purchase.' };
+  }
+
+  try {
+    const direct = await m.requestPurchase({ type: 'in-app', request: { google: { skus: [sku] } } });
+    const one = firstPurchase(direct);
+    if (one && one.productId === sku) {
+      settle(one.purchaseState === 'pending'
+        ? { status: 'pending' }
+        : { status: 'purchased', purchase: one, settledElsewhere: false });
+    }
+  } catch (e: any) {
+    settle(fromError(e) as OneTimeOutcome);
+  }
+
+  const timeout = new Promise<OneTimeOutcome>((res) =>
+    setTimeout(() => res({ status: 'failed', message: 'The store did not confirm this purchase.' }), 180000)
+  );
+  const outcome = await Promise.race([race, timeout]);
+  subs.forEach((s) => { try { s.remove(); } catch {} });
+  inFlightSku = null;
+  return outcome;
+}
+
+/**
+ * Hand a consumable back to the store. ONLY after the server has recorded the pass.
+ *
+ * ⚠️ isConsumable TRUE. On Android this consumes the purchase — both the acknowledgement Google
+ * requires within 3 days (or it auto-refunds and revokes) and the thing that makes the sku buyable
+ * again. Passing false here would give the user one pass, ever.
+ */
+export async function finishOneTime(purchase: Purchase): Promise<boolean> {
+  const m = iap();
+  if (!m) return false;
+  try {
+    await m.finishTransaction({ purchase, isConsumable: true });
+    return true;
+  } catch (e: any) {
+    console.log('[storeBilling] finishTransaction(consumable) failed:', e?.message || e);
+    return false;
+  }
+}

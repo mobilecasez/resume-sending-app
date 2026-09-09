@@ -21,7 +21,12 @@ const home = R('../components/HomeScreen.js');
 const card = R('../components/ResumeRebuildCard.tsx');
 
 console.log('── server: downloads are paid, previews are not ──');
-ok('generatePDF gates on an active subscription', /activeSubscription\(userId\)[\s\S]{0,400}paid_required/.test(ctl));
+// The gate moved into services/downloads: a plan OR a single-employer pass now satisfies it, and
+// the decision lives in ONE place instead of five copy-pasted subscription checks.
+ok('generatePDF gates through the download service',
+  /downloads\.canDownload\(userId, \{ employer \}, req\)[\s\S]{0,300}paid_required/.test(ctl));
+ok('⚠️ …and charges only AFTER the file exists, never at the gate',
+  ctl.indexOf('downloads.claimDownload') > ctl.indexOf('downloads.canDownload'));
 ok('generateDocx gates the same way', /generateDocx[\s\S]{0,600}paid_required/.test(ctl));
 ok('the PDF path no longer deducts credits', !/deductCredits\(userId, DOWNLOAD_CREDIT_COST/.test(ctl));
 ok('previewTemplates has NO plan/credit gate', !/previewTemplates[\s\S]{0,900}(activeSubscription|checkUserCredits)/.test(ctl.slice(ctl.indexOf('async function previewTemplates'))));
@@ -62,7 +67,8 @@ ok('previews load lazily in batches of ≤3', /need\.slice\(i, i \+ 3\)/.test(tp
 ok('in-flight requests are deduped', /inFlight\.current\.has\(id\)/.test(tpl));
 ok('neighbours are prefetched on swipe', /prefetchAround\(idx/.test(tpl));
 ok('swatch taps fetch just that variant', /pickVariant[\s\S]{0,200}ensurePreviews\(\[tplId\]\)/.test(tpl));
-ok('free users see the download as a PAID feature, with plans routing', /upsellDownload[\s\S]{0,400}View paid plans/.test(tpl));
+ok('free users are offered BOTH ways to pay, not just plans',
+  /function upsellDownload\(\) \{ setPayOpen\(true\); \}/.test(tpl) && /DownloadPaywallSheet/.test(tpl));
 ok('the server 403 wins over cached paid state', /paid_required[\s\S]{0,80}setIsPaid\(false\)/.test(tpl));
 ok('previews are stated free in the UI', /every preview is free|previews of all designs free|Previews are free/.test(tpl));
 ok('no credit badges remain in the gallery', !/DOWNLOAD_CREDITS/.test(tpl));
@@ -156,8 +162,8 @@ ok('the sheet slides up like the filter sheet', /animationType="slide"/.test(tpl
 ok('the Generate button shows the REMAINING count, not a credit price',
   /resumesLeft} left/.test(idx) && !/genCost/.test(idx));
 ok('cover-letter downloads are paid-gated server-side', (clc.match(/requirePaidForDownload/g) || []).length >= 3);
-ok('the cover-letter gallery shows Paid plans, not credit numbers',
-  /Paid plans/.test(clt) && !/credits per download/.test(clt));
+ok('the cover-letter gallery shows a lock or a count, not credit numbers',
+  /dlBadge/.test(clt) && /dlLabel\.locked/.test(clt) && !/credits per download/.test(clt));
 ok('the company-card credit stamp is retired', !/CREDIT\$\{clGenCost/.test(home2) && /stamp is retired/.test(home2));
 // The Home card shows the REAL rendered resume.
 ok('a cached home-thumb endpoint exists', /home-thumb/.test(routes) && /resume_thumb_/.test(ctl));

@@ -766,7 +766,15 @@ async function verifyApplePurchase(req, res, dbConfig) {
             console.log(`🍎 download pass ${created ? 'granted' : 'already recorded'} — user=${userId} txId=${passTxn} env=${purchaseEnvironment}`);
             // Success either way: a replayed receipt means the pass already exists, and the client
             // must be told yes so it finishes the transaction rather than retrying forever.
-            return res.json({ success: true, kind: 'download_pass', granted: created });
+            //
+            // ⚠️ `alreadyProcessed: true` is deliberate, and it is what keeps this working without
+            // editing App.js. That listener is written for CREDIT PACKS: on a plain success it pops
+            // "🎉 N credits have been added" — which for a pass would read "undefined credits" —
+            // and then navigates to the dashboard, yanking the user off the download they were in
+            // the middle of. `alreadyProcessed` is the existing flag that suppresses exactly that
+            // celebration and that navigation, while still finishing the transaction with Apple.
+            // The download sheet reports the real outcome itself.
+            return res.json({ success: true, kind: 'download_pass', granted: created, alreadyProcessed: true });
         }
 
         // Look up the plan from our database using the Apple product ID

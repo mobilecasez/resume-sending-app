@@ -15,6 +15,8 @@ import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { API_BASE } from '../../config';
+import DownloadPaywallSheet from '../../components/downloads/DownloadPaywallSheet';
+import { fetchDownloadState, downloadButtonLabel, type DownloadState } from '../../services/downloadPassService';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 
@@ -71,6 +73,11 @@ export default function CoverLetterTemplates() {
   const [downloading, setDownloading] = useState(false);
   // Downloads are paid-plan features now (the credit model is retired); previews stay free.
   const [isPaid, setIsPaid] = useState(false);
+  // A pass is bought per EMPLOYER and covers the letter as well as the resume, so this screen
+  // asks about the SAME company the resume gallery does.
+  const [dlState, setDlState] = useState<DownloadState>({ metered: false, paid: false, unlimited: false, remaining: null, passes: 0, ownsEmployer: false, employer: null });
+  const [payOpen, setPayOpen] = useState(false);
+  const [pendingFmt, setPendingFmt] = useState<'pdf' | 'docx' | null>(null);
   useEffect(() => {
     (async () => {
       try {
@@ -80,16 +87,21 @@ export default function CoverLetterTemplates() {
       } catch {}
     })();
   }, []);
-  function upsellDownload() {
-    Alert.alert(
-      'Downloads are part of the paid plans',
-      'Previewing every design is free. To download your designed PDF or Word file, choose a paid plan.',
-      [
-        { text: 'Not now', style: 'cancel' },
-        { text: 'View paid plans', onPress: () => router.push('/(subscription)/plans' as never) },
-      ],
-    );
-  }
+  // The sheet, not an alert — an alert had nowhere to offer the one-off, so "View paid plans" was
+  // a dead end for anyone who wanted a single letter.
+  function upsellDownload() { setPayOpen(true); }
+  const refreshDownloadState = React.useCallback(async () => {
+    const st = await fetchDownloadState(ctx?.companyName || null);
+    setDlState(st);
+    return st;
+  }, [ctx?.companyName]);
+  useEffect(() => { refreshDownloadState(); }, [refreshDownloadState]);
+  const dlLabel = downloadButtonLabel(dlState);
+  const dlBadge = dlState.ownsEmployer || dlState.passes > 0
+    ? null
+    : dlLabel.locked
+      ? 'Locked'
+      : (dlState.metered && dlState.paid && dlState.remaining != null ? `${dlState.remaining} left` : null);
   // Which format the user chose on the Review screen — shown first/prominent in the footer.
   const [preferredFormat, setPreferredFormat] = useState<'pdf' | 'docx'>('pdf');
 
@@ -153,7 +165,9 @@ export default function CoverLetterTemplates() {
 
   async function handleDownload(fmt: 'pdf' | 'docx' = 'pdf') {
     if (downloading || !previews[active] || !ctx) return;
-    if (!isPaid) { upsellDownload(); return; }
+    const st = dlState;
+    const allowed = st.ownsEmployer || st.passes > 0 || st.unlimited || (st.paid && (st.remaining ?? 1) > 0);
+    if (!allowed) { setPendingFmt(fmt); upsellDownload(); return; }
     setDownloading(true);
     try {
       const token = await getToken();
@@ -166,7 +180,9 @@ export default function CoverLetterTemplates() {
         body: JSON.stringify({ template: selected.id, mode, coverLetterHtml: downloadHtml || ctx.coverLetterHtml, companyName: ctx.companyName, companyAddress: ctx.companyAddress }),
       });
       const json = await res.json();
-      if (res.status === 403 && json.reason === 'paid_required') { setIsPaid(false); upsellDownload(); return; }
+      if (res.status === 403 && (json.reason === 'paid_required' || json.reason === 'quota_exhausted')) {
+        setIsPaid(false); await refreshDownloadState(); setPendingFmt(fmt); upsellDownload(); return;
+      }
       if (res.status === 402) {
         Alert.alert('Limit reached', json.error || 'Downloads are part of the paid plans.');
         return;
@@ -188,6 +204,7 @@ export default function CoverLetterTemplates() {
       } else {
         Alert.alert('Downloaded', `Cover letter ${fmt === 'docx' ? 'Word document' : 'PDF'} saved successfully.`);
       }
+      refreshDownloadState();   // the pass is now bound, or a plan download spent
     } catch (e: any) {
       Alert.alert('Download failed', e.message || 'Please try again.');
     } finally {
@@ -311,9 +328,9 @@ export default function CoverLetterTemplates() {
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
                   <>
-                    <Ionicons name={isPaid ? (fmt === 'pdf' ? 'download-outline' : 'document-text-outline') : 'lock-closed'} size={17} color="#fff" />
+                    <Ionicons name={dlLabel.locked ? 'lock-closed' : (fmt === 'pdf' ? 'download-outline' : 'document-text-outline')} size={17} color="#fff" />
                     <Text style={s.dlText}>{fmt === 'pdf' ? 'Download PDF' : 'Download as Word'}</Text>
-                    {!isPaid && <View style={s.credBadge}><Text style={s.credBadgeText}>Paid plans</Text></View>}
+                    {!!dlBadge && <View style={s.credBadge}><Text style={s.credBadgeText}>{dlBadge}</Text></View>}
                   </>
                 )}
               </LinearGradient>
@@ -327,6 +344,18 @@ export default function CoverLetterTemplates() {
         </View>
       )}
       <RatingPromptModal visible={!!rating.trigger} trigger={rating.trigger} onClose={closeRating} />
+      <DownloadPaywallSheet
+        visible={payOpen}
+        employer={ctx?.companyName || null}
+        onClose={() => { setPayOpen(false); setPendingFmt(null); }}
+        onSeePlans={() => router.push('/(subscription)/plans' as never)}
+        onUnlocked={async () => {
+          setPayOpen(false);
+          await refreshDownloadState();
+          const fmt = pendingFmt; setPendingFmt(null);
+          if (fmt) handleDownload(fmt);
+        }}
+      />
     </SafeAreaView>
   );
 }

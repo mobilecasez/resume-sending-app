@@ -4034,6 +4034,7 @@ app.use('/api', notificationsRoutes);
 app.use('/api', jobRoutes);
 app.use('/api/ai-hub', aiHubRoutes);
 app.use('/api/resume-builder', resumeBuilderRoutes);
+app.use('/api/downloads', require('./server/routes/downloads'));
 app.use('/api', require('./server/routes/resumeScoreRoutes'));   // résumé score popup (additive)
 app.use('/api', require('./server/routes/journeyRoutes'));       // activation journey coach (additive)
 app.use('/api', featureFlagsRoutes);
