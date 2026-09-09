@@ -1080,6 +1080,57 @@ async function generateDocx(req, res) {
 
 // POST /api/resume-builder/preview-templates — renders the saved resume in the
 // templates recommended for a region (free) so the user can pick before download.
+
+/** The photo's identity, folded into every render cache key — a new photo must invalidate. */
+async function photoVersion(userId) {
+    try {
+        const ppath = await resolvePhotoPath(userId);
+        if (ppath) return String((await fs.stat(ppath)).mtimeMs);
+    } catch { /* unreadable → 'none', which is itself a distinct version */ }
+    return 'none';
+}
+
+// ── Full-size design previews, cached on disk ────────────────────────────────────────────────────
+// The GALLERY used to render every design it showed, every single time it was opened and again on
+// every swatch tap — so opening it cost a serial chromium render per design, and the FIRST family
+// in the list also paid the browser cold start on top. That is why one particular design always
+// looked slow: nothing was ever reused.
+//
+// Same key as the Home thumbnails (resume version + photo version + template), different prefix and
+// no downscale, because the gallery wants the full 794px page. Stored as JSON so the page HEIGHT
+// travels with the image — it varies per design, and the client lays out against it.
+const PREVIEW_KEEP = 150;
+function previewFile(userId, row, tplId, pver) {
+    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tplId;
+    return path.join(__dirname, '../../temp', `resume_prev_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.json`);
+}
+async function readPreviewCache(userId, row, tplId, pver) {
+    try {
+        const j = JSON.parse(await fs.readFile(previewFile(userId, row, tplId, pver), 'utf8'));
+        return (j && j.image) ? j : null;
+    } catch { return null; }
+}
+async function writePreviewCache(userId, row, preview, pver) {
+    try {
+        const tDir = path.join(__dirname, '../../temp');
+        await fs.mkdir(tDir, { recursive: true });
+        await fs.writeFile(previewFile(userId, row, preview.id, pver), JSON.stringify(preview));
+    } catch { /* a cache miss next time is the only cost */ }
+}
+/** Keep the most recent PREVIEW_KEEP previews per user; drop the oldest. */
+async function prunePreviews(userId) {
+    try {
+        const tDir = path.join(__dirname, '../../temp');
+        const names = (await fs.readdir(tDir)).filter((n) => n.startsWith(`resume_prev_${userId}_`));
+        if (names.length <= PREVIEW_KEEP) return;
+        const stamped = await Promise.all(names.map(async (nm) => {
+            try { return { nm, at: (await fs.stat(path.join(tDir, nm))).mtimeMs }; } catch { return { nm, at: 0 }; }
+        }));
+        stamped.sort((a, b) => b.at - a.at);
+        for (const { nm } of stamped.slice(PREVIEW_KEEP)) fs.unlink(path.join(tDir, nm)).catch(() => {});
+    } catch {}
+}
+
 async function previewTemplates(req, res) {
     const userId = req.user.id;
     const { region, ids } = req.body || {};
@@ -1097,8 +1148,26 @@ async function previewTemplates(req, res) {
             ? [...new Set(ids)].slice(0, 6).map(id => TEMPLATES.find(t => t.id === id)).filter(Boolean)
             : templatesForRegion(region);                 // legacy region mode (older app builds)
         if (!tpls.length) return res.status(400).json({ error: 'No valid template ids.' });
-        const { photo, photoRect } = await photosFor(userId);
-        const previews = await renderPreviews(row.resume_data, { photo, photoRect }, tpls);
+        // Serve what we already have; render only what is genuinely missing, in ONE batch so the
+        // warm browser is reused. A second visit to the gallery renders nothing at all.
+        const pver = await photoVersion(userId);
+        const hits = [];
+        const missing = [];
+        for (const tpl of tpls) {
+            const c = await readPreviewCache(userId, row, tpl.id, pver);
+            if (c) hits.push(c); else missing.push(tpl);
+        }
+        let fresh = [];
+        if (missing.length) {
+            const { photo, photoRect } = await photosFor(userId);
+            fresh = await renderPreviews(row.resume_data, { photo, photoRect }, missing);
+            for (const p of fresh) await writePreviewCache(userId, row, p, pver);
+            prunePreviews(userId);                       // fire and forget
+        }
+        // Answer in the order asked for, whatever came from where.
+        const byId = new Map([...hits, ...fresh].map((p) => [p.id, p]));
+        const previews = tpls.map((t) => byId.get(t.id)).filter(Boolean);
+        console.log(`[resumeBuilder] previews: ${hits.length} cached, ${fresh.length} rendered`);
         return res.json({ success: true, region: region || 'generic', previews });
     } catch (e) {
         console.error('[resumeBuilder] previewTemplates error:', e.message);
@@ -1129,11 +1198,7 @@ async function cachedThumb(userId, row, tplId, tag = '') {
     // ⚠️ The profile photo is rendered INTO the card but used to be absent from the key, so
     // replacing a photo never invalidated anything — Home kept serving the old face until the
     // resume itself was next saved. Its mtime is part of the version now.
-    let pver = 'none';
-    try {
-        const ppath = await resolvePhotoPath(userId);
-        if (ppath) pver = String((await fs.stat(ppath)).mtimeMs);
-    } catch { /* no photo, or unreadable → 'none', which is itself a distinct version */ }
+    const pver = await photoVersion(userId);
     const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tag + ':' + tplId;
     const tDir = path.join(__dirname, '../../temp');
     await fs.mkdir(tDir, { recursive: true });
@@ -1346,4 +1411,4 @@ async function buildResumePdfForRegion(userId, region, mode) {
     return { filePath, fileName, template: tplId };
 }
 
-module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt };   // buildParsePrompt exported for tests only
+module.exports = { previewFile, readPreviewCache, writePreviewCache, generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt };   // buildParsePrompt exported for tests only
