@@ -29,7 +29,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { E } from '../employer-home/theme';
-import { buyDownloadPass, fetchPassPrice, fetchDownloadState } from '../../services/downloadPassService';
+import { buyDownloadPass, fetchPassPrice, fetchDownloadState, recoverStrandedPasses } from '../../services/downloadPassService';
 
 export default function DownloadPaywallSheet({
   visible, employer, onClose, onUnlocked, onSeePlans,
@@ -59,7 +59,14 @@ export default function DownloadPaywallSheet({
       easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.quad),
       useNativeDriver: true,
     }).start();
-    if (visible) { setNote(null); fetchPassPrice().then(setPrice).catch(() => setPrice(null)); }
+    if (visible) {
+      setNote(null);
+      fetchPassPrice().then(setPrice).catch(() => setPrice(null));
+      // A purchase Play still holds unconsumed is money we took and never honoured. Heal it as the
+      // sheet opens, so someone who was cut off mid-verification is not asked to pay a second time.
+      // No-op everywhere but Android; the server dedupes, so it cannot grant twice.
+      recoverStrandedPasses().catch(() => {});
+    }
   }, [visible, t]);
 
   // Coming BACK from the plans screen. If they subscribed, this sheet has nothing left to offer;

@@ -19,8 +19,13 @@ const svcSrc   = R('../services/downloadPassService.ts');
 const billSrc  = R('../services/storeBilling.ts');
 const galSrc   = R('../app/(resume-builder)/templates.tsx');
 const letSrc   = R('../app/(cover-letter)/templates.tsx');
-const FILES = { 'DownloadPaywallSheet.tsx': sheetSrc, 'downloadPassService.ts': svcSrc };
+const envSrc   = R('../services/storeEnv.ts');
+const prevSrc  = R('../app/(resume-builder)/preview.tsx');
+const homeSrc  = R('../components/employer-home/EmployerHome.tsx');
+const bempSrc  = R('../services/builderEmployer.ts');
+const FILES = { 'DownloadPaywallSheet.tsx': sheetSrc, 'downloadPassService.ts': svcSrc, 'builderEmployer.ts': bempSrc };
 const sheet = strip(sheetSrc), svc = strip(svcSrc), bill = strip(billSrc), gal = strip(galSrc), let_ = strip(letSrc);
+const env = strip(envSrc), prev = strip(prevSrc), home = strip(homeSrc);
 
 console.log('── the new files parse and follow the house rules ──');
 for (const [name, src] of Object.entries(FILES)) {
@@ -80,6 +85,42 @@ ok('⚠️ the letter screen prefers the SHARED employer identity over the AI\u2
   && /employer=\{passEmployer\}/.test(let_));
 ok('…and sends both spellings so the server can pick the one already paid for',
   /companyName: ctx\.companyName, companyAddress: ctx\.companyAddress, employer: passEmployer/.test(let_));
+
+console.log('── ⚠️ MONEY WE TOOK AND NEVER HONOURED MUST HEAL ITSELF ──');
+// iOS replays unfinished transactions every launch (App.js's drainUnfinishedApplePurchases).
+// Android had NO such path: a 503 during verification left the purchase unconsumed and unhonoured,
+// and because Play then reports the sku as owned, the next Buy came back ITEM_ALREADY_OWNED — the
+// user could not even pay again until Google auto-refunded on day three.
+ok('there IS an Android recovery path', /export async function recoverStrandedPasses/.test(svc));
+ok('…that only runs where the gap was', /Platform\.OS !== 'android'/.test(svc));
+ok('⚠️ …and it runs BEFORE a new purchase is attempted, because Play refuses a second one',
+  /if \(await recoverStrandedPasses\(\)\)[\s\S]{0,200}\n  const priced = await fetchOneTimeProducts/.test(svc), svc.match(/if \(await recoverStrandedPasses[\s\S]{0,240}/)?.[0]);
+ok('…verifying with the server before consuming, never the other way round',
+  /verifyGooglePass\(tok\)\)\.ok\) \{[\s\S]{0,120}finishOneTime\(p\)/.test(svc));
+ok('…and the sheet heals on open too, so a stranded purchase needs no second Buy tap',
+  /recoverStrandedPasses\(\)\.catch/.test(sheet));
+
+console.log('── ⚠️ A SANDBOX PASS MUST NOT BE INVISIBLE TO THE BUILD THAT BOUGHT IT ──');
+// x-store-env was an axios DEFAULT only, and every pass endpoint is written with fetch — so on
+// TestFlight the pass was written in Sandbox and every read, defaulting to Production, saw nothing.
+ok('the header reaches fetch, not only axios', /__cvaFetchStoreEnvPatched/.test(env));
+ok('⚠️ …for our own API origin only', /url\.startsWith\(API_BASE\)/.test(env));
+ok('⚠️ …and Production still sends nothing at all', /if \(cached === 'Sandbox'\)/.test(env));
+ok('Android adopts the environment the server reported', /rememberStoreEnv\(j\.environment\)/.test(svc));
+ok('⚠️ iOS adopts it only when a pass demonstrably exists there',
+  /fetchDownloadState\(employer, 'Sandbox'\)[\s\S]{0,160}rememberStoreEnv\('Sandbox'\)/.test(svc));
+
+console.log('── ⚠️ THE PADLOCK FOLLOWS WHAT THEY PAID FOR ──');
+// isPaid comes from the subscription status alone, so a pass buyer who had just downloaded a file
+// was still shown 🔒 "Paid plans" on the button they had already paid for.
+ok('the resume gallery badges on the pass, not the subscription',
+  /\{dlLabel\.locked && <View style=\{s\.credBadge\}/.test(gal) && !/\{!isPaid && <View style=\{s\.credBadge\}/.test(gal));
+ok('…and the letter footer says "Included" for a pass owner too', /!dlLabel\.locked/.test(let_));
+
+console.log('── ⚠️ A DOWNLOAD WITH NO COMPANY IS A PAYMENT WITH NOTHING TO ATTACH TO ──');
+ok('the editor carries the employer into the gallery, as Home already does',
+  /pathname: '\/\(resume-builder\)\/templates',[\s\S]{0,120}builderEmployer \? \{ employer: builderEmployer \} : \{\}/.test(prev));
+ok('…taking it from where Home stored it', /readBuilderEmployer\(\)/.test(prev) && /rememberBuilderEmployer/.test(home));
 
 console.log('── a server NO always wins over the cached state ──');
 for (const [what, src] of [['resume gallery', gal], ['cover letter', let_]]) {

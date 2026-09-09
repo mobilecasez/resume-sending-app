@@ -6,6 +6,7 @@ const dbConfig = require('../../db-config');
 const { executeGenerationWork } = require('../controllers/coverLetterController');
 const { executeSendWork } = require('../controllers/emailController');
 const { regionFromCountry, regionFromTld } = require('../utils/regionFromCountry');
+const entitlements = require('../services/entitlements');
 
 /**
  * POST /api/batch-process
@@ -50,6 +51,24 @@ router.post('/batch-process', authenticateToken, async (req, res) => {
 
         if (validRecipients.length === 0) {
             return res.status(400).json({ error: 'No valid recipients (email + website required)' });
+        }
+
+        // ⚠️ GENERATE-ALL IS THE SAME AI CALL AS GENERATE, AND IT HAS TO COST THE SAME.
+        // This route ran executeGenerationWork with no gate at all, so the single-letter button's
+        // 402 was one tap away from an unmetered batch of the identical work — up to six at a time.
+        // Checked (never reserved) for the whole batch, matching the per-letter deduction inside
+        // executeGenerationWork, so an oversized batch is refused up front instead of delivering the
+        // overflow unpaid. 'send' stays ungated: sending a letter that is already paid for is free.
+        if (mode === 'generate' || mode === 'generate-and-send') {
+            let gate;
+            try {
+                gate = await entitlements.canConsumeMany(userId, 'cover_letter', validRecipients.length, req);
+            } catch (e) {
+                return res.status(500).json({ error: 'Failed to check your plan allowance' });
+            }
+            if (!gate.allowed) {
+                return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', remainingCredits: 0, creditsRequired: validRecipients.length });
+            }
         }
 
         // Create batch job

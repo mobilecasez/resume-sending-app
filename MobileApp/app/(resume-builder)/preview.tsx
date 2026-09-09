@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
+import { readBuilderEmployer } from '../../services/builderEmployer';
 
 const T = {
   bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
@@ -230,6 +231,12 @@ export default function ResumePreview() {
   const [rich, setRich] = useState<{ title: string; value: string; apply: (md: string) => void } | null>(null);
 
   const [regen, setRegen] = useState<{ used: number; freeLimit: number; isPaid: boolean }>({ used: 0, freeLimit: 1, isPaid: false });
+  // ⚠️ The company this résumé is for, so the gallery opened from HERE can name it. Without it the
+  // download reaches the server with employer:null and a pass bought on this screen attaches to
+  // nothing anyone can use. Home's "View PDF" already passes it in the route; this button had no
+  // params of its own to inherit, which is what services/builderEmployer bridges.
+  const [builderEmployer, setBuilderEmployer] = useState<string | null>(null);
+  useEffect(() => { readBuilderEmployer().then(setBuilderEmployer).catch(() => {}); }, []);
   useEffect(() => {
     (async () => {
       // Manual-build seed: start from the sample template the index screen saved (ignore any
@@ -595,7 +602,14 @@ export default function ResumePreview() {
       {!busy && (
         <View style={s.floatingBar}>
           <View style={s.actionRow}>
-            <TouchableOpacity style={s.actionHalf} activeOpacity={0.88} onPress={() => router.push('/(resume-builder)/templates')}>
+            <TouchableOpacity
+              style={s.actionHalf}
+              activeOpacity={0.88}
+              onPress={() => router.push({
+                pathname: '/(resume-builder)/templates',
+                params: builderEmployer ? { employer: builderEmployer } : {},
+              })}
+            >
               <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.regenBtn}>
                 <Ionicons name="download-outline" size={16} color="#fff" /><Text style={s.regenText}>Download / Preview</Text>
               </LinearGradient>

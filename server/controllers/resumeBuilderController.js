@@ -367,15 +367,34 @@ async function generateAI(req, res) {
             freeRegen = true;
         }
         // GATE — plan/trial quota first, legacy credits fallback; deduct on success only (below).
-        // A single-employer pass includes ONE AI resume for that company. Checked before the plan
-        // quota so a pass holder is not told they are out of plan resumes they never had.
+        //
+        // A single-employer pass includes ONE AI resume for that company.
+        // ⚠️ THE PLAN IS ASKED FIRST AND THE PASS IS THE FALLBACK. Burning someone's one-off while
+        // their plan or free allowance could have paid destroys what they bought and gives nothing
+        // back. `boundOnly` says exactly that: while quota remains only a pass ALREADY bound to
+        // this employer may pay (they bought it for precisely this); once quota is gone the pass is
+        // consulted in full — and that call RESERVES it, so two generations for two companies
+        // inside one AI minute cannot both ride the same pass.
         const passEmployer = (job && (job.company || '').trim()) || null;
-        const viaPass = passEmployer
-            ? await downloads.passCoversGeneration(userId, 'resume', passEmployer, req).catch(() => false)
+        const quota = freeRegen ? { allowed: true } : await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        const viaPass = (!freeRegen && passEmployer)
+            ? await downloads.passCoversGeneration(userId, 'resume', passEmployer, req, { boundOnly: quota.allowed }).catch(() => false)
             : false;
-        const gate = (freeRegen || viaPass) ? { allowed: true } : await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        const gate = (freeRegen || viaPass) ? { allowed: true } : quota;
         if (!gate.allowed) {
             return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
+        }
+
+        // ⚠️ NEVER CHARGE FOR AN ANSWER THE CLIENT CAN NO LONGER RECEIVE.
+        // The app aborts at 120s; a run that retries a truncated Gemini response routinely passes
+        // that, and then tells the user "tap Generate again — it usually succeeds on the next try".
+        // Charging anyway meant the retry was refused for a resume they had already paid for.
+        // The resume is still SAVED below, so nothing is lost — their retry regenerates and pays
+        // exactly once. Only the synchronous lane is guarded: asJob's capturing res has no
+        // writableEnded, and its request socket is deliberately closed after the 202.
+        let clientGone = false;
+        if (typeof res.writableEnded === 'boolean' && req && typeof req.on === 'function') {
+            req.on('close', () => { if (!res.writableEnded) clientGone = true; });
         }
         const RESUME_CREDIT_COST = await getEventCost('resume_ai_generate');   // legacy display only
         const creditCheck = { hasCredits: true };   // gate above is authoritative now
@@ -464,11 +483,15 @@ async function generateAI(req, res) {
             // claim did not land — two taps racing means the second must still be paid for by
             // something, and silently generating for free is the wrong way to lose that race.
             let spentPass = false;
-            if (viaPass) {
-                const claimed = await downloads.claimGeneration(userId, 'resume', passEmployer, req);
-                spentPass = !!claimed.charged;
+            if (clientGone) {
+                console.warn('[resumeBuilder] client disconnected before delivery — resume saved, nothing charged');
+            } else {
+                if (viaPass) {
+                    const claimed = await downloads.claimGeneration(userId, 'resume', passEmployer, req);
+                    spentPass = !!claimed.charged;
+                }
+                if (!spentPass && !freeRegen) await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
             }
-            if (!spentPass && !freeRegen) await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
         } catch (e) { console.warn('[resumeBuilder] usage record failed:', e.message); }
 
         await ensureResumeTable();

@@ -24,6 +24,7 @@
 // transaction Apple's sandbox API recognises — which an App Store build's StoreKit cannot produce.
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
+import { API_BASE } from '../config';
 
 export type StoreEnvironment = 'Production' | 'Sandbox';
 
@@ -58,6 +59,38 @@ function applyHeader(env: StoreEnvironment): void {
   const common = axios.defaults.headers.common as Record<string, unknown>;
   if (env === 'Sandbox') common[HEADER] = 'Sandbox';
   else delete common[HEADER];
+  patchFetch();
+}
+
+/**
+ * ⚠️ AXIOS IS NOT THE WHOLE APP. The download-pass endpoints — /downloads/state, the two
+ * generate-*-pdf calls, verify-google-product — are all written with plain `fetch`, which an axios
+ * default cannot reach. On TestFlight that meant the pass was granted in Sandbox and then invisible:
+ * every read defaulted to Production, `passes` stayed 0, and the sheet said "still applying it"
+ * forever. So the same rule is installed on fetch, once, for OUR origin only.
+ *
+ * Production sets nothing at all — the interceptor is a no-op unless `cached` is Sandbox, exactly
+ * like the axios default above, so a real customer's requests are byte-for-byte unchanged.
+ */
+function patchFetch(): void {
+  const g = global as any;
+  if (g.__cvaFetchStoreEnvPatched) return;
+  const orig: typeof fetch = g.fetch;
+  if (typeof orig !== 'function') return;
+  g.__cvaFetchStoreEnvPatched = true;
+  g.fetch = ((input: any, init?: any) => {
+    try {
+      if (cached === 'Sandbox') {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (url && API_BASE && url.startsWith(API_BASE)) {
+          const headers = { ...((init && init.headers) || {}) } as Record<string, string>;
+          headers[HEADER] = 'Sandbox';
+          return orig(input, { ...(init || {}), headers });
+        }
+      }
+    } catch { /* a header must never be the reason a request does not go out */ }
+    return orig(input, init);
+  }) as typeof fetch;
 }
 
 /** Load the persisted environment and install the header. Idempotent; safe to call repeatedly. */

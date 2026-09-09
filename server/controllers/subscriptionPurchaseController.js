@@ -215,9 +215,26 @@ async function verifyGoogleProduct(req, res) {
   const environment = purchase.purchaseType === 0 ? SANDBOX : PRODUCTION;
   const storeTxnId = String(purchase.orderId || purchaseToken);
 
-  const created = await downloads.grantPass(userId, {
-    store: 'google', environment, storeTxnId, productId,
-  });
+  // ⚠️ A WRITE FAILURE MUST NOT BE REPORTED AS SUCCESS. On success:true the client calls
+  // finishOneTime, which CONSUMES and acknowledges the Play purchase — Google then keeps the money
+  // (no three-day auto-refund, because it was acknowledged) for a pass that was never written.
+  // 503 + retryable leaves the purchase unconsumed, so recoverStrandedPasses can honour it later.
+  let created;
+  try {
+    created = await downloads.grantPass(userId, { store: 'google', environment, storeTxnId, productId });
+  } catch (e) {
+    console.error('[verifyGoogleProduct] pass write FAILED (nothing granted):', e.message);
+    return res.status(503).json({
+      error: 'We could not finish applying your purchase. Nothing is lost — it will be applied automatically.',
+      retryable: true,
+    });
+  }
+  if (!created) {
+    const owner = await downloads.passOwnerOf({ store: 'google', environment, storeTxnId });
+    if (owner && owner !== userId) {
+      console.error(`🤖 download pass order=${storeTxnId} belongs to user ${owner}, replayed by user ${userId} — nothing granted`);
+    }
+  }
   console.log(`🤖 download pass ${created ? 'granted' : 'already recorded'} — user=${userId} order=${storeTxnId} env=${environment}`);
   return res.json({ success: true, kind: 'download_pass', granted: created, environment });
 }

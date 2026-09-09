@@ -757,12 +757,35 @@ async function verifyApplePurchase(req, res, dbConfig) {
         // sandbox download. Credits could not do that — they are one pooled integer.
         if (verifiedProductId === downloads.PASS_PRODUCT_ID) {
             const passTxn = verifiedTransactionId || transactionId;
-            const created = await downloads.grantPass(userId, {
-                store: 'apple',
-                environment: purchaseEnvironment,
-                storeTxnId: passTxn,
-                productId: verifiedProductId,
-            });
+            // ⚠️ A WRITE FAILURE MUST NOT BE REPORTED AS SUCCESS. App.js finishes the transaction on
+            // success:true — it leaves StoreKit's queue and the pending-retry record is deleted — so
+            // answering yes for a pass that was never written loses the purchase with no artifact
+            // left to rebuild it from. 503 + retryable is the one shape App.js treats as non-final:
+            // it keeps the transaction and replays it on the next launch.
+            let created;
+            try {
+                created = await downloads.grantPass(userId, {
+                    store: 'apple',
+                    environment: purchaseEnvironment,
+                    storeTxnId: passTxn,
+                    productId: verifiedProductId,
+                });
+            } catch (e) {
+                console.error('🍎 download pass write FAILED (nothing granted):', e.message);
+                return res.status(503).json({
+                    error: 'We could not finish applying your purchase. Nothing is lost — it will be applied automatically.',
+                    retryable: true,
+                });
+            }
+            if (!created) {
+                // Already recorded. If it was recorded for SOMEONE ELSE, this is a receipt replayed
+                // under a second account (the pending list on iOS is per device, not per user) —
+                // it grants nothing here, so say so loudly enough to be found in support.
+                const owner = await downloads.passOwnerOf({ store: 'apple', environment: purchaseEnvironment, storeTxnId: passTxn });
+                if (owner && owner !== userId) {
+                    console.error(`🍎 download pass txId=${passTxn} belongs to user ${owner}, replayed by user ${userId} — nothing granted`);
+                }
+            }
             console.log(`🍎 download pass ${created ? 'granted' : 'already recorded'} — user=${userId} txId=${passTxn} env=${purchaseEnvironment}`);
             // Success either way: a replayed receipt means the pass already exists, and the client
             // must be told yes so it finishes the transaction rather than retrying forever.
@@ -774,7 +797,10 @@ async function verifyApplePurchase(req, res, dbConfig) {
             // the middle of. `alreadyProcessed` is the existing flag that suppresses exactly that
             // celebration and that navigation, while still finishing the transaction with Apple.
             // The download sheet reports the real outcome itself.
-            return res.json({ success: true, kind: 'download_pass', granted: created, alreadyProcessed: true });
+            // `environment` travels back so the app can learn it is a Sandbox (TestFlight) device and
+            // send x-store-env from then on — without it the pass is written in Sandbox and every
+            // later read, which defaults to Production, cannot see it.
+            return res.json({ success: true, kind: 'download_pass', granted: created, environment: purchaseEnvironment, alreadyProcessed: true });
         }
 
         // Look up the plan from our database using the Apple product ID

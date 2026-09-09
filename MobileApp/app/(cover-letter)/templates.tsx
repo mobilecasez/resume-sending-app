@@ -350,9 +350,11 @@ export default function CoverLetterTemplates() {
               </LinearGradient>
             </TouchableOpacity>
           ))}
+          {/* Same rule as the resume gallery: a pass owner is a paying customer, so do not tell
+              them downloads are "included in every paid plan" as though they had not bought one. */}
           <Text style={s.footerNote}>
-            {isPaid
-              ? `Included in your plan · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`
+            {!dlLabel.locked
+              ? `Included · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`
               : 'Previews are free · downloads are included in every paid plan'}
           </Text>
         </View>

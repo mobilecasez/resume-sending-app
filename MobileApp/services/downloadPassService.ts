@@ -13,8 +13,9 @@ import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../config';
 import {
-  fetchOneTimeProducts, purchaseOneTime, finishOneTime, isStoreBillingAvailable,
+  fetchOneTimeProducts, purchaseOneTime, finishOneTime, isStoreBillingAvailable, getOwnedSubscriptions,
 } from './storeBilling';
+import { rememberStoreEnv } from './storeEnv';
 
 export const PASS_SKU = 'com.cvapplyr.mobile.download.single';
 
@@ -45,12 +46,14 @@ async function token(): Promise<string | undefined> {
 }
 
 /** What a download costs this user right now. Fails CLOSED — an unreadable state is a locked one. */
-export async function fetchDownloadState(employer?: string | null): Promise<DownloadState> {
+export async function fetchDownloadState(employer?: string | null, forceEnv?: 'Sandbox'): Promise<DownloadState> {
   const t = await token();
   if (!t) return LOCKED;
   try {
     const q = employer ? `?employer=${encodeURIComponent(employer)}` : '';
-    const r = await fetch(`${API_BASE}/downloads/state${q}`, { headers: { Authorization: `Bearer ${t}` } });
+    const headers: Record<string, string> = { Authorization: `Bearer ${t}` };
+    if (forceEnv) headers['x-store-env'] = forceEnv;
+    const r = await fetch(`${API_BASE}/downloads/state${q}`, { headers });
     if (!r.ok) return LOCKED;
     const j = await r.json();
     return {
@@ -87,6 +90,15 @@ export async function buyDownloadPass(employer?: string | null): Promise<BuyResu
   if (!isStoreBillingAvailable()) {
     return { ok: false, message: 'In-app purchases are not available in this build.' };
   }
+
+  // ⚠️ BEFORE ANYTHING ELSE, HONOUR WHAT THEY ALREADY PAID FOR. On Android an unconsumed purchase
+  // makes Play answer ITEM_ALREADY_OWNED for the next Buy, so a stranded pass does not merely sit
+  // there — it blocks the user from even paying again. This has to run ahead of purchaseOneTime.
+  if (await recoverStrandedPasses()) {
+    const s = await waitForPass(employer);
+    if (s) return { ok: true, employerUnlocked: s.ownsEmployer || s.passes > 0 };
+  }
+
   const priced = await fetchOneTimeProducts([PASS_SKU]);
   if (!priced.length) {
     return { ok: false, message: 'This is not on sale yet. Please try again shortly.' };
@@ -120,6 +132,32 @@ export async function buyDownloadPass(employer?: string | null): Promise<BuyResu
   return { ok: true, employerUnlocked: state.ownsEmployer || state.passes > 0 };
 }
 
+/**
+ * Android only. Anything Play still holds unconsumed is money we took and never honoured.
+ *
+ * ⚠️ THERE IS NO OTHER RECOVERY PATH ON ANDROID. iOS replays unfinished transactions on every
+ * launch (App.js's drainUnfinishedApplePurchases); the Android half of that effect is hard-gated to
+ * iOS, and the only other purchase query filters to subscription skus, so a pass whose verification
+ * 503'd — or that was interrupted by the app being killed — was stranded forever. Verify it, and
+ * only then consume it. Idempotent: the server dedupes on the store transaction's unique index, so
+ * re-verifying an already-granted token simply grants nothing again.
+ */
+export async function recoverStrandedPasses(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !isStoreBillingAvailable()) return false;
+  let recovered = false;
+  try {
+    for (const p of await getOwnedSubscriptions([PASS_SKU])) {
+      const tok = (p as any).purchaseToken || (p as any).purchaseTokenAndroid;
+      if (!tok) continue;
+      if ((await verifyGooglePass(tok)).ok) {
+        await finishOneTime(p);          // the CONSUME — also Play's required acknowledgement
+        recovered = true;
+      }
+    }
+  } catch { /* recovery is best-effort; a failure here must not block a fresh purchase */ }
+  return recovered;
+}
+
 async function verifyGooglePass(purchaseToken?: string): Promise<{ ok: boolean; message?: string }> {
   if (!purchaseToken) return { ok: false, message: 'The store did not return a purchase token.' };
   const t = await token();
@@ -131,7 +169,10 @@ async function verifyGooglePass(purchaseToken?: string): Promise<{ ok: boolean; 
       body: JSON.stringify({ productId: PASS_SKU, purchaseToken }),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok && j.success) return { ok: true };
+    // The server reports which environment the store said this purchase was in. A TestFlight/
+    // internal-test build must adopt it, or the pass it just wrote in Sandbox is invisible to every
+    // later read (which defaults to Production) and the download stays locked forever.
+    if (r.ok && j.success) { await rememberStoreEnv(j.environment); return { ok: true }; }
     return { ok: false, message: j.error };
   } catch (e: any) {
     return { ok: false, message: e?.message };
@@ -145,6 +186,20 @@ async function waitForPass(employer?: string | null): Promise<DownloadState | nu
     if (s.passes > 0 || s.ownsEmployer) return s;
     await new Promise((r) => setTimeout(r, i < 3 ? 700 : 1500));
   }
+
+  // ⚠️ LAST RESORT: WE MAY BE A SANDBOX BUILD THAT DOES NOT KNOW IT YET. On iOS App.js owns the
+  // verify response, so this module never sees the environment the server reported — a TestFlight
+  // tester's pass is written in Sandbox and every poll above, defaulting to Production, reads 0.
+  // Ask once in Sandbox; adopt it ONLY if a pass demonstrably exists there. That is the same threat
+  // model the header already assumes — an App Store build's StoreKit cannot mint a sandbox purchase
+  // in the first place, so claiming Sandbox without one only hides your own production plan.
+  try {
+    const sb = await fetchDownloadState(employer, 'Sandbox');
+    if (sb.passes > 0 || sb.ownsEmployer) {
+      await rememberStoreEnv('Sandbox');
+      return sb;
+    }
+  } catch { /* fall through to the honest "still applying it" message */ }
   return null;
 }
 

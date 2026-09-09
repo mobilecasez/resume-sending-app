@@ -35,9 +35,14 @@ console.log('── server: free plan = one regeneration, in its own lane ──
 ok('regenerate checks regen_count for free users', /isRegenerate && !sub[\s\S]{0,400}regen_count/.test(ctl));
 ok('the used-up case is a 403 with reason regen_limit', /regen_limit/.test(ctl));
 ok('the one free regen BYPASSES the quota gate',
-  /\(freeRegen \|\| viaPass\) \? \{ allowed: true \} : await entitlements\.canConsumeMany/.test(ctl));
+  /const quota = freeRegen \? \{ allowed: true \} : await entitlements\.canConsumeMany/.test(ctl)
+  && /const gate = \(freeRegen \|\| viaPass\) \? \{ allowed: true \} : quota;/.test(ctl));
 ok('⚠️ …and so does a single-employer pass, which includes one AI resume',
-  /passCoversGeneration\(userId, 'resume', passEmployer, req\)/.test(ctl));
+  /passCoversGeneration\(userId, 'resume', passEmployer, req, \{ boundOnly: quota\.allowed \}\)/.test(ctl));
+// ⚠️ ORDER, NOT JUST PRESENCE. Asking the pass first burned the one-off someone had bought while
+// their plan or free allowance could have paid — destroying it and handing back nothing.
+ok('⚠️ …but the PLAN is asked first, so an unspent one-off is not burned ahead of quota',
+  ctl.indexOf('canConsumeMany(userId, \'resume\', 1, req)') < ctl.indexOf('passCoversGeneration(userId, \'resume\''));
 ok('…and is not double-counted on success',
   /if \(!spentPass && !freeRegen\) await entitlements\.consumeOnSuccess/.test(ctl));
 ok('⚠️ …and a pass is spent BEFORE the plan, never both',
@@ -63,7 +68,10 @@ ok('ContentText only enters HTML mode on real rich-text tags', /<\\\/\?\(h\[1-6\
 ok('the old strip-everything tail is gone', !/\.replace\(\/<\[\^>\]\+>\/g, ''\);/.test(prev.slice(prev.indexOf('function ContentText'))));
 
 console.log('── app: preview action bar ──');
-ok('Download/Preview routes to the gallery', (prev.match(/router\.push\('\/\(resume-builder\)\/templates'\)/g) || []).length >= 1);
+// ⚠️ It now carries the EMPLOYER. Without it the download reached the server with employer:null,
+// which a pass can only be charged into the "(none)" scope for — a payment attached to nothing.
+ok('Download/Preview routes to the gallery, naming the company it is for',
+  /pathname: '\/\(resume-builder\)\/templates',[\s\S]{0,140}employer: builderEmployer/.test(prev));
 ok('Regenerate knows the free allowance before navigating', /regen\.used >= regen\.freeLimit/.test(prev));
 ok('…and offers the plans screen', /Regeneration used[\s\S]{0,300}\/\(subscription\)\/plans/.test(prev));
 

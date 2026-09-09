@@ -52,20 +52,71 @@ async function dbGet(sql, params = []) {
   db.log.push(q.slice(0, 90));
 
   // ── download_passes: the money table ──────────────────────────────────────────────────────────
+  // ⚠️ "unspent" now includes a pass bound to the '(none)' scope: a download that named no company
+  // is CHARGED (or the gate would be saying yes to something the claim declines to bill) but into a
+  // scope no employer occupies, so the first named download or generation takes it over.
+  const takeable = (p, uid, env) => p.user_id === uid && p.environment === env && (!p.bound_at || p.employer_key === '(none)');
+  const oldestTakeable = (uid, env) => db.passes
+    .filter((p) => takeable(p, uid, env))
+    .sort((a, b) => (b.bound_at ? 1 : 0) - (a.bound_at ? 1 : 0) || a.created_at - b.created_at)[0];
+
   if (/SELECT COUNT\(\*\)::int AS n FROM download_passes/.test(q)) {
     const [uid, env] = params;
-    return { n: db.passes.filter((p) => p.user_id === uid && p.environment === env && !p.bound_at).length };
+    return { n: db.passes.filter((p) => takeable(p, uid, env)).length };
   }
-  if (/SELECT id, employer_name FROM download_passes/.test(q)) {
+  // boundPassFor, exact key.
+  if (/SELECT id, employer_name, employer_key FROM download_passes WHERE user_id = \$1 AND employer_key = \$2/.test(q)) {
     const [uid, key, env] = params;
     return db.passes.find((p) => p.user_id === uid && p.employer_key === key && p.environment === env && p.bound_at) || null;
   }
-  if (/UPDATE download_passes SET employer_key/.test(q)) {
+  // boundPassFor, the alias scan (a query(), so it is served through dbQuery below).
+  if (/SELECT id, employer_name, employer_key FROM download_passes WHERE user_id = \$1 AND environment = \$2 AND bound_at IS NOT NULL/.test(q)) {
+    const [uid, env, none] = params;
+    return db.passes.filter((p) => p.user_id === uid && p.environment === env && p.bound_at && p.employer_key !== none);
+  }
+  // passCoversGeneration: is this specific pass's generation still unused?
+  if (/^SELECT id FROM download_passes WHERE id = \$1 AND \w+ IS NULL/.test(q)) {
+    const col = q.match(/AND (\w+) IS NULL/)[1];
+    const row = db.passes.find((p) => p.id === params[0]);
+    return row && !row[col] ? { id: row.id } : null;
+  }
+  // claimGeneration, on a pass already bound to this employer: stamp only.
+  if (/^UPDATE download_passes SET \w+ = NOW\(\) WHERE id = \( SELECT id FROM download_passes WHERE id = \$1/.test(q)) {
+    const col = q.match(/SET (\w+) = NOW/)[1];
+    const row = db.passes.find((p) => p.id === params[0]);
+    if (!row || row[col]) return null;
+    row[col] = Date.now();
+    return { id: row.id };
+  }
+  // claimGeneration, taking an unspent pass: stamp AND bind, in one update.
+  if (/^UPDATE download_passes SET \w+ = NOW\(\), employer_key = \$3/.test(q)) {
+    const col = q.match(/SET (\w+) = NOW/)[1];
+    const [uid, env, key, name] = params;
+    const row = db.passes
+      .filter((p) => takeable(p, uid, env) && !p[col])
+      .sort((a, b) => (b.bound_at ? 1 : 0) - (a.bound_at ? 1 : 0) || a.created_at - b.created_at)[0];
+    if (!row) return null;
+    row[col] = Date.now(); row.employer_key = key; row.employer_name = name; row.bound_at = Date.now();
+    db.boundWrites.push({ user_id: uid, employer_key: key });
+    return { id: row.id };
+  }
+  // passCoversGeneration: RESERVE — bind an unspent pass at the gate, without stamping anything.
+  if (/^UPDATE download_passes SET employer_key = \$3, employer_name = \$4, bound_at = NOW\(\)/.test(q)) {
+    const col = (q.match(/AND (\w+) IS NULL/) || [])[1];
+    const [uid, env, key, name] = params;
+    const row = db.passes
+      .filter((p) => takeable(p, uid, env) && (!col || !p[col]))
+      .sort((a, b) => (b.bound_at ? 1 : 0) - (a.bound_at ? 1 : 0) || a.created_at - b.created_at)[0];
+    if (!row) return null;
+    row.employer_key = key; row.employer_name = name; row.bound_at = Date.now();
+    db.boundWrites.push({ user_id: uid, employer_key: key });
+    return { id: row.id };
+  }
+  // claimDownload: bind an unspent pass to this employer.
+  if (/^UPDATE download_passes SET employer_key = \$2, employer_name = \$3, bound_at = NOW\(\)/.test(q)) {
     db.claimUpdates++;
     const [uid, key, name, env] = params;
-    const row = db.passes
-      .filter((p) => p.user_id === uid && !p.bound_at && p.environment === env)
-      .sort((a, b) => a.created_at - b.created_at)[0];
+    const row = oldestTakeable(uid, env);
     if (!row) return null;
     row.employer_key = key; row.employer_name = name; row.bound_at = Date.now();
     db.boundWrites.push({ user_id: uid, employer_key: key });
@@ -90,7 +141,10 @@ async function dbGet(sql, params = []) {
 }
 const dbPath = require.resolve(path.join(ROOT, 'db-config.js'));
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
-  get: dbGet, query: async () => [], run: async (sql) => { db.log.push('RUN ' + norm(sql).slice(0, 70)); return {}; },
+  get: dbGet,
+  // The alias scan is the one query() the money path makes; everything else reads nothing.
+  query: async (sql, params) => { const r = await dbGet(sql, params); return Array.isArray(r) ? r : []; },
+  run: async (sql) => { db.log.push('RUN ' + norm(sql).slice(0, 70)); return {}; },
   withTransaction: async (fn) => fn({ get: dbGet, run: async () => ({}) }), isUniqueViolation: () => false, getDbType: () => 'postgres',
 } };
 
@@ -305,12 +359,18 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
   // and there is no hint, it is the URL — a string the resume screen would never produce.
   const aiEmployerName = 'https://acme.test';
 
-  // The raw service cannot bridge the two spellings — it is only ever given one string, and
-  // "https://acme.test" is not "acme corp". Asserted so the reason resolveEmployer exists stays
-  // visible: without it, this is precisely where the second charge came from.
+  // ⚠️ THIS ASSERTION USED TO SAY THE OPPOSITE, AND THE OPPOSITE WAS THE BUG.
+  // The service matched employer keys as exact strings, so "https://acme.test" was simply not
+  // "acme corp" and the same customer was charged a second time for the same company — and it was
+  // only ever bridged when a caller happened to remember to send BOTH spellings. Now the identity
+  // is the company, not the string: a URL, a legal suffix and a case difference are the same
+  // employer, so a single spelling from any screen finds the pass that was already bought.
   const rawGate = await D.canDownload(4, { employer: aiEmployerName }, mkReq(4, {}));
-  ok('the raw service alone does NOT bridge the two spellings (why resolveEmployer exists)',
-     rawGate.allowed === false, { rawGate });
+  ok('⚠️ ONE spelling is enough — the service itself bridges the URL to the company',
+     rawGate.allowed === true && rawGate.via === 'pass_owned', { rawGate });
+  const strangerGate = await D.canDownload(4, { employer: 'https://boeing.test' }, mkReq(4, {}));
+  ok('…but a DIFFERENT company is still refused, so the bridge is not a skeleton key',
+     strangerGate.allowed === false, { strangerGate });
 
   // What the fixed client sends: BOTH spellings. The controller resolves them, finds the pass the
   // resume download already bound to the Home target's company, and honours it — one payment, one
@@ -333,11 +393,77 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
   ok('an unknown company is still refused rather than guessed', oldClient.statusCode === 403,
      { status: oldClient.statusCode });
 
+  // ── T9 ───────────────────────────────────────────────────────────────────────────────────────
+  // ⚠️ THE APP'S MAIN LETTERS SCREEN SENDS NO COMPANY AT ALL — App.js posts exactly
+  // { recipientEmail, websiteUrl, position }. The gate used to take the employer from
+  // `body.employer || companyNameHint`, so it was null on that screen, the pass was never
+  // consulted, and a pass holder with no quota left was told to buy a PLAN to get the letter their
+  // pass explicitly includes. The employer is now derived from the website they did send.
+  console.log('\n── T9 · the letter the pass includes, from the screen that names no company ──');
+  ent.gate = { allowed: false, message: "You've used your free cover letters." };
+  await grant(9, 'TXN-9');
+  ai.letterCalls = 0; ent.consumed.length = 0;
+  const nameless = await call(CL.generateCoverLetterDetails, 9, {
+    recipientEmail: 'jobs@acme.test', websiteUrl: 'https://www.acme.test/careers', position: 'Backend Engineer',
+  });
+  ok('the letter was generated, not refused with a 402', nameless.statusCode === 200, { status: nameless.statusCode, body: nameless.body });
+  ok('⚠️ …paid for by the PASS, not by a quota the user does not have',
+     ent.consumed.filter((c) => c.kind === 'cover_letter').length === 0, ent.consumed);
+  ok('…and the pass now records its one letter as spent',
+     db.passes.some((p) => p.user_id === 9 && p.letter_generated_at), db.passes.filter((p) => p.user_id === 9));
+  ok('⚠️ the AI ran exactly once for it', ai.letterCalls === 1, { calls: ai.letterCalls });
+
+  const secondLetter = await call(CL.generateCoverLetterDetails, 9, {
+    recipientEmail: 'jobs@acme.test', websiteUrl: 'https://www.acme.test/careers', position: 'Staff Engineer',
+  });
+  ok('⚠️ a SECOND letter on the same pass is refused — one AI letter, not unlimited',
+     secondLetter.statusCode === 402, { status: secondLetter.statusCode });
+
+  // …but every DOWNLOAD for that employer stays free, which is the rest of the promise.
+  const nDl = await call(CL.generateCoverLetterTemplatePdf, 9, {
+    template: 'ats_pro', mode: 'a4', coverLetterHtml: '<p>Dear Hiring Manager</p>', companyName: 'Acme',
+  });
+  ok('…while downloading it in any format is still free for that employer — the pass bound to the '
+     + 'site it was generated from, and "Acme" is the same company as "acme.test"',
+     nDl.statusCode === 200, { status: nDl.statusCode, bound: boundKeys(9) });
+
+  // ── T10 ──────────────────────────────────────────────────────────────────────────────────────
+  // ⚠️ Burning the one-off while the plan could have paid destroys what they bought for nothing.
+  console.log('\n── T10 · a plan that can pay must not eat the one-off ──');
+  ent.gate = { allowed: true, remaining: 5 };
+  await grant(10, 'TXN-10');
+  ent.consumed.length = 0;
+  const withQuota = await call(CL.generateCoverLetterDetails, 10, {
+    recipientEmail: 'jobs@beta.test', websiteUrl: 'https://beta.test', position: 'Engineer',
+  });
+  ok('the letter was generated', withQuota.statusCode === 200, { status: withQuota.statusCode });
+  ok('⚠️ …charged to the allowance the user already had', ent.consumed.filter((c) => c.kind === 'cover_letter').length === 1, ent.consumed);
+  ok('⚠️ …and the pass is untouched, still unspent and still unbound',
+     unbound(10) === 1 && !db.passes.some((p) => p.user_id === 10 && p.letter_generated_at), db.passes.filter((p) => p.user_id === 10));
+
+  // ── T11 ──────────────────────────────────────────────────────────────────────────────────────
+  // The legacy /generate-cover-letter-pdf renders the SAME branded file as the paid template path
+  // and asked for nothing at all — one tap away from the 403 the other route returns.
+  console.log('\n── T11 · the legacy cover-letter PDF is a paid download too ──');
+  ent.gate = { allowed: false, message: 'no' }; ent.sub = null;
+  const freeRide = await call(CL.generateCoverLetterPdf, 11, {
+    coverLetterHtml: '<p>Dear Hiring Manager</p>', companyName: 'Gamma Test', websiteUrl: 'https://gamma.test',
+  });
+  ok('⚠️ a user with no plan and no pass is refused', freeRide.statusCode === 403, { status: freeRide.statusCode, body: freeRide.body });
+  await grant(11, 'TXN-11');
+  const paidRide = await call(CL.generateCoverLetterPdf, 11, {
+    coverLetterHtml: '<p>Dear Hiring Manager</p>', companyName: 'Gamma Test', websiteUrl: 'https://gamma.test',
+  });
+  ok('…and allowed once they hold a pass', paidRide.statusCode === 200, { status: paidRide.statusCode });
+  ok('…which it then actually SPENDS on that employer',
+     boundKeys(11).includes('gamma test'), { bound: boundKeys(11) });
+  ent.gate = { allowed: true, remaining: 5 };
+
   // ── tidy: the handlers are real, so they wrote real files. Remove everything THIS RUN created
   // (name pattern + created after we started); nothing older is touched.
   const fsSync = require('fs');
   const tempDir = path.join(ROOT, 'temp');
-  const MINE = /^(Test_User_Resume_|Cover_Letter_(Acme_Corp|acme_test|beta_test)_)/;
+  const MINE = /^(Test_User_Resume_|Cover_Letter_)/;
   let removed = 0;
   try {
     for (const f of fsSync.readdirSync(tempDir)) {

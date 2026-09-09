@@ -7,6 +7,7 @@ const router = express.Router();
 const { authenticateToken, authenticateAdmin } = require('../middleware/auth');
 const ents = require('../services/entitlements');
 const downloads = require('../services/downloads');
+const { normalizeEnvironment, PRODUCTION } = require('../services/storeEnvironment');
 
 // Plan catalog + the caller's current entitlement picture (plan/trial/remaining/used).
 router.get('/subscription/status', authenticateToken, async (req, res) => {
@@ -79,12 +80,19 @@ router.post('/admin/grant-download-pass', authenticateAdmin, async (req, res) =>
     if (!Number.isFinite(userId) || userId <= 0) return res.status(400).json({ error: 'Invalid userId' });
 
     const count = Math.min(Math.max(parseInt(body.count, 10) || 1, 1), 10);
-    const environment = body.environment === 'production' ? 'production' : 'sandbox';
+    // ⚠️ CAPITALISED, VIA THE CANONICAL NORMALISER. The column's CHECK constraint is
+    // environment IN ('Sandbox','Production'); a hand-rolled lowercase ternary here made every
+    // INSERT raise a check violation that grantPass then swallowed, so this replied
+    // { success: true, granted: 0 } and handed out nothing. Production is the default because a
+    // granted pass has to be visible to the ordinary, header-less requests that will spend it.
+    const environment = normalizeEnvironment(body.environment) || PRODUCTION;
     const store = body.store === 'google' ? 'google' : 'apple';
 
     let granted = 0;
     for (let i = 0; i < count; i++) {
       const storeTxnId = `admin-${userId}-${body.label || 'test'}-${i}-${Date.now()}`;
+      // grantPass no longer swallows write failures — let one reach the 500 below rather than
+      // reporting a success that never happened.
       if (await downloads.grantPass(userId, { store, environment, storeTxnId, productId: downloads.PASS_PRODUCT_ID })) granted++;
     }
     const state = await downloads.downloadState(userId, body.employer || null, req).catch(() => null);

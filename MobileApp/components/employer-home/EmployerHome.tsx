@@ -27,6 +27,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { rememberBuilderEmployer } from '../../services/builderEmployer';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { E, SERIF, sweepWords } from './theme';
@@ -79,6 +80,9 @@ export default function EmployerHome({
       from: 'home_employer',
       target: t ? { company: t.company, role: t.role, applyUrl: t.applyUrl || t.jobUrl || '' } : null,
     })).catch(() => {});
+    // The company also has to survive into the EDITOR's own download button, which has no params
+    // to inherit — otherwise a pass bought there attaches to nothing. See services/builderEmployer.
+    await rememberBuilderEmployer(t?.company);
   }, []);
   // Drives ONLY the pinned header's backdrop. Native driver, and the header is a sibling of the
   // ScrollView — a separate view tree from the mesh, so the b126 one-driver-per-tree rule holds.
@@ -488,7 +492,9 @@ export default function EmployerHome({
           // 'resumeBuilderAction', would arm a PAID regeneration — neither is touched.
           track('home_customize', { mode, sample });
           if (sample) armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
-          else nav()?.push?.('/(resume-builder)/preview');
+          // Not armBuilderFor: writing 'resume_builder_entry' here would arm a PAID regeneration.
+          // Only the employer hint travels, so the editor's download can name the company.
+          else rememberBuilderEmployer(target?.company).finally(() => nav()?.push?.('/(resume-builder)/preview'));
         }}
         onViewPdf={() => {
           const id = zoom ? deck[zoom.i]?.id : undefined;

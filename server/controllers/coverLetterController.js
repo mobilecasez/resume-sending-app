@@ -719,7 +719,26 @@ const generateCoverLetterDetails = async (req, res) => {
             : null;
         // The company a PASS attaches to, and whether one covers this generation. Resolved here and
         // threaded into the worker (see the gate below).
-        const passEmployer = ((req.body || {}).employer || companyNameHint || '').trim() || null;
+        //
+        // ⚠️ THE MAIN LETTERS SCREEN SENDS NO COMPANY AT ALL — App.js posts exactly
+        // { recipientEmail, websiteUrl, position }. Taking the employer from `employer ||
+        // companyNameHint` therefore left it null on the app's primary letter flow, the pass was
+        // never consulted, and a pass holder was told they were out of plan letters for the letter
+        // their pass explicitly includes. So derive a spelling from the one identifier that request
+        // does carry, the website, and let resolveEmployer prefer whichever candidate ALREADY owns a
+        // pass — that is how a pass bound by the resume download under "Acme Corp" still covers
+        // "acme.com" here.
+        const passHost = (() => {
+            try {
+                const raw = String(websiteUrl || '').trim();
+                if (!raw) return '';
+                const u = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+                return new URL(u).hostname.replace(/^www\./i, '');
+            } catch { return ''; }
+        })();
+        const passEmployer = await downloads.resolveEmployer(
+            userId, [(req.body || {}).employer, companyNameHint, passHost], req,
+        ).catch(() => ((req.body || {}).employer || companyNameHint || passHost || '').trim() || null);
         let passViaPass = false;
         let passEnv = null;
 
@@ -749,15 +768,23 @@ const generateCoverLetterDetails = async (req, res) => {
         // GATE (always synchronous — fast DB check): plan/trial quota first, credits fallback.
         // Deduction is on SUCCESS only, further down.
         try {
-            // A single-employer pass includes ONE AI cover letter for that company, so it is
-            // checked before the plan quota — a pass holder must not be told they are out of plan
-            // letters they never had. The decision is made HERE, where req exists, and carried
-            // into the worker: the charge happens after the response has already gone.
+            // A single-employer pass includes ONE AI cover letter for that company. The decision is
+            // made HERE, where req exists, and carried into the worker: the charge happens after
+            // the response has already gone.
+            //
+            // ⚠️ THE PLAN IS ASKED FIRST, AND THE PASS IS THE FALLBACK. Spending someone's one-off
+            // while their plan or free allowance could have paid destroys what they bought for
+            // nothing. `boundOnly` says exactly that: while quota remains, only a pass ALREADY
+            // bound to THIS employer may pay (they bought it for precisely this letter); an unspent
+            // pass is left alone. Once quota is gone the pass is consulted in full — and the gate
+            // RESERVES it, so two letters for two companies inside one AI minute cannot both ride
+            // the same pass.
             passEnv = downloads.envOf(req);
-            passViaPass = passEmployer
-                ? await downloads.passCoversGeneration(userId, 'cover_letter', passEmployer, passEnv).catch(() => false)
-                : false;
-            const gate = passViaPass ? { allowed: true } : await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
+            const quota = await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
+            passViaPass = await downloads
+                .passCoversGeneration(userId, 'cover_letter', passEmployer, passEnv, { boundOnly: quota.allowed })
+                .catch(() => false);
+            const gate = passViaPass ? { allowed: true } : quota;
             if (!gate.allowed) {
                 return res.status(402).json({
                     error: gate.message,
@@ -816,7 +843,12 @@ const generateCoverLetterDetails = async (req, res) => {
 
         } else {
             // SYNC MODE: Original behavior — hold connection until done
-            const result = await executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint });
+            // The pass decision travels into SYNC mode as well — without it a pass holder was gated
+            // on the pass and then charged again by the plan when the letter landed.
+            const result = await executeGenerationWork(userId, user, {
+                recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing,
+                passEmployer, passViaPass, passEnv,
+            });
 
             const duration = Date.now() - startTime;
             console.log(`✅ [${requestId}] Response sent in ${duration}ms`);
@@ -973,17 +1005,23 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         // ⚠️ Spend the PASS first when one covered this. Falls back to the plan if the claim did
         // not land (another tap won the same pass) — losing that race must not mean a free letter.
         let spentPass = false;
-        if (passViaPass && passEmployer) {
-            const claimed = await downloads.claimGeneration(userId, 'cover_letter', passEmployer, passEnv);
+        if (passViaPass) {
+            // The AI has now read the real employer name off the posting, which is a better spelling
+            // than anything the gate had — bind on it, so the download screens (which send that same
+            // name) match this pass exactly instead of asking for a second payment.
+            const claimed = await downloads.claimGeneration(userId, 'cover_letter', passEmployer || companyName, passEnv);
             spentPass = !!claimed.charged;
-            if (spentPass) console.log(`✅ Cover letter covered by a download pass for ${passEmployer}`);
+            if (spentPass) console.log(`✅ Cover letter covered by a download pass for ${passEmployer || companyName}`);
         }
+        // ⚠️ THE FALLBACK CHARGE NEEDS THE GATE'S ENVIRONMENT. This runs in the worker, with no req,
+        // so requestEnvironment({}) would answer Production while the gate resolved Sandbox — and a
+        // TestFlight subscriber would be billed legacy credits for a letter their plan had paid for.
         const used = spentPass ? { via: 'pass' } : await entitlements.consumeOnSuccess(userId, 'cover_letter', {
             companyName,
             position,
             recipientEmail,
             screen: 'job_cover_letter'
-        });
+        }, { storeEnv: passEnv || undefined });
         console.log(`✅ Usage recorded via ${used.via}`);
 
         await dbConfig.run(
@@ -1036,6 +1074,11 @@ async function processGenerationJob(jobId, userId, input) {
 }
 
 // Generate cover letter PDF for download
+//
+// ⚠️ THIS IS A PAID DOWNLOAD, AND FOR A LONG TIME IT WAS THE ONE THAT FORGOT TO ASK.
+// generateRichCoverLetterPDF here is byte-for-byte the generator the gated 'generic' template path
+// uses, so any signed-in account could POST its own HTML and get the paid file for nothing — one tap
+// away from the 403 the template route returns. Same gate, same claim, same employer resolution.
 const generateCoverLetterPdf = async (req, res) => {
     const useAsync = process.env.USE_ASYNC_JOBS === 'true';
     
@@ -1050,6 +1093,12 @@ const generateCoverLetterPdf = async (req, res) => {
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
+
+        // Both spellings plus the site, so a pass bought on the resume side covers this letter.
+        const passEmployer = await downloads.resolveEmployer(
+            userId, [(req.body || {}).employer, companyName, websiteUrl], req,
+        ).catch(() => companyName || null);
+        if (!(await requirePaidForDownload(userId, res, passEmployer, req))) return;
 
         // If brand data not passed by client, look it up from employer_brand_profiles cache
         if (!brandColor || !fontName) {
@@ -1132,6 +1181,7 @@ const generateCoverLetterPdf = async (req, res) => {
                 try {
                     await jobService.startJob(jobId);
                     const { filePath, fileName } = await generateRichPDF();
+                    await downloads.claimDownload(userId, { employer: passEmployer }, req);
                     const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
                     await jobService.completeJob(jobId, { success: true, downloadUrl, fileName });
                 } catch (err) {
@@ -1140,6 +1190,8 @@ const generateCoverLetterPdf = async (req, res) => {
             })();
         } else {
             const { filePath, fileName } = await generateRichPDF();
+            // Charged only now — the file exists on the line above.
+            await downloads.claimDownload(userId, { employer: passEmployer }, req);
             const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
             res.json({ success: true, downloadUrl, fileName });
         }

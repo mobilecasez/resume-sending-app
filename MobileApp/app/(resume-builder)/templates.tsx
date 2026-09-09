@@ -490,7 +490,12 @@ export default function ResumeTemplates() {
                 <>
                   <Ionicons name="download-outline" size={17} color="#fff" />
                   <Text style={s.dlText}>Download</Text>
-                  {!isPaid && <View style={s.credBadge}><Ionicons name="lock-closed" size={10} color="#fff" /><Text style={s.credBadgeText}>Paid plans</Text></View>}
+                  {/* ⚠️ THE PADLOCK FOLLOWS THE PASS, NOT THE SUBSCRIPTION. `isPaid` is set from
+                      fetchSubscriptionStatus alone, so someone who had just bought a pass and
+                      downloaded a file was still shown 🔒 "Paid plans" on the button they had
+                      already paid for — for the life of the account, unless they also subscribed.
+                      dlLabel.locked is the same truth the sheet and the format rows use. */}
+                  {dlLabel.locked && <View style={s.credBadge}><Ionicons name="lock-closed" size={10} color="#fff" /><Text style={s.credBadgeText}>Paid plans</Text></View>}
                 </>
               )}
             </LinearGradient>
