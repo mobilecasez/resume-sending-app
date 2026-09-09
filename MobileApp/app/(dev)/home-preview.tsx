@@ -18,7 +18,7 @@ import { View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import EmployerHome from '../../components/employer-home/EmployerHome';
 import { E } from '../../components/employer-home/theme';
-import type { Target, HomeCard } from '../../services/employerHomeService';
+import type { Target, HomeCard, DownloadHistoryItem } from '../../services/employerHomeService';
 
 // ── Paper, drawn six ways, so the deck reads as genuinely different LAYOUTS and not one design
 // recoloured. Each returns a data URI the carousel can lay out without a server round-trip.
@@ -127,6 +127,22 @@ const TARGETS: Target[] = [
 ];
 
 export default function HomePreview() {
+const DAY = 86400000;
+// Fixed offsets from a fixed epoch: a fixture that used Date.now() would render differently on
+// every run and make a visual diff of this screen worthless.
+const T0 = Date.parse('2026-09-09T10:00:00Z');
+const RESUME_HISTORY: DownloadHistoryItem[] = [
+  { id: 1, kind: 'resume', employer: 'Airbus', templateId: CATALOGUE[0].id, templateName: CATALOGUE[0].name, format: 'pdf', mode: 'a4', times: 3, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 2, kind: 'resume', employer: 'Zalando SE', templateId: CATALOGUE[2].id, templateName: CATALOGUE[2].name, format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 3, kind: 'resume', employer: 'Siemens', templateId: CATALOGUE[4].id, templateName: CATALOGUE[4].name, format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+  { id: 4, kind: 'resume', employer: 'Revolut', templateId: 'not-in-the-deck', templateName: 'Berlin Serif', format: 'pdf', mode: 'a4', times: 2, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 5, kind: 'resume', employer: 'Klarna', templateId: CATALOGUE[1].id, templateName: CATALOGUE[1].name, format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 400 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+];
+const LETTER_HISTORY: DownloadHistoryItem[] = [
+  { id: 11, kind: 'cover_letter', employer: 'Airbus', templateId: 'ats_pro', templateName: 'ATS Professional', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 12, kind: 'cover_letter', employer: 'Siemens', templateId: 'german', templateName: 'German Professional', format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 12 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+];
+
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <View style={s.fill}>
@@ -143,6 +159,15 @@ export default function HomePreview() {
             cards: async () => ({ preferred: CATALOGUE[0].id, cards: CATALOGUE.slice(0, 5), sample: true }),
             catalogue: async () => CATALOGUE,
             paid: async () => false,
+            // ⚠️ The library, from fixtures. EmployerHome's image-hydration effect short-circuits
+            // entirely when `loaders` is present, so this has to be self-contained — every row
+            // borrows a thumbnail from CATALOGUE by template id, with no follow-up fetch.
+            // One locked row on purpose: the padlock is the state most worth looking at.
+            history: async (kind) => ({
+              unlimited: false,
+              items: (kind === 'cover_letter' ? LETTER_HISTORY : RESUME_HISTORY) as DownloadHistoryItem[],
+            }),
+            setup: async () => ({ profile: true, resume: false, photo: false, signature: false, complete: false }),
           }}
         />
       </View>

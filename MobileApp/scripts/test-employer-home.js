@@ -17,6 +17,7 @@ const theme = R('../components/employer-home/theme.ts');
 const boundary = R('../components/employer-home/HomeBoundary.tsx');
 const zoomSrc = R('../components/employer-home/PaperZoom.tsx');
 const sheetSrc = R('../components/employer-home/AddEmployerSheet.tsx');
+const histSrc  = R('../components/employer-home/DownloadHistory.tsx');
 const svc = R('../services/employerHomeService.ts');
 const hs = R('../components/HomeScreen.js');
 const ctl = R('../../server/controllers/resumeBuilderController.js');
@@ -27,10 +28,11 @@ const routes = R('../../server/routes/resumeBuilder.js');
 // than once (Dimensions, router.back(), and the 1.99 the design deliberately does NOT copy).
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
 const homeC = strip(home), svcC = strip(svc), hsC = strip(hs), carC = strip(carousel), ctlC = strip(ctl);
+const histC = strip(histSrc);
 const FILES = {
   'EmployerHome.tsx': home, 'MeshStage.tsx': mesh, 'PaperCarousel.tsx': carousel,
   'theme.ts': theme, 'HomeBoundary.tsx': boundary, 'employerHomeService.ts': svc, 'HomeScreen.js': hs,
-  'PaperZoom.tsx': zoomSrc, 'AddEmployerSheet.tsx': sheetSrc,
+  'PaperZoom.tsx': zoomSrc, 'AddEmployerSheet.tsx': sheetSrc, 'DownloadHistory.tsx': histSrc,
 };
 
 console.log('── every file parses (a JSX slip here white-screens the app) ──');
@@ -166,8 +168,13 @@ ok('the carousel centres AND sizes from a MEASURED width, not module-load Dimens
   && !/Dimensions/.test(strip(carousel)));   // strip(): the rule is explained in a comment that names it
 ok('the reflection is a sliver, not a grey bar', /height: 6, marginTop: 7/.test(carousel));
 ok('the glare is a gradient, not a hard white block', /transparent', 'rgba\(255,255,255,0\.42\)', 'transparent/.test(carousel));
-ok('target cards cannot stretch when the count is odd', !/flexGrow: 1, backgroundColor: E\.surface/.test(home));
-ok('target thumbnails use expo-image (RN Image did not paint the data URI)', /ExpoImage source=\{\{ uri: image \}\}/.test(home));
+// ⚠️ RETARGETED, NOT DELETED. The grid these two guarded is gone — it re-showed the carousel's own
+// resume pages under a company badge, which is the duplication the user reported. The rules they
+// encode (no stretching card, expo-image for data URIs) now belong to the library that replaced it.
+ok('library cards cannot stretch', !/flexGrow: 1, backgroundColor: E\.surface/.test(home + histSrc));
+ok('library thumbnails use expo-image (RN Image did not paint the data URI)',
+  /<ExpoImage\s+source=\{\{ uri: image \}\}/.test(histSrc));
+ok('⚠️ the duplicate targets grid is GONE', !/function TargetCard/.test(home) && !/cards\[i % Math\.max/.test(home));
 ok('a signed-out preview route exists for looking at this before shipping',
   fs.existsSync(path.join(__dirname, '../app/(dev)/home-preview.tsx')));
 ok('…and nothing in the app links to it', !new RegExp('home-preview').test(home + hs));
@@ -342,12 +349,86 @@ ok('cover letters pick the listing up too, without every caller threading it',
   /loadJobListing\(\{ applyUrl: websiteUrl, company: companyName \}\)/.test(strip(R('../services/aiHubService.ts')))
   && /body\.jobText = l\.jobText/.test(strip(R('../services/aiHubService.ts'))));
 
+console.log('── ⚠️ THE LOWER HALF SHOWS WHAT YOU OWN, NOT THE DESIGNS AGAIN ──');
+// The grid that used to be here fed TargetCard `cards[i % cards.length].image` — the SAME
+// server-rendered resume pages the carousel above was already showing, cycled under a company
+// badge. Scrolling revealed the same designs twice and told the user nothing new.
+// ⚠️ NOT /<DownloadHistory/ — that also matches the `useState<DownloadHistoryItem[]>` type
+// annotation, so it would pass with no section rendered at all. Match the JSX element itself.
+ok('the library section is rendered by Home', /<DownloadHistory\n/.test(homeC));
+ok('…BELOW the hero, where the light card vocabulary belongs',
+  homeC.indexOf('<DownloadHistory\n') > homeC.indexOf('</MeshStage>'));
+ok('…driven by the SAME mode switch the hero uses', /mode=\{mode\}/.test(homeC));
+ok('…and it keeps the one affordance the old grid had', /onMoreJobs=/.test(homeC) && /tab: 'myjobs'/.test(homeC));
+
+ok('⚠️ free-ness is the SERVER\'s answer, never computed here',
+  /item\.unlocked \?/.test(histC) && !/ownsEmployer \|\| /.test(histC));
+ok('…so a lapsed plan draws a padlock the download will agree with', /lock-closed/.test(histC));
+
+ok('⚠️ the library NEVER requests its own renders', !/fetch\(/.test(histC) && !/home-cards/.test(histC));
+ok('…it borrows an image Home already hydrated, or draws one',
+  /cards\.find\(\(c\) => c\.id === templateId\)/.test(homeC) && /function LetterMark/.test(histC));
+
+ok('the section paints from cache BEFORE the network', /cachedDownloadHistory/.test(homeC));
+ok('…and a failed refresh leaves what is on screen alone', /if \(fresh\) setHistory/.test(homeC));
+ok('re-download goes through the server, which re-runs the same gate', /redownload\(it\.id\)/.test(homeC));
+ok('⚠️ a locked row opens the SAME purchase sheet a first download offers',
+  /r\.locked/.test(homeC) && /<DownloadPaywallSheet/.test(homeC));
+ok('the resume asymmetry is stated rather than hidden', /latest resume in that design/.test(histSrc));
+
+console.log('── ⚠️ MAKE YOURS: above the fold, or it does not exist ──');
+// stageH = rootH * 1.18, so the hero is TALLER than the viewport — anything placed after
+// </MeshStage> is below the first screenful, which is where the old download CTA died.
+const heroBlock = homeC.slice(0, homeC.indexOf('</MeshStage>'));
+ok('the CTA is INSIDE the hero, not below it', /makeWrap/.test(heroBlock));
+ok('…shown only while the profile is unfinished', /setup && !setup\.complete/.test(homeC));
+ok('…reading completeness from the SERVER, not a third local rule', /loaders\?\.setup \|\| /.test(homeC) && /fetchProfileSnapshot/.test(homeC));
+ok('…and it routes rather than generating', /nav\(\)\?\.push\?\.\('\/\(onboarding\)'\)/.test(homeC));
+ok('⚠️ no autoBuild anywhere near it', !/makeWrap[\s\S]{0,400}autoBuild/.test(homeC));
+
+console.log('── ⚠️ the wizard collects only what an endpoint can actually store ──');
+const wiz = strip(R('../app/(onboarding)/index.tsx'));
+const psvc = strip(R('../services/profileSetupService.ts'));
+ok('it writes through the PARTIAL update endpoint', /\/users\/profile\/update/.test(psvc));
+ok('⚠️ …never /update-user-details, which NULLs every field it was not given',
+  !/update-user-details/.test(psvc) && !/update-user-details/.test(wiz));
+ok('⚠️ it does not collect city or nationality — no endpoint writes them',
+  !/setCity/.test(wiz) && !/nationality/.test(wiz));
+ok('gender is the server\'s exact enum', /'Male', 'Female', 'Prefer Not to Say'/.test(wiz));
+ok('the three uploads use the field names the server expects',
+  /'profileImage'/.test(psvc) && /'signature'/.test(psvc) && /'resume'/.test(psvc));
+ok('⚠️ Content-Type is never set by hand on a multipart post', !/'Content-Type': 'multipart/.test(psvc));
+ok('the resume picker is restricted to PDF, which is what the parser can read',
+  /type: 'application\/pdf'/.test(wiz));
+ok('⚠️ generating is behind an explicit tap, never on step entry',
+  /onPress=\{onStart\}/.test(wiz) && !/useEffect\([\s\S]{0,120}build\(\)/.test(wiz));
+ok('it resumes at the first unfinished step', /!s\.setup\.profile \? 0 :/.test(wiz));
+
+console.log('── ⚠️ the progress bar reports the SERVER\'s stages ──');
+ok('generation runs as a background job', /__async: true/.test(psvc));
+ok('…polled until it finishes', /job-status\//.test(psvc));
+ok('⚠️ a progress tick is told from the final payload by resumeData', /data\.stage && !j\.data\.resumeData/.test(psvc));
+ok('⚠️ the UI is driven by STATUS, not by progress (failJob leaves progress where it was)',
+  /j\.status === 'completed'/.test(psvc) && /j\.status === 'failed'/.test(psvc));
+ok('the bar never overtakes the stage it was told about', /Math\.min\(target/.test(wiz));
+ok('⚠️ and it is scaleX, not an animated width — width forces the JS driver',
+  /scaleX: bar/.test(wiz) && !/useNativeDriver: false/.test(wiz));
+
+console.log('── the preview harness can still see the whole screen ──');
+const previewSrc = R('../app/(dev)/home-preview.tsx');
+ok('the library has a fixture, or it renders empty in the only way to look at this',
+  /history: async \(kind\)/.test(previewSrc));
+ok('…including a LOCKED row, which is the state worth looking at', /unlocked: false/.test(previewSrc));
+ok('…and the profile-setup fixture that arms the CTA', /setup: async \(\)/.test(previewSrc));
+ok('⚠️ the fixture is time-STABLE, or a visual diff of this screen is worthless',
+  /const T0 = Date\.parse/.test(previewSrc) && !/downloadedAt: new Date\(\)\.toISOString/.test(previewSrc));
+
 console.log('── ⚠️ a page is read from the top, so the crop comes off the BOTTOM ──');
 ok('the carousel page is top-anchored', /contentFit="cover" contentPosition="top"/.test(carC));
 ok('the opened page is too', /contentFit="cover" contentPosition="top"/.test(strip(zoomSrc)));
-ok('…and the target thumbnails', /contentFit="cover" contentPosition="top"/.test(homeC));
+ok('…and the library thumbnails', /contentFit="cover"\s+contentPosition="top"/.test(histC));
 ok('no cover-fitted resume image is left centred',
-  !/contentFit="cover"(?! contentPosition="top")/.test(carC + strip(zoomSrc) + homeC));
+  !/contentFit="cover"(?!\s+contentPosition="top")/.test(carC + strip(zoomSrc) + homeC + histC));
 ok('the preview contains pages TALLER than the card, or this could never be seen',
   /function paper\(accent: string, shape: Shape, tall = false\)/.test(prevC) && /tall \? 760 : 424/.test(prevC));
 

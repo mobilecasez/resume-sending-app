@@ -29,13 +29,24 @@ import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { rememberBuilderEmployer } from '../../services/builderEmployer';
 import * as Haptics from 'expo-haptics';
+import * as Sharing from 'expo-sharing';
+import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
+import * as SecureStore from 'expo-secure-store';
+import { API_BASE } from '../../config';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { E, SERIF, sweepWords } from './theme';
 import MeshStage from './MeshStage';
 import PaperCarousel, { PaperCard } from './PaperCarousel';
 import PaperZoom, { OriginRect } from './PaperZoom';
 import AddEmployerSheet from './AddEmployerSheet';
-import { fetchTargets, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS, Target, HomeCard, HomeCards } from '../../services/employerHomeService';
+import {
+  fetchTargets, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS,
+  fetchDownloadHistory, cachedDownloadHistory, redownload,
+  Target, HomeCard, HomeCards, DownloadHistory as HistoryPayload, DownloadHistoryItem,
+} from '../../services/employerHomeService';
+import DownloadHistory from './DownloadHistory';
+import DownloadPaywallSheet from '../downloads/DownloadPaywallSheet';
+import { fetchProfileSnapshot, ProfileSetup } from '../../services/profileSetupService';
 import { fetchSubscriptionStatus } from '../../services/subscriptionService';
 import { track } from '../../services/analytics';
 
@@ -60,6 +71,9 @@ export default function EmployerHome({
     cards: () => Promise<HomeCards | 'none' | null>;
     paid?: () => Promise<boolean>;
     catalogue?: () => Promise<HomeCard[]>;
+    /** The library section. Injected so the preview harness can render it from fixtures. */
+    history?: (kind: 'resume' | 'cover_letter') => Promise<HistoryPayload | null>;
+    setup?: () => Promise<ProfileSetup | null>;
   };
 }) {
   // The dark stage runs edge to edge under the status bar (HomeScreen drops its top safe-area
@@ -105,6 +119,14 @@ export default function EmployerHome({
   const [isPaid, setIsPaid] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reshaping, setReshaping] = useState(false);
+  // The library below the hero: what they have already paid to download, per kind.
+  const [history, setHistory] = useState<DownloadHistoryItem[]>([]);
+  const [histLoading, setHistLoading] = useState(true);
+  const [histOpen, setHistOpen] = useState(false);
+  const [againId, setAgainId] = useState<number | null>(null);
+  // Whether the profile is filled in, straight from the server's own `setup` — this screen does
+  // NOT get to invent a third definition of "complete" (the API and the journey already disagree).
+  const [setup, setSetup] = useState<ProfileSetup | null>(null);
   const lastLoad = useRef(0);
   // The employer the user actually TAPPED, held by key. empIdx alone is a position into a list
   // that is re-fetched and re-sorted by match on every focus, so a background refresh could slide
@@ -116,6 +138,8 @@ export default function EmployerHome({
   const loadTargets = loaders?.targets || fetchTargets;
   const loadCards = loaders?.cards || fetchHomeCards;
   const loadPaid = loaders?.paid || (async () => { try { const st = await fetchSubscriptionStatus(); return !!st?.subscription; } catch { return false; } });
+  const loadHistory = loaders?.history || fetchDownloadHistory;
+  const loadSetup = loaders?.setup || (async () => (await fetchProfileSnapshot())?.setup ?? null);
 
   const load = useCallback(async (force = false) => {
     if (!force && Date.now() - lastLoad.current < 60_000) return;
@@ -140,7 +164,91 @@ export default function EmployerHome({
     else { setLoadFailed(true); }
     setLoading(false);
     setIsPaid(await loadPaid());
-  }, [loadTargets, loadCards, loadPaid]);
+    loadSetup().then((st) => setSetup(st)).catch(() => {});
+  }, [loadTargets, loadCards, loadPaid, loadSetup]);
+
+  /**
+   * The library, per kind.
+   *
+   * ⚠️ CACHE FIRST, THEN REVALIDATE. Home has no SWR anywhere today, so a cold open shows nothing
+   * until the network answers. Painting the last answer first is the difference between a section
+   * that appears and one that pops in a second late; the reference for this shape is the Job Hub's
+   * dashboard cache. A failed refresh returns null and leaves what is on screen alone.
+   */
+  const refreshHistory = useCallback(async (kind: Mode) => {
+    const wire: 'resume' | 'cover_letter' = kind === 'letter' ? 'cover_letter' : 'resume';
+    setHistOpen(false);
+    if (!loaders) {
+      const cached = await cachedDownloadHistory(wire).catch(() => null);
+      if (cached) { setHistory(cached.items); setHistLoading(false); }
+    }
+    const fresh = await loadHistory(wire).catch(() => null);
+    if (fresh) setHistory(fresh.items);
+    else if (loaders) setHistory([]);
+    setHistLoading(false);
+  }, [loadHistory, loaders]);
+
+  useEffect(() => { setHistLoading(true); refreshHistory(mode); }, [mode, refreshHistory]);
+
+  /**
+   * Get a document again.
+   *
+   * ⚠️ THE SERVER DECIDES, NOT THIS FUNCTION. It re-renders through the very same controller the
+   * first download used, so canDownload runs again exactly as it did then: a pass bought for that
+   * employer keeps it free forever, and a plan that has since lapsed answers 403 — at which point
+   * the honest response is the same purchase sheet a first download offers, not an error.
+   */
+  const [payFor, setPayFor] = useState<string | null>(null);
+  const againItem = useRef<DownloadHistoryItem | null>(null);
+
+  const doAgain = useCallback(async (it: DownloadHistoryItem) => {
+    if (againId != null) return;
+    setAgainId(it.id);
+    track('home_history_again', { kind: it.kind, unlocked: it.unlocked, format: it.format });
+    try {
+      const r = await redownload(it.id);
+      if (!r.ok) {
+        if (r.locked) { againItem.current = it; setPayFor(it.employer || null); return; }
+        Alert.alert(r.gone ? 'That letter is gone' : 'Could not get that file', r.message);
+        return;
+      }
+      const raw = await SecureStore.getItemAsync('userSession').catch(() => null);
+      const tok = JSON.parse(raw || '{}')?.token;
+      const cleanPath = r.downloadUrl.replace(/^\/api/, '');
+      const name = decodeURIComponent(r.downloadUrl.split('/').pop() || 'document');
+      const dl = await downloadAsync(`${API_BASE}${cleanPath}`, cacheDirectory + name, {
+        headers: { Authorization: `Bearer ${tok}` },
+      });
+      if (dl.status !== 200) throw new Error('Download failed');
+      const mime = it.format === 'docx'
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : 'application/pdf';
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(dl.uri, { mimeType: mime, dialogTitle: 'Save or share' });
+      } else {
+        Alert.alert('Downloaded', 'Saved successfully.');
+      }
+      refreshHistory(mode);
+    } catch (e: any) {
+      Alert.alert('Could not get that file', e?.message || 'Please try again.');
+    } finally {
+      setAgainId(null);
+    }
+  }, [againId, mode, refreshHistory]);
+
+  /**
+   * A page image we ALREADY have for this design, or nothing.
+   *
+   * ⚠️ IT NEVER TRIGGERS A FETCH. /home-cards is capped at five ids server-side because rendering
+   * is serial and single-process chromium dies after about five pages; Home's own hydration runs
+   * behind a single-flight mutex within a bounded window for the same reason. A library row that
+   * asked for its own render would stampede the front door of the app.
+   */
+  const thumbFor = useCallback((templateId: string): string | null | undefined => {
+    if (!templateId) return null;
+    const hit = cards.find((c) => c.id === templateId);
+    return (hit && hit.image) || shots[templateId] || null;
+  }, [cards, shots]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -363,6 +471,39 @@ export default function EmployerHome({
           </View>
           )}
 
+          {/* ⚠️ INSIDE MeshStage ON PURPOSE. stageH = rootH * 1.18, so the hero is taller than the
+              viewport and anything placed after </MeshStage> is below the fold on first paint —
+              a CTA that has to be seen "right below the slider" cannot live down there.
+              It shows only while the profile is unfinished, which is also the only time the
+              library below is empty, so the two never compete for the same space. */}
+          {setup && !setup.complete && (
+            <TouchableOpacity
+              style={s.makeWrap}
+              activeOpacity={0.9}
+              onPress={() => {
+                try { Haptics.selectionAsync(); } catch {}
+                track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join('') });
+                nav()?.push?.('/(onboarding)');
+              }}
+            >
+              <LinearGradient
+                colors={[E.blue, E.purple, E.purpleLite]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={s.makeBtn}
+              >
+                <Ionicons name="sparkles" size={16} color="#fff" />
+                <Text style={s.makeTx} numberOfLines={1}>Make yours</Text>
+                <Ionicons name="arrow-forward" size={15} color="rgba(255,255,255,0.9)" />
+              </LinearGradient>
+            </TouchableOpacity>
+          )}
+          {setup && !setup.complete && (
+            <Text style={s.makeSub} numberOfLines={2}>
+              A few details and we will build your real resume into every design above.
+            </Text>
+          )}
+
           {sample && mode === 'resume' && (
             <TouchableOpacity
               style={s.sampleBar}
@@ -382,37 +523,22 @@ export default function EmployerHome({
         </View>
       </MeshStage>
 
-      {/* ───────────────────────── SAMPLES ───────────────────────── */}
-      {targets.length > 0 && (
-        <View style={{ paddingHorizontal: 16, paddingTop: 26 }}>
-          <View style={s.rowBetween}>
-            <View>
-              <Text style={s.eyebrow}>Your targets</Text>
-              <Text style={s.sectionTitle}>
-                {targets.length === 1 ? 'One employer, tailored' : `Same you, ${targets.length} employers`}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={s.rowCenter}
-              activeOpacity={0.8}
-              onPress={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } })}
-            >
-              <Text style={s.moreTx}>More jobs </Text>
-              <Ionicons name="arrow-forward" size={12} color={E.blueDeep} />
-            </TouchableOpacity>
-          </View>
-          <View style={s.grid}>
-            {targets.slice(0, 6).map((t, i) => (
-              <TargetCard
-                key={t.key}
-                t={t}
-                image={cards[i % Math.max(1, cards.length)]?.image}
-                onPress={() => { pickEmployer(targets.indexOf(t)); }}
-              />
-            ))}
-          </View>
-        </View>
-      )}
+      {/* ─────────────────── YOUR LIBRARY ───────────────────
+          What used to be here re-showed the SAME resume pages the carousel above was already
+          showing — `image={cards[i % cards.length]?.image}` under a company badge — so scrolling
+          revealed the same designs twice and said nothing new. This says what only they know:
+          what they have already paid for, and can have again. */}
+      <DownloadHistory
+        mode={mode}
+        items={history}
+        loading={histLoading}
+        expanded={histOpen}
+        busyId={againId}
+        thumbFor={thumbFor}
+        onAgain={doAgain}
+        onExpand={() => { try { Haptics.selectionAsync(); } catch {} setHistOpen(true); }}
+        onMoreJobs={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } })}
+      />
 
       {/* the old home, one tap away */}
       <TouchableOpacity style={s.dashLink} activeOpacity={0.8} onPress={onOpenDashboard}>
@@ -478,6 +604,23 @@ export default function EmployerHome({
               : { tab: 'search', addCompany: value },
           });
         }}
+      />
+
+      {/* ⚠️ The SAME sheet a first download offers. A row goes locked when the plan that paid for it
+          has ended, and the honest answer to that is the two ways to pay — not an error dialog.
+          A react-native Modal is a separate native window above the whole navigator, which is why
+          the sheet hides itself while the plans screen it pushes is up. */}
+      <DownloadPaywallSheet
+        visible={payFor !== null}
+        employer={payFor}
+        onClose={() => { setPayFor(null); againItem.current = null; }}
+        onUnlocked={() => {
+          const it = againItem.current;
+          setPayFor(null); againItem.current = null;
+          refreshHistory(mode);
+          if (it) doAgain(it);
+        }}
+        onSeePlans={() => nav()?.push?.('/(subscription)/plans')}
       />
 
       <PaperZoom
@@ -581,38 +724,6 @@ function EmployerChip({ t, on, onPress }: { t: Target; on: boolean; onPress: () 
       {t.match != null && (
         <View style={[s.chipPct, on && s.chipPctOn]}>
           <Text style={[s.chipPctTx, on && s.chipPctTxOn]}>{t.match}%</Text>
-        </View>
-      )}
-    </TouchableOpacity>
-  );
-}
-
-function TargetCard({ t, image, onPress }: { t: Target; image?: string | null; onPress: () => void }) {
-  const strong = (t.match ?? 0) >= 90;
-  return (
-    <TouchableOpacity style={s.tCard} activeOpacity={0.9} onPress={onPress}>
-      <View style={s.tThumb}>
-        {image ? (
-          <ExpoImage source={{ uri: image }} style={s.tThumbImg} contentFit="cover" contentPosition="top" transition={160} />
-        ) : (
-          <View style={[s.tThumbImg, { backgroundColor: '#EEF2F8' }]} />
-        )}
-        <LinearGradient colors={t.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.tBadge}>
-          <Text style={s.tBadgeTx}>{t.initial}</Text>
-        </LinearGradient>
-        {t.match != null && (
-          <View style={[s.tPct, { backgroundColor: strong ? E.tealDeep : E.blueDeep }]}>
-            <Text style={s.tPctTx}>{t.match}%</Text>
-          </View>
-        )}
-      </View>
-      <Text style={s.tOrg} numberOfLines={1}>{t.company}</Text>
-      <Text style={s.tRole} numberOfLines={1}>{t.role}</Text>
-      {!!t.skills.length && (
-        <View style={s.tChips}>
-          {t.skills.slice(0, 3).map((sk) => (
-            <View key={sk} style={s.tChip}><Text style={s.tChipTx} numberOfLines={1}>{sk}</Text></View>
-          ))}
         </View>
       )}
     </TouchableOpacity>
@@ -737,6 +848,23 @@ const s = StyleSheet.create({
   emptyTargetsTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: '#fff' },
 
   paperLoading: { height: 300, alignItems: 'center', justifyContent: 'center' },
+  // ⚠️ THE GLOW IS ON THE OUTER VIEW AND THE CLIPPING ON THE INNER GRADIENT. iOS drops a shadow
+  // drawn on the same view as overflow:'hidden', and this exact trap has been hit three times in
+  // this folder. Note the style is NOT keyed `cta` — the suite forbids a shadowColor inside one.
+  makeWrap: {
+    marginTop: 14, marginHorizontal: 16, borderRadius: 16,
+    shadowColor: E.blue, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.42, shadowRadius: 18, elevation: 8,
+  },
+  makeBtn: {
+    height: 52, borderRadius: 16, overflow: 'hidden',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
+  },
+  makeTx: { fontSize: 15.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
+  makeSub: {
+    marginTop: 9, marginHorizontal: 22, fontSize: 12, fontWeight: '600',
+    color: E.onDark, textAlign: 'center', lineHeight: 17, flexShrink: 1,
+  },
+
   sampleBar: {
     marginHorizontal: 16, marginTop: 12, padding: 11, borderRadius: 15,
     flexDirection: 'row', alignItems: 'center', gap: 9,
@@ -761,28 +889,7 @@ const s = StyleSheet.create({
   captionMeta: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)' },
   captionScan: { fontSize: 12, fontWeight: '600', color: '#C4BBFF' },
 
-  // Same iOS trap as PaperCarousel.paper: the Shimmer needs overflow:'hidden', which would clip
-  // the blue glow off the button. Glow on the touchable, clipping on the gradient.
-  reassure: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 10 },
-  reassureTx: { fontSize: 11.5, fontWeight: '600', color: E.textMuted },
 
-  eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: E.textFaint },
-  sectionTitle: { fontSize: 19, fontWeight: '800', color: E.ink, letterSpacing: -0.7, marginTop: 3 },
-  moreTx: { fontSize: 12.5, fontWeight: '700', color: E.blueDeep },
-
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
-  tCard: { width: '48%', backgroundColor: E.surface, borderRadius: 18, borderWidth: 1, borderColor: E.border, padding: 8, shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 18, elevation: 2 },
-  tThumb: { width: '100%', aspectRatio: 300 / 424, borderRadius: 11, overflow: 'hidden', backgroundColor: '#fff', borderWidth: 1, borderColor: E.border },
-  tThumbImg: { width: '100%', height: '100%' },
-  tBadge: { position: 'absolute', left: 6, top: 6, width: 22, height: 22, borderRadius: 7, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#fff' },
-  tBadgeTx: { fontSize: 11, fontWeight: '800', color: '#fff' },
-  tPct: { position: 'absolute', right: 6, top: 6, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 100 },
-  tPctTx: { fontSize: 9.5, fontWeight: '800', color: '#fff' },
-  tOrg: { fontSize: 12.5, fontWeight: '800', color: E.ink, letterSpacing: -0.2, marginTop: 9, paddingHorizontal: 4 },
-  tRole: { fontSize: 10.5, fontWeight: '500', color: E.textMuted, marginTop: 2, paddingHorizontal: 4 },
-  tChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 7, paddingHorizontal: 4, paddingBottom: 2 },
-  tChip: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, backgroundColor: E.inputBg, maxWidth: '100%' },
-  tChipTx: { fontSize: 9, fontWeight: '700', color: E.textMuted },
 
   noResume: { marginHorizontal: 16, padding: 20, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: E.glassBorder, alignItems: 'center' },
   noResumeIcon: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'rgba(79,141,255,0.16)', alignItems: 'center', justifyContent: 'center' },

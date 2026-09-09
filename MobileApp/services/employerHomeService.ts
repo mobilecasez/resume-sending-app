@@ -35,7 +35,7 @@ const AV: [string, string][] = [
   ['#06B6D4', '#3B82F6'], ['#10B981', '#06B6D4'], ['#F59E0B', '#EF4444'], ['#14B8A6', '#3B82F6'],
 ];
 // Same hash the rest of the app uses for a stable per-company colour.
-const gradFor = (s?: string): [string, string] => {
+export const gradFor = (s?: string): [string, string] => {
   let h = 0; const k = s || 'x';
   for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
   return AV[h % AV.length];
