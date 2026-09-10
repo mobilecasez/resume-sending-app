@@ -1,7 +1,10 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// The design gallery: 9 layout families × recolored variants (37 designs) from
-// GET /resume-builder/templates. One full preview per FAMILY, recolors via swatch taps —
+// The design gallery: 15 layout families × recolored variants (73 designs) from
+// GET /resume-builder/templates. ⚠️ This prose said "9 families / 37 designs" long after the
+// catalogue had grown — the only trustworthy count is `totalDesigns`, computed below from what
+// the server actually returned. Do not re-hardcode a number here.
+// One full preview per FAMILY, recolors via swatch taps —
 // previews are fetched lazily in small batches because rendering every design in one request
 // is exactly what used to break this screen at nine designs (multi-MB base64 + a serial
 // chromium loop outliving the client timeout).
@@ -19,7 +22,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect, useNavigation } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -56,6 +59,9 @@ async function getToken() {
 
 export default function ResumeTemplates() {
   const router = useRouter();
+  // The (resume-builder) Stack itself — goEdit needs to know WHAT is sitting under this screen
+  // before it decides between back() and push(). See goEdit for why that matters.
+  const navigation = useNavigation();
   // Home opens this screen on the design the user tapped. Optional: with no param the gallery
   // behaves exactly as before and starts on the first family.
   const { template: wantTemplate, employer: wantEmployer } = useLocalSearchParams<{ template?: string; employer?: string }>();
@@ -93,8 +99,14 @@ export default function ResumeTemplates() {
   // ── Lazy preview loader: small batches, deduped, merged into a cache ───────
   // Every batch carries its own 45s timeout and marks ITS ids as failed on any miss — the pager
   // card then shows a tap-to-retry. Nothing in here may leave an id in spinner-limbo.
-  async function ensurePreviews(ids: string[]) {
-    const need = [...new Set(ids)].filter((id) => id && !previews[id] && !inFlight.current.has(id));
+  // ⚠️ `force` and `cacheGen` both exist for the Edit round trip. The cache is keyed by DESIGN id
+  // alone, so once the résumé text changes every entry in it is a stale picture: `force` re-requests
+  // ids we already hold, and `cacheGen` makes a request that was already in the air when the cache
+  // was dropped throw its own result away instead of writing the pre-edit render back in.
+  const cacheGen = useRef(0);
+  async function ensurePreviews(ids: string[], force = false) {
+    const gen = cacheGen.current;
+    const need = [...new Set(ids)].filter((id) => id && (force || !previews[id]) && !inFlight.current.has(id));
     if (!need.length) return;
     need.forEach((id) => inFlight.current.add(id));
     setFailed((f) => { const next = { ...f }; for (const id of need) delete next[id]; return next; });
@@ -113,6 +125,7 @@ export default function ResumeTemplates() {
             signal: controller.signal,
           });
           const json = await res.json();
+          if (cacheGen.current !== gen) return;          // cache was dropped mid-flight → this answer is stale
           if (res.status === 404) { setNoResume(true); return; }
           if (!res.ok) throw new Error(json.error || 'Could not build previews');
           const got: Preview[] = json.previews || [];
@@ -125,6 +138,7 @@ export default function ResumeTemplates() {
           const missing = batch.filter((id) => !gotIds.has(id));
           if (missing.length) setFailed((f) => { const next = { ...f }; for (const id of missing) next[id] = 'Could not render this design.'; return next; });
         } catch (e: any) {
+          if (cacheGen.current !== gen) return;
           const msg = e?.name === 'AbortError' ? 'This took too long.' : (e?.message || 'Could not render this design.');
           setFailed((f) => { const next = { ...f }; for (const id of batch) next[id] = msg; return next; });
         } finally {
@@ -132,7 +146,7 @@ export default function ResumeTemplates() {
         }
       }
     } catch (e: any) {
-      setFailed((f) => { const next = { ...f }; for (const id of need) next[id] = e?.message || 'Could not render this design.'; return next; });
+      if (cacheGen.current === gen) setFailed((f) => { const next = { ...f }; for (const id of need) next[id] = e?.message || 'Could not render this design.'; return next; });
     } finally {
       need.forEach((id) => inFlight.current.delete(id));
     }
@@ -140,12 +154,12 @@ export default function ResumeTemplates() {
 
   // The VISIBLE design renders first, alone — its request must never wait behind the
   // neighbours'. They prefetch immediately after, so a swipe still lands on a warm image.
-  function prefetchAround(idx: number, fams: Family[], sel: Record<string, string>) {
+  function prefetchAround(idx: number, fams: Family[], sel: Record<string, string>, force = false) {
     const idOf = (j: number) => { const f = fams[j]; return f ? (sel[f.id] || f.id) : ''; };
     const rest = [idOf(idx + 1), idOf(idx - 1)].filter(Boolean);
     const cur = idOf(idx);
-    if (cur) ensurePreviews([cur]).then(() => { if (rest.length) ensurePreviews(rest); });
-    else if (rest.length) ensurePreviews(rest);
+    if (cur) ensurePreviews([cur], force).then(() => { if (rest.length) ensurePreviews(rest, force); });
+    else if (rest.length) ensurePreviews(rest, force);
   }
 
   async function loadCatalogue() {
@@ -202,28 +216,62 @@ export default function ResumeTemplates() {
 
   const totalDesigns = useMemo(() => visibleFams.reduce((a, f) => a + f.variants.length, 0), [visibleFams]);
 
+  // ── Coming back from Edit: the preview cache must not outlive the résumé it was rendered from ──
+  // ⚠️ `previews` is plain mounted state and ensurePreviews early-returns on any id already in it,
+  // so tap Edit → change a bullet → come back and every card still shows the PRE-EDIT render, with
+  // no refresh anywhere on the screen. Drop the cache on the focus that follows an edit trip.
+  // Only that trip: returning from the plans / paywall screens changed no résumé, and each rebuild
+  // is a real chromium render on the server, so a blanket "invalidate on every focus" would burn
+  // renders for nothing.
+  const returningFromEdit = useRef(false);
+  // Refs, not deps: a useFocusEffect callback closing over active/visibleFams/chosen would be a NEW
+  // callback on every swipe, and useFocusEffect re-runs it — the invalidation would fire mid-browse.
+  const focusState = useRef<{ active: number; fams: Family[]; sel: Record<string, string> }>({ active: 0, fams: [], sel: {} });
+  useEffect(() => { focusState.current = { active, fams: visibleFams, sel: chosen }; }, [active, visibleFams, chosen]);
+  useFocusEffect(React.useCallback(() => {
+    if (!returningFromEdit.current) return;
+    returningFromEdit.current = false;
+    cacheGen.current += 1;             // orphan anything still in the air (it renders the OLD résumé)
+    inFlight.current.clear();
+    setPreviews({});
+    setFailed({});
+    const { active: a, fams, sel } = focusState.current;
+    if (fams.length) prefetchAround(a, fams, sel, true);   // force: the ids are all "already cached"
+  }, []));
+
   // ── The selection IS the choice: whatever design is on screen becomes the user's preferred
   // template (debounced). Every downstream file — Auto Fill attach, email attachment, the Home
   // thumbnail — renders THIS template, so what gets sent is exactly what they picked here.
   const prefTimer = useRef<any>(null);
   const activeFamForSave = visibleFams[active];
   const selForSave = activeFamForSave ? (chosen[activeFamForSave.id] || activeFamForSave.id) : '';
+  const savePreferred = React.useCallback(async (tpl: string) => {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      await fetch(`${API_BASE}/resume-builder/save`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferredTemplate: tpl }),
+      });
+    } catch {}
+  }, []);
   useEffect(() => {
     if (!selForSave) return;
     if (prefTimer.current) clearTimeout(prefTimer.current);
-    prefTimer.current = setTimeout(async () => {
-      try {
-        const token = await getToken();
-        if (!token) return;
-        await fetch(`${API_BASE}/resume-builder/save`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ preferredTemplate: selForSave }),
-        });
-      } catch {}
-    }, 900);
+    prefTimer.current = setTimeout(() => { prefTimer.current = null; savePreferred(selForSave); }, 900);
     return () => { if (prefTimer.current) clearTimeout(prefTimer.current); };
-  }, [selForSave]);
+  }, [selForSave, savePreferred]);
+  // ⚠️ The cleanup above clears the timer on unmount, so ANY navigation inside that 900ms window
+  // silently drops the design the user just chose — the one thing this screen exists to record.
+  // goEdit now LEAVES this screen (see below), so the pending save must be fired first; the fetch
+  // itself is not tied to the component and finishes after the unmount.
+  function flushPreferred() {
+    if (!prefTimer.current) return;
+    clearTimeout(prefTimer.current);
+    prefTimer.current = null;
+    if (selForSave) savePreferred(selForSave);
+  }
 
   function pickRegion(id: string) {
     if (id === region) return;
@@ -250,6 +298,27 @@ export default function ResumeTemplates() {
     setActive(idx);
     prefetchAround(idx, visibleFams, chosen);
   }
+  // ⚠️ NEVER push a screen that can push you. preview's "Download / Preview" pushes THIS gallery,
+  // so a plain push() here grew the stack without limit on the commonest path —
+  // preview→templates→preview→templates… Each round trip mounted a FRESH preview (re-running its
+  // mount effects), and preview's own Back is a router.replace that swaps only the TOP entry, so
+  // hardware back then walked the user down through the copies left underneath: first the gallery
+  // they had just left, then a stale preview still showing the pre-edit résumé.
+  // So: if a preview is already sitting under us, go BACK to it. Push only when nothing is there to
+  // return to (arriving straight from Home's design card), which is the one case that cannot loop.
+  function goEdit() {
+    // Leaving unmounts this screen either way, and the design choice is still in a 900ms debounce.
+    flushPreferred();
+    const st = navigation?.getState?.();
+    const routes: any[] = st?.routes || [];
+    const meIdx = typeof st?.index === 'number' ? st.index : routes.length - 1;
+    // Route names inside this Stack are the file names ('preview'); split guards a fuller form.
+    const below = String(routes[meIdx - 1]?.name || '').split('/').pop();
+    if (below === 'preview' && router.canGoBack()) { router.back(); return; }
+    returningFromEdit.current = true;   // we stay mounted → arm the stale-preview invalidation
+    router.push('/(resume-builder)/preview' as never);
+  }
+
   function pickVariant(famId: string, tplId: string) {
     const sel = { ...chosen, [famId]: tplId };
     setChosen(sel);
@@ -343,11 +412,20 @@ export default function ResumeTemplates() {
           <Ionicons name="arrow-back" size={14} color={T.ink} />
           <Text style={s.backPillText}>Back</Text>
         </TouchableOpacity>
-        <Text style={s.topTitle}>Choose a Format</Text>
-        <View style={s.countPill}><Text style={s.countPillText}>{totalDesigns || '…'} designs</Text></View>
+        <View style={s.titleCol}>
+          <Text style={s.topTitle}>Choose a Format</Text>
+          {/* The count is not deleted, only demoted: it is the only place the user is told how far
+              the pager runs, but it answered a question nobody asked from the screen's most
+              valuable slot. The corner now carries the way OUT of the gallery. */}
+          <Text style={s.countLine}>{totalDesigns || '…'} designs</Text>
+        </View>
+        <TouchableOpacity onPress={goEdit} style={s.editPill} activeOpacity={0.8}>
+          <Ionicons name="create-outline" size={14} color={T.blueDeep} />
+          <Text style={s.editPillText}>Edit</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Region chips — a recommendation lens over the same 9 families, no reload */}
+      {/* Region chips — a recommendation lens over the same families, no reload */}
       <View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.regionRow}>
           {[{ id: 'all', label: 'All designs' } as Region, ...regions].map((r) => {
@@ -587,8 +665,10 @@ const s = StyleSheet.create({
   backPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
   topTitle:     { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
-  countPill:    { backgroundColor: T.blue + '15', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5 },
-  countPillText:{ fontSize: 11, fontWeight: '800', color: T.blueDeep },
+  titleCol:     { alignItems: 'center' },
+  countLine:    { fontSize: 11, fontWeight: '700', color: T.faint, marginTop: 1 },
+  editPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.blue + '15', borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12 },
+  editPillText: { fontSize: 13, fontWeight: '700', color: T.blueDeep },
 
   regionRow:    { paddingHorizontal: 12, gap: 8, paddingBottom: 4, paddingTop: 2 },
   regionChip:   { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 13, borderWidth: 1, borderColor: T.border },

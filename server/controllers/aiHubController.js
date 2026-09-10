@@ -3682,21 +3682,37 @@ async function deductCredits(req, res) {
             });
         }
 
-        await dbConfig.run(
-            'UPDATE user_credits SET credits_remaining = credits_remaining - ? WHERE user_id = ?',
-            [amount, userId]
+        // ⚠️ ONE guarded statement — never SELECT-then-UPDATE this balance. The read above is a
+        // fast path for the obvious "no credits" case; it decides nothing. Two callers that both
+        // passed it both decremented, and the balance went negative — free credits. The Home
+        // screen's "add employer" path makes that second concurrent caller real. RETURNING is what
+        // tells us the row matched at all, and gives the balance *after our own* decrement (a
+        // follow-up SELECT can read a value another caller has already moved).
+        const debited = await dbConfig.get(
+            'UPDATE user_credits SET credits_remaining = credits_remaining - ? WHERE user_id = ? AND credits_remaining >= ? RETURNING credits_remaining',
+            [amount, userId, amount]
         );
+        if (!debited) {
+            // No row matched: either there is no user_credits row, or the balance moved under us
+            // since the read above — so re-read instead of reporting the now-stale `current`.
+            const fresh = await dbConfig.get(
+                'SELECT credits_remaining FROM user_credits WHERE user_id = ?',
+                [userId]
+            );
+            return res.status(402).json({
+                error: 'insufficient_credits',
+                balance: fresh ? (fresh.credits_remaining || 0) : 0,
+                required: amount,
+            });
+        }
+
         try {
             await dbConfig.run(
                 'INSERT INTO credit_usage_history (user_id, credits_used, action_type, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
                 [userId, amount, eventKey || 'deduct']);
         } catch (e) { /* history best-effort */ }
 
-        const updated = await dbConfig.get(
-            'SELECT credits_remaining FROM user_credits WHERE user_id = ?',
-            [userId]
-        );
-        return res.json({ success: true, balance: updated ? updated.credits_remaining : current - amount, charged: amount });
+        return res.json({ success: true, balance: debited.credits_remaining, charged: amount });
     } catch (err) {
         console.error('[aiHub] deductCredits error:', err);
         return res.status(500).json({ error: 'Failed to deduct credits' });
@@ -3926,6 +3942,10 @@ async function findRecruiters(req, res) {
     const userId = req.user.id;
     const { employerId } = req.params;
 
+    // Declared out here so the catch below can reach it: we debit before the model runs, so a
+    // Gemini failure would otherwise bill for recruiters the user never received.
+    let charge = null;
+
     try {
         await ensureRecruiterTables();
 
@@ -3947,10 +3967,19 @@ async function findRecruiters(req, res) {
 
         // Deduct upfront
         if (findCost > 0) {
-            await dbConfig.run(
-                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
-                [findCost, userId]
+            // ⚠️ ONE guarded statement — never SELECT-then-UPDATE this balance. The read above is a
+            // fast path for the obvious "no credits" case; it decides nothing. Two taps on
+            // "find recruiters" with one credit left both passed it and both decremented, and the
+            // balance went negative — free credits. RETURNING is what tells us the row matched at
+            // all; a null result means the balance moved under us since the read.
+            const debited = await dbConfig.get(
+                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 AND credits_remaining >= $3 RETURNING credits_remaining`,
+                [findCost, userId, findCost]
             );
+            if (!debited) {
+                return res.status(402).json({ error: `Insufficient credits. ${findCost} credit(s) required.` });
+            }
+            charge = { charged: true, cost: findCost }; // shape refundCredits() expects
         }
 
         // Gemini Google Search for LinkedIn recruiters
@@ -4033,6 +4062,9 @@ Maximum 6 results. Quality over quantity — only include people you are certain
 
     } catch (error) {
         console.error('[recruiter] findRecruiters error:', error.message);
+        // Nothing reached the user on this path, so hand the credit back instead of charging for a
+        // model call that produced no recruiters. No-op when we never charged (free event / admin).
+        await refundCredits(userId, 'find_recruiters', charge);
         return res.status(500).json({ error: 'Failed to find recruiters' });
     }
 }
@@ -4064,6 +4096,14 @@ async function findRecruiterEmails(req, res) {
     const userId = req.user.id;
     const { employerId } = req.params;
 
+    // Out here so the failure paths below can reach them. `deliveredAny` gates the refund:
+    // ⚠️ this handler commits per recruiter as it goes (email saved on employer_recruiters +
+    // propagated to job_contacts), so a throw halfway through is PARTIAL DELIVERY — refunding
+    // then would hand back the credit while the user keeps verified emails. Refund only when
+    // the run delivered nothing.
+    let charge = null;
+    let deliveredAny = false;
+
     try {
         await ensureRecruiterTables();
 
@@ -4088,15 +4128,28 @@ async function findRecruiterEmails(req, res) {
             return res.status(402).json({ error: `Insufficient credits. ${emailCost} credit(s) required.` });
         }
         if (emailCost > 0) {
-            await dbConfig.run(
-                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
-                [emailCost, userId]
+            // ⚠️ ONE guarded statement — never SELECT-then-UPDATE this balance. The read above is a
+            // fast path for the obvious "no credits" case; it decides nothing. Two concurrent taps
+            // with one credit left both passed it and both decremented, and the balance went
+            // negative — free credits. RETURNING is what tells us the row matched at all.
+            const debited = await dbConfig.get(
+                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 AND credits_remaining >= $3 RETURNING credits_remaining`,
+                [emailCost, userId, emailCost]
             );
+            if (!debited) {
+                return res.status(402).json({ error: `Insufficient credits. ${emailCost} credit(s) required.` });
+            }
+            charge = { charged: true, cost: emailCost }; // shape refundCredits() expects
         }
 
         // Get company domain from employer domain field
         const domain = employer.domain;
-        if (!domain) return res.status(400).json({ error: 'No domain found for employer' });
+        if (!domain) {
+            // We already debited above and no verification can run without a domain — nothing
+            // delivered, so give it back.
+            await refundCredits(userId, 'find_recruiter_emails', charge);
+            return res.status(400).json({ error: 'No domain found for employer' });
+        }
 
         // Check for known winning pattern for this domain
         const patternRow = await dbConfig.get(
@@ -4166,6 +4219,7 @@ async function findRecruiterEmails(req, res) {
 
             // Save verified email to recruiter record
             if (verifiedEmail) {
+                deliveredAny = true; // committed below — from here a later throw is partial delivery
                 await dbConfig.run(
                     `UPDATE employer_recruiters SET email = $1, email_verified = true, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
                     [verifiedEmail, recruiter.id]
@@ -4195,6 +4249,10 @@ async function findRecruiterEmails(req, res) {
 
     } catch (error) {
         console.error('[recruiter] findRecruiterEmails error:', error.message);
+        // ⚠️ Refund only a run that delivered nothing — see deliveredAny above. Once an email is
+        // saved and propagated to job_contacts the user has the thing they paid for, even if a
+        // later recruiter blew up, so refunding there would be giving the work away.
+        if (!deliveredAny) await refundCredits(userId, 'find_recruiter_emails', charge);
         return res.status(500).json({ error: 'Failed to find emails' });
     }
 }
@@ -4209,6 +4267,10 @@ async function findRecruiterEmails(req, res) {
 async function generateJobCoverLetter(req, res) {
     const userId     = req.user.id;
     const { jobId }  = req.params;
+
+    // Out here so the catch can reach it: the debit lands immediately before the Gemini call, so
+    // a model failure would otherwise charge for a letter that was never written.
+    let charge = null;
 
     try {
         // Load user + resume
@@ -4279,10 +4341,18 @@ async function generateJobCoverLetter(req, res) {
             return res.status(402).json({ error: `Insufficient credits. ${jclCost} credit(s) required.` });
         }
         if (jclCost > 0) {
-            await dbConfig.run(
-                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
-                [jclCost, userId]
+            // ⚠️ ONE guarded statement — never SELECT-then-UPDATE this balance. The read above is a
+            // fast path for the obvious "no credits" case; it decides nothing. Two taps on
+            // "generate cover letter" with one credit left both passed it and both decremented, and
+            // the balance went negative — free credits. RETURNING is what tells us the row matched.
+            const debited = await dbConfig.get(
+                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 AND credits_remaining >= $3 RETURNING credits_remaining`,
+                [jclCost, userId, jclCost]
             );
+            if (!debited) {
+                return res.status(402).json({ error: `Insufficient credits. ${jclCost} credit(s) required.` });
+            }
+            charge = { charged: true, cost: jclCost }; // shape refundCredits() expects
         }
 
         // Build Gemini prompt
@@ -4340,6 +4410,9 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
 
     } catch (error) {
         console.error('[aiHub] generateJobCoverLetter error:', error.message);
+        // The only work after the debit is the Gemini call, so a throw here means no letter was
+        // delivered — refund rather than bill for it. No-op when we never charged (adminTest).
+        await refundCredits(userId, 'job_cover_letter', charge);
         return res.status(500).json({ error: 'Failed to generate cover letter. Please try again.' });
     }
 }

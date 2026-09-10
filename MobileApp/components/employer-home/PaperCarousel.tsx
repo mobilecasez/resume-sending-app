@@ -21,8 +21,24 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { E } from './theme';
+import PaperSkeleton, { AFFORDANCE, PaperState } from './PaperSkeleton';
 
 const GAP = 18;
+// ⚠️ WIDE ON PURPOSE, AND IT CANNOT BE LIVE. `dist` is measured from the SETTLED index, and the
+// screen above only advances that in onMomentumScrollEnd — so for the entire duration of a fling
+// the index is still whichever card the gesture started on. At the old window of 4 that meant
+// every card crossing the viewport mid-fling drew as a bare accent band + name bar and only filled
+// in once the deck had already stopped: the page content degraded exactly while the user was
+// looking through it. The live distance `d` exists and is native-driven, but mounting views off it
+// means an addListener callback on every frame — a JS-driven value in a native-driver tree, which
+// is the b126-128 fatal crash. So the STATIC window is widened instead: with decelerationRate
+// "fast" and snapToInterval a hard fling settles within ~8 steps, and 12 covers that with headroom.
+// Cost of the extra reach is 12 flat, non-animated Views per card across 25 cards instead of 9.
+const DETAIL_WINDOW = 12;
+// Mirrors the hydrator above: it asks for cards within ±6 of the current one, 5 ids per wave
+// (the /home-cards cap), and each wave's result re-triggers the next until the window is full.
+const FETCH_WINDOW = 6;
+const FETCH_BATCH = 5;
 const A4 = 424 / 300;                 // page ratio, same as the renderer
 /** The paper is the hero of this screen, so it takes as much width as the frame allows. */
 export function cardWidthFor(containerW: number) {
@@ -39,8 +55,40 @@ export type PaperCard = { id: string; name: string; accent?: string; image?: str
 
 type Metrics = { w: number; h: number; step: number };
 
-function Card({ card, i, scrollX, ribbon, m, onOpen }: {
+/**
+ * Which pixel-less slots are genuinely being worked on, walked out from the centre in the same
+ * order the hydrator uses so the words match what it will actually request.
+ *
+ * ⚠️ IT SAYS 'idle' UNLESS IT CAN SHOW ITS WORKING. Anything outside the fetch window is nobody's
+ * job — it will not be requested until the user moves — and a card that says "loading" forever is
+ * worse than a card that just says its own name. Residual: a slot the renderer already FAILED on
+ * is marked dead upstairs and never retried, and that is invisible from here, so a dead card
+ * inside the window still reads as busy. That is at most a handful next to the user rather than
+ * the whole deck, and the fix when it matters is to pass the truth down through `state`.
+ *
+ * The `| undefined` in the return type is deliberate: most ids are simply ABSENT from this map, and
+ * without it TypeScript reads the lookup as always-truthy — which makes the caller's `|| 'idle'`
+ * look like dead code that a later cleanup would delete, taking every idle card's honesty with it.
+ */
+function hydrationStates(cards: PaperCard[], index: number): Record<string, PaperState | undefined> {
+  const out: Record<string, PaperState | undefined> = {};
+  let asked = 0;
+  for (let k = 0; k <= FETCH_WINDOW * 2; k++) {
+    const i = index + (k % 2 === 0 ? k / 2 : -((k + 1) / 2));
+    if (i < 0 || i >= cards.length) continue;
+    const c = cards[i];
+    if (!c || c.image || out[c.id]) continue;
+    if (asked < FETCH_BATCH) { out[c.id] = 'loading'; asked++; } else out[c.id] = 'queued';
+  }
+  return out;
+}
+
+function Card({ card, i, dist, state, scrollX, ribbon, m, onOpen }: {
   card: PaperCard; i: number; scrollX: Animated.Value; m: Metrics;
+  /** Cards away from the settled one, in whole steps. Gates what is allowed to animate. */
+  dist: number;
+  /** Whether anything is actually fetching this slot's page — see hydrationStates. */
+  state: PaperState;
   ribbon?: { letter: string; short: string; colors: [string, string] } | null;
   onOpen?: (i: number, rect: { x: number; y: number; w: number; h: number }) => void;
 }) {
@@ -60,6 +108,17 @@ function Card({ card, i, scrollX, ribbon, m, onOpen }: {
   const clamp = (out: [number, number, number]) =>
     d.interpolate({ inputRange: [-1.4, 0, 1.4], outputRange: out, extrapolate: 'clamp' });
 
+  // ⚠️ TWO GATES, AND THEY ARE NOT REDUNDANT. `d` is the same native-driven distance-from-centre
+  // that already turns and dims this card, so riding it costs nothing and the sweep dies as the
+  // page rotates away — but an opacity of 0 does not stop an Animated.loop, and `d` cannot be read
+  // in JS without a per-frame listener, which is exactly the bridge traffic this native-driver tree
+  // exists to avoid. So the loops are MOUNTED off the settled index instead. 73 slots each running
+  // a shimmer is a battery fire; this runs at most five and shows at most one. The sweep is also
+  // gated on `state === 'loading'` now, for the same reason the label is: a slot that nothing is
+  // fetching must not animate as though its page were on the way.
+  const sweepFade = d.interpolate({ inputRange: [-0.85, 0, 0.85], outputRange: [0, 1, 0], extrapolate: 'clamp' });
+  const near = dist <= 2;
+
   return (
     <Animated.View
       style={{
@@ -75,14 +134,28 @@ function Card({ card, i, scrollX, ribbon, m, onOpen }: {
     >
       <TouchableOpacity ref={box} activeOpacity={0.92} onPress={open} style={s.paperShadow}>
         <View style={[s.paper, { width: m.w, height: m.h }]}>
+          {/* ⚠️ THE PLACEHOLDER STAYS MOUNTED UNDERNEATH, ALWAYS. `transition` alone is NOT the
+              cross-fade it looks like: expo-image fades from whatever that Image was already
+              showing, and with no `placeholder` prop that is TRANSPARENT — so on its own the page
+              fades up out of the bare white card and the user still watches a blank sheet for the
+              1.7s serial chromium render. Fading in over a drawn page is what makes it read as the
+              page filling in. Leaving it mounted afterwards also means an image that fails or gets
+              evicted from expo-image's cache falls back to a page instead of to white, and it is
+              ~20 flat Views with nothing to decode — cheaper than the onLoad state change and
+              re-render that unmounting it would cost, mid-scroll, on the app's front door. */}
+          <PaperSkeleton
+            w={m.w} h={m.h} accent={card.accent} name={card.name}
+            detail={dist <= DETAIL_WINDOW} state={state}
+            shimmer={state === 'loading' && near} fade={sweepFade}
+          />
           {/* ⚠️ TOP-ANCHORED. `cover` alone centres the page, so anything taller than the card loses
               its head AND its foot — and the head is where the name is. Crop the tail instead. */}
-          {card.image ? (
+          {!!card.image && (
             <Image source={{ uri: card.image }} style={s.img} contentFit="cover" contentPosition="top" transition={220} />
-          ) : (
-            <View style={[s.img, s.imgEmpty]} />
           )}
-          <Glare w={m.w} />
+          {/* Same reason the sweep is gated: this was 73 concurrent loops on a 73-design deck, all
+              but three of them sweeping a card nobody can see. */}
+          {near && <Glare w={m.w} />}
           {!!ribbon && (
             <View style={s.ribbon}>
               <View style={[s.ribbonTile, { backgroundColor: ribbon.colors[0] }]}>
@@ -169,6 +242,9 @@ export default function PaperCarousel({ cards, index, onIndex, ribbon, onOpen }:
   const settled = useRef(index);
   const [width, setWidth] = React.useState(0);
 
+  // One pass over the fetch window per render, not a scan per card.
+  const states = React.useMemo(() => hydrationStates(cards, index), [cards, index]);
+
   const w = cardWidthFor(width);
   const m: Metrics = { w, h: Math.round(w * A4), step: w + GAP };
   const side = width > w ? (width - w) / 2 : 16;
@@ -198,7 +274,10 @@ export default function PaperCarousel({ cards, index, onIndex, ribbon, onOpen }:
         }}
       >
         {cards.map((c, i) => (
-          <Card key={c.id} card={c} i={i} scrollX={scrollX} ribbon={ribbon} m={m} onOpen={onOpen} />
+          <Card
+            key={c.id} card={c} i={i} dist={Math.abs(i - index)} state={states[c.id] || 'idle'}
+            scrollX={scrollX} ribbon={ribbon} m={m} onOpen={onOpen}
+          />
         ))}
       </Animated.ScrollView>
       <Dots n={cards.length} index={index} />
@@ -216,11 +295,17 @@ const s = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 24 }, shadowOpacity: 0.5, shadowRadius: 40, elevation: 14,
   },
   paper: { borderRadius: 14, overflow: 'hidden', backgroundColor: '#fff' },
+  // ⚠️ NO `imgEmpty` ANY MORE. A slot with no pixels used to be a flat #EEF2F8 rectangle, which
+  // users read as "blank resume" — PaperSkeleton draws the design instead.
   img: { width: '100%', height: '100%' },
-  imgEmpty: { backgroundColor: '#EEF2F8' },
   glare: { position: 'absolute', top: -30, bottom: -30, width: 60 },
+  // ⚠️ GEOMETRY COMES FROM PaperSkeleton's AFFORDANCE, because the skeleton has to reserve exactly
+  // this footprint for it — the name chip used to run underneath, and since this button renders
+  // AFTER the skeleton it drew on top of the name. Change the size or inset here and the chip's
+  // clearance moves with it; hard-code a number and they drift apart again.
   expand: {
-    position: 'absolute', right: 8, bottom: 8, width: 24, height: 24, borderRadius: 8,
+    position: 'absolute', right: AFFORDANCE.inset, bottom: AFFORDANCE.inset,
+    width: AFFORDANCE.size, height: AFFORDANCE.size, borderRadius: 8,
     alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(11,15,34,0.55)',
   },
   ribbon: {

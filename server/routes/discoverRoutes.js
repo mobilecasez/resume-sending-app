@@ -6,6 +6,7 @@ const ctrl = require('../controllers/discoverController');
 
 router.get('/discover/jobs', authenticateToken, ctrl.discoverJobs);
 router.get('/discover/facets', authenticateToken, ctrl.discoverFacets);
+router.get('/discover/employers', authenticateToken, ctrl.discoverEmployers); // employer NAME search for the Add-employer sheet — FREE (two table reads, no AI)
 router.post('/discover/ai-search', authenticateToken, ctrl.aiSearch);
 router.post('/discover/hydrate-urls', authenticateToken, ctrl.hydrateUrls);
 router.post('/discover/live-search', authenticateToken, ctrl.liveSearch);   // "Look for live jobs on Google" → app-style cards

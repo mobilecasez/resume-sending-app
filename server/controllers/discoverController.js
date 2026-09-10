@@ -24,6 +24,11 @@ const synonyms = require('../utils/searchSynonyms');   // .net⇄dotnet, node⇄
 const { cleanSkills, seniorityFromTitle } = require('../utils/jobFields');   // a skill is a name, not a sentence
 const geoRank = require('../utils/geoRank');            // ONE country-then-distance comparator, shared app-wide
 const geoContext = require('../services/geoContext');   // …and the per-user anchor/mode behind it
+// ⚠️ ONE normalisation of a company name, app-wide. The download PASS already answers "is this the
+// same employer?" (legal suffixes stripped, a URL reduced to its label); the employer SEARCH has to
+// give the same answer, or "Siemens AG" and "Siemens" are two rows in the picker and one scope in
+// the paywall.
+const { aliasKeysOf, employerKeyOf } = require('../services/downloads');
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -256,6 +261,241 @@ async function discoverFacets(req, res) {
   } catch (e) {
     console.error('[discover] facets error:', e.message);
     res.status(500).json({ error: 'Failed to load facets' });
+  }
+}
+
+// ─── Employer NAME search (FREE: two table reads, no AI) ───────────────────────
+// ⚠️ THIS EXISTS BECAUSE "ADD EMPLOYER" WAS RUNNING A JOB SEARCH. The sheet called
+// GET /discover/jobs?q=… and deduped company names out of the returned job rows — and that search
+// matches title and location too, so on prod q=Siemens came back as 50 jobs whose companies were
+// mostly STAFFING AGENCIES that merely mention Siemens in the ad (Randstad, Experis, Skill
+// Kompetenspartner), while q=Nordex came back EMPTY because the firehose has never crawled Nordex.
+// A 10,000-employee employer, invisible; three agencies, top of the list. An employer is an
+// IDENTITY, not a job row: match employer NAMES only, and look in `employers` — the identity table
+// the app already builds — before looking at the firehose at all.
+//
+// ⚠️ FREE, AND IT HAS TO STAY FREE: the sheet calls this on a 320ms keystroke debounce, so one
+// typed word is several requests. No Gemini, no grounding, no chargeCredits, no outbound HTTP —
+// this handler reads `employers` and `global_jobs` and nothing else. Anything added here that costs
+// money charges the user for typing.
+
+// ⚠️ pg_trgm MAY NOT EXIST. Migration 045 runs CREATE EXTENSION pg_trgm, but that needs a superuser
+// role and db-init's col() swallows the refusal — the '✅ Migration 045' line prints either way, so
+// the log is NOT proof the extension is there. Ask the catalog once and cache it; without trigrams
+// the exact→prefix→contains ranking below is still correct, it just loses the fuzzy tail.
+let trgmAvailable = null;   // null = not asked yet; true/false = the cached answer for this process
+async function hasTrigram() {
+  if (trgmAvailable !== null) return trgmAvailable;
+  try {
+    trgmAvailable = !!(await dbConfig.get(`SELECT 1 AS ok FROM pg_extension WHERE extname = 'pg_trgm'`));
+    return trgmAvailable;
+  } catch (e) {
+    // ⚠️ A FAILED PROBE IS NOT AN ANSWER. This used to cache `false`, so one pool reset / one
+    // statement_timeout during boot traffic left the worker permanently trigram-less — fuzzy
+    // matching silently gone for the life of the process, on a database that has the extension.
+    // Leave the flag UNSET so the next request re-asks; this request just takes the plain path.
+    trgmAvailable = null;
+    console.warn('[discover] employers: trigram probe failed, will re-ask —', e.message);
+    return false;
+  }
+}
+
+// Is this error actually "the trigram function/operator cannot be resolved"? Postgres raises 42883
+// (undefined_function) for similarity(), 42704 (undefined_object) for the operator/opclass; the
+// message carries the same news when a driver does not surface the code.
+// ⚠️ EVERYTHING ELSE MUST RETHROW. A pool reset, a statement_timeout (57014) or a hot-standby
+// recovery conflict is not evidence about the catalog, and treating it as such latched the whole
+// worker into the no-trigram path while logging a line that asserted something false about the DB.
+function isMissingTrigram(e) {
+  if (!e) return false;
+  if (e.code === '42883' || e.code === '42704') return true;
+  return /similarity|operator does not exist/i.test(String(e.message || ''));
+}
+
+// ⚠️ The catalog check can still be wrong (extension installed into a schema outside search_path),
+// and `similarity()` / `%` are resolved when the statement is PLANNED — i.e. it throws here, not at
+// the check. So a trigram query that fails FOR THAT REASON gets exactly one retry without trigrams,
+// and the process stops asking. A missing index must never 500 an employer lookup — but neither may
+// a transient failure be mistaken for a missing index.
+async function withTrigramFallback(build, trgm) {
+  try { return await build(trgm); }
+  catch (e) {
+    if (!trgm || !isMissingTrigram(e)) throw e;
+    trgmAvailable = false;
+    console.warn('[discover] employers: trigram unavailable, retrying plain —', e.message);
+    return build(false);
+  }
+}
+
+// exact → prefix → contains → (trigram tail). Written over an already-lowered column.
+function nameTierSql(col, pExact, pPrefix, pContains) {
+  return `CASE WHEN ${col} = ${pExact} THEN 0
+               WHEN ${col} LIKE ${pPrefix} THEN 1
+               WHEN ${col} LIKE ${pContains} THEN 2
+               ELSE 3 END`;
+}
+
+// The name PREDICATE — what actually decides which rows are read (the CASE above only ranks what
+// this let through). `prefix` used to appear ONLY inside that CASE, so the single term either query
+// emitted was a leading-wildcard `LIKE '%q%'` and Migration 045's btree could never be picked.
+//
+// What each arm is, and what can serve it — honestly, so nobody reads an index into this that
+// is not there:
+//  • ANCHORED `${col} LIKE 'nordex%'` is the ONLY shape a btree can serve. Migration 045 built
+//    idx_employers_name_lower ON employers (lower(name) text_pattern_ops) — same expression, same
+//    opclass as emitted here, and text_pattern_ops is the one that matters: it compares byte-wise,
+//    so a prefix stays a range scan whatever the database collation is.
+//  • INFIX `LIKE '%nordex%'` and `%` need gin_trgm_ops, i.e. they need pg_trgm to have actually
+//    been created. Kept unconditionally on purpose: dropping it when the extension is missing would
+//    change WHICH EMPLOYERS ARE FOUND depending on a database extension, and "Energy" has to keep
+//    finding "Nordex Energy SE" on both kinds of server.
+// ⚠️ TWO LIMITS THIS DOES NOT FIX, said plainly:
+//  1. An OR is index-servable only when EVERY arm is — the planner can BitmapOr, it cannot
+//     half-scan — and the anchored arm is a strict SUBSET of the infix arm, so it adds no rows.
+//     With pg_trgm present the GIN serves the whole disjunction; with pg_trgm absent `employers` is
+//     still scanned, and the btree only becomes reachable for a caller that drops the infix arm.
+//  2. global_jobs has NO btree this can use at all: idx_global_jobs_employer is on the RAW column
+//     with the default opclass, which cannot serve `lower(employer_name) LIKE …`. Its only relevant
+//     index is idx_global_jobs_employer_trgm. Making the ~120k-row firehose side index-servable
+//     WITHOUT pg_trgm needs a `(lower(employer_name) text_pattern_ops)` btree in db-init — this file
+//     cannot add one, and until it exists the no-trigram path there is a sequential scan per
+//     keystroke.
+function nameWhereSql(col, pExact, pPrefix, pContains, trgm) {
+  return `(${col} LIKE ${pPrefix} OR ${col} LIKE ${pContains}${trgm ? ` OR ${col} % ${pExact}` : ''})`;
+}
+
+// Source 1: the employers the app has already identified. Nothing in this codebase has ever queried
+// employers.name — it is only ever read by domain — so this is a new access path on an existing table.
+// ⚠️ employers.sub_info is NOT a location: aiHubController overwrites it with "N open roles" on every
+// research path, so showing it as one would put "12 open roles" in a location chip. A tracked
+// employer's location can only come from the firehose rows it merges with, or stay null.
+async function trackedEmployerHits(q, prefix, contains, cand, trgm) {
+  const params = [];
+  const P = (v) => { params.push(v); return '$' + params.length; };
+  const pExact = P(q), pPrefix = P(prefix), pContains = P(contains);
+  const sim = trgm ? `similarity(lower(name), ${pExact})` : '0';
+  const rows = await dbConfig.query(
+    `SELECT name, domain, ${nameTierSql('lower(name)', pExact, pPrefix, pContains)} AS tier, ${sim} AS sim
+       FROM employers
+      WHERE name IS NOT NULL AND name <> ''
+        AND ${nameWhereSql('lower(name)', pExact, pPrefix, pContains, trgm)}
+      ORDER BY tier, (domain IS NOT NULL AND domain <> '') DESC, sim DESC, length(name)
+      LIMIT ${P(cand)}`, params);
+  return (rows || []).map((r) => ({
+    name: r.name, domain: r.domain || null, location: null,
+    jobs: 0,   // filled in by the merge when the firehose knows this employer; 0 is honest, not missing
+    source: 'tracked', tier: Number(r.tier), sim: Number(r.sim) || 0,
+  }));
+}
+
+// Source 2: employers the firehose has seen.
+// ⚠️ employer_name ONLY. Widening this to title or location is the exact bug this endpoint replaces:
+// that is what put Randstad and Experis at the top of a search for Siemens, on the strength of ad copy.
+async function jobEmployerHits(q, prefix, contains, cand, country, trgm) {
+  const params = [];
+  const P = (v) => { params.push(v); return '$' + params.length; };
+  const pExact = P(q), pPrefix = P(prefix), pContains = P(contains);
+  const sim = trgm ? `similarity(lower(employer_name), ${pExact})` : '0';
+  const where = [`is_active`, `employer_name IS NOT NULL`, `employer_name <> ''`,
+    nameWhereSql('lower(employer_name)', pExact, pPrefix, pContains, trgm)];
+  if (country) where.push(`country = ${P(country)}`);
+  const rows = await dbConfig.query(
+    `SELECT employer_name AS name,
+            MIN(NULLIF(employer_domain, '')) AS domain,
+            mode() WITHIN GROUP (ORDER BY country) FILTER (WHERE country IS NOT NULL AND country <> '') AS location,
+            COUNT(*)::int AS jobs,
+            ${nameTierSql('lower(employer_name)', pExact, pPrefix, pContains)} AS tier,
+            ${sim} AS sim
+       FROM global_jobs
+      WHERE ${where.join(' AND ')}
+      GROUP BY employer_name
+      ORDER BY tier, jobs DESC, sim DESC
+      LIMIT ${P(cand)}`, params);
+  return (rows || []).map((r) => ({
+    name: r.name, domain: r.domain || null, location: r.location || null,
+    jobs: Number(r.jobs) || 0, source: 'jobs', tier: Number(r.tier), sim: Number(r.sim) || 0,
+  }));
+}
+
+// ⚠️ ONE EMPLOYER, ONE ROW. "Siemens AG" in `employers` and "Siemens" in `global_jobs` are the same
+// company, and a user shown both has to guess. Alias-key overlap is how the download PASS already
+// decides that question (services/downloads.js) — a second normaliser here would be a second answer
+// to it, and the two would drift. Tracked hits are merged FIRST so the identity table's spelling and
+// domain win; the firehose contributes what only it knows, the job count and the country.
+function mergeEmployerHits(hits) {
+  const out = [];
+  const byKey = new Map();
+  for (const hit of hits) {
+    const keys = aliasKeysOf(hit.name);
+    if (!keys.size) keys.add(employerKeyOf(hit.name));
+    let idx = -1;
+    for (const k of keys) { if (byKey.has(k)) { idx = byKey.get(k); break; } }
+    if (idx < 0) { idx = out.push({ ...hit }) - 1; }
+    else {
+      const t = out[idx];
+      t.tier = Math.min(t.tier, hit.tier);
+      t.sim = Math.max(t.sim, hit.sim);
+      // Counts ADD: the firehose groups by employer_name, so "Zalando" and "Zalando SE" are disjoint
+      // sets of rows (measured on dev data: 2 + 64), and a tracked hit always contributes 0. Taking the
+      // max here would quietly under-report the company the user is actually looking at.
+      t.jobs += hit.jobs;
+      t.domain = t.domain || hit.domain;
+      t.location = t.location || hit.location;
+    }
+    for (const k of keys) if (!byKey.has(k)) byKey.set(k, idx);
+  }
+  return out;
+}
+
+async function discoverEmployers(req, res) {
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase().slice(0, 80);
+    const country = String(req.query.country || '').trim().slice(0, 40);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 25);
+    // One letter matches half of both tables and means nothing. Answer without touching the DB —
+    // on a keystroke debounce this is the most-hit branch there is.
+    if (q.length < 2) return res.json({ success: true, employers: [] });
+
+    // The user's own '%' is a character they typed, not a wildcard that matches the whole table.
+    const esc = q.replace(/[\\%_]/g, (c) => '\\' + c);
+    const prefix = esc + '%';
+    const contains = '%' + esc + '%';
+    const cand = Math.min(limit * 4, 100);   // over-fetch both sources, merge, then cut to `limit`
+    const trgm = await hasTrigram();
+
+    const [tracked, fromJobs] = await Promise.all([
+      withTrigramFallback((t) => trackedEmployerHits(q, prefix, contains, cand, t), trgm),
+      withTrigramFallback((t) => jobEmployerHits(q, prefix, contains, cand, country, t), trgm),
+    ]);
+    // ⚠️ `country` narrows the firehose only — `employers` has no country column, and dropping
+    // tracked hits for want of one would hide exactly the employers this endpoint exists to surface.
+    const merged = mergeEmployerHits([...tracked, ...fromJobs]);
+    merged.sort((a, b) =>
+      a.tier - b.tier
+      // ⚠️ SOURCE BEFORE JOB COUNT — this is where the header's promise ("look in `employers` …
+      // before looking at the firehose at all") is actually kept. A tracked employer the firehose
+      // has never crawled merges in with jobs: 0 and no location, so a domain-then-jobs tiebreak
+      // sorted it BELOW any firehose subsidiary sharing its tier: search Nordex, and the one row
+      // this endpoint exists to surface lands under "Nordex Energy Spain". A merged row keeps
+      // source 'tracked' (tracked hits are merged first), so a company BOTH sources know about
+      // rides this term too rather than being penalised for also being in the firehose.
+      || (b.source === 'tracked' ? 1 : 0) - (a.source === 'tracked' ? 1 : 0)
+      || (b.domain ? 1 : 0) - (a.domain ? 1 : 0)   // a company we can reach outranks a bare name
+      || b.jobs - a.jobs
+      || b.sim - a.sim
+      || a.name.length - b.name.length
+      || String(a.name).localeCompare(String(b.name)));
+
+    res.json({
+      success: true,
+      employers: merged.slice(0, limit).map((e) => ({
+        name: e.name, domain: e.domain || null, location: e.location || null,
+        jobs: e.jobs || 0, source: e.source,
+      })),
+    });
+  } catch (e) {
+    console.error('[discover] employers error:', e.message);
+    res.status(500).json({ error: 'Failed to search employers' });
   }
 }
 
@@ -1084,7 +1324,7 @@ async function getGlobalJobById(req, res) {
   }
 }
 
-module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard, getGlobalJobById,
+module.exports = { discoverJobs, discoverFacets, discoverEmployers, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard, getGlobalJobById,
   // Exported for reuse ONLY (behaviour unchanged): the admin "matched jobs" view scores jobs with the
   // EXACT same expression + résumé-skill normalisation as the user's own feed, so the two never drift.
   matchExprSql, getResume, skillsOf };

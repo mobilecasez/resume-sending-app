@@ -122,8 +122,10 @@ ok('a font-network failure degrades to system fonts, never hangs', /route\.abort
 ok('warmPreviews exists and never throws at the caller', /warmPreviews[\s\S]{0,1400}purely a head start/.test(rend));
 ok('the catalogue request pre-warms the pipeline', /listTemplates[\s\S]{0,400}warmPreviews\(\)/.test(ctl));
 ok('sharp photo crops are cached against the file mtime', /photoCache/.test(ctl) && /mtimeMs/.test(ctl));
+// The second argument is `force`, added so returning from the editor can invalidate a cache that
+// otherwise served pre-edit renders forever. The ORDER — visible design first — is the rule here.
 ok('the gallery renders the VISIBLE design first, neighbours after',
-  /ensurePreviews\(\[cur\]\)\.then\(/.test(tpl));
+  /ensurePreviews\(\[cur\], force\)\.then\(/.test(tpl));
 
 console.log('── a lost preview request must NEVER spin forever ──');
 // Field report (b195): "Rendering Azure Sidebar and just spinning." Production rendered in
@@ -196,7 +198,8 @@ ok('finalize marks the builder resume a perfect 100', /markBuilderPerfect/.test(
 ok('…acted-stamped so the popup never re-prompts over a 100', /'ready', NOW\(\)\)/.test(ctl) && /acted_at\)/.test(ctl));
 // The chosen design travels: gallery pick → preferred_template → every rendered file.
 ok('preferred_template column exists (idempotent)', /ADD COLUMN IF NOT EXISTS preferred_template/.test(ctl));
-ok('the gallery persists the on-screen design (debounced)', /preferredTemplate: selForSave/.test(tpl));
+ok('the gallery persists the on-screen design (debounced)',
+  /savePreferred\(selForSave\)/.test(tpl) && /preferredTemplate: tpl/.test(tpl));
 ok('a template-only save needs no resumeData', /!resumeData && preferredTemplate/.test(ctl));
 ok('the apply/email PDF renders the CHOSEN template', /pref \|\| \(tpls && tpls\[0\]/.test(ctl));
 ok('the Home thumbnail renders the chosen template too', /preferred_template[\s\S]{0,200}'banner'/.test(ctl));

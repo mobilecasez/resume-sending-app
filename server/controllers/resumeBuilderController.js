@@ -1483,10 +1483,14 @@ async function homeCards(req, res) {
         }
         const asked = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
         const pref = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : null;
-        // The user's own pick always leads; the rest fill up to 5 from the request (or a sensible
-        // default spread across visually distinct families).
+        // What the client ASKED for wins, then the user's own pick, then a default spread across
+        // visually distinct families — de-duped and cut to 5.
+        // ⚠️ Order is load-bearing: `pref` used to be prepended, so a full 5-id request silently
+        // lost its 5th card to the slice, and the client marks any id missing from the response as
+        // permanently dead — that slot stayed blank forever. Never push anything ahead of `asked`.
+        // On the first load `asked` is empty (no ?ids), so `pref` still leads.
         const fallback = ['banner', 'rightrail', 'elegant', 'mono', 'timeline'];
-        const ids = [...new Set([pref, ...asked, ...fallback].filter((id) => id && TEMPLATE_IDS.includes(id)))].slice(0, 5);
+        const ids = [...new Set([...asked, pref, ...fallback].filter((id) => id && TEMPLATE_IDS.includes(id)))].slice(0, 5);
         const cards = [];
         const files = [];
         for (const id of ids) {
@@ -1499,7 +1503,11 @@ async function homeCards(req, res) {
         }
         if (!cards.length) return res.status(500).json({ error: 'Could not render previews.' });
         pruneThumbs(userId, files);
-        return res.json({ success: true, preferred: pref || cards[0].id, cards, sample });
+        // `preferred` names a card in THIS response, not the stored pick: an ids-scoped request may
+        // legitimately not render the stored pick (and a render can fail), so fall back to the first
+        // card actually returned rather than pointing at an id the payload does not contain.
+        const preferred = pref && cards.some((c) => c.id === pref) ? pref : cards[0].id;
+        return res.json({ success: true, preferred, cards, sample });
     } catch (e) {
         console.error('[resumeBuilder] homeCards error:', e.message);
         return res.status(500).json({ error: 'Could not render previews.' });

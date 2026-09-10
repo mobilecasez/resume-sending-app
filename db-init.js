@@ -1652,6 +1652,81 @@ async function runPostgresMigrations(db) {
                      ON download_history(user_id, kind, downloaded_at DESC)`);
         console.log('✅ Migration 044: download_history done');
 
+        // ── Migration 045: PER-EMPLOYER TAILORED DOCUMENTS + employer NAME search ───────────
+        // The tailored resume/letter we generated for ONE employer, cached so a second visit to the
+        // same company with the same inputs costs nothing and returns the same document.
+        //
+        // ⚠️ EVERY MEMBER OF THE UNIQUE INDEX IS NOT NULL WITH A DEFAULT. Postgres treats NULLs as
+        // distinct, so a single nullable key column silently defeats the dedupe: every lookup misses,
+        // every generation re-charges, and the table grows without bound. Migration 044 documents the
+        // same defence for download_history — keep '' / '(none)' rather than NULL here.
+        //
+        // ⚠️ THE PAYLOAD IS SELF-CONTAINED, ON PURPOSE. Re-tailoring from today's base resume would
+        // hand back a DIFFERENT document than the one the user saw, so the finished document (and the
+        // research it was built from) is frozen in the row rather than referenced.
+        await col(`CREATE TABLE IF NOT EXISTS user_employer_documents (
+            id                SERIAL PRIMARY KEY,
+            user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind              TEXT NOT NULL,
+            employer_key      TEXT NOT NULL DEFAULT '(none)',
+            employer_name     TEXT NOT NULL DEFAULT '',
+            job_url           TEXT NOT NULL DEFAULT '',
+            job_title         TEXT NOT NULL DEFAULT '',
+            input_fingerprint VARCHAR(64) NOT NULL DEFAULT '',
+            model             VARCHAR(48),
+            payload           JSONB NOT NULL,
+            research          JSONB,
+            environment       TEXT NOT NULL DEFAULT 'Production',
+            times             INTEGER NOT NULL DEFAULT 1,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        // ⚠️ kind AND environment ARE CACHE-KEY MEMBERS, SO A TYPO IS A SILENT DOUBLE CHARGE.
+        // A writer that inserts 'coverLetter' or 'production' creates a SECOND row for the same
+        // document instead of colliding with the first — the reader then misses forever and pays for
+        // a fresh AI call on every lookup, with no error anywhere. Same defence as Migration 044.
+        await col(`ALTER TABLE user_employer_documents DROP CONSTRAINT IF EXISTS chk_user_employer_documents_kind`);
+        await col(`ALTER TABLE user_employer_documents ADD CONSTRAINT chk_user_employer_documents_kind
+                     CHECK (kind IN ('resume','cover_letter'))`);
+        // ⚠️ Same capitalisation as download_passes and download_history — see storeEnvironment.js.
+        await col(`ALTER TABLE user_employer_documents DROP CONSTRAINT IF EXISTS chk_user_employer_documents_environment`);
+        await col(`ALTER TABLE user_employer_documents ADD CONSTRAINT chk_user_employer_documents_environment
+                     CHECK (environment IN ('Sandbox','Production'))`);
+        // The cache key. A miss here is a paid AI call, so the tuple must match the lookup exactly.
+        // ⚠️ environment is CAPITALISED 'Sandbox' / 'Production', matching download_passes and
+        // download_history (services/storeEnvironment.js) — lowercase would never join.
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_user_employer_docs
+                     ON user_employer_documents(user_id, kind, employer_key, input_fingerprint, environment)`);
+        // The list query: one user's most recent documents of one kind.
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_employer_docs_user
+                     ON user_employer_documents(user_id, kind, updated_at DESC)`);
+        // The "what do I already have for this company" query.
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_employer_docs_emp
+                     ON user_employer_documents(user_id, kind, employer_key, updated_at DESC)`);
+
+        // Employer NAME search — until this migration nothing queried employers.name, so it was never
+        // indexed and the new lookup would be a sequential scan of the whole table.
+        //
+        // The two index families cover DIFFERENT halves of the search and do not substitute for each
+        // other: the btree on lower(name) text_pattern_ops serves ONLY the ANCHORED prefix term
+        // (LIKE 'foo%'), while the gin_trgm_ops indexes are what make the infix / typo-tolerant terms
+        // (LIKE '%foo%', similarity) cheap. No btree can serve a leading wildcard.
+        //
+        // ⚠️ CREATE EXTENSION pg_trgm CAN BE REFUSED on a locked-down Postgres role (it needs
+        // superuser / rds_superuser), and col() SWALLOWS the refusal — the '✅' line below still
+        // prints, so the log is NOT proof the extension is there. VERIFY AGAINST pg_extension IN
+        // PRODUCTION, never from the boot log. The two gin_trgm_ops indexes then fail just as
+        // quietly, and the endpoint stays CORRECT but degrades to a SEQUENTIAL SCAN for its infix
+        // matches — only the anchored prefix branch keeps an index. There is no trigram fallback.
+        //
+        // ⚠️ The GIN build on global_jobs (68k-120k rows) takes a ShareLock INLINE during boot, so
+        // the first boot after this deploy stalls the firehose writer once while it builds.
+        await col(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_employers_name_lower ON employers (lower(name) text_pattern_ops)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_employers_name_trgm ON employers USING gin (lower(name) gin_trgm_ops)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_employer_trgm ON global_jobs USING gin (lower(employer_name) gin_trgm_ops)`);
+        console.log('✅ Migration 045: user_employer_documents + employer name search done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

@@ -30,6 +30,15 @@ const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((
 const homeC = strip(home), svcC = strip(svc), hsC = strip(hs), carC = strip(carousel), ctlC = strip(ctl);
 const histC = strip(histSrc);
 const meshC = strip(mesh);
+// The per-employer tailoring work: the free employer-name search, the document cache that stops a
+// switch-back from costing a second AI call, and the drawn page that replaces a blank card.
+const discSrc = R('../../server/controllers/discoverController.js');
+const discRoutes = R('../../server/routes/discoverRoutes.js');
+const docsSrc = R('../../server/services/employerDocs.js');
+const dbInit = R('../../db-init.js');
+const skelSrc = R('../components/employer-home/PaperSkeleton.tsx');
+const aiHubCtl = R('../../server/controllers/aiHubController.js');
+const discC = strip(discSrc), docsC = strip(docsSrc), skelC = strip(skelSrc), aiHubC = strip(aiHubCtl);
 const studioSrc = R('../components/onboarding/SignatureStudio.tsx');
 const countrySheetSrc = R('../components/onboarding/CountrySheet.tsx');
 const countrySheetC = strip(countrySheetSrc);
@@ -143,7 +152,16 @@ console.log('── server: the carousel previews are cached, never re-rendered 
 ok('a home-cards route exists', /router\.get \('\/home-cards'/.test(routes));
 ok('every card is disk-cached per resume version', /async function cachedThumb/.test(ctl) && /resume_thumb_\$\{userId\}/.test(ctl));
 ok('the batch is capped below the chromium crash threshold', /\.slice\(0, 5\)/.test(ctl) && /recycles its browser every 3/.test(ctl));
-ok('the user’s chosen design leads the carousel', /const fallback = \['banner'/.test(ctl) && /\[pref, \.\.\.asked/.test(ctl));
+// ⚠️ RETARGETED, AND THE OLD ORDER WAS THE BUG THIS ASSERTION PINNED IN PLACE. `[pref, ...asked]`
+// put the stored pick in front BEFORE the cap, so a five-id hydration wave silently lost its fifth
+// id — and the client marks any requested id missing from a response permanently dead, with no
+// retry. That card then stayed blank forever, which is exactly what the user reported as "after
+// scrolling few resumes it shows blank resume". What is ON SCREEN wins now; `pref` still leads on
+// the first load, where `asked` is empty.
+ok('the ids the client asked for lead the carousel',
+  /const fallback = \['banner'/.test(ctl) && /\[\.\.\.asked, pref/.test(ctl));
+ok('…and the response never names a preferred card it did not return',
+  /cards\.some\(\(c\) => c\.id === pref\)/.test(ctl));
 ok('stale versions are pruned', /async function pruneThumbs/.test(ctl));
 ok('the single-thumb endpoint still 404s cleanly when there is no resume',
   /No resume yet\.'/.test(ctl));
@@ -351,7 +369,14 @@ console.log('── add employer: recognisable results, and a way out when they 
 ok('the field says what it takes', /placeholder=\{urlMode \? "https:\/\/careers\.company\.com" : "Employer name or URL"\}/.test(sheetC));
 ok('a result is identifiable: name, website, location', /h\.domain/.test(sheetC) && /h\.location/.test(sheetC) && /globe-outline/.test(sheetC) && /location-outline/.test(sheetC));
 ok('…and results are cards, not bare rows', /hit: \{[\s\S]{0,180}borderRadius: 14/.test(sheetC));
-ok('not in the list → add their URL instead', /setUrlMode\(true\)/.test(sheetC) && /Add their careers URL instead/.test(sheetC));
+ok('not in the list → add their URL instead',
+  /setUrlMode\(true\)/.test(sheetC) && /Add their careers URL so we watch it/.test(sheetC));
+// ⚠️ The field is CLEARED on the way into urlMode and the name is remembered instead. Keeping the
+// name in the box looked friendlier and was worse: `selectTextOnFocus` is applied on a focus EVENT,
+// the row that flips the mode sits under keyboardShouldPersistTaps so the input never blurs, and a
+// pasted URL therefore landed at the caret — "NordexNordexhttps://…".
+ok('…and the typed name is remembered, so the way back is not a retype',
+  /setKeptName\(typed\)/.test(sheetC) && /setUrlMode\(true\); setHits\(\[\]\); setQ\(''\)/.test(sheetC));
 ok('…offered whether or not there were hits', /hits\.length \? 'Not the right one\?' :/.test(sheetC));
 
 // ── Round 6: the posting the user is applying to, end to end ────────────────────────────────────
@@ -620,6 +645,109 @@ ok('the bridge is still the proven one: base64 → a file → multipart',
   /image\/png/.test(studioC) && /EncodingType\.Base64/.test(studioC));
 ok('⚠️ the old pad is deleted, not left behind to drift out of date',
   !fs.existsSync(path.join(__dirname, '../components/onboarding/SignaturePad.tsx')));
+
+console.log('── ⚠️ EMPLOYER SEARCH IS EMPLOYER SEARCH, NOT A JOB SEARCH ──');
+// Measured against production before this was built: q=Siemens returned 50 jobs whose companies
+// were mostly STAFFING AGENCIES (Randstad, Experis, Skill Kompetenspartner) that merely mention
+// Siemens in the posting text, and q=Nordex returned 0 — a real 10,000-person employer with a live
+// careers site, invisible because the firehose has never crawled them. An employer only "existed"
+// if we happened to hold one of their postings.
+ok('there is a real employer endpoint now', /router\.get\('\/discover\/employers'/.test(discRoutes));
+ok('…behind the same auth as its siblings', /'\/discover\/employers', authenticateToken/.test(discRoutes));
+// Bound the slice to THIS handler: the file's other handlers (ai-search, live-search) do spend.
+const empHandler = (discC.match(/async function discoverEmployers[\s\S]*?\n\}/) || [''])[0];
+ok('⚠️ it is FREE — the sheet calls it on a keystroke debounce',
+  empHandler.length > 200 && !/deductCredits|getEventCost|credits/i.test(empHandler));
+// ⚠️ THE IDENTITY TABLE NOTHING EVER QUERIED BY NAME. `employers` is keyed UNIQUE on domain and is
+// read by domain everywhere in this codebase; it is the one place that knows an employer we have
+// no postings for.
+ok('it reads the employers identity table', /FROM employers/.test(discC));
+ok('…and DISTINCT employer names from the firehose', /global_jobs/.test(discC) && /employer_name/.test(discC));
+// ⚠️ NEVER the job text. Matching title/description is what surfaced the agencies.
+ok('⚠️ it never matches job titles or descriptions', !/lower\(title\)/.test(discC.slice(discC.indexOf('async function discoverEmployers'))));
+ok('a query under two characters never touches the database', /\.length < 2/.test(discC));
+
+console.log('── ⚠️ pg_trgm may be REFUSED, and the endpoint must not care ──');
+ok('availability is probed, not assumed', /FROM pg_extension WHERE extname = 'pg_trgm'/.test(discC));
+// ⚠️ The first version latched "no trigrams" on ANY error — one pool reset or statement timeout and
+// fuzzy matching was dead for the life of the worker, while logging a claim about the database that
+// was not true. Only the error that actually means "this function does not exist" may latch it.
+ok('⚠️ only a real 42883/42704 latches the flag off', /e\.code === '42883' \|\| e\.code === '42704'/.test(discC));
+ok('…and a transient probe failure leaves it unset, so the next request re-asks', /trgmAvailable = null/.test(discC));
+ok('there is an anchored prefix term the btree can actually serve', /prefix/.test(discC) && /LIKE/.test(discC));
+
+console.log('── ⚠️ THE TYPED NAME IS ALWAYS USABLE ──');
+// This is what makes "it wont miss any employer" true. An employer, for the purpose of writing a
+// resume, is a NAME. It never needed a row in our jobs index.
+ok('the sheet offers what the user typed as a first-class action', /canUseTyped/.test(sheetC));
+ok('…not only when the list came back empty', !/hits\.length === 0 && canUseTyped/.test(sheetC));
+ok('⚠️ …and never at the same time as the paste-a-URL prompt', /!urlMode && canUseTyped/.test(sheetC));
+ok('the sheet still spends nothing', !/deductCredits|generate-ai|ai-search/.test(sheetC));
+ok('a miss is reported without the raw query', /home_add_employer_miss/.test(sheetC) && !/q: q\b/.test(sheetC));
+
+console.log('── ⚠️ THE PER-EMPLOYER CACHE IS A MONEY COMPONENT ──');
+ok('migration 045 creates the table', /Migration 045/.test(dbInit) && /CREATE TABLE IF NOT EXISTS user_employer_documents/.test(dbInit));
+// ⚠️ Postgres treats NULLs as DISTINCT, so one nullable member silently defeats the dedupe: every
+// lookup misses, the user is re-charged, and the table grows without bound. Migration 044 learned it.
+const uedBlock = (dbInit.match(/CREATE TABLE IF NOT EXISTS user_employer_documents[\s\S]*?\)`\);/) || [''])[0];
+// NOT NULL is the part that defeats NULL-distinctness; the DEFAULT is what stops an omitted
+// column becoming one. `kind` needs no default — no writer may leave it unsaid, and the CHECK
+// below refuses anything but the two real values.
+for (const colName of ['kind', 'employer_key', 'employer_name', 'input_fingerprint', 'environment']) {
+  ok(`⚠️ ${colName} is NOT NULL (it is in the unique key)`,
+    new RegExp(colName + '\\s+\\S+[^,]*NOT NULL').test(uedBlock));
+}
+for (const colName of ['employer_key', 'employer_name', 'input_fingerprint', 'environment']) {
+  ok(`…and ${colName} defaults, so an omitted value cannot become NULL`,
+    new RegExp(colName + '\\s+\\S+[^,]*NOT NULL[^,]*DEFAULT').test(uedBlock));
+}
+ok('the unique key is the cache key', /uq_user_employer_docs[\s\S]{0,200}user_id, kind, employer_key, input_fingerprint, environment/.test(dbInit));
+ok('kind and environment are CHECK-constrained like migration 044', /chk_user_employer_documents_kind/.test(dbInit) && /chk_user_employer_documents_environment/.test(dbInit));
+ok('⚠️ environment is capitalised, matching download_passes', /'Sandbox','Production'|'Sandbox', 'Production'/.test(dbInit));
+
+ok('the cache keys on the SAME employer string the money path charges under', /downloads\.employerKeyOf/.test(docsC));
+// ⚠️ The first version capped `model` at 80 into a VARCHAR(48). Postgres REJECTS an over-length
+// varchar (22001) rather than truncating, and the insert sits in a swallow-everything catch — so
+// the cache would have silently stopped writing rows and re-charged the user forever.
+ok('⚠️ the model cap is tied to the column width', /MODEL_MAX = 48/.test(docsC));
+ok('⚠️ the employer name is truncated ONCE, before it is keyed', /EMPLOYER_NAME_MAX/.test(docsC) && /employerNameOf/.test(docsC));
+// ⚠️ An unknown kind must not become 'resume': a cover letter served as a resume would be handed
+// over free, because a hit skips the billing claim as well as the AI call.
+ok('⚠️ an unrecognised kind refuses instead of guessing',
+  /function kindOf\(k\) \{[\s\S]{0,220}return null;/.test(docsC) && /refusing to guess/.test(docsSrc));
+ok('…and never widens a DELETE', /if \(!want\) return;/.test(docsC));
+ok('a listing ships no payloads', /function list\(/.test(docsC) && !/SELECT \*[\s\S]{0,200}function list/.test(docsC));
+ok('it prunes itself, like download_history', /KEEP_PER_KIND/.test(docsC) && /function prune\(/.test(docsC));
+ok('a fingerprint exists, or an edited base resume serves a stale tailored one', /function fingerprint\(/.test(docsC) && /FP_VERSION/.test(docsC));
+
+console.log('── ⚠️ ONE SHARED BALANCE, FOUR WRITERS ──');
+// A check-then-decrement lets two concurrent taps both pass and drive the balance negative. Fixing
+// one of four writers does not fix the column.
+const debits = (aiHubC.match(/credits_remaining = credits_remaining - /g) || []).length;
+const guarded = (aiHubC.match(/AND credits_remaining >= /g) || []).length;
+ok(`⚠️ every debit of credits_remaining is guarded (${guarded}/${debits})`, debits > 0 && guarded >= debits);
+ok('…and the guard decides, so a zero-row result is insufficient funds', /RETURNING credits_remaining/.test(aiHubC));
+
+console.log('── ⚠️ A BLANK CARD IS A DRAWN CARD NOW ──');
+ok('there is a page-sized skeleton', /export default function PaperSkeleton/.test(skelC));
+ok('it draws the RIGHT design — it already knows the accent and the name', /accent/.test(skelC) && /name/.test(skelC));
+// ⚠️ Only five of 73 slots are ever in flight (a chromium crash constraint), and any id the renderer
+// fails to return is marked permanently dead with no retry. Saying "loading" on all 73 is a lie.
+ok('⚠️ the loading word is given by the caller, never inferred from a missing image',
+  /state = 'idle'/.test(skelC) && /export type PaperState/.test(skelC));
+ok('⚠️ every animation here is native-driver, transform/opacity only',
+  !/useNativeDriver: false/.test(skelC) && !/Animated\.(timing|spring|loop)[\s\S]{0,200}(width|height|backgroundColor):/.test(skelC));
+ok('the carousel passes what it actually knows', /PaperSkeleton/.test(carC) && /state=/.test(carC));
+
+console.log('── the gallery gets an Edit button, and it does not build a stack ──');
+ok('the count pill became a real button', /goEdit/.test(galC) && /editPill/.test(galC));
+// ⚠️ preview pushes templates for its Download action; if templates pushes preview back, the two
+// screens push each other forever and hardware-back lands on a stale pre-edit instance.
+ok('⚠️ it goes BACK to a preview already below rather than pushing a second one',
+  /router\.canGoBack\(\)/.test(galC) && /router\.back\(\)/.test(galC));
+// ⚠️ `previews` is mounted state and ensurePreviews early-returns on a cached id, so without this
+// the gallery shows pre-edit renders after the one thing a button called Edit invites you to do.
+ok('⚠️ returning from the editor invalidates the preview cache', /useFocusEffect/.test(galC) && /setPreviews\(\{\}\)/.test(galC));
 
 console.log('── the preview harness can still see the whole screen ──');
 const previewSrc = R('../app/(dev)/home-preview.tsx');
