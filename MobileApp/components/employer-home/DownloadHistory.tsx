@@ -54,9 +54,13 @@ const CHIP_W = 48;
 const CHIP_H = 68;
 const ROW_H = 90;
 
-/** Home is a hero surface, not a list screen. */
-const PREVIEW_ROWS = 3;
-const MAX_ROWS = 12;
+/**
+ * Home is a hero surface, not a list screen — but three was too mean. Someone with five downloads
+ * was shown three and a "See all 5", and the locked strip underneath then counted a row they could
+ * not see. Six covers almost everyone in one glance and still stops the front door becoming a feed.
+ */
+const PREVIEW_ROWS = 6;
+const MAX_ROWS = 20;
 
 /** Every colour in the employer palette is 6-digit hex. */
 const rgba = (hex: string, a: number) =>
@@ -306,7 +310,10 @@ function Row({
                   <Text style={s.what} numberOfLines={1} allowFontScaling={false}>
                     {item.templateName || 'Your design'}
                   </Text>
-                  <View style={s.capDot} />
+                  {/* ⚠️ The separator only exists to separate. Rendering it unconditionally left a
+                      dot hanging off the end of every ordinary row — "Modern Minimal ·" — which
+                      reads as a line that got cut off. */}
+                  {(!free || item.times > 1) && <View style={s.capDot} />}
                   {!free ? (
                     <View style={s.planPill}>
                       <Text style={s.planPillTx} allowFontScaling={false}>PLAN ENDED</Text>
@@ -479,7 +486,9 @@ export default function DownloadHistory({
   onMoreJobs: () => void;
 }) {
   const shown = expanded ? items.slice(0, MAX_ROWS) : items.slice(0, PREVIEW_ROWS);
-  const lockedCount = items.filter((i) => !i.unlocked).length;
+  // ⚠️ Counted over the rows ACTUALLY ON SCREEN. Counting the whole list made the strip announce
+  // a locked file that was hidden behind "See all", which reads as a bug in the count.
+  const lockedCount = shown.filter((i) => !i.unlocked).length;
 
   /**
    * The list fades in on a mode change; the header and the title never move.

@@ -137,15 +137,15 @@ const T0 = Date.parse('2026-09-09T10:00:00Z');
 // working, which is the whole reason this harness exists. The locked row is kept inside the visible
 // three for the same reason: the padlock is the state most worth looking at.
 const RESUME_HISTORY: DownloadHistoryItem[] = [
-  { id: 1, kind: 'resume', employer: 'Klarna', templateId: CATALOGUE[0].id, templateName: CATALOGUE[0].name, format: 'pdf', mode: 'a4', times: 3, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 2, kind: 'resume', employer: 'Revolut', templateId: CATALOGUE[2].id, templateName: CATALOGUE[2].name, format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 3, kind: 'resume', employer: 'Airbus', templateId: CATALOGUE[4].id, templateName: CATALOGUE[4].name, format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
-  { id: 4, kind: 'resume', employer: 'Zalando SE', templateId: 'not-in-the-deck', templateName: 'Berlin Serif', format: 'pdf', mode: 'a4', times: 2, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 5, kind: 'resume', employer: 'Siemens', templateId: CATALOGUE[1].id, templateName: CATALOGUE[1].name, format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 400 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+  { id: 6, kind: 'resume', employer: 'Siemens', templateId: 'banner', templateName: 'Bold Banner', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 5, kind: 'resume', employer: 'Zalando SE', templateId: 'minimal', templateName: 'Modern Minimal', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 30 * 60000).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 1, kind: 'resume', employer: 'Airbus', templateId: 'azure', templateName: 'Azure Sidebar', format: 'pdf', mode: 'a4', times: 2, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 3, kind: 'resume', employer: 'Airbus', templateId: 'executive', templateName: 'Executive Dark', format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 2, kind: 'resume', employer: 'Airbus', templateId: 'azure', templateName: 'Azure Sidebar', format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
 ];
 const LETTER_HISTORY: DownloadHistoryItem[] = [
-  { id: 11, kind: 'cover_letter', employer: 'Airbus', templateId: 'ats_pro', templateName: 'ATS Professional', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 12, kind: 'cover_letter', employer: 'Siemens', templateId: 'german', templateName: 'German Professional', format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 12 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+  { id: 8, kind: 'cover_letter', employer: 'Siemens', templateId: 'german', templateName: 'German Professional', format: 'docx', mode: 'a4', times: 1, downloadedAt: new Date(T0 - DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 7, kind: 'cover_letter', employer: 'Airbus', templateId: 'ats_pro', templateName: 'ATS Professional', format: 'pdf', mode: 'a4', times: 3, downloadedAt: new Date(T0 - 12 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
 ];
 
   return (
@@ -172,7 +172,9 @@ const LETTER_HISTORY: DownloadHistoryItem[] = [
               unlimited: false,
               items: (kind === 'cover_letter' ? LETTER_HISTORY : RESUME_HISTORY) as DownloadHistoryItem[],
             }),
-            setup: async () => ({ profile: true, resume: false, photo: false, signature: false, complete: false }),
+            // The account this was built against: everything done. That is the state where the
+            // wizard entry used to disappear entirely, so it is the one worth looking at.
+            setup: async () => ({ profile: true, resume: true, photo: true, signature: true, complete: true }),
           }}
         />
       </View>

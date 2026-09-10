@@ -392,7 +392,14 @@ console.log('── ⚠️ MAKE YOURS: above the fold, or it does not exist ─�
 // </MeshStage> is below the first screenful, which is where the old download CTA died.
 const heroBlock = homeC.slice(0, homeC.indexOf('</MeshStage>'));
 ok('the CTA is INSIDE the hero, not below it', /makeWrap/.test(heroBlock));
-ok('…shown only while the profile is unfinished', /setup && !setup\.complete/.test(homeC));
+// ⚠️ THIS ASSERTION USED TO SAY "only while the profile is unfinished", AND THAT WAS THE BUG THE
+// user reported: the moment they completed a profile the only door to the wizard vanished, and
+// rebuilding a resume from fresh notes is something people do repeatedly, not once. It is always
+// reachable now; what changes is the WEIGHT — gradient when there is something left to do, glass
+// when there is not, so it sits beside the carousel instead of shouting over it.
+ok('the wizard is always reachable from Home', /\{!!setup && \(\(\) => \{/.test(homeC));
+ok('…loud when something is missing, quiet when nothing is', /left\.length \? \(/.test(homeC) && /makeGhost/.test(homeC));
+ok('…and it says what the user asked it to say', /'Make your Resume'/.test(homeC));
 ok('…reading completeness from the SERVER, not a third local rule', /loaders\?\.setup \|\| /.test(homeC) && /fetchProfileSnapshot/.test(homeC));
 ok('…and it routes rather than generating', /nav\(\)\?\.push\?\.\('\/\(onboarding\)'\)/.test(homeC));
 ok('⚠️ no autoBuild anywhere near it', !/makeWrap[\s\S]{0,400}autoBuild/.test(homeC));

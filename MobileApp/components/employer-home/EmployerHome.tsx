@@ -486,7 +486,7 @@ export default function EmployerHome({
               a CTA that has to be seen "right below the slider" cannot live down there.
               It shows only while the profile is unfinished, which is also the only time the
               library below is empty, so the two never compete for the same space. */}
-          {setup && !setup.complete && (() => {
+          {!!setup && (() => {
             // ⚠️ NAME WHAT IS ACTUALLY LEFT. `setup` carries four real booleans from the server, so
             // saying "Make yours" to someone who finished two steps last week tells them their work
             // is gone. In wizard order, so the sentence matches the screens they will see.
@@ -495,35 +495,49 @@ export default function EmployerHome({
               [setup.signature, 'your signature'], [setup.resume, 'your experience'],
             ] as Array<[boolean, string]>).filter(([done]) => !done).map(([, n]) => n);
             const started = setup.profile || setup.photo || setup.signature || setup.resume;
+            // ⚠️ THE WIZARD IS THE ONLY WAY IN, SO IT IS ALWAYS REACHABLE.
+            // Gating it on an unfinished profile meant that the moment someone completed one, the
+            // door disappeared — and rebuilding a resume from fresh notes is a thing people want to
+            // do repeatedly, not once. So it is always here; what changes is the weight. Unfinished
+            // gets the gradient, because it is the most useful thing on the screen. Finished gets
+            // glass, so it sits beside the carousel instead of shouting over it.
             const sub = !started
               ? 'A few details and we will build your real resume into every design above.'
-              : left.length === 1
-                ? `One thing left — ${left[0]}.`
-                : `${left.length} things left — ${left.slice(0, -1).join(', ')} and ${left[left.length - 1]}.`;
+              : left.length === 0
+                ? 'New notes, a fresh resume — into every design above.'
+                : left.length === 1
+                  ? `One thing left — ${left[0]}.`
+                  : `${left.length} things left — ${left.slice(0, -1).join(', ')} and ${left[left.length - 1]}.`;
+            // "Make your Resume" names the DESTINATION — the wizard that makes one — not a claim
+            // that you have not got one. Someone mid-way gets the more useful sentence instead.
+            const label = left.length && started ? 'Pick up where you left off' : 'Make your Resume';
+            const go = () => {
+              try { Haptics.selectionAsync(); } catch {}
+              track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join('') });
+              nav()?.push?.('/(onboarding)');
+            };
             return (
               <>
-                <TouchableOpacity
-                  style={s.makeWrap}
-                  activeOpacity={0.9}
-                  onPress={() => {
-                    try { Haptics.selectionAsync(); } catch {}
-                    track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join('') });
-                    nav()?.push?.('/(onboarding)');
-                  }}
-                >
-                  <LinearGradient
-                    colors={[E.blue, E.purple, E.purpleLite]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={s.makeBtn}
-                  >
-                    <Ionicons name="sparkles" size={16} color="#fff" />
-                    <Text style={s.makeTx} numberOfLines={1}>
-                      {started ? 'Pick up where you left off' : 'Make yours'}
-                    </Text>
-                    <Ionicons name="arrow-forward" size={15} color="rgba(255,255,255,0.9)" />
-                  </LinearGradient>
-                </TouchableOpacity>
+                {left.length ? (
+                  <TouchableOpacity style={s.makeWrap} activeOpacity={0.9} onPress={go}>
+                    <LinearGradient
+                      colors={[E.blue, E.purple, E.purpleLite]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={s.makeBtn}
+                    >
+                      <Ionicons name="sparkles" size={16} color="#fff" />
+                      <Text style={s.makeTx} numberOfLines={1}>{label}</Text>
+                      <Ionicons name="arrow-forward" size={15} color="rgba(255,255,255,0.9)" />
+                    </LinearGradient>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={s.makeGhost} activeOpacity={0.85} onPress={go}>
+                    <Ionicons name="sparkles-outline" size={15} color="#fff" />
+                    <Text style={s.makeGhostTx} numberOfLines={1}>{label}</Text>
+                    <Ionicons name="arrow-forward" size={14} color="rgba(255,255,255,0.55)" />
+                  </TouchableOpacity>
+                )}
                 <Text style={s.makeSub} numberOfLines={2}>{sub}</Text>
               </>
             );
@@ -888,6 +902,13 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
   },
   makeTx: { fontSize: 15.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
+  makeGhost: {
+    marginTop: 14, marginHorizontal: 16, height: 48, borderRadius: 15,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder,
+  },
+  makeGhostTx: { fontSize: 14.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
+
   makeSub: {
     marginTop: 9, marginHorizontal: 22, fontSize: 12, fontWeight: '600',
     color: E.onDark, textAlign: 'center', lineHeight: 17, flexShrink: 1,
