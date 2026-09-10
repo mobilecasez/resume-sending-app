@@ -50,9 +50,9 @@ import { E } from './theme';
 import { gradFor, DownloadHistoryItem } from '../../services/employerHomeService';
 
 /** 48 x 68 is the renderer's own A4 ratio (68 * 300/424 = 48.1). */
-const CHIP_W = 48;
-const CHIP_H = 68;
-const ROW_H = 90;
+const CHIP_W = 50;
+const CHIP_H = 70;
+const ROW_H = 94;
 
 /**
  * Home is a hero surface, not a list screen — but three was too mean. Someone with five downloads
@@ -106,8 +106,8 @@ function Facets({
   // gradient they have to carry the whole card, so the colour goes up and every WHITE face comes
   // DOWN — a 0.50 sheen that looked like light on a white card is a grey patch on a dark one, and
   // it takes the text's contrast with it.
-  const a0 = dim ? 0.17 : (warm ? 0.24 : 0.32);
-  const a1 = dim ? 0.06 : 0.10;
+  const a0 = dim ? 0.20 : (warm ? 0.30 : 0.40);
+  const a1 = dim ? 0.07 : 0.13;
   return (
     <>
       <View style={s.wash} pointerEvents="none">
@@ -293,9 +293,6 @@ function Row({
                     ) : (
                       <Letterpress accent={accent} letter={item.kind === 'cover_letter'} />
                     )}
-                    <View style={[s.stamp, item.format === 'docx' ? s.stampDoc : s.stampPdf]}>
-                      <Text style={s.stampTx} allowFontScaling={false}>{item.format === 'docx' ? 'WORD' : 'PDF'}</Text>
-                    </View>
                   </View>
                   <LinearGradient colors={pair} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.badge}>
                     <Text style={s.badgeTx} allowFontScaling={false}>
@@ -326,14 +323,23 @@ function Row({
                     <Text style={s.times} allowFontScaling={false}>{item.times} times</Text>
                   ) : null}
                 </View>
-                <Text style={s.when} numberOfLines={1} allowFontScaling={false}>{stamp(item.downloadedAt)}</Text>
+                <View style={s.l3}>
+                  {/* ⚠️ OFF THE PAPER. A black chip sat on the corner of a 50pt thumbnail, which at
+                      that size is a blot on the one thing in the row that is meant to look like a
+                      document. It belongs with the rest of the file's description. */}
+                  <Text style={[s.fmt, item.format === 'docx' && s.fmtDoc]} allowFontScaling={false}>
+                    {item.format === 'docx' ? 'WORD' : 'PDF'}
+                  </Text>
+                  <View style={s.capDot} />
+                  <Text style={s.when} numberOfLines={1} allowFontScaling={false}>{stamp(item.downloadedAt)}</Text>
+                </View>
               </View>
 
               {/* ── the action, same geometry in every state so nothing shifts ── */}
               <View style={[s.act, free ? s.actFree : s.actLocked]}>
-                {busy ? <ActivityIndicator size="small" color="#fff" />
+                {busy ? <ActivityIndicator size="small" color={E.mint} />
                   : justDone ? <Ionicons name="checkmark" size={17} color={E.mint} />
-                  : free ? <Ionicons name="arrow-down" size={17} color="#fff" />
+                  : free ? <Ionicons name="arrow-down" size={17} color={E.mint} />
                   : <Ionicons name="lock-closed" size={14} color="rgba(255,255,255,0.42)" />}
               </View>
             </View>
@@ -609,30 +615,35 @@ const s = StyleSheet.create({
   seeAll: { flexDirection: 'row', alignItems: 'center', paddingBottom: 3 },
   seeAllTx: { fontSize: 12.5, fontWeight: '700', color: LINK, flexShrink: 1 },
 
-  list: { gap: 10 },
+  list: { gap: 11 },
 
   // ⚠️ Shadow and clipping never share a view: iOS drops a shadow drawn on an overflow:'hidden'
   // view. The fill is now TRANSLUCENT, so the page gradient shows through the card — that is what
   // makes it read as glass laid on the page rather than a white tile dropped on it. It is still
   // opaque enough that a row is a card even if every gradient below fails to draw.
+  // ⚠️ DARKER THAN THE PAGE, NOT LIGHTER. A white tint over a blue gradient is a milky grey-blue —
+  // the card and the ground meet in the middle, white text loses its contrast, and the whole list
+  // reads as fog. Glass on a dark ground works the other way round: the pane is DEEPER than what is
+  // behind it, and it is the lit rim that describes its shape. Now the ink is the brightest thing
+  // on the row, which is what it should be.
   shell: {
-    height: ROW_H, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.055)',
-    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.12)',
-    shadowColor: '#01030A', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.35, shadowRadius: 18,
-    elevation: 3,
+    height: ROW_H, borderRadius: 20, backgroundColor: 'rgba(6,11,30,0.46)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.10)',
+    shadowColor: '#01030A', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.45, shadowRadius: 20,
+    elevation: 4,
   },
   // 19 and not 20: absolute children position against the padding box, so matching radii leave a
   // sub-pixel seam of shell colour at each corner.
   clip: { ...StyleSheet.absoluteFillObject, borderRadius: 19, overflow: 'hidden' },
   content: { flex: 1, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 12 },
 
-  wash: { position: 'absolute', left: 0, top: 0, bottom: 0, width: '42%' },
+  wash: { position: 'absolute', left: 0, top: 0, bottom: 0, width: '58%' },
   refract: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 26 },
   rim: { position: 'absolute', top: 0, left: '-20%', width: '140%', height: 1.5 },
   falloff: { position: 'absolute', top: 1.5, left: 0, right: 0, height: 16 },
   shade: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 22 },
   returnLight: { position: 'absolute', bottom: 0, left: 10, right: 10, height: 1, backgroundColor: 'rgba(255,255,255,0.60)' },
-  innerRim: { ...StyleSheet.absoluteFillObject, borderRadius: 19, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+  innerRim: { ...StyleSheet.absoluteFillObject, borderRadius: 19, borderWidth: 1, borderColor: 'rgba(255,255,255,0.13)' },
 
   chipWrap: { width: CHIP_W, height: CHIP_H },
   shim: {
@@ -642,10 +653,10 @@ const s = StyleSheet.create({
   shim1: { opacity: 0.62, transform: [{ rotate: '-4deg' }, { translateX: -3 }] },
   shim2: { opacity: 0.40, transform: [{ rotate: '-7.5deg' }, { translateX: -5.5 }, { translateY: 2 }] },
   chipLift: {
-    width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: '#fff',
-    shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.16, shadowRadius: 7, elevation: 3,
+    width: CHIP_W, height: CHIP_H, borderRadius: 7, backgroundColor: '#fff',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 4,
   },
-  chipClip: { width: CHIP_W, height: CHIP_H, borderRadius: 6, overflow: 'hidden', backgroundColor: '#fff' },
+  chipClip: { width: CHIP_W, height: CHIP_H, borderRadius: 7, overflow: 'hidden', backgroundColor: '#fff' },
   chipImg: { width: '100%', height: '100%' },
 
   pAccent: { position: 'absolute', left: 0, right: 0, top: 0, height: 4 },
@@ -654,21 +665,16 @@ const s = StyleSheet.create({
   pRule: { height: 2, borderRadius: 1, backgroundColor: 'rgba(11,15,34,0.075)' },
   pRuleAbs: { position: 'absolute', left: 6, right: 6 },
 
-  stamp: { position: 'absolute', right: 3, bottom: 3, height: 13, paddingHorizontal: 4, borderRadius: 4, alignItems: 'center', justifyContent: 'center' },
-  stampPdf: { backgroundColor: 'rgba(11,15,34,0.72)' },
-  stampDoc: { backgroundColor: 'rgba(37,99,235,0.90)' },
-  stampTx: { fontSize: 7.5, fontWeight: '800', letterSpacing: 0.6, color: '#fff' },
-
   // A sibling of the clip so it can bleed outside it — the same badge the hero uses, at 82%.
   badge: {
-    position: 'absolute', left: -5, bottom: -5, width: 18, height: 18, borderRadius: 6,
-    alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#fff',
+    position: 'absolute', left: -6, bottom: -6, width: 21, height: 21, borderRadius: 7,
+    alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(9,14,32,0.9)',
   },
-  badgeTx: { fontSize: 9, fontWeight: '800', color: '#fff' },
+  badgeTx: { fontSize: 10, fontWeight: '800', color: '#fff' },
 
   mid: { flex: 1, minWidth: 0 },
   // Never dimmed on a locked row: greying the name is what makes people believe their work is gone.
-  who: { fontSize: 14, fontWeight: '800', color: '#fff', letterSpacing: -0.3, flexShrink: 1 },
+  who: { fontSize: 14.5, fontWeight: '800', color: '#fff', letterSpacing: -0.3, flexShrink: 1 },
   l2: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
   what: { fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.64)', flexShrink: 1 },
   capDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.28)' },
@@ -681,15 +687,20 @@ const s = StyleSheet.create({
   planPillTx: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4, color: '#FCD34D' },
   // The hero's caption metric, recoloured. The type scale crossing the dark/light boundary is the
   // clearest tell that the two halves of this screen are one design.
-  when: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.42)', marginTop: 5, flexShrink: 1 },
+  l3: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 6 },
+  fmt: { fontSize: 9.5, fontWeight: '800', letterSpacing: 1, color: 'rgba(255,255,255,0.5)' },
+  fmtDoc: { color: '#9DBEFF' },
+  when: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.42)', flexShrink: 1 },
 
-  act: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderWidth: 1 },
-  actFree: { backgroundColor: 'rgba(255,255,255,0.15)', borderColor: 'rgba(255,255,255,0.24)' },
-  actLocked: { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.10)' },
+  act: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderWidth: 1 },
+  // The same mint that says "do this" everywhere else on the screen, so the one control on a row
+  // is findable at a glance instead of being another pale circle.
+  actFree: { backgroundColor: 'rgba(45,224,192,0.16)', borderColor: 'rgba(45,224,192,0.38)' },
+  actLocked: { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.09)' },
 
   skPaper: { width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.09)' },
   skBar: { backgroundColor: 'rgba(255,255,255,0.09)' },
-  skAct: { width: 34, height: 34, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.07)' },
+  skAct: { width: 36, height: 36, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.07)' },
   glare: { position: 'absolute', top: 0, bottom: 0, width: 160 },
 
   emptyShell: { height: 150 },

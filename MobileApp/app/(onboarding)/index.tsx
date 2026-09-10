@@ -370,7 +370,7 @@ export default function MakeYours() {
           to itself and a pinned footer never reaches the bottom of the screen. As a sibling it
           needs no change to a shipped hero component — and its three washes keep drifting through
           the whole flow, on the same native driver everything here uses. */}
-      <MeshStage style={StyleSheet.absoluteFill}><View /></MeshStage>
+      <MeshStage style={StyleSheet.absoluteFill} focus={0.78} lift={0.35}><View /></MeshStage>
 
       {/* insets.top + 52 is Home's own header height, so the chrome on both screens sits on
           exactly one line and the crossfade between them does not jump. */}
@@ -900,12 +900,15 @@ const s = StyleSheet.create({
   lede: { fontFamily: SERIF, fontStyle: 'italic', fontSize: 16, color: 'rgba(255,255,255,0.66)', marginTop: 8, lineHeight: 22 },
 
   /* the details card */
+  // ⚠️ DARKER THAN THE PAGE, NOT LIGHTER — the same lesson as the download cards. A white tint on
+  // a blue ground is a milky panel that reads as a second background pasted onto the screen; a
+  // deeper pane with a lit rim reads as glass, and the white type on it gets its contrast back.
   card: {
     marginTop: 18, borderRadius: 18, overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.055)', borderWidth: 1, borderColor: E.glassBorder,
+    backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
   },
   row: { height: 54, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, gap: 10 },
-  rowOn: { backgroundColor: 'rgba(94,234,212,0.07)' },
+  rowOn: { backgroundColor: 'rgba(94,234,212,0.09)' },
   rowLabel: { width: 74, fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.5)' },
   rowLabelOn: { color: 'rgba(255,255,255,0.78)' },
   rowValue: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
@@ -955,7 +958,7 @@ const s = StyleSheet.create({
   /* photo + signature */
   photoRow: {
     marginTop: 18, flexDirection: 'row', alignItems: 'center', gap: 14, padding: 13, borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.055)', borderWidth: 1, borderColor: E.glassBorder,
+    backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
   },
   photo: { width: 62, height: 62, borderRadius: 31, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.22)' },
   photoEmpty: {
@@ -998,14 +1001,14 @@ const s = StyleSheet.create({
   area: {
     marginTop: 12, minHeight: 178, borderRadius: 16, padding: 15, fontSize: 15, lineHeight: 22,
     fontWeight: '500', color: '#fff',
-    backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder,
+    backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
   },
   areaShort: { minHeight: 104 },
   count: { marginTop: 8, fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.42)', textAlign: 'right', flexShrink: 1 },
 
   drop: {
     marginTop: 14, paddingVertical: 24, paddingHorizontal: 18, borderRadius: 18, alignItems: 'center', gap: 7,
-    backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1.5, borderColor: E.glassBorder, borderStyle: 'dashed',
+    backgroundColor: 'rgba(6,11,30,0.34)', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.18)', borderStyle: 'dashed',
   },
   dropTx: { fontSize: 15, fontWeight: '800', color: '#fff', flexShrink: 1 },
   dropSub: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.45)', textAlign: 'center', flexShrink: 1 },

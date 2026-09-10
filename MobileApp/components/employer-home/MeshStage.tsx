@@ -43,7 +43,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { E } from './theme';
 
 /** The foot of the page: the same navy, opened up. Painted from zero alpha of ITSELF. */
-const LIFT = '46,72,140';
+const LIFT = '34,55,110';
 const lift = (a: number) => `rgba(${LIFT},${a})`;
 
 // One drifting wash.
@@ -84,7 +84,7 @@ function Wash({ colors, locations, start, end, dur, dx, dy, delay = 0 }: {
 }
 
 export default function MeshStage({
-  children, style, focus = 1, rows = 40,
+  children, style, focus = 1, rows = 40, lift: liftScale = 1,
 }: {
   children?: React.ReactNode;
   style?: any;
@@ -100,8 +100,16 @@ export default function MeshStage({
    * avoid. Callers pass ceil(height / 30).
    */
   rows?: number;
+  /**
+   * How much of the foot-of-page opening to apply, 0-1. A scrolling page wants the full amount —
+   * it is what stops a long list ending in a black hole. A single screen that is mostly a FORM
+   * wants very little: the lift lands halfway up a viewport-tall surface and washes out the panel
+   * sitting on it.
+   */
+  lift?: number;
 }) {
   const f = Math.max(0.12, Math.min(1, focus));
+  const L = Math.max(0, Math.min(1, liftScale));
   return (
     <View style={[s.stage, style]}>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -110,22 +118,22 @@ export default function MeshStage({
             and no third hue anywhere along the page. It starts below the colour, so the hero keeps
             the near-black it has always had and the opening happens under the list. */}
         <LinearGradient
-          colors={[lift(0), lift(0.30), lift(0.68), lift(1)]}
-          locations={[0.62 * f, 0.62 * f + (1 - 0.62 * f) * 0.38, 0.62 * f + (1 - 0.62 * f) * 0.74, 1]}
+          colors={[lift(0), lift(0.28 * L), lift(0.66 * L), lift(0.96 * L)]}
+          locations={[0.78 * f, 0.78 * f + (1 - 0.78 * f) * 0.38, 0.78 * f + (1 - 0.78 * f) * 0.74, 1]}
           start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
         {/* blue, leaning in from the upper left — held clear of the very top so the pinned header
             has flat dark under it */}
-        <Wash colors={['rgba(79,141,255,0.80)', 'rgba(79,141,255,0.26)', 'rgba(79,141,255,0)']}
-              locations={[0.06, 0.36 * f, 0.88 * f]}
+        <Wash colors={['rgba(79,141,255,0.62)', 'rgba(79,141,255,0.15)', 'rgba(79,141,255,0)']}
+              locations={[0.10, 0.40 * f, 0.92 * f]}
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} dur={9000} dx={16} dy={-12} />
         {/* violet, leaning the other way, arriving late — a BAND, so it cannot flood the page below */}
-        <Wash colors={['rgba(124,107,255,0)', 'rgba(124,107,255,0.62)', 'rgba(124,107,255,0)']}
+        <Wash colors={['rgba(124,107,255,0)', 'rgba(124,107,255,0.44)', 'rgba(124,107,255,0)']}
               locations={[0.1 * f, 0.55 * f, 0.98 * f]}
               start={{ x: 1, y: 0 }} end={{ x: 0, y: 1 }} dur={11000} dx={-18} dy={14} delay={400} />
         {/* teal, lower half of the hero, the smallest of the three */}
-        <Wash colors={['rgba(20,184,166,0)', 'rgba(20,184,166,0.44)', 'rgba(20,184,166,0)']}
+        <Wash colors={['rgba(20,184,166,0)', 'rgba(20,184,166,0.30)', 'rgba(20,184,166,0)']}
               locations={[0.3 * f, 0.74 * f, 1.0 * f]}
               start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} dur={13000} dx={12} dy={-10} delay={900} />
         {/* a faint grid, held well inside the edges so it never reads as a box */}
@@ -133,9 +141,13 @@ export default function MeshStage({
           {Array.from({ length: Math.max(8, Math.ceil(rows)) }).map((_, i) => <View key={'h' + i} style={[s.gline, { top: i * 30 }]} />)}
           {Array.from({ length: 14 }).map((_, i) => <View key={'v' + i} style={[s.gline, s.gvert, { left: i * 30 }]} />)}
         </View>
-        {/* Keep the very top flat: the washes are already held clear, this settles any bleed. */}
-        <LinearGradient colors={['rgba(7,10,24,0.92)', 'rgba(7,10,24,0)']}
-                        locations={[0, 0.13 * f]}
+        {/* ⚠️ THE TOP IS DELIBERATELY NEAR-BLACK, AND IT CARRIES FURTHER DOWN THAN IT LOOKS.
+            Every wash axis now runs the whole page, so each one is at its strongest from the very
+            first pixel — the screen went pale blue under the status bar, which is the opposite of
+            the dark head this design has always had. This holds the first fifth back to the base
+            colour, and the pinned header still gets a flat, stable band to sit on. */}
+        <LinearGradient colors={['rgba(7,10,24,0.96)', 'rgba(7,10,24,0.55)', 'rgba(7,10,24,0)']}
+                        locations={[0, 0.09 * f, 0.34 * f]}
                         start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
                         style={StyleSheet.absoluteFill} />
       </View>

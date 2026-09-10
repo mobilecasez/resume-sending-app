@@ -180,7 +180,15 @@ ok('each glow stops before the far edge, so they stay three glows and not one fl
 ok('the carousel centres AND sizes from a MEASURED width, not module-load Dimensions',
   /onLayout=\{\(e\) => setWidth/.test(carousel) && /cardWidthFor\(width\)/.test(carousel)
   && !/Dimensions/.test(strip(carousel)));   // strip(): the rule is explained in a comment that names it
-ok('the reflection is a sliver, not a grey bar', /height: 6, marginTop: 7/.test(carousel));
+// ⚠️ RETARGETED, AND THE OLD VERSION WAS THE BUG WRITTEN DOWN. "A sliver, not a grey bar" still
+// described a SOLID 6pt block of flat blue spanning the card width, directly above the page
+// counter — which on a screen whose whole point is that it has no seams was the most visible line
+// left on it ("a clear separation line is visible right above those dots"). A reflection has no
+// ends: this one starts and finishes at zero alpha and is inset well inside the paper.
+ok('the reflection has no ends and no fill, so it cannot read as a rule',
+  /reflect: \{ height: 4, marginTop: 9, marginHorizontal: 76/.test(carousel)
+  && !/reflect[\s\S]{0,120}backgroundColor/.test(carousel)
+  && /rgba\(79,141,255,0\)', 'rgba\(140,180,255,0\.30\)', 'rgba\(79,141,255,0\)/.test(carousel));
 ok('the glare is a gradient, not a hard white block', /transparent', 'rgba\(255,255,255,0\.42\)', 'transparent/.test(carousel));
 // ⚠️ RETARGETED, NOT DELETED. The grid these two guarded is gone — it re-showed the carousel's own
 // resume pages under a company badge, which is the duplication the user reported. The rules they
@@ -250,7 +258,11 @@ ok('the real logo asset is used, tinted to read on the hero',
 ok('the header sits OUTSIDE the scroll view', /<\/Animated\.ScrollView>[\s\S]{0,400}headerWrap/.test(homeC));
 ok('its backdrop is transparent at rest, so it cannot read as a second background',
   /scrollY\.interpolate\(\{ inputRange: \[0, 64\], outputRange: \[0, 1\]/.test(homeC));
-ok('the stage keeps its top band flat for the header to sit on', /rgba\(7,10,24,0\.92\)', 'rgba\(7,10,24,0\)'/.test(meshC));
+// ⚠️ Every wash axis runs the whole page now, so each is at full strength from the first pixel —
+// the screen went pale blue under the status bar, which is the opposite of the dark head this
+// design has always had. This holds the first fifth back to the base colour.
+ok('the stage keeps its top band dark and flat for the header to sit on',
+  /rgba\(7,10,24,0\.96\)', 'rgba\(7,10,24,0\.55\)', 'rgba\(7,10,24,0\)'/.test(meshC));
 
 console.log('── the whole page is one gradient ──');
 // ⚠️ RETARGETED TWICE, AND THE RULE GOT SIMPLER EACH TIME. First the stage outran the viewport by
@@ -503,7 +515,7 @@ ok('every wash tail is a ZERO-ALPHA version of its own colour, so it cannot floo
 // shortened to `0.64 * focus` therefore paints one thing on a phone and another in the preview
 // harness — the one tool that exists to show what the phone will do.
 ok('⚠️ `focus` moves the STOPS; it never shortens an axis',
-  !/end=\{\{ x: [^}]*\* f \}\}/.test(meshC) && /locations=\{\[0\.06, 0\.36 \* f, 0\.88 \* f\]\}/.test(meshC));
+  !/end=\{\{ x: [^}]*\* f \}\}/.test(meshC) && /locations=\{\[0\.10, 0\.40 \* f, 0\.92 \* f\]\}/.test(meshC));
 ok('…and every axis runs corner to corner or straight down, where CSS and native agree',
   /start=\{\{ x: 0, y: 0 \}\} end=\{\{ x: 1, y: 1 \}\}/.test(meshC)
   && /start=\{\{ x: 1, y: 0 \}\} end=\{\{ x: 0, y: 1 \}\}/.test(meshC));
@@ -512,8 +524,17 @@ ok('…and every axis runs corner to corner or straight down, where CSS and nati
 ok('the grid is told how tall the page is', /rows\?: number/.test(meshC) && /Math\.ceil\(stageH \/ 30\)/.test(homeC));
 
 console.log('── the library is glass ON that page, not a white tile dropped on it ──');
-ok('the card fill is translucent, so the gradient shows through it',
-  /backgroundColor: 'rgba\(255,255,255,0\.055\)'/.test(histC));
+// ⚠️ DARKER THAN THE PAGE, NOT LIGHTER. A white tint over a blue gradient is a milky grey-blue:
+// card and ground meet in the middle, white text loses its contrast, and the list reads as fog.
+// Glass on a dark ground is a pane DEEPER than what is behind it, described by a lit rim.
+ok('the card fill is translucent AND deeper than the page it sits on',
+  /backgroundColor: 'rgba\(6,11,30,0\.46\)'/.test(histC)
+  && /borderColor: 'rgba\(255,255,255,0\.10\)'/.test(histC));
+ok('…and the wizard\'s panels learned the same thing', /backgroundColor: 'rgba\(6,11,30,0\.42\)'/.test(wiz));
+ok('the format moved off the 50pt thumbnail and into the line that describes the file',
+  /fmt: \{ fontSize: 9\.5/.test(histC) && !/stampPdf/.test(histC));
+ok('a row\'s one control wears the accent, so it is findable',
+  /rgba\(45,224,192,0\.16\)/.test(histC) && /color=\{E\.mint\}/.test(histC));
 ok('⚠️ and no light-theme ink survived the move',
   !/E\.ink/.test(histC) && !/E\.textMuted/.test(histC) && !/E\.textFaint/.test(histC) && !/E\.surface/.test(histC));
 ok('…including the dashboard link, which was the last white thing on the screen',

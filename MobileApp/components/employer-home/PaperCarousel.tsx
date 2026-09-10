@@ -16,7 +16,7 @@
 // pager from a module-load window width and the first page sat flush against the left edge on a
 // real device. Everything here derives from the container's own onLayout width.
 import React, { useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Animated, Platform, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, Animated, TouchableOpacity } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -97,8 +97,18 @@ function Card({ card, i, scrollX, ribbon, m, onOpen }: {
           </View>
         </View>
       </TouchableOpacity>
-      {/* the glow the card sits on */}
-      <Animated.View style={[s.reflect, { opacity: clamp([0.3, 1, 0.3]) }]} />
+      {/* ⚠️ THIS WAS A SOLID BAR AND IT READ AS A RULE ACROSS THE SCREEN. A 6pt block of flat blue
+          spanning the card width, sitting directly above the page counter, is a horizontal LINE —
+          which on a screen whose whole point is that it has no seams was the most visible edge left
+          on it. A reflection has no ends: this one fades to nothing at both, and it is dimmer and
+          narrower than the card so it can never trace its edge. */}
+      <Animated.View style={[s.reflect, { opacity: clamp([0.22, 0.75, 0.22]) }]} pointerEvents="none">
+        <LinearGradient
+          colors={['rgba(79,141,255,0)', 'rgba(140,180,255,0.30)', 'rgba(79,141,255,0)']}
+          start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -223,11 +233,9 @@ const s = StyleSheet.create({
   ribbonTx: { fontSize: 8.5, fontWeight: '800', color: '#fff', letterSpacing: 0.5, textTransform: 'uppercase' },
   // ⚠️ NOT a blur — React Native has none. A thin tinted sliver directly under the page, which
   // reads as the light it sits in. A taller/darker block read as a grey bar (b202 preview).
-  reflect: {
-    height: 6, marginTop: 7, marginHorizontal: 30, borderRadius: 3,
-    backgroundColor: 'rgba(79,141,255,0.22)',
-    ...Platform.select({ ios: { shadowColor: E.blue, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.5, shadowRadius: 10 }, default: {} }),
-  },
+  // No fill and no shadow: both gave it hard ends. It is a gradient that starts and finishes at
+  // zero alpha, inset well inside the card so it cannot line up with the paper's edge.
+  reflect: { height: 4, marginTop: 9, marginHorizontal: 76, borderRadius: 2, overflow: 'hidden' },
   dots: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 5, marginTop: 10 },
   dot: { width: 6, height: 6, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.28)' },
   dotOn: { width: 20, backgroundColor: '#fff' },

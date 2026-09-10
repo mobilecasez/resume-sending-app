@@ -535,7 +535,7 @@ export default function SignatureStudio({
               disabled={!drawn || busy}
               onPress={() => { setSmooth(false); send('window.__smooth(0)'); send('window.__clear()'); }}
             >
-              <Ionicons name="refresh" size={15} color={drawn ? E.textMuted : E.textFaint} />
+              <Ionicons name="refresh" size={15} color={drawn ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.32)'} />
               <Text style={[s.toolTx, !drawn && s.toolOff]}>Clear</Text>
             </TouchableOpacity>
             {/* ⚠️ A TOGGLE, NOT A ONE-WAY BUTTON. The points are kept, so this re-renders the same
@@ -547,13 +547,13 @@ export default function SignatureStudio({
               onPress={() => { const v = !smooth; setSmooth(v); send(`window.__smooth(${v ? 1 : 0})`); }}
             >
               <Ionicons name={smooth ? 'sparkles' : 'sparkles-outline'} size={15}
-                        color={!drawn ? E.textFaint : smooth ? E.blueDeep : E.textMuted} />
+                        color={!drawn ? 'rgba(255,255,255,0.32)' : smooth ? E.mint : 'rgba(255,255,255,0.72)'} />
               <Text style={[s.toolTx, smooth && s.toolTxOn, !drawn && s.toolOff]}>Enhance</Text>
             </TouchableOpacity>
           </>
         ) : (
           <View style={s.pickHint}>
-            <Ionicons name="hand-left-outline" size={14} color={E.textFaint} />
+            <Ionicons name="hand-left-outline" size={14} color="rgba(255,255,255,0.45)" />
             <Text style={s.pickHintTx} numberOfLines={1}>
               {styles.length > 1 ? `Tap a hand · ${styles.length} on this device` : 'Tap a hand'}
             </Text>
@@ -567,8 +567,8 @@ export default function SignatureStudio({
           onPress={() => { setBusy(true); send('window.__export()'); }}
         >
           {busy
-            ? <ActivityIndicator size="small" color="#fff" />
-            : <><Ionicons name="checkmark" size={16} color="#fff" /><Text style={s.saveTx}>Use this</Text></>}
+            ? <ActivityIndicator size="small" color="#04211C" />
+            : <><Ionicons name="checkmark" size={16} color={canSave ? '#04211C' : 'rgba(255,255,255,0.4)'} /><Text style={[s.saveTx, !canSave && s.saveTxOff]}>Use this</Text></>}
         </TouchableOpacity>
       </View>
 
@@ -613,29 +613,34 @@ const s = StyleSheet.create({
   baseline: { position: 'absolute', left: 26, right: 26, bottom: 52, height: 1, backgroundColor: 'rgba(11,15,34,0.12)' },
   hint: { fontSize: 12.5, fontWeight: '600', color: E.textFaint, flexShrink: 1 },
 
+  // ⚠️ THE TOOLS BELONG TO THE PAGE, NOT TO THE PAD. Light chips under a white pad ran the two
+  // together into one pale block that read as a separate section pasted onto a dark screen. They
+  // are glass on the page now, and the one that commits is the same mint as every other primary
+  // action in this flow.
   tools: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   tool: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     height: 46, paddingHorizontal: 14, borderRadius: 14,
-    backgroundColor: E.inputBg, borderWidth: 1, borderColor: E.border,
+    backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
   },
-  toolOn: { backgroundColor: 'rgba(37,99,235,0.12)', borderColor: 'rgba(37,99,235,0.28)' },
-  toolTx: { fontSize: 13, fontWeight: '700', color: E.textMuted, flexShrink: 1 },
-  toolTxOn: { color: E.blueDeep },
-  toolOff: { color: E.textFaint },
+  toolOn: { backgroundColor: 'rgba(45,224,192,0.16)', borderColor: 'rgba(45,224,192,0.38)' },
+  toolTx: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.72)', flexShrink: 1 },
+  toolTxOn: { color: E.mint },
+  toolOff: { color: 'rgba(255,255,255,0.32)' },
 
   pickHint: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, height: 46, paddingHorizontal: 12,
-    borderRadius: 14, backgroundColor: E.inputBg, borderWidth: 1, borderColor: E.border,
+    borderRadius: 14, backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
   },
-  pickHintTx: { fontSize: 12, fontWeight: '700', color: E.textFaint, flexShrink: 1 },
+  pickHintTx: { fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.45)', flexShrink: 1 },
 
   save: {
-    flex: 1, height: 46, borderRadius: 14, backgroundColor: E.blueDeep,
+    flex: 1, height: 46, borderRadius: 14, backgroundColor: '#2DE0C0',
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
   },
-  saveOff: { backgroundColor: '#C3CEDF' },
-  saveTx: { fontSize: 14.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
+  saveOff: { backgroundColor: 'rgba(255,255,255,0.09)' },
+  saveTx: { fontSize: 14.5, fontWeight: '800', color: '#04211C', flexShrink: 1 },
+  saveTxOff: { color: 'rgba(255,255,255,0.4)' },
 
   have: { fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.45)', textAlign: 'center', flexShrink: 1 },
 });
