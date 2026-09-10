@@ -184,5 +184,5 @@ const LETTER_HISTORY: DownloadHistoryItem[] = [
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: E.stage },
-  fill: { flex: 1, backgroundColor: E.bg },
+  fill: { flex: 1, backgroundColor: E.stage },
 });

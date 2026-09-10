@@ -81,9 +81,11 @@ export default function EmployerHome({
   // painted in the app's LIGHT background and sits as a grey strip above the near-black hero.
   const insets = useSafeAreaInsets();
   const [rootH, setRootH] = useState(0);
-  // What the hero actually PUTS on the stage. The stage is sized from this, not from a
-  // multiple of the viewport — see MELT below.
+  // What the hero puts on the stage, and what the WHOLE page does. The backdrop is one gradient
+  // over all of it now, and it needs both: the page height to know how far it runs, the hero height
+  // to know where the colour should resolve. See `focus` in MeshStage.
   const [heroH, setHeroH] = useState(0);
+  const [pageH, setPageH] = useState(0);
   const [zoom, setZoom] = useState<{ i: number; rect: OriginRect } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const regionHint = useCallback((c: string) => bestDesignForCountry(c)?.name || null, []);
@@ -344,35 +346,37 @@ export default function EmployerHome({
 
   const headerH = insets.top + 52;
   /**
-   * ⚠️ THE STAGE IS AS TALL AS WHAT IS ON IT, PLUS THE MELT. IT IS NOT A MULTIPLE OF THE VIEWPORT.
-   * It used to be `rootH * 1.18`, which on a normal phone left about 150pt of empty gradient
-   * between the last thing in the hero and the first row of the library, and then melted across
-   * another 170 — a third of a screen of nothing, which is what "there is a lot of empty gap" was
-   * describing. Now the hero measures itself and the gradient ends where its content does.
-   * The viewport floor stays: the first screenful must still be unbroken gradient, so a short hero
-   * (letter mode) does not leave the light section peeking over the fold.
+   * ⚠️ THERE IS NO SECOND SURFACE ON THIS SCREEN ANY MORE. The stage used to end partway down and
+   * melt into a light section that carried the library; however carefully that melt was tuned, it
+   * was still a place where one surface stopped and another began, and it read as a line. The
+   * backdrop is now ONE gradient over the entire page — dark navy at the top, opening a little
+   * toward the foot — and everything, library included, sits on it.
+   * `focus` keeps the hero looking like the hero: it tells the mesh to resolve its colour inside
+   * the first screenful rather than spreading it over a page three times as tall.
    */
-  const MELT = 92;
-  const stageH = heroH
-    ? Math.max(headerH + heroH + MELT, rootH ? Math.round(rootH * 0.98) : 620)
-    : (rootH ? Math.round(rootH * 1.05) : 900);
-  const fadeFrom = Math.max(0.3, (stageH - MELT) / stageH);
+  const stageH = Math.max(rootH || 700, headerH + pageH);
+  // ⚠️ CAPPED AT 0.82. While the deck is still loading the page is barely taller than the
+  // viewport, so the ratio runs to ~0.95 and the teal wash — which sits at three quarters of
+  // the colour — lands in the middle of the first screen and turns it green for a second.
+  const focus = pageH ? Math.max(0.18, Math.min(0.82, (headerH + heroH) / stageH)) : 0.75;
+  const gridRows = Math.ceil(stageH / 30) + 2;
 
   return (
     <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
       <Animated.ScrollView
         ref={scrollRef}
         style={s.flex}
-        contentContainerStyle={{ paddingBottom: 108 }}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={E.blue} progressViewOffset={headerH} />}
       >
-      {/* ───────────────────────── DARK STAGE ───────────────────────── */}
-      <MeshStage style={{ minHeight: stageH, paddingTop: headerH }} fadeFrom={fadeFrom}>
-        {/* ⚠️ THE MEASURED BLOCK. Everything the hero draws lives inside this one view so its
-            height can size the stage; adding a sibling after it would be invisible to the melt. */}
+      {/* ────────────────── ONE GRADIENT, THE WHOLE PAGE ────────────────── */}
+      <MeshStage style={{ minHeight: stageH, paddingTop: headerH }} focus={focus} rows={gridRows}>
+        {/* ⚠️ EVERYTHING GOES INSIDE, INCLUDING THE TAIL. Anything rendered after </MeshStage>
+            would sit on the root colour, and the root is the near-black the gradient STARTS from —
+            so a sibling below would be a hard step back to dark at the bottom of the page. */}
+        <View onLayout={(e) => setPageH(Math.round(e.nativeEvent.layout.height))}>
         <View onLayout={(e) => setHeroH(Math.round(e.nativeEvent.layout.height))}>
         {/* live pill + edit */}
         <View style={[s.rowBetween, { paddingHorizontal: 16, paddingTop: 14 }]}>
@@ -576,7 +580,6 @@ export default function EmployerHome({
           )}
         </View>
         </View>
-      </MeshStage>
 
       {/* ─────────────────── YOUR LIBRARY ───────────────────
           What used to be here re-showed the SAME resume pages the carousel above was already
@@ -602,10 +605,15 @@ export default function EmployerHome({
 
       {/* the old home, one tap away */}
       <TouchableOpacity style={s.dashLink} activeOpacity={0.8} onPress={onOpenDashboard}>
-        <Ionicons name="grid-outline" size={15} color={E.textMuted} />
+        <Ionicons name="grid-outline" size={15} color="rgba(255,255,255,0.62)" />
         <Text style={s.dashLinkTx} numberOfLines={1}>Open Dashboard</Text>
-        <Ionicons name="chevron-forward" size={14} color={E.textFaint} />
+        <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.34)" />
       </TouchableOpacity>
+
+      {/* The tab bar's worth of room, ON the gradient rather than under it. */}
+      <View style={s.tail} />
+      </View>
+      </MeshStage>
       </Animated.ScrollView>
 
       {/* ── PINNED HEADER ───────────────────────────────────────────────────
@@ -852,7 +860,9 @@ const MAKE_INK = '#04211C';
 
 /* ── styles ─────────────────────────────────────────────────────────────── */
 const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: E.bg },
+  // ⚠️ The SAME colour the gradient starts from. A bounce at the top of the scroll view
+  // exposes this, and any other value would flash a band above the hero.
+  root: { flex: 1, backgroundColor: E.stage },
   flex: { flex: 1 },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   rowCenter: { flexDirection: 'row', alignItems: 'center' },
@@ -969,11 +979,15 @@ const s = StyleSheet.create({
   noResumeBtn: { height: 46, paddingHorizontal: 22, borderRadius: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
   noResumeBtnTx: { fontSize: 14, fontWeight: '800', color: '#fff' },
 
-  // ⚠️ IT OVERLAPS THE MELT ON PURPOSE — this is the join, not a mistake. The section header sits
-  // in the last quarter of the ramp, where the ground is already all but the light colour, so the
-  // list grows out of the hero instead of starting under it after a strip of nothing.
-  library: { marginTop: -24 },
+  // Nothing to overlap any more: there is no seam to hide, only the spacing between two parts of
+  // one page.
+  library: { marginTop: 4 },
+  tail: { height: 108 },
 
-  dashLink: { marginHorizontal: 16, marginTop: 26, height: 46, borderRadius: 14, backgroundColor: E.surface, borderWidth: 1, borderColor: E.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  dashLinkTx: { fontSize: 13, fontWeight: '700', color: E.textMuted },
+  dashLink: {
+    marginHorizontal: 16, marginTop: 24, height: 46, borderRadius: 14,
+    backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+  },
+  dashLinkTx: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.72)' },
 });

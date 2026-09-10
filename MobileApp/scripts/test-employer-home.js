@@ -87,13 +87,16 @@ ok('the boundary falls back to the dashboard, not a dead screen', /getDerivedSta
 ok('…and reports the crash', /home_employer_crash/.test(boundary));
 
 console.log('── the design, as drawn in the mockup ──');
-ok('dark stage #070A18, full-bleed — the rounded bottom is GONE so it can melt into the grey',
-  /stage: '#070A18'/.test(theme) && !/borderBottomLeftRadius/.test(mesh) && /fadeFrom/.test(mesh));
+ok('dark stage #070A18, full-bleed — no radius and no bottom edge, because it IS the page',
+  /stage: '#070A18'/.test(theme) && !/borderBottomLeftRadius/.test(mesh) && /focus\?: number/.test(meshC));
 // ⚠️ b202 drew these as circular Views holding LinearGradients — with no overflow:hidden, each
 // painted a hard-edged SQUARE across the hero. They are full-bleed washes now: every layer
 // covers the whole stage, so there is no edge anywhere to see.
 ok('three drifting colour washes (blue, violet, teal)', (mesh.match(/<Wash/g) || []).length === 3);
-ok('every wash is oversized so its own bounds never enter frame', /left: '-25%', right: '-25%'/.test(mesh));
+// ⚠️ IN POINTS, NOT PER CENT. -25% on a page-tall stage is a 500pt overhang, and every `y`
+// fraction in a wash would then mean something other than the page fraction it is named after.
+ok('every wash is oversized so its own bounds never enter frame, by a fixed 40pt',
+  /left: -40, right: -40, top: -40, bottom: -40/.test(meshC));
 ok('the stage clips to its radius', /overflow: 'hidden',\s+\/\/ ⚠️ load-bearing/.test(mesh));
 ok('the rectangle bug is written down where it happened', /painted as a hard-edged SQUARE/.test(mesh));
 ok('the faint grid is there', /i \* 30/.test(mesh));
@@ -162,7 +165,10 @@ ok('no resume → a build-my-resume state, not an empty carousel', /function NoR
 ok('no targets \u2192 an ADD EMPLOYER prompt', /Add an employer to design your resume around/.test(home));
 ok('loading shows chip skeletons', /chipSkeleton/.test(home));
 ok('pull-to-refresh is wired', /RefreshControl/.test(home));
-ok('bottom padding clears the floating tab bar', /paddingBottom: 108/.test(home));
+// ⚠️ ON the gradient, not under it: as scroll-view padding this was outside the backdrop, and the
+// root colour is the near-black the gradient STARTS from — so the foot of the page stepped back to
+// dark below the last card.
+ok('the tab bar\'s worth of room is a spacer INSIDE the backdrop', /tail: \{ height: 108 \}/.test(homeC));
 
 console.log('── the bugs the first on-screen look caught (b202) ──');
 // Every one of these was invisible to a type-check and obvious in a screenshot.
@@ -244,15 +250,17 @@ ok('the real logo asset is used, tinted to read on the hero',
 ok('the header sits OUTSIDE the scroll view', /<\/Animated\.ScrollView>[\s\S]{0,400}headerWrap/.test(homeC));
 ok('its backdrop is transparent at rest, so it cannot read as a second background',
   /scrollY\.interpolate\(\{ inputRange: \[0, 64\], outputRange: \[0, 1\]/.test(homeC));
-ok('the stage keeps its top band flat for the header to sit on', /rgba\(7,10,24,0\.92\)', 'transparent'/.test(strip(mesh)));
+ok('the stage keeps its top band flat for the header to sit on', /rgba\(7,10,24,0\.92\)', 'rgba\(7,10,24,0\)'/.test(meshC));
 
-console.log('── the first screenful is all gradient; grey is met on the way down ──');
-// ⚠️ RETARGETED. The rule stands — screen one must be unbroken gradient — but it is no longer
-// bought with `rootH * 1.18`, which paid for it with 150pt of empty gradient nobody asked for.
-// The floor below is what now guarantees it; see THE SEAM further down for the rest.
-ok('the stage still fills the first screenful', /Math\.round\(rootH \* 0\.98\)/.test(homeC));
-ok('…and the melt is the LAST part of it, wherever the content ended',
-  /const fadeFrom = Math\.max\(0\.3, \(stageH - MELT\) \/ stageH\)/.test(homeC));
+console.log('── the whole page is one gradient ──');
+// ⚠️ RETARGETED TWICE, AND THE RULE GOT SIMPLER EACH TIME. First the stage outran the viewport by
+// 18% (150pt of empty gradient). Then it was sized to its content and melted into a light section
+// (a shorter gap, but still a place where one surface stopped and another began, and it read as a
+// line). Now there is no second surface at all: one gradient covers the page and the library sits
+// on it. There is nothing left to align, because there is only one thing.
+ok('the stage is the page, not a hero with something under it', /const stageH = Math\.max\(rootH \|\| 700, headerH \+ pageH\)/.test(homeC));
+ok('⚠️ no melt, no light section, no second background anywhere on this screen',
+  !/fadeFrom/.test(homeC) && !/MELT/.test(homeC) && !/E\.bg/.test(homeC) && !/E\.bg/.test(histC));
 
 console.log('── compact mode icons, glass employer chips ──');
 ok('the full-width tab pair is gone', !/toggleBtnOn/.test(home) && /function ModeSwitch/.test(homeC));
@@ -368,8 +376,12 @@ console.log('── ⚠️ THE LOWER HALF SHOWS WHAT YOU OWN, NOT THE DESIGNS AG
 // ⚠️ NOT /<DownloadHistory/ — that also matches the `useState<DownloadHistoryItem[]>` type
 // annotation, so it would pass with no section rendered at all. Match the JSX element itself.
 ok('the library section is rendered by Home', /<DownloadHistory\n/.test(homeC));
-ok('…BELOW the hero, where the light card vocabulary belongs',
-  homeC.indexOf('<DownloadHistory\n') > homeC.indexOf('</MeshStage>'));
+// ⚠️ RETARGETED. It used to have to come AFTER </MeshStage>, because the light section lived
+// there. There is no light section now — the library is glass on the same gradient — so the rule
+// inverts: it must be INSIDE, or it sits on the root colour with an edge above it.
+ok('…below the hero and INSIDE the one backdrop',
+  homeC.indexOf('<DownloadHistory\n') > homeC.indexOf('setHeroH')
+  && homeC.indexOf('<DownloadHistory\n') < homeC.indexOf('</MeshStage>'));
 ok('…driven by the SAME mode switch the hero uses', /mode=\{mode\}/.test(homeC));
 ok('…and it keeps the one affordance the old grid had', /onMoreJobs=/.test(homeC) && /tab: 'myjobs'/.test(homeC));
 
@@ -471,24 +483,45 @@ ok('the bar never overtakes the stage it was told about', /Math\.min\(target/.te
 ok('⚠️ and it is scaleX, not an animated width — width forces the JS driver',
   /scaleX: bar/.test(wiz) && !/useNativeDriver: false/.test(wiz));
 
-console.log('── ⚠️ THE SEAM: the hero ends where its content does ──');
-// "There is a lot of empty gap" was `rootH * 1.18`: on a normal phone that left ~150pt of empty
-// gradient after the last thing in the hero, and then melted across another 170 before the list
-// began. The stage is measured now, and the melt is what joins the two halves rather than what
-// separates them.
-ok('the stage is as tall as what is on it, plus the melt',
-  /const stageH = heroH/.test(homeC) && !/rootH \* 1\.18/.test(homeC));
-ok('…measured from ONE block, so nothing can be laid out beyond the melt',
-  /onLayout=\{\(e\) => setHeroH\(/.test(homeC));
-ok('…with a viewport floor, so a short hero still fills screen one', /Math\.round\(rootH \* 0\.98\)/.test(homeC));
-// ⚠️ `transparent` is transparent BLACK. Interpolating from it to a light colour passes through
-// dark, and that muddy grey-blue band is what made this seam read as a third surface.
-ok('⚠️ the melt never passes through the `transparent` keyword',
-  /colors=\{\[BG0, BG0, bg\(/.test(meshC) && !/'transparent', 'rgba\(160,178,206/.test(mesh));
-ok('…it is one colour fading up from zero alpha', /const BG0 = bg\(0\)/.test(meshC));
-ok('…in six eased stops, because three band visibly across 100pt', /const RAMP = \[/.test(meshC));
-ok('the library overlaps the melt instead of starting under it', /library: \{ marginTop: -24 \}/.test(homeC));
-ok('…and the section stops adding its own gap on top of it', /paddingTop: 14 \},/.test(histC));
+console.log('── ⚠️ ONE SURFACE: nothing on this page has an edge ──');
+ok('everything is inside the backdrop — library, dashboard link and the tab bar\'s tail',
+  homeC.indexOf('<DownloadHistory') < homeC.indexOf('</MeshStage>')
+  && homeC.indexOf('s.dashLink') < homeC.indexOf('</MeshStage>')
+  && homeC.indexOf('style={s.tail}') < homeC.indexOf('</MeshStage>'));
+// ⚠️ Anything rendered after </MeshStage> sits on the ROOT colour, which is the near-black the
+// gradient starts from — so a sibling at the foot would be a hard step back to dark.
+ok('…and the root is that same starting colour, for the bounce at the top',
+  /root: \{ flex: 1, backgroundColor: E\.stage \}/.test(homeC));
+ok('the page opens toward a lighter navy instead of ending on white', /const LIFT = /.test(meshC) && /lift\(0\)/.test(meshC));
+// ⚠️ `transparent` is transparent BLACK. Interpolating to it drags the midpoint toward dark and
+// leaves a muddy band — the artefact that made the old seam visible in the first place.
+ok('⚠️ not one gradient in the backdrop passes through the `transparent` keyword',
+  !/'transparent'/.test(meshC));
+ok('every wash tail is a ZERO-ALPHA version of its own colour, so it cannot flood the page below',
+  /rgba\(79,141,255,0\)/.test(meshC) && /rgba\(124,107,255,0\)/.test(meshC) && /rgba\(20,184,166,0\)/.test(meshC));
+// ⚠️ react-native-web turns start/end into a CSS ANGLE and throws the LENGTH away. An axis
+// shortened to `0.64 * focus` therefore paints one thing on a phone and another in the preview
+// harness — the one tool that exists to show what the phone will do.
+ok('⚠️ `focus` moves the STOPS; it never shortens an axis',
+  !/end=\{\{ x: [^}]*\* f \}\}/.test(meshC) && /locations=\{\[0\.06, 0\.36 \* f, 0\.88 \* f\]\}/.test(meshC));
+ok('…and every axis runs corner to corner or straight down, where CSS and native agree',
+  /start=\{\{ x: 0, y: 0 \}\} end=\{\{ x: 1, y: 1 \}\}/.test(meshC)
+  && /start=\{\{ x: 1, y: 0 \}\} end=\{\{ x: 0, y: 1 \}\}/.test(meshC));
+// ⚠️ The grid is a fixed COUNT of absolutely-placed lines: on a page taller than rows * 30 it
+// simply stops, and the row where it stops is a visible horizontal edge.
+ok('the grid is told how tall the page is', /rows\?: number/.test(meshC) && /Math\.ceil\(stageH \/ 30\)/.test(homeC));
+
+console.log('── the library is glass ON that page, not a white tile dropped on it ──');
+ok('the card fill is translucent, so the gradient shows through it',
+  /backgroundColor: 'rgba\(255,255,255,0\.055\)'/.test(histC));
+ok('⚠️ and no light-theme ink survived the move',
+  !/E\.ink/.test(histC) && !/E\.textMuted/.test(histC) && !/E\.textFaint/.test(histC) && !/E\.surface/.test(histC));
+ok('…including the dashboard link, which was the last white thing on the screen',
+  !/backgroundColor: E\.surface/.test(homeC) && /dashLink[\s\S]{0,160}backgroundColor: E\.glass/.test(homeC));
+// ⚠️ These same white faces read as light over a white card and as a grey patch over a dark one,
+// and the grey takes the text's contrast with it.
+ok('the glass faces were re-weighted for a dark ground, not carried over',
+  /rgba\(255,255,255,0\.17\)/.test(histC) && !/rgba\(255,255,255,0\.50\)', 'rgba\(255,255,255,0\.06\)/.test(histC));
 
 console.log('── ⚠️ FOUR STEPS, EACH ONE SCREEN ──');
 const stepList = (wiz.match(/const STEPS[\s\S]*?\n\];/) || [''])[0];
@@ -501,6 +534,15 @@ ok('⚠️ saving a signature no longer jumps ahead, which would walk away from 
   !/uploadSignature\(uri\)[\s\S]{0,400}goTo\(/.test(wiz));
 ok('the details are ONE card of fixed rows, not five boxed fields',
   /function Row\(\{/.test(wiz) && /row: \{ height: 54,/.test(wiz));
+// ⚠️ The footer used to be a near-opaque panel with a hairline on top: a second background across
+// the foot of a screen that is one continuous gradient — the same complaint as the home seam.
+ok('⚠️ the footer paints NO bar behind its button',
+  /backgroundColor: 'transparent', gap: 10,/.test(wiz) && !/borderTopColor/.test(wiz));
+ok('…the button carries itself on colour instead, the same mint that brought them here',
+  /const MINT: \[string, string, string\]/.test(wiz) && /colors=\{MINT\}/.test(wiz)
+  && /color: MINT_INK/.test(wiz));
+ok('…and the scroll padding still keeps content from running under it',
+  /paddingBottom: 126 \+ insets\.bottom/.test(wiz));
 ok('…and the last step is still the only one that spends a generation',
   /step === 3 && \(\s*<BuildStep/.test(wiz) && /onPress=\{onStart\}/.test(wiz));
 
@@ -535,8 +577,21 @@ ok('⚠️ …and there is always at least one, even on a device with none of th
 ok('⚠️ enhance RE-RENDERS the stored points; it does not filter the bitmap',
   /window\.__smooth=function\(on\)\{ smooth=!!on; render\(\); \}/.test(studioC));
 ok('…which is why it can be turned back off', /const v = !smooth/.test(studioC));
+// ⚠️ THE FIRST VERSION DID ALMOST NOTHING. Catmull-Rom is an INTERPOLATING spline: it passes
+// through every point it is given, so every tremor survived and "enhance" only added in-between
+// points. Smoothing has to move points OFF the path they were captured on.
+ok('⚠️ the smoothing MOVES points off the captured path',
+  /function soften\(pts, passes, w\)/.test(studioC) && /function resample\(pts, step\)/.test(studioC));
+ok('…then re-draws through a handful of controls, which is what makes it flow',
+  /function refit\(pts, every\)/.test(studioC) && /refit\(soften\(resample\(src, 1\.8\), 3, 2\), 6\)/.test(studioC));
+ok('⚠️ the ends are pinned on every pass, or the stroke shrinks a little each time',
+  /o\[0\]=pts\[0\]; o\[o\.length-1\]=pts\[pts\.length-1\];/.test(studioC));
 ok('the ribbon is tapered by how fast the finger was moving',
-  /function speeds\(pts\)/.test(studioC) && /3\.5-2\.1\*f/.test(studioC));
+  /function speeds\(pts\)/.test(studioC) && /4\.4-3\.1\*f/.test(studioC));
+// It goes onto a letterhead, so the page must never paint a ground into the bitmap: the white is
+// CSS on the body, and the canvas itself only ever has ink on it.
+ok('⚠️ the exported PNG has no background — nothing ever fills the canvas',
+  !/fillRect/.test(studioC) && /clearRect\(0,0,c\.width,c\.height\)/.test(studioC));
 ok('⚠️ every preview is trimmed to its ink before it is fitted, or tall faces clip',
   /function bitmap\(st, text\)/.test(studioC) && /BM\[key\]=trim\(o\)/.test(studioC));
 ok('the export goes through that same trim, at print scale', /var X=3;/.test(studioC));

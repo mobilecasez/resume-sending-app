@@ -56,6 +56,10 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { E, SERIF, sweepWords } from '../../components/employer-home/theme';
+// The one warm accent on a blue screen, shared with Home's "Make your Resume" so the button that
+// brought them here and the button that moves them forward are visibly the same thing.
+const MINT: [string, string, string] = ['#8FF7E4', '#2DE0C0', '#12BFA6'];
+const MINT_INK = '#04211C';
 import MeshStage from '../../components/employer-home/MeshStage';
 import SignatureStudio from '../../components/onboarding/SignatureStudio';
 import CountrySheet from '../../components/onboarding/CountrySheet';
@@ -366,7 +370,7 @@ export default function MakeYours() {
           to itself and a pinned footer never reaches the bottom of the screen. As a sibling it
           needs no change to a shipped hero component — and its three washes keep drifting through
           the whole flow, on the same native driver everything here uses. */}
-      <MeshStage fade={false} style={StyleSheet.absoluteFill}><View /></MeshStage>
+      <MeshStage style={StyleSheet.absoluteFill}><View /></MeshStage>
 
       {/* insets.top + 52 is Home's own header height, so the chrome on both screens sits on
           exactly one line and the crossfade between them does not jump. */}
@@ -688,13 +692,13 @@ export default function MakeYours() {
             disabled={!canAdvance || saving}
             onPress={next}
           >
-            <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.nextBtn}>
+            <LinearGradient colors={MINT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.nextBtn}>
               {saving
-                ? <ActivityIndicator size="small" color="#fff" />
+                ? <ActivityIndicator size="small" color={MINT_INK} />
                 : (
                   <>
                     <Text style={s.nextTx} numberOfLines={1}>Next: {STEPS[step + 1].short}</Text>
-                    <Ionicons name="arrow-forward" size={16} color="#fff" />
+                    <Ionicons name="arrow-forward" size={16} color="rgba(4,33,28,0.7)" />
                   </>
                 )}
             </LinearGradient>
@@ -802,9 +806,9 @@ function BuildStep({
         <Text style={b.h}>Your resume is ready</Text>
         <Text style={b.p}>It is in every design on your home screen. Pick the one you like.</Text>
         <TouchableOpacity style={b.cta} activeOpacity={0.9} onPress={onFinish}>
-          <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={b.ctaBtn}>
+          <LinearGradient colors={MINT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={b.ctaBtn}>
             <Text style={b.ctaTxt} numberOfLines={1}>See my designs</Text>
-            <Ionicons name="arrow-forward" size={16} color="#fff" />
+            <Ionicons name="arrow-forward" size={16} color="rgba(4,33,28,0.7)" />
           </LinearGradient>
         </TouchableOpacity>
       </View>
@@ -825,8 +829,8 @@ function BuildStep({
           </View>
         )}
         <TouchableOpacity style={b.cta} activeOpacity={0.9} onPress={onStart}>
-          <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={b.ctaBtn}>
-            <Ionicons name="sparkles" size={16} color="#fff" />
+          <LinearGradient colors={MINT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={b.ctaBtn}>
+            <Ionicons name="sparkles" size={16} color={MINT_INK} />
             <Text style={b.ctaTxt} numberOfLines={1}>{error ? 'Try again' : 'Build my resume'}</Text>
           </LinearGradient>
         </TouchableOpacity>
@@ -1006,21 +1010,24 @@ const s = StyleSheet.create({
   dropTx: { fontSize: 15, fontWeight: '800', color: '#fff', flexShrink: 1 },
   dropSub: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.45)', textAlign: 'center', flexShrink: 1 },
 
+  // ⚠️ NO BAR BEHIND IT. This used to be a near-opaque panel with a hairline on top, which drew a
+  // second background across the foot of a screen that is one continuous gradient — the same
+  // "separate background" complaint the home screen's seam was. The button carries itself on its
+  // own colour instead; the step's scroll padding already keeps content from running under it.
   footer: {
     position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 18, paddingTop: 12,
-    backgroundColor: 'rgba(7,10,24,0.86)', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.07)',
-    gap: 10,
+    backgroundColor: 'transparent', gap: 10,
   },
   skip: { alignSelf: 'center', paddingVertical: 4 },
   skipTx: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.5)', flexShrink: 1 },
   // Glow outside, clipping inside — iOS drops a shadow on an overflow:'hidden' view.
   nextWrap: {
     borderRadius: 16,
-    shadowColor: E.blue, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8,
+    shadowColor: '#2DE0C0', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.45, shadowRadius: 18, elevation: 8,
   },
-  nextOff: { shadowOpacity: 0, elevation: 0, opacity: 0.45 },
+  nextOff: { shadowOpacity: 0, elevation: 0, opacity: 0.4 },
   nextBtn: { height: 54, borderRadius: 16, overflow: 'hidden', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  nextTx: { fontSize: 15.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
+  nextTx: { fontSize: 15.5, fontWeight: '800', color: MINT_INK, flexShrink: 1 },
 });
 
 const b = StyleSheet.create({
@@ -1048,8 +1055,8 @@ const b = StyleSheet.create({
 
   cta: {
     marginTop: 26, alignSelf: 'stretch', borderRadius: 16,
-    shadowColor: E.blue, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8,
+    shadowColor: '#2DE0C0', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.45, shadowRadius: 18, elevation: 8,
   },
   ctaBtn: { height: 54, borderRadius: 16, overflow: 'hidden', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  ctaTxt: { fontSize: 15.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
+  ctaTxt: { fontSize: 15.5, fontWeight: '800', color: MINT_INK, flexShrink: 1 },
 });

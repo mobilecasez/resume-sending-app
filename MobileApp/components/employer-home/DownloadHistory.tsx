@@ -102,8 +102,12 @@ function Facets({
 }) {
   // The amber/red pair drifts warm enough under white to read as a warning state at full strength.
   const warm = pair[0] === '#F59E0B';
-  const a0 = dim ? 0.13 : (warm ? 0.15 : 0.22);
-  const a1 = dim ? 0.04 : 0.06;
+  // ⚠️ RE-WEIGHTED FOR A DARK GROUND. These same numbers over white read as a tint; over the page
+  // gradient they have to carry the whole card, so the colour goes up and every WHITE face comes
+  // DOWN — a 0.50 sheen that looked like light on a white card is a grey patch on a dark one, and
+  // it takes the text's contrast with it.
+  const a0 = dim ? 0.17 : (warm ? 0.24 : 0.32);
+  const a1 = dim ? 0.06 : 0.10;
   return (
     <>
       <View style={s.wash} pointerEvents="none">
@@ -117,7 +121,7 @@ function Facets({
       </View>
       <View style={s.refract} pointerEvents="none">
         <LinearGradient
-          colors={['rgba(255,255,255,0.58)', 'rgba(255,255,255,0)']}
+          colors={['rgba(255,255,255,0.42)', 'rgba(255,255,255,0)']}
           start={{ x: 0, y: 0.5 }}
           end={{ x: 1, y: 0.5 }}
           style={StyleSheet.absoluteFill}
@@ -125,7 +129,7 @@ function Facets({
       </View>
       <Animated.View style={[StyleSheet.absoluteFill, { opacity: sheenOpacity }]} pointerEvents="none">
         <LinearGradient
-          colors={['rgba(255,255,255,0.50)', 'rgba(255,255,255,0.06)', 'transparent']}
+          colors={['rgba(255,255,255,0.17)', 'rgba(255,255,255,0.03)', 'rgba(255,255,255,0)']}
           locations={[0, 0.40, 1]}
           start={{ x: 0.10, y: 0 }}
           end={{ x: 0.72, y: 1 }}
@@ -144,10 +148,10 @@ function Facets({
         />
       </Animated.View>
       <View style={s.falloff} pointerEvents="none">
-        <LinearGradient colors={['rgba(255,255,255,0.40)', 'transparent']} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={StyleSheet.absoluteFill} />
+        <LinearGradient colors={['rgba(255,255,255,0.16)', 'rgba(255,255,255,0)']} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={StyleSheet.absoluteFill} />
       </View>
       <View style={s.shade} pointerEvents="none">
-        <LinearGradient colors={['rgba(11,15,34,0)', 'rgba(11,15,34,0.06)']} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={StyleSheet.absoluteFill} />
+        <LinearGradient colors={['rgba(4,6,16,0)', 'rgba(4,6,16,0.22)']} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={StyleSheet.absoluteFill} />
       </View>
       {/* Dark, then bright, in two points. That reversal at the foot is what reads as an object
           made of a material rather than a rectangle with a gradient in it. */}
@@ -327,10 +331,10 @@ function Row({
 
               {/* ── the action, same geometry in every state so nothing shifts ── */}
               <View style={[s.act, free ? s.actFree : s.actLocked]}>
-                {busy ? <ActivityIndicator size="small" color={E.blueDeep} />
-                  : justDone ? <Ionicons name="checkmark" size={17} color={E.emerald} />
-                  : free ? <Ionicons name="arrow-down" size={17} color={E.blueDeep} />
-                  : <Ionicons name="lock-closed" size={14} color={E.textFaint} />}
+                {busy ? <ActivityIndicator size="small" color="#fff" />
+                  : justDone ? <Ionicons name="checkmark" size={17} color={E.mint} />
+                  : free ? <Ionicons name="arrow-down" size={17} color="#fff" />
+                  : <Ionicons name="lock-closed" size={14} color="rgba(255,255,255,0.42)" />}
               </View>
             </View>
 
@@ -451,7 +455,7 @@ function EmptyState({ mode, onScrollToTop }: { mode: 'resume' | 'letter'; onScro
           {/* Not a gradient CTA and not a navigation: the designs are on this same screen, straight
               up. Sending someone somewhere else for something already here would be a small lie. */}
           <TouchableOpacity style={s.emptyLink} activeOpacity={0.85} onPress={onScrollToTop}>
-            <Ionicons name="arrow-up" size={13} color={E.blueDeep} />
+            <Ionicons name="arrow-up" size={13} color="#fff" />
             <Text style={s.emptyLinkTx}>Pick a design above</Text>
           </TouchableOpacity>
         </View>
@@ -527,7 +531,7 @@ export default function DownloadHistory({
         </View>
         <TouchableOpacity style={s.seeAll} activeOpacity={0.8} onPress={onMoreJobs}>
           <Text style={s.seeAllTx}>More jobs </Text>
-          <Ionicons name="arrow-forward" size={12} color={E.blueDeep} />
+          <Ionicons name="arrow-forward" size={12} color={LINK} />
         </TouchableOpacity>
       </View>
 
@@ -561,7 +565,7 @@ export default function DownloadHistory({
           {items.length > PREVIEW_ROWS && !expanded && (
             <TouchableOpacity style={s.expand} activeOpacity={0.85} onPress={onExpand}>
               <Text style={s.expandTx}>See all {items.length}</Text>
-              <Ionicons name="chevron-down" size={14} color={E.blueDeep} />
+              <Ionicons name="chevron-down" size={14} color="rgba(255,255,255,0.7)" />
             </TouchableOpacity>
           )}
 
@@ -571,7 +575,7 @@ export default function DownloadHistory({
             // employer and everything for that employer comes back. No date is named because the
             // endpoint returns none, and an invented one would be a lie.
             <View style={s.lockedStrip}>
-              <Ionicons name="information-circle" size={15} color={E.purple} style={{ marginTop: 1 }} />
+              <Ionicons name="information-circle" size={15} color="#B9AEFF" style={{ marginTop: 1 }} />
               <Text style={s.lockedTx}>
                 {lockedCount === 1 ? '1 file is' : `${lockedCount} files are`} locked because your plan
                 ended. Nothing was deleted — your designs and your details are exactly as you left
@@ -589,28 +593,32 @@ export default function DownloadHistory({
   );
 }
 
+/** The one blue that still reads as a link on this ground. */
+const LINK = '#9DBEFF';
+
 const s = StyleSheet.create({
   // ⚠️ 14, NOT 26. The hero above now ends where its content ends and melts across the last
   // 118pt, so this section starts immediately after that ramp. A second 26pt of air on top
   // of it re-opened the same gap the melt was shortened to close.
-  wrap: { paddingHorizontal: 16, paddingTop: 14 },
+  wrap: { paddingHorizontal: 16, paddingTop: 22 },
 
   head: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: 12 },
   // The same values the section this replaced used, so it reads as its sibling.
-  eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: E.textFaint },
-  title: { fontSize: 19, fontWeight: '800', color: E.ink, letterSpacing: -0.7, marginTop: 3, flexShrink: 1 },
+  eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: 'rgba(255,255,255,0.45)' },
+  title: { fontSize: 19, fontWeight: '800', color: '#fff', letterSpacing: -0.7, marginTop: 3, flexShrink: 1 },
   seeAll: { flexDirection: 'row', alignItems: 'center', paddingBottom: 3 },
-  seeAllTx: { fontSize: 12.5, fontWeight: '700', color: E.blueDeep, flexShrink: 1 },
+  seeAllTx: { fontSize: 12.5, fontWeight: '700', color: LINK, flexShrink: 1 },
 
   list: { gap: 10 },
 
   // ⚠️ Shadow and clipping never share a view: iOS drops a shadow drawn on an overflow:'hidden'
-  // view. The white is opaque because iOS derives the shadow from the alpha channel — a transparent
-  // card casts nothing — and because the row must still be a card if every gradient fails to draw.
+  // view. The fill is now TRANSLUCENT, so the page gradient shows through the card — that is what
+  // makes it read as glass laid on the page rather than a white tile dropped on it. It is still
+  // opaque enough that a row is a card even if every gradient below fails to draw.
   shell: {
-    height: ROW_H, borderRadius: 20, backgroundColor: '#FFFFFF',
-    borderWidth: StyleSheet.hairlineWidth, borderColor: E.border,
-    shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.07, shadowRadius: 20,
+    height: ROW_H, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.055)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.12)',
+    shadowColor: '#01030A', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.35, shadowRadius: 18,
     elevation: 3,
   },
   // 19 and not 20: absolute children position against the padding box, so matching radii leave a
@@ -624,7 +632,7 @@ const s = StyleSheet.create({
   falloff: { position: 'absolute', top: 1.5, left: 0, right: 0, height: 16 },
   shade: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 22 },
   returnLight: { position: 'absolute', bottom: 0, left: 10, right: 10, height: 1, backgroundColor: 'rgba(255,255,255,0.60)' },
-  innerRim: { ...StyleSheet.absoluteFillObject, borderRadius: 19, borderWidth: 1, borderColor: 'rgba(255,255,255,0.62)' },
+  innerRim: { ...StyleSheet.absoluteFillObject, borderRadius: 19, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
 
   chipWrap: { width: CHIP_W, height: CHIP_H },
   shim: {
@@ -660,28 +668,28 @@ const s = StyleSheet.create({
 
   mid: { flex: 1, minWidth: 0 },
   // Never dimmed on a locked row: greying the name is what makes people believe their work is gone.
-  who: { fontSize: 14, fontWeight: '800', color: E.ink, letterSpacing: -0.3, flexShrink: 1 },
+  who: { fontSize: 14, fontWeight: '800', color: '#fff', letterSpacing: -0.3, flexShrink: 1 },
   l2: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
-  what: { fontSize: 11.5, fontWeight: '600', color: E.textMuted, flexShrink: 1 },
-  capDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: 'rgba(11,15,34,0.20)' },
-  times: { fontSize: 11, fontWeight: '600', color: E.textFaint, flexShrink: 1 },
+  what: { fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.64)', flexShrink: 1 },
+  capDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.28)' },
+  times: { fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.46)', flexShrink: 1 },
   // Amber, never red: red says you did something wrong, amber says paused.
   planPill: {
     height: 16, paddingHorizontal: 6, borderRadius: 5, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(245,158,11,0.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.28)',
+    backgroundColor: 'rgba(245,158,11,0.18)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.42)',
   },
-  planPillTx: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4, color: '#B45309' },
+  planPillTx: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4, color: '#FCD34D' },
   // The hero's caption metric, recoloured. The type scale crossing the dark/light boundary is the
   // clearest tell that the two halves of this screen are one design.
-  when: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: E.textFaint, marginTop: 5, flexShrink: 1 },
+  when: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.42)', marginTop: 5, flexShrink: 1 },
 
   act: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderWidth: 1 },
-  actFree: { backgroundColor: 'rgba(37,99,235,0.10)', borderColor: 'rgba(37,99,235,0.20)' },
-  actLocked: { backgroundColor: 'rgba(11,15,34,0.05)', borderColor: 'rgba(11,15,34,0.07)' },
+  actFree: { backgroundColor: 'rgba(255,255,255,0.15)', borderColor: 'rgba(255,255,255,0.24)' },
+  actLocked: { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.10)' },
 
-  skPaper: { width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: 'rgba(11,15,34,0.055)' },
-  skBar: { backgroundColor: 'rgba(11,15,34,0.055)' },
-  skAct: { width: 34, height: 34, borderRadius: 11, backgroundColor: 'rgba(11,15,34,0.04)' },
+  skPaper: { width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.09)' },
+  skBar: { backgroundColor: 'rgba(255,255,255,0.09)' },
+  skAct: { width: 34, height: 34, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.07)' },
   glare: { position: 'absolute', top: 0, bottom: 0, width: 160 },
 
   emptyShell: { height: 150 },
@@ -691,27 +699,27 @@ const s = StyleSheet.create({
     width: CHIP_W, height: CHIP_H, borderRadius: 6, backgroundColor: '#FFFFFF',
     borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(11,15,34,0.10)', marginHorizontal: -12,
   },
-  emptyH: { marginTop: 13, fontSize: 15, fontWeight: '800', color: E.ink, letterSpacing: -0.3, flexShrink: 1 },
-  emptyTx: { marginTop: 5, fontSize: 12.5, fontWeight: '600', color: E.textMuted, textAlign: 'center', lineHeight: 18, maxWidth: 262, flexShrink: 1 },
+  emptyH: { marginTop: 13, fontSize: 15, fontWeight: '800', color: '#fff', letterSpacing: -0.3, flexShrink: 1 },
+  emptyTx: { marginTop: 5, fontSize: 12.5, fontWeight: '600', color: 'rgba(255,255,255,0.6)', textAlign: 'center', lineHeight: 18, maxWidth: 262, flexShrink: 1 },
   emptyLink: {
     marginTop: 12, height: 34, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14,
-    borderRadius: 11, backgroundColor: 'rgba(37,99,235,0.10)', borderWidth: 1, borderColor: 'rgba(37,99,235,0.20)',
+    borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.12)', borderWidth: 1, borderColor: E.glassBorder,
   },
-  emptyLinkTx: { fontSize: 12.5, fontWeight: '700', color: E.blueDeep, flexShrink: 1 },
+  emptyLinkTx: { fontSize: 12.5, fontWeight: '700', color: '#fff', flexShrink: 1 },
 
   expand: {
     marginTop: 10, height: 42, borderRadius: 14, flexDirection: 'row', alignItems: 'center',
     justifyContent: 'center', gap: 5,
-    backgroundColor: 'rgba(37,99,235,0.07)', borderWidth: 1, borderColor: 'rgba(37,99,235,0.16)',
+    backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder,
   },
-  expandTx: { fontSize: 13, fontWeight: '700', color: E.blueDeep, flexShrink: 1 },
+  expandTx: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.82)', flexShrink: 1 },
 
   lockedStrip: {
     marginTop: 10, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 14,
-    backgroundColor: 'rgba(124,107,255,0.07)', borderWidth: 1, borderColor: 'rgba(124,107,255,0.18)',
+    backgroundColor: 'rgba(124,107,255,0.16)', borderWidth: 1, borderColor: 'rgba(124,107,255,0.34)',
     flexDirection: 'row', alignItems: 'flex-start', gap: 9,
   },
-  lockedTx: { flex: 1, fontSize: 11.5, fontWeight: '600', color: E.textMuted, lineHeight: 16 },
+  lockedTx: { flex: 1, fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.72)', lineHeight: 16 },
 
-  footnote: { fontSize: 11, fontWeight: '600', color: E.textFaint, textAlign: 'center', marginTop: 8, flexShrink: 1 },
+  footnote: { fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.42)', textAlign: 'center', marginTop: 8, flexShrink: 1 },
 });

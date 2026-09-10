@@ -126,7 +126,6 @@ const PAGE = `<!doctype html><html><head>
       var dt=Math.max(8, pts[i].t-pts[i-1].t);
       v.push(Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y)/dt);
     }
-    // A three-tap mean: raw speed jumps between consecutive samples and the width would flicker.
     var o=[];
     for(var j=0;j<v.length;j++){
       var a=v[Math.max(0,j-1)], b=v[j], d=v[Math.min(v.length-1,j+1)];
@@ -134,37 +133,93 @@ const PAGE = `<!doctype html><html><head>
     }
     return o;
   }
-  function spline(pts, vs){
-    if(pts.length<3) return pts.map(function(p,i){ return {x:p.x,y:p.y,v:vs[i]||0}; });
+  /* ── ENHANCE, THE PIPELINE ──────────────────────────────────────────────────────────────────
+   * ⚠️ THE FIRST VERSION OF THIS DID ALMOST NOTHING, AND THE REASON IS WORTH KEEPING.
+   * It ran the raw samples through Catmull-Rom, which is an INTERPOLATING spline: it passes exactly
+   * through every point it is given. So every tremor in the original gesture survived intact and
+   * "enhance" only added in-between points — smoother in the small, identical in the large.
+   * Smoothing has to move points OFF the path they were captured on. Four stages, in order:
+   *   1. resample  — uniform spacing, so the filter treats a slow stroke and a fast one alike
+   *   2. soften    — a moving average, repeated: this is the stage that actually removes the shake
+   *   3. refit     — re-draw through every Nth softened point, so the curve is described by a
+   *                  handful of controls rather than hundreds; that is what makes it FLOW
+   *   4. ribbon    — variable width from the recorded speed, tapered at both ends
+   */
+  function resample(pts, step){
+    if(pts.length<2) return pts.slice();
+    var out=[{x:pts[0].x,y:pts[0].y,v:pts[0].v}], carry=0;
+    for(var i=1;i<pts.length;i++){
+      var a=pts[i-1], b=pts[i];
+      var d=Math.hypot(b.x-a.x, b.y-a.y);
+      if(d<0.0001) continue;
+      var t=(step-carry)/d;
+      while(t<=1){
+        out.push({x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t, v:a.v+(b.v-a.v)*t});
+        t+=step/d;
+      }
+      carry=(1-(t-step/d))*d;
+    }
+    var last=pts[pts.length-1];
+    out.push({x:last.x,y:last.y,v:last.v});
+    return out;
+  }
+  // ⚠️ THE ENDS ARE PINNED ON EVERY PASS. Without that the average walks the first and last points
+  // inward and the stroke visibly shrinks a little each time it is smoothed.
+  function soften(pts, passes, w){
+    for(var p=0;p<passes;p++){
+      var o=[];
+      for(var i=0;i<pts.length;i++){
+        var sx=0, sy=0, sv=0, n=0;
+        for(var k=Math.max(0,i-w);k<=Math.min(pts.length-1,i+w);k++){
+          sx+=pts[k].x; sy+=pts[k].y; sv+=pts[k].v; n++;
+        }
+        o.push({x:sx/n, y:sy/n, v:sv/n});
+      }
+      o[0]=pts[0]; o[o.length-1]=pts[pts.length-1];
+      pts=o;
+    }
+    return pts;
+  }
+  function crThrough(ctrl){
+    if(ctrl.length<3) return ctrl.slice();
     var out=[];
-    for(var i=0;i<pts.length-1;i++){
-      var p0=pts[i-1]||pts[i], p1=pts[i], p2=pts[i+1], p3=pts[i+2]||pts[i+1];
-      var v1=vs[i], v2=vs[i+1];
-      var n=Math.max(2, Math.min(16, Math.ceil(Math.hypot(p2.x-p1.x,p2.y-p1.y)/2.2)));
+    for(var i=0;i<ctrl.length-1;i++){
+      var p0=ctrl[i-1]||ctrl[i], p1=ctrl[i], p2=ctrl[i+1], p3=ctrl[i+2]||ctrl[i+1];
+      var n=Math.max(3, Math.min(24, Math.ceil(Math.hypot(p2.x-p1.x,p2.y-p1.y)/1.4)));
       for(var j=0;j<n;j++){
         var t=j/n, t2=t*t, t3=t2*t;
         out.push({
           x:0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
           y:0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3),
-          v:v1+(v2-v1)*t
+          v:p1.v+(p2.v-p1.v)*t
         });
       }
     }
-    var last=pts[pts.length-1];
-    out.push({x:last.x,y:last.y,v:vs[vs.length-1]||0});
+    out.push(ctrl[ctrl.length-1]);
     return out;
+  }
+  function refit(pts, every){
+    if(pts.length<=every*2) return pts.slice();
+    var ctrl=[pts[0]];
+    for(var i=every;i<pts.length-1;i+=every) ctrl.push(pts[i]);
+    ctrl.push(pts[pts.length-1]);
+    return crThrough(ctrl);
   }
   // Enhanced: one filled ribbon, thick where the finger was slow, tapered at both ends.
   function inked(g, pts){
-    if(pts.length<2){ g.beginPath(); g.arc(pts[0].x,pts[0].y,1.7,0,6.284); g.fill(); return; }
-    var sp=spline(pts, speeds(pts));
-    var n=sp.length, W=[];
+    if(pts.length<2){ g.beginPath(); g.arc(pts[0].x,pts[0].y,1.8,0,6.284); g.fill(); return; }
+    var vs=speeds(pts);
+    var src=pts.map(function(p,i){ return {x:p.x,y:p.y,v:vs[i]}; });
+    var sp=refit(soften(resample(src, 1.8), 3, 2), 6);
+    var n=sp.length;
+    if(n<2){ g.beginPath(); g.arc(sp[0].x,sp[0].y,1.8,0,6.284); g.fill(); return; }
+    var W=[];
     for(var i=0;i<n;i++){
-      var f=Math.max(0, Math.min(1, sp[i].v/0.9));
-      var w=3.5-2.1*f;
+      var f=Math.max(0, Math.min(1, sp[i].v/0.85));
+      var w=4.4-3.1*f;
       // Taper the first and last few millimetres — a stroke that starts at full width reads stamped.
-      var edge=Math.min(i, n-1-i)/Math.max(1, Math.min(9, (n-1)/2));
-      W.push(w*(0.42+0.58*Math.min(1,edge)));
+      var edge=Math.min(i, n-1-i)/Math.max(1, Math.min(14, (n-1)/2));
+      W.push(w*(0.34+0.66*Math.min(1,edge)));
     }
     // A five-tap mean over the widths, or a single noisy sample pinches the ribbon.
     var WS=[];
@@ -176,7 +231,7 @@ const PAGE = `<!doctype html><html><head>
     W=WS;
     var L=[], R=[];
     for(var k=0;k<n;k++){
-      // ⚠️ THE TANGENT SPANS FIVE SAMPLES, NOT TWO. The spline lands a point every ~2px, so two
+      // ⚠️ THE TANGENT SPANS FIVE SAMPLES, NOT TWO. The curve lands a point every ~1.4px, so two
       // adjacent ones are nearly collinear and their normal swings with rounding error — which
       // showed up as a bumpy, chewed edge along an otherwise clean curve.
       var a=sp[Math.max(0,k-2)], b=sp[Math.min(n-1,k+2)];
@@ -187,8 +242,8 @@ const PAGE = `<!doctype html><html><head>
     }
     g.beginPath();
     g.moveTo(L[0].x,L[0].y);
-    for(var p=1;p<n;p++) g.lineTo(L[p].x,L[p].y);
-    for(var q=n-1;q>=0;q--) g.lineTo(R[q].x,R[q].y);
+    for(var p2=1;p2<n;p2++) g.lineTo(L[p2].x,L[p2].y);
+    for(var q2=n-1;q2>=0;q2--) g.lineTo(R[q2].x,R[q2].y);
     g.closePath(); g.fill();
     g.beginPath(); g.arc(sp[0].x,sp[0].y,W[0]/2,0,6.284); g.fill();
     g.beginPath(); g.arc(sp[n-1].x,sp[n-1].y,W[n-1]/2,0,6.284); g.fill();
