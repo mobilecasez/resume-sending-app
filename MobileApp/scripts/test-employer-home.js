@@ -29,10 +29,18 @@ const routes = R('../../server/routes/resumeBuilder.js');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
 const homeC = strip(home), svcC = strip(svc), hsC = strip(hs), carC = strip(carousel), ctlC = strip(ctl);
 const histC = strip(histSrc);
+const meshC = strip(mesh);
+const studioSrc = R('../components/onboarding/SignatureStudio.tsx');
+const countrySheetSrc = R('../components/onboarding/CountrySheet.tsx');
+const countrySheetC = strip(countrySheetSrc);
+const countriesSrc = R('../constants/countries.ts');
+const studioC = strip(studioSrc);
 const FILES = {
   'EmployerHome.tsx': home, 'MeshStage.tsx': mesh, 'PaperCarousel.tsx': carousel,
   'theme.ts': theme, 'HomeBoundary.tsx': boundary, 'employerHomeService.ts': svc, 'HomeScreen.js': hs,
   'PaperZoom.tsx': zoomSrc, 'AddEmployerSheet.tsx': sheetSrc, 'DownloadHistory.tsx': histSrc,
+  'SignatureStudio.tsx': studioSrc, 'CountrySheet.tsx': countrySheetSrc, 'countries.ts': countriesSrc,
+  'onboarding/index.tsx': R('../app/(onboarding)/index.tsx'),
 };
 
 console.log('── every file parses (a JSX slip here white-screens the app) ──');
@@ -239,8 +247,12 @@ ok('its backdrop is transparent at rest, so it cannot read as a second backgroun
 ok('the stage keeps its top band flat for the header to sit on', /rgba\(7,10,24,0\.92\)', 'transparent'/.test(strip(mesh)));
 
 console.log('── the first screenful is all gradient; grey is met on the way down ──');
-ok('the stage outruns the viewport', /rootH \* 1\.18/.test(homeC));
-ok('…and the melt starts below the fold', /\(rootH \* 0\.97\) \/ stageH/.test(homeC));
+// ⚠️ RETARGETED. The rule stands — screen one must be unbroken gradient — but it is no longer
+// bought with `rootH * 1.18`, which paid for it with 150pt of empty gradient nobody asked for.
+// The floor below is what now guarantees it; see THE SEAM further down for the rest.
+ok('the stage still fills the first screenful', /Math\.round\(rootH \* 0\.98\)/.test(homeC));
+ok('…and the melt is the LAST part of it, wherever the content ended',
+  /const fadeFrom = Math\.max\(0\.3, \(stageH - MELT\) \/ stageH\)/.test(homeC));
 
 console.log('── compact mode icons, glass employer chips ──');
 ok('the full-width tab pair is gone', !/toggleBtnOn/.test(home) && /function ModeSwitch/.test(homeC));
@@ -398,7 +410,15 @@ ok('the CTA is INSIDE the hero, not below it', /makeWrap/.test(heroBlock));
 // reachable now; what changes is the WEIGHT — gradient when there is something left to do, glass
 // when there is not, so it sits beside the carousel instead of shouting over it.
 ok('the wizard is always reachable from Home', /\{!!setup && \(\(\) => \{/.test(homeC));
-ok('…loud when something is missing, quiet when nothing is', /left\.length \? \(/.test(homeC) && /makeGhost/.test(homeC));
+// ⚠️ RETARGETED. This used to require a GLASS pill once the profile was complete, and glass on a
+// blue-violet hero is the one thing on that screen you cannot see — which is what "the button
+// should be contrasting, eye engaging" was about. It is mint in both states now; only the glow
+// changes, so a finished profile gets a quieter version of the same button rather than a hidden one.
+ok('the CTA is the one warm accent on a blue screen, not glass on glass',
+  /MAKE_MINT/.test(homeC) && /shadowColor: '#2DE0C0'/.test(homeC) && !/makeGhost/.test(homeC));
+ok('…with dark ink on it, because white on mint is unreadable at this size',
+  /const MAKE_INK = '#04211C'/.test(homeC) && /color: MAKE_INK/.test(homeC));
+ok('…and the weight still varies with what is left to do', /!left\.length && s\.makeCalm/.test(homeC));
 ok('…and it says what the user asked it to say', /'Make your Resume'/.test(homeC));
 ok('…reading completeness from the SERVER, not a third local rule', /loaders\?\.setup \|\| /.test(homeC) && /fetchProfileSnapshot/.test(homeC));
 ok('…and it routes rather than generating', /nav\(\)\?\.push\?\.\('\/\(onboarding\)'\)/.test(homeC));
@@ -410,8 +430,22 @@ const psvc = strip(R('../services/profileSetupService.ts'));
 ok('it writes through the PARTIAL update endpoint', /\/users\/profile\/update/.test(psvc));
 ok('⚠️ …never /update-user-details, which NULLs every field it was not given',
   !/update-user-details/.test(psvc) && !/update-user-details/.test(wiz));
-ok('⚠️ it does not collect city or nationality — no endpoint writes them',
-  !/setCity/.test(wiz) && !/nationality/.test(wiz));
+// ⚠️ RETARGETED, NOT DELETED. The rule this encodes is "never collect what no endpoint stores",
+// and it is intact: city and country ARE asked for now — separately, because that is how a person
+// knows what to type — and they are JOINED into `address`, which is the column that is really
+// written. Nothing reaches a users.city or users.nationality that no code writes.
+ok('city and country are joined into the one field that is actually stored',
+  /const address = useMemo\(/.test(wiz) && /\[city\.trim\(\), country\?\.name\]\.filter\(Boolean\)\.join\(', '\)/.test(wiz));
+ok('…and re-opening splits them back apart rather than losing one', /function splitAddress/.test(wiz));
+ok('⚠️ nothing is sent to a column no endpoint writes',
+  !/nationality/.test(wiz) && !/\bcity:/.test(psvc)
+  && /for \(const k of \['fullName', 'phone', 'address', 'dateOfBirth', 'gender'\] as const\)/.test(psvc));
+ok('the dial code rides the phone string, because phone_number is one free-text column',
+  /\[dial, phone\.trim\(\)\]\.filter\(Boolean\)\.join\(' '\)/.test(wiz));
+ok('⚠️ …and picking a country never overwrites a code the user chose themselves',
+  /dialPinned\.current = true/.test(wiz) && /if \(!dialPinned\.current\) setDial\(c\.dial\)/.test(wiz));
+ok('a saved number is split on the LONGEST matching code, so +91 beats +9',
+  /d\.length > best\.length/.test(wiz));
 ok('gender is the server\'s exact enum', /'Male', 'Female', 'Prefer Not to Say'/.test(wiz));
 ok('the three uploads use the field names the server expects',
   /'profileImage'/.test(psvc) && /'signature'/.test(psvc) && /'resume'/.test(psvc));
@@ -423,7 +457,7 @@ ok('⚠️ generating is behind an explicit tap, never on step entry',
 ok('it resumes at the first unfinished step', /!s\.setup\.profile \? 0 :/.test(wiz));
 ok('⚠️ the step override is __DEV__ ONLY, so it cannot skip a step for a real user',
   /__DEV__ && params\.step != null/.test(wiz));
-ok('…and it is clamped, so a hand-typed url cannot land off the end', /Math\.min\(4,/.test(wiz));
+ok('…and it is clamped, so a hand-typed url cannot land off the end', /Math\.min\(3,/.test(wiz));
 ok('the header spacer paints nothing — an empty glass button is a button nobody can press',
   /iconSpacer: \{ width: 38, height: 38 \}/.test(wiz));
 
@@ -436,6 +470,80 @@ ok('⚠️ the UI is driven by STATUS, not by progress (failJob leaves progress 
 ok('the bar never overtakes the stage it was told about', /Math\.min\(target/.test(wiz));
 ok('⚠️ and it is scaleX, not an animated width — width forces the JS driver',
   /scaleX: bar/.test(wiz) && !/useNativeDriver: false/.test(wiz));
+
+console.log('── ⚠️ THE SEAM: the hero ends where its content does ──');
+// "There is a lot of empty gap" was `rootH * 1.18`: on a normal phone that left ~150pt of empty
+// gradient after the last thing in the hero, and then melted across another 170 before the list
+// began. The stage is measured now, and the melt is what joins the two halves rather than what
+// separates them.
+ok('the stage is as tall as what is on it, plus the melt',
+  /const stageH = heroH/.test(homeC) && !/rootH \* 1\.18/.test(homeC));
+ok('…measured from ONE block, so nothing can be laid out beyond the melt',
+  /onLayout=\{\(e\) => setHeroH\(/.test(homeC));
+ok('…with a viewport floor, so a short hero still fills screen one', /Math\.round\(rootH \* 0\.98\)/.test(homeC));
+// ⚠️ `transparent` is transparent BLACK. Interpolating from it to a light colour passes through
+// dark, and that muddy grey-blue band is what made this seam read as a third surface.
+ok('⚠️ the melt never passes through the `transparent` keyword',
+  /colors=\{\[BG0, BG0, bg\(/.test(meshC) && !/'transparent', 'rgba\(160,178,206/.test(mesh));
+ok('…it is one colour fading up from zero alpha', /const BG0 = bg\(0\)/.test(meshC));
+ok('…in six eased stops, because three band visibly across 100pt', /const RAMP = \[/.test(meshC));
+ok('the library overlaps the melt instead of starting under it', /library: \{ marginTop: -24 \}/.test(homeC));
+ok('…and the section stops adding its own gap on top of it', /paddingTop: 14 \},/.test(histC));
+
+console.log('── ⚠️ FOUR STEPS, EACH ONE SCREEN ──');
+const stepList = (wiz.match(/const STEPS[\s\S]*?\n\];/) || [''])[0];
+ok('the wizard is four steps, not five', (stepList.match(/key: '/g) || []).length === 4);
+ok('photo and signature share one — each was a single control with a screen to itself',
+  /key: 'sign', title: 'Photo & signature'/.test(wiz));
+ok('…so resuming requires BOTH before it moves past that step',
+  /\(!s\.setup\.photo \|\| !s\.setup\.signature\) \? 1/.test(wiz));
+ok('⚠️ saving a signature no longer jumps ahead, which would walk away from an unchosen photo',
+  !/uploadSignature\(uri\)[\s\S]{0,400}goTo\(/.test(wiz));
+ok('the details are ONE card of fixed rows, not five boxed fields',
+  /function Row\(\{/.test(wiz) && /row: \{ height: 54,/.test(wiz));
+ok('…and the last step is still the only one that spends a generation',
+  /step === 3 && \(\s*<BuildStep/.test(wiz) && /onPress=\{onStart\}/.test(wiz));
+
+console.log('── ⚠️ the date of birth is picked, not typed ──');
+ok('it uses the picker the app already ships', /import DateTimePicker from '@react-native-community\/datetimepicker'/.test(wiz));
+ok('⚠️ Android gets the bare dialog — mounting it inside a Modal shows two pickers',
+  /\{dobOpen && Platform\.OS === 'android' && \(/.test(wiz));
+ok('…and iOS gets the sheet, which is App.js\'s own pattern for this component',
+  /Platform\.OS === 'ios' && \(\s*<Modal transparent visible=\{dobOpen\}/.test(wiz));
+ok('⚠️ it still writes a plain YYYY-MM-DD — an ISO instant re-introduces the timezone off-by-one',
+  /setDob\(iso\(dobDraft\)\)/.test(wiz) && /const ISO_RE = \/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\//.test(wiz));
+
+console.log('── the country list is data, and the flag is computed ──');
+ok('⚠️ the flag comes from the ISO pair, so it cannot disagree with the code',
+  /0x1f1e6 \+ c\.charCodeAt\(0\) - 65/.test(countriesSrc));
+ok('⚠️ nothing turns a dial code back into a country — +1 is twenty-two of them',
+  !/countryByDial/.test(countriesSrc));
+ok('search covers the name, the ISO and the code', /export function searchCountries/.test(countriesSrc));
+ok('⚠️ the picker owns no Animated value, so it cannot mix drivers with the wizard behind it',
+  !/Animated/.test(countrySheetC));
+ok('…and it opens on the current answer rather than at Afghanistan', /initialScrollIndex=\{initialIndex\}/.test(countrySheetC));
+
+console.log('── ⚠️ THE SIGNATURE STUDIO: drawn, typed, or drawn and then enhanced ──');
+ok('⚠️ it loads NOTHING over the network — the old generator pulled cursive faces from a CDN',
+  !/https?:\/\//.test(studioC) && !/googleapis/.test(studioC));
+ok('the hands are whichever ones the DEVICE has, found by measuring',
+  /function resolve\(\)/.test(studioC) && /measureText\('Signature Mg'\)/.test(studioC));
+ok('…two styles that resolved to the same face are folded together',
+  /if\(seen\[w\]\) continue;/.test(studioC));
+ok('⚠️ …and there is always at least one, even on a device with none of them',
+  /if\(!out\.length\) out\.push/.test(studioC));
+ok('⚠️ enhance RE-RENDERS the stored points; it does not filter the bitmap',
+  /window\.__smooth=function\(on\)\{ smooth=!!on; render\(\); \}/.test(studioC));
+ok('…which is why it can be turned back off', /const v = !smooth/.test(studioC));
+ok('the ribbon is tapered by how fast the finger was moving',
+  /function speeds\(pts\)/.test(studioC) && /3\.5-2\.1\*f/.test(studioC));
+ok('⚠️ every preview is trimmed to its ink before it is fitted, or tall faces clip',
+  /function bitmap\(st, text\)/.test(studioC) && /BM\[key\]=trim\(o\)/.test(studioC));
+ok('the export goes through that same trim, at print scale', /var X=3;/.test(studioC));
+ok('the bridge is still the proven one: base64 → a file → multipart',
+  /image\/png/.test(studioC) && /EncodingType\.Base64/.test(studioC));
+ok('⚠️ the old pad is deleted, not left behind to drift out of date',
+  !fs.existsSync(path.join(__dirname, '../components/onboarding/SignaturePad.tsx')));
 
 console.log('── the preview harness can still see the whole screen ──');
 const previewSrc = R('../app/(dev)/home-preview.tsx');

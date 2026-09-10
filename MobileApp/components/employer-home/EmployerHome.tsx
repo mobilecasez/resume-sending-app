@@ -81,6 +81,9 @@ export default function EmployerHome({
   // painted in the app's LIGHT background and sits as a grey strip above the near-black hero.
   const insets = useSafeAreaInsets();
   const [rootH, setRootH] = useState(0);
+  // What the hero actually PUTS on the stage. The stage is sized from this, not from a
+  // multiple of the viewport — see MELT below.
+  const [heroH, setHeroH] = useState(0);
   const [zoom, setZoom] = useState<{ i: number; rect: OriginRect } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const regionHint = useCallback((c: string) => bestDesignForCountry(c)?.name || null, []);
@@ -340,12 +343,20 @@ export default function EmployerHome({
   const accent = mode === 'resume' ? 'exclusively for the employer.' : 'for this exact posting.';
 
   const headerH = insets.top + 52;
-  // The stage must outrun the viewport so the first screenful is ALL gradient and the fade into the
-  // grey is something you only meet on the way down (minHeight, so it still grows with content).
-  // Just past the fold — enough that screen one is unbroken gradient, not so much that scrolling
-  // drags through a dead field of it before the content resumes.
-  const stageH = rootH ? Math.round(rootH * 1.18) : 900;
-  const fadeFrom = rootH ? Math.min(0.88, (rootH * 0.97) / stageH) : 0.8;
+  /**
+   * ⚠️ THE STAGE IS AS TALL AS WHAT IS ON IT, PLUS THE MELT. IT IS NOT A MULTIPLE OF THE VIEWPORT.
+   * It used to be `rootH * 1.18`, which on a normal phone left about 150pt of empty gradient
+   * between the last thing in the hero and the first row of the library, and then melted across
+   * another 170 — a third of a screen of nothing, which is what "there is a lot of empty gap" was
+   * describing. Now the hero measures itself and the gradient ends where its content does.
+   * The viewport floor stays: the first screenful must still be unbroken gradient, so a short hero
+   * (letter mode) does not leave the light section peeking over the fold.
+   */
+  const MELT = 92;
+  const stageH = heroH
+    ? Math.max(headerH + heroH + MELT, rootH ? Math.round(rootH * 0.98) : 620)
+    : (rootH ? Math.round(rootH * 1.05) : 900);
+  const fadeFrom = Math.max(0.3, (stageH - MELT) / stageH);
 
   return (
     <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
@@ -360,6 +371,9 @@ export default function EmployerHome({
       >
       {/* ───────────────────────── DARK STAGE ───────────────────────── */}
       <MeshStage style={{ minHeight: stageH, paddingTop: headerH }} fadeFrom={fadeFrom}>
+        {/* ⚠️ THE MEASURED BLOCK. Everything the hero draws lives inside this one view so its
+            height can size the stage; adding a sibling after it would be invisible to the melt. */}
+        <View onLayout={(e) => setHeroH(Math.round(e.nativeEvent.layout.height))}>
         {/* live pill + edit */}
         <View style={[s.rowBetween, { paddingHorizontal: 16, paddingTop: 14 }]}>
           <View style={s.livePill}>
@@ -498,9 +512,14 @@ export default function EmployerHome({
             // ⚠️ THE WIZARD IS THE ONLY WAY IN, SO IT IS ALWAYS REACHABLE.
             // Gating it on an unfinished profile meant that the moment someone completed one, the
             // door disappeared — and rebuilding a resume from fresh notes is a thing people want to
-            // do repeatedly, not once. So it is always here; what changes is the weight. Unfinished
-            // gets the gradient, because it is the most useful thing on the screen. Finished gets
-            // glass, so it sits beside the carousel instead of shouting over it.
+            // do repeatedly, not once.
+            // ⚠️ AND IT IS MINT, NOT BLUE. The finished state used to be a glass pill, which on a
+            // blue-violet hero is the one thing on the screen you cannot see. Every other surface
+            // here is blue or violet, so the only colour that can carry a call to action is the
+            // one that is not: the mint already in the LIVE pill and at the end of the headline's
+            // sweep. Dark ink on a bright fill, rather than white on mid-blue, is what makes it
+            // read from across the room. Weight still varies — the glow, not the colour — so a
+            // finished profile gets a quieter version of the same button instead of a hidden one.
             const sub = !started
               ? 'A few details and we will build your real resume into every design above.'
               : left.length === 0
@@ -518,26 +537,22 @@ export default function EmployerHome({
             };
             return (
               <>
-                {left.length ? (
-                  <TouchableOpacity style={s.makeWrap} activeOpacity={0.9} onPress={go}>
-                    <LinearGradient
-                      colors={[E.blue, E.purple, E.purpleLite]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={s.makeBtn}
-                    >
-                      <Ionicons name="sparkles" size={16} color="#fff" />
-                      <Text style={s.makeTx} numberOfLines={1}>{label}</Text>
-                      <Ionicons name="arrow-forward" size={15} color="rgba(255,255,255,0.9)" />
-                    </LinearGradient>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity style={s.makeGhost} activeOpacity={0.85} onPress={go}>
-                    <Ionicons name="sparkles-outline" size={15} color="#fff" />
-                    <Text style={s.makeGhostTx} numberOfLines={1}>{label}</Text>
-                    <Ionicons name="arrow-forward" size={14} color="rgba(255,255,255,0.55)" />
-                  </TouchableOpacity>
-                )}
+                <TouchableOpacity
+                  style={[s.makeWrap, !left.length && s.makeCalm]}
+                  activeOpacity={0.9}
+                  onPress={go}
+                >
+                  <LinearGradient
+                    colors={MAKE_MINT}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.makeBtn}
+                  >
+                    <Ionicons name="sparkles" size={16} color={MAKE_INK} />
+                    <Text style={s.makeTx} numberOfLines={1}>{label}</Text>
+                    <Ionicons name="arrow-forward" size={15} color="rgba(4,33,28,0.6)" />
+                  </LinearGradient>
+                </TouchableOpacity>
                 <Text style={s.makeSub} numberOfLines={2}>{sub}</Text>
               </>
             );
@@ -560,6 +575,7 @@ export default function EmployerHome({
             </TouchableOpacity>
           )}
         </View>
+        </View>
       </MeshStage>
 
       {/* ─────────────────── YOUR LIBRARY ───────────────────
@@ -567,6 +583,7 @@ export default function EmployerHome({
           showing — `image={cards[i % cards.length]?.image}` under a company badge — so scrolling
           revealed the same designs twice and said nothing new. This says what only they know:
           what they have already paid for, and can have again. */}
+      <View style={s.library}>
       <DownloadHistory
         mode={mode}
         items={history}
@@ -581,6 +598,7 @@ export default function EmployerHome({
         onScrollToTop={() => scrollRef.current?.scrollTo?.({ y: 0, animated: true })}
         onMoreJobs={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } })}
       />
+      </View>
 
       {/* the old home, one tap away */}
       <TouchableOpacity style={s.dashLink} activeOpacity={0.8} onPress={onOpenDashboard}>
@@ -824,6 +842,14 @@ function NoResume({ onBuild }: { onBuild: () => void }) {
   );
 }
 
+/**
+ * The one warm-side accent on a blue-violet screen, and the ink that goes on it.
+ * ⚠️ DARK INK, NOT WHITE. White on mint fails contrast at this size; #04211C is the same hue
+ * driven almost to black, so the label reads as part of the button rather than sitting on it.
+ */
+const MAKE_MINT: [string, string, string] = ['#8FF7E4', '#2DE0C0', '#12BFA6'];
+const MAKE_INK = '#04211C';
+
 /* ── styles ─────────────────────────────────────────────────────────────── */
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: E.bg },
@@ -894,20 +920,16 @@ const s = StyleSheet.create({
   // drawn on the same view as overflow:'hidden', and this exact trap has been hit three times in
   // this folder. Note the style is NOT keyed `cta` — the suite forbids a shadowColor inside one.
   makeWrap: {
-    marginTop: 14, marginHorizontal: 16, borderRadius: 16,
-    shadowColor: E.blue, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.42, shadowRadius: 18, elevation: 8,
+    marginTop: 15, marginHorizontal: 16, borderRadius: 16,
+    shadowColor: '#2DE0C0', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.5, shadowRadius: 20, elevation: 8,
   },
+  // Same button, half the glow: a finished profile still needs the door, not the announcement.
+  makeCalm: { shadowOpacity: 0.28, shadowRadius: 13, elevation: 5 },
   makeBtn: {
     height: 52, borderRadius: 16, overflow: 'hidden',
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
   },
-  makeTx: { fontSize: 15.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
-  makeGhost: {
-    marginTop: 14, marginHorizontal: 16, height: 48, borderRadius: 15,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder,
-  },
-  makeGhostTx: { fontSize: 14.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
+  makeTx: { fontSize: 15.5, fontWeight: '800', color: MAKE_INK, letterSpacing: -0.2, flexShrink: 1 },
 
   makeSub: {
     marginTop: 9, marginHorizontal: 22, fontSize: 12, fontWeight: '600',
@@ -946,6 +968,11 @@ const s = StyleSheet.create({
   noResumeSub: { fontSize: 12.5, color: E.onDark, textAlign: 'center', marginTop: 6, lineHeight: 18 },
   noResumeBtn: { height: 46, paddingHorizontal: 22, borderRadius: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
   noResumeBtnTx: { fontSize: 14, fontWeight: '800', color: '#fff' },
+
+  // ⚠️ IT OVERLAPS THE MELT ON PURPOSE — this is the join, not a mistake. The section header sits
+  // in the last quarter of the ramp, where the ground is already all but the light colour, so the
+  // list grows out of the hero instead of starting under it after a strip of nothing.
+  library: { marginTop: -24 },
 
   dashLink: { marginHorizontal: 16, marginTop: 26, height: 46, borderRadius: 14, backgroundColor: E.surface, borderWidth: 1, borderColor: E.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   dashLinkTx: { fontSize: 13, fontWeight: '700', color: E.textMuted },

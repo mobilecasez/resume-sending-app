@@ -26,6 +26,13 @@ import { View, StyleSheet, Animated, Easing } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { E } from './theme';
 
+// The light section's colour, as a fade-up rather than a fade-through. See the melt below.
+const BG_RGB = '229,234,243';                    // E.bg — kept as components so alpha can vary
+const bg = (a: number) => `rgba(${BG_RGB},${a})`;
+const BG0 = bg(0);
+/** Where the four intermediate stops sit inside the melt, as a smoothstep rather than evenly. */
+const RAMP = [0.2, 0.42, 0.66, 0.86];
+
 // One drifting wash. Deliberately oversized (150% of the stage) and offset, so its own bounds can
 // never enter frame however far it drifts.
 function Wash({ colors, locations, start, end, dur, dx, dy, delay = 0 }: {
@@ -94,12 +101,19 @@ export default function MeshStage({
         {/* Keep the very top flat: the washes are already held clear, this settles any bleed. */}
         <LinearGradient colors={['rgba(7,10,24,0.92)', 'transparent']} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.13 }}
                         style={StyleSheet.absoluteFill} />
-        {/* Melt into the light section rather than ending on an edge — the grey below is only met
-            on the way down, so the first screenful reads as one continuous gradient. */}
+        {/* Melt into the light section rather than ending on an edge.
+            ⚠️ EVERY STOP IS THE LIGHT COLOUR AT A DIFFERENT ALPHA, AND THE FIRST ONE IS NOT
+            `transparent`. The keyword means transparent BLACK, so a gradient from it to a light
+            colour interpolates through dark — which is exactly the muddy grey-blue band that made
+            this seam read as a third surface sitting between the hero and the list. Fading one
+            colour up from zero alpha introduces no colour of its own, so what you see is the hero
+            being covered rather than something being drawn between the two.
+            ⚠️ SIX STOPS, EASED, NOT THREE. Three evenly-spaced stops band visibly across 100+pt;
+            the curve below is a smoothstep, so the ramp has no edge anywhere along it. */}
         {fade && (
           <LinearGradient
-            colors={['transparent', 'rgba(160,178,206,0.35)', E.bg]}
-            locations={[fadeFrom, fadeFrom + (1 - fadeFrom) * 0.62, 1]}
+            colors={[BG0, BG0, bg(0.08), bg(0.28), bg(0.58), bg(0.85), E.bg]}
+            locations={[0, fadeFrom, ...RAMP.map((r) => fadeFrom + (1 - fadeFrom) * r), 1]}
             start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
             style={StyleSheet.absoluteFill}
           />

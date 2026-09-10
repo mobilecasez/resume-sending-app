@@ -1,16 +1,34 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// MAKE YOURS — the five steps between "I just installed this" and "here is my resume".
+// MAKE YOURS — the four steps between "I just installed this" and "here is my resume".
 //
 // The app's own retention data says people install and never activate: most accounts never upload a
 // résumé at all. Everything they need already had an endpoint and a screen somewhere — they were
 // just scattered across Account Settings, the profile editor and the builder, so nobody walked the
 // whole path. This is that path, once, in order, with the resume built at the end of it.
 //
+// ⚠️ EVERY STEP FITS ON ONE SCREEN. That is a hard constraint, not a preference: a wizard step you
+// have to scroll hides its own Next button, and the first version shipped five separate boxed
+// fields plus their labels — 86pt each — which ran off the bottom of every phone. The details are
+// now ONE inset card of 54pt rows with the value on the right, which is half the height and reads
+// as a single object rather than five. Photo and signature became one step for the same reason:
+// each was a single control with a whole screen to itself.
+//
 // ⚠️ IT DOES NOT INVENT A DEFINITION OF "COMPLETE". Two already exist and they disagree — the API
 // says phone + address + date of birth, the activation journey says those three PLUS all three
 // files on disk. A third would be how a green tick appears over a profile the generator then
 // refuses, so the server's own `setup` object decides, and it also decides which step to open on.
+//
+// ⚠️ CITY AND COUNTRY ARE COLLECTED, AND THEY ARE STORED IN `address`. No endpoint in this codebase
+// writes users.city or users.nationality — /api/update-user-details looks like it accepts them and
+// silently drops them — so the two fields are ASKED separately, because that is how a person knows
+// what to type, and JOINED into the one column that is really written. Re-opening splits them back
+// apart on the last comma. Nothing is sent to a column that does not exist.
+//
+// ⚠️ THE DIAL CODE IS PART OF THE PHONE STRING, because `phone_number` is a single free-text column
+// and a resume prints a phone number, not a pair of fields. Picking a country fills the code in
+// when the user has not already chosen one — following the country is help; overriding a code they
+// picked themselves would be a bug.
 //
 // ⚠️ IT RESUMES. Someone who quits at the signature comes back to the signature, because `setup`
 // already reports each piece separately. Restarting them at their own name would be a small insult.
@@ -21,16 +39,17 @@
 // same tree as this native slide is exactly the crash. Nothing here animates width, height, margin
 // or colour.
 //
-// ⚠️ STEP 5 SPENDS MONEY. Generating is a metered AI call that can answer 402 or 403, so it is
-// behind an explicit tap and never fires on step entry — the letters auto-regeneration incident is
-// the precedent for why.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// ⚠️ THE LAST STEP SPENDS MONEY. Generating is a metered AI call that can answer 402 or 403, so it
+// is behind an explicit tap and never fires on step entry — the letters auto-regeneration incident
+// is the precedent for why.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Animated, Easing,
-  ActivityIndicator, Platform, KeyboardAvoidingView, Alert, Image,
+  ActivityIndicator, Platform, KeyboardAvoidingView, Alert, Image, Modal, Pressable,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -38,56 +57,105 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { E, SERIF, sweepWords } from '../../components/employer-home/theme';
 import MeshStage from '../../components/employer-home/MeshStage';
-import SignaturePad from '../../components/onboarding/SignaturePad';
+import SignatureStudio from '../../components/onboarding/SignatureStudio';
+import CountrySheet from '../../components/onboarding/CountrySheet';
+import { COUNTRIES, Country, countryByName } from '../../constants/countries';
 import {
   fetchProfileSnapshot, saveDetails, uploadPhoto, uploadSignature, uploadResumeFile,
   generateResume, GenStage, ProfileSnapshot,
 } from '../../services/profileSetupService';
 import { track } from '../../services/analytics';
 
-type StepKey = 'you' | 'photo' | 'signature' | 'experience' | 'build';
+type StepKey = 'you' | 'sign' | 'experience' | 'build';
 const STEPS: Array<{ key: StepKey; title: string; short: string }> = [
   { key: 'you', title: 'About you', short: 'You' },
-  { key: 'photo', title: 'Your photo', short: 'Photo' },
-  { key: 'signature', title: 'Your signature', short: 'Sign' },
+  { key: 'sign', title: 'Photo & signature', short: 'Photo' },
   { key: 'experience', title: 'Your experience', short: 'Work' },
   { key: 'build', title: 'Building it', short: 'Build' },
 ];
+const LAST = STEPS.length - 1;
 
 /** The server enum, exactly. Anything else is a 400. */
 const GENDERS = ['Male', 'Female', 'Prefer Not to Say'];
 
+/** "Pune, India" → the two halves, when the tail is a country we know. */
+function splitAddress(addr: string): { city: string; country: Country | null } {
+  const raw = (addr || '').trim();
+  if (!raw) return { city: '', country: null };
+  const i = raw.lastIndexOf(',');
+  if (i > 0) {
+    const c = countryByName(raw.slice(i + 1));
+    if (c) return { city: raw.slice(0, i).trim(), country: c };
+  }
+  const whole = countryByName(raw);
+  if (whole) return { city: '', country: whole };
+  return { city: raw, country: null };
+}
+
+/** The longest dial code this number starts with, so +91 does not win over +9 by accident. */
+function splitPhone(phone: string): { dial: string; rest: string } {
+  const raw = (phone || '').trim();
+  if (!raw.startsWith('+')) return { dial: '', rest: raw };
+  const digits = raw.slice(1).replace(/\D/g, '');
+  let best = '';
+  for (const c of COUNTRIES) {
+    const d = c.dial.slice(1);
+    if (digits.startsWith(d) && d.length > best.length) best = d;
+  }
+  if (!best) return { dial: '', rest: raw };
+  return { dial: `+${best}`, rest: raw.slice(1).replace(/\D/g, '').slice(best.length) };
+}
+
+const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const iso = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const pretty = (s: string) => {
+  if (!ISO_RE.test(s)) return '';
+  const [y, m, d] = s.split('-').map(Number);
+  return `${d} ${MONTHS[m - 1]} ${y}`;
+};
+
 export default function MakeYours() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  // ⚠️ DEV ONLY, AND IT MUST STAY THAT WAY. Four of the five steps are unreachable in the preview
+  // ⚠️ DEV ONLY, AND IT MUST STAY THAT WAY. Three of the four steps are unreachable in the preview
   // harness without a signed-in session, and a screen nobody can look at is a screen nobody checks.
   // __DEV__ is compiled out of a release bundle, so this cannot skip a step for a real user.
   const params = useLocalSearchParams<{ step?: string }>();
-  const devStep = __DEV__ && params.step != null ? Math.max(0, Math.min(4, Number(params.step) || 0)) : null;
+  const devStep = __DEV__ && params.step != null ? Math.max(0, Math.min(3, Number(params.step) || 0)) : null;
 
   const [step, setStep] = useState(0);
   const [snap, setSnap] = useState<ProfileSnapshot | null>(null);
   const [booting, setBooting] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // step 1
+  // step 1 — the details
   const [fullName, setFullName] = useState('');
+  const [city, setCity] = useState('');
+  const [country, setCountry] = useState<Country | null>(null);
+  const [dial, setDial] = useState('');
   const [phone, setPhone] = useState('');
   const [dob, setDob] = useState('');
-  const [address, setAddress] = useState('');
   const [gender, setGender] = useState('');
+  const [focus, setFocus] = useState('');
+  const [sheet, setSheet] = useState<'dial' | 'country' | null>(null);
+  const [dobOpen, setDobOpen] = useState(false);
+  const [dobDraft, setDobDraft] = useState<Date>(new Date(1995, 0, 1));
+  // Set the moment they open the code picker themselves — after that, choosing a country must not
+  // quietly rewrite the code they chose.
+  const dialPinned = useRef(false);
 
-  // steps 2-3
+  // step 2 — photo + signature
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [signUri, setSignUri] = useState<string | null>(null);
 
-  // step 4
+  // step 3 — experience
   const [lane, setLane] = useState<'write' | 'upload'>('write');
   const [rawText, setRawText] = useState('');
   const [file, setFile] = useState<{ uri: string; name: string; mime: string } | null>(null);
 
-  // step 5
+  // step 4 — the build
   const [stage, setStage] = useState<GenStage | null>(null);
   const [genErr, setGenErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -105,11 +173,20 @@ export default function MakeYours() {
       if (s) {
         setSnap(s);
         setFullName(s.fullName || '');
-        setPhone(s.phone || '');
-        setDob(s.dateOfBirth || '');
-        setAddress(s.address || '');
+        const a = splitAddress(s.address || '');
+        setCity(a.city);
+        setCountry(a.country);
+        const p = splitPhone(s.phone || '');
+        if (p.dial) { setDial(p.dial); dialPinned.current = true; }
+        else if (a.country) setDial(a.country.dial);
+        setPhone(p.rest);
+        setDob(ISO_RE.test(s.dateOfBirth || '') ? s.dateOfBirth : '');
+        if (ISO_RE.test(s.dateOfBirth || '')) {
+          const [y, m, d] = s.dateOfBirth.split('-').map(Number);
+          setDobDraft(new Date(y, m - 1, d));
+        }
         setGender(GENDERS.includes(s.gender) ? s.gender : '');
-        const first = !s.setup.profile ? 0 : !s.setup.photo ? 1 : !s.setup.signature ? 2 : !s.setup.resume ? 3 : 3;
+        const first = !s.setup.profile ? 0 : (!s.setup.photo || !s.setup.signature) ? 1 : !s.setup.resume ? 2 : 2;
         setStep(devStep ?? first);
       } else if (devStep != null) {
         setStep(devStep);
@@ -147,13 +224,25 @@ export default function MakeYours() {
   }, [bar, step]);
 
   /* ── steps ───────────────────────────────────────────────────────────────────────────────── */
+  const address = useMemo(
+    () => [city.trim(), country?.name].filter(Boolean).join(', '),
+    [city, country],
+  );
+
   const saveYou = useCallback(async () => {
     setSaving(true);
-    const r = await saveDetails({ fullName, phone, address, dateOfBirth: dob, gender });
+    const r = await saveDetails({
+      fullName,
+      // One column, one string — the code is part of the number a resume prints.
+      phone: [dial, phone.trim()].filter(Boolean).join(' '),
+      address,
+      dateOfBirth: dob,
+      gender,
+    });
     setSaving(false);
     if (!r.ok) { Alert.alert('Could not save', r.message || 'Please try again.'); return false; }
     return true;
-  }, [fullName, phone, address, dob, gender]);
+  }, [fullName, dial, phone, address, dob, gender]);
 
   const pickPhoto = useCallback(async () => {
     try {
@@ -176,6 +265,8 @@ export default function MakeYours() {
     }
   }, []);
 
+  // ⚠️ NO AUTO-ADVANCE. Photo and signature share this step, so jumping to the next one the moment
+  // the signature uploads would walk away from a photo they had not chosen yet.
   const saveSignature = useCallback(async (uri: string) => {
     setSignUri(uri);
     setSaving(true);
@@ -183,8 +274,7 @@ export default function MakeYours() {
     setSaving(false);
     if (!up.ok) { setSignUri(null); Alert.alert('Could not upload', up.message || 'Please try again.'); return; }
     try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
-    goTo(3);
-  }, [goTo]);
+  }, []);
 
   const pickFile = useCallback(async () => {
     try {
@@ -220,8 +310,8 @@ export default function MakeYours() {
       : rawText.trim();
     const r = await generateResume(
       {
-        name: fullName, email: snap?.email || '', phone, location: address,
-        rawText: text, includeUploadedResume: true,
+        name: fullName, email: snap?.email || '', phone: [dial, phone.trim()].filter(Boolean).join(' '),
+        location: address, rawText: text, includeUploadedResume: true,
       },
       (st) => setStage(st),
     );
@@ -233,18 +323,21 @@ export default function MakeYours() {
     }
     setStage(null);
     setGenErr(r.message);
-  }, [stage, lane, rawText, fullName, phone, address, snap]);
+  }, [stage, lane, rawText, fullName, dial, phone, address, snap]);
 
   /* ── gating ──────────────────────────────────────────────────────────────────────────────── */
   const canAdvance = (() => {
-    if (step === 0) return fullName.trim().length > 1 && phone.trim().length >= 5 && address.trim().length >= 4;
-    if (step === 3) return lane === 'write' ? rawText.trim().length >= 40 : !!file;
+    if (step === 0) {
+      return fullName.trim().length > 1 && phone.replace(/\D/g, '').length >= 5
+        && city.trim().length >= 2 && !!country;
+    }
+    if (step === 2) return lane === 'write' ? rawText.trim().length >= 40 : !!file;
     return true;
   })();
 
   const next = useCallback(async () => {
     if (step === 0 && !(await saveYou())) return;
-    if (step < STEPS.length - 1) goTo(step + 1);
+    if (step < LAST) goTo(step + 1);
   }, [step, saveYou, goTo]);
 
   const leave = useCallback(() => {
@@ -255,8 +348,16 @@ export default function MakeYours() {
     router.back();
   }, [router]);
 
+  const chooseCountry = useCallback((c: Country) => {
+    setCountry(c);
+    // Help, not an override: it fills a code in, and never replaces one they picked themselves.
+    if (!dialPinned.current) setDial(c.dial);
+  }, []);
+
   /* ── render ──────────────────────────────────────────────────────────────────────────────── */
   const s0 = STEPS[step];
+  const hasPhoto = !!(photoUri || snap?.profileImage);
+  const hasSign = !!(signUri || snap?.signature);
 
   return (
     <View style={s.root}>
@@ -327,7 +428,7 @@ export default function MakeYours() {
             ]}
           >
             <ScrollView
-              contentContainerStyle={[s.body, { paddingBottom: 132 + insets.bottom }]}
+              contentContainerStyle={[s.body, { paddingBottom: 126 + insets.bottom }]}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
@@ -337,62 +438,168 @@ export default function MakeYours() {
               {step === 0 && (
                 <>
                   <Text style={s.lede}>
-                    {sweepWords('This is what goes at the top of every resume.').map((p, i, a) => (
+                    {sweepWords('This is the top of every resume you send.').map((p, i, a) => (
                       <Text key={i} style={{ color: p.c }}>{p.w}{i < a.length - 1 ? ' ' : ''}</Text>
                     ))}
                   </Text>
-                  <Field label="Full name" value={fullName} onChange={setFullName} placeholder="Your name" autoCapitalize="words" />
-                  <Field label="Phone" value={phone} onChange={setPhone} placeholder="+91 98765 43210" keyboardType="phone-pad" />
-                  <Field label="Where you live" value={address} onChange={setAddress} placeholder="City, country" autoCapitalize="words" />
-                  <Field label="Date of birth" value={dob} onChange={setDob} placeholder="YYYY-MM-DD" keyboardType="numbers-and-punctuation" hint="Some employers ask for it. Leave it blank if you would rather not." />
-                  <Text style={s.label}>Gender</Text>
-                  <View style={s.chips}>
-                    {GENDERS.map((g) => (
-                      <TouchableOpacity
-                        key={g}
-                        style={[s.chip, gender === g && s.chipOn]}
-                        activeOpacity={0.85}
-                        onPress={() => setGender(gender === g ? '' : g)}
-                      >
-                        <Text style={[s.chipTx, gender === g && s.chipTxOn]} numberOfLines={1}>{g}</Text>
+
+                  {/* ONE card, five rows. Five boxed fields with their own labels was twice this
+                      tall and turned a one-screen step into a scroll. */}
+                  <View style={s.card}>
+                    <Row icon="person-outline" label="Full name" focused={focus === 'name'}>
+                      <TextInput
+                        style={s.value}
+                        value={fullName}
+                        onChangeText={setFullName}
+                        onFocus={() => setFocus('name')}
+                        onBlur={() => setFocus('')}
+                        placeholder="Your name"
+                        placeholderTextColor="rgba(255,255,255,0.28)"
+                        autoCapitalize="words"
+                        returnKeyType="next"
+                      />
+                    </Row>
+                    <Rule />
+                    <Row icon="business-outline" label="City" focused={focus === 'city'}>
+                      <TextInput
+                        style={s.value}
+                        value={city}
+                        onChangeText={setCity}
+                        onFocus={() => setFocus('city')}
+                        onBlur={() => setFocus('')}
+                        placeholder="Where you live"
+                        placeholderTextColor="rgba(255,255,255,0.28)"
+                        autoCapitalize="words"
+                        returnKeyType="next"
+                      />
+                    </Row>
+                    <Rule />
+                    <Row icon="earth-outline" label="Country" focused={sheet === 'country'}>
+                      <TouchableOpacity style={s.pickRow} activeOpacity={0.7} onPress={() => setSheet('country')}>
+                        {country ? (
+                          <>
+                            <Text style={s.flag}>{country.flag}</Text>
+                            <Text style={s.value} numberOfLines={1}>{country.name}</Text>
+                          </>
+                        ) : (
+                          <Text style={s.placeholder}>Choose</Text>
+                        )}
+                        <Ionicons name="chevron-down" size={14} color="rgba(255,255,255,0.4)" />
                       </TouchableOpacity>
-                    ))}
+                    </Row>
+                    <Rule />
+                    <Row icon="call-outline" label="Phone" focused={focus === 'phone' || sheet === 'dial'}>
+                      <TouchableOpacity
+                        style={s.dialBtn}
+                        activeOpacity={0.7}
+                        onPress={() => { dialPinned.current = true; setSheet('dial'); }}
+                      >
+                        <Text style={[s.dialTx, !dial && s.placeholder]}>{dial || '+ code'}</Text>
+                        <Ionicons name="chevron-down" size={12} color="rgba(255,255,255,0.4)" />
+                      </TouchableOpacity>
+                      <TextInput
+                        style={[s.value, s.phoneInput]}
+                        value={phone}
+                        onChangeText={setPhone}
+                        onFocus={() => setFocus('phone')}
+                        onBlur={() => setFocus('')}
+                        placeholder="98765 43210"
+                        placeholderTextColor="rgba(255,255,255,0.28)"
+                        keyboardType="phone-pad"
+                      />
+                    </Row>
+                    <Rule />
+                    <Row icon="calendar-outline" label="Born" focused={dobOpen}>
+                      {Platform.OS === 'web' ? (
+                        <TextInput
+                          style={s.value}
+                          value={dob}
+                          onChangeText={setDob}
+                          placeholder="YYYY-MM-DD"
+                          placeholderTextColor="rgba(255,255,255,0.28)"
+                        />
+                      ) : (
+                        <TouchableOpacity style={s.pickRow} activeOpacity={0.7} onPress={() => setDobOpen(true)}>
+                          <Text style={dob ? s.value : s.placeholder}>{dob ? pretty(dob) : 'Optional'}</Text>
+                          <Ionicons name="chevron-down" size={14} color="rgba(255,255,255,0.4)" />
+                        </TouchableOpacity>
+                      )}
+                    </Row>
+                  </View>
+
+                  <View style={s.genderRow}>
+                    <Text style={s.genderLabel}>GENDER</Text>
+                    <View style={s.chips}>
+                      {GENDERS.map((g) => (
+                        <TouchableOpacity
+                          key={g}
+                          style={[s.chip, gender === g && s.chipOn]}
+                          activeOpacity={0.85}
+                          onPress={() => setGender(gender === g ? '' : g)}
+                        >
+                          <Text style={[s.chipTx, gender === g && s.chipTxOn]} numberOfLines={1}>
+                            {g === 'Prefer Not to Say' ? 'Rather not' : g}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+
+                  <View style={s.note}>
+                    <Ionicons name="lock-closed-outline" size={13} color="rgba(255,255,255,0.38)" />
+                    <Text style={s.noteTx} numberOfLines={2}>
+                      Used on the documents you make here. Nothing is shared with employers you
+                      have not applied to.
+                    </Text>
                   </View>
                 </>
               )}
 
               {step === 1 && (
                 <>
-                  <Text style={s.lede}>Optional. Most designs show your initials instead, and look just as good.</Text>
-                  <TouchableOpacity style={s.photoWrap} activeOpacity={0.9} onPress={pickPhoto}>
-                    {photoUri || snap?.profileImage ? (
-                      <Image source={{ uri: photoUri || snap?.profileImage || '' }} style={s.photo} />
-                    ) : (
-                      <View style={s.photoEmpty}>
-                        <Ionicons name="camera-outline" size={28} color="rgba(255,255,255,0.6)" />
+                  <Text style={s.lede}>Both optional. Both make a document look like it is yours.</Text>
+
+                  <TouchableOpacity style={s.photoRow} activeOpacity={0.9} onPress={pickPhoto}>
+                    <View>
+                      {hasPhoto ? (
+                        <Image source={{ uri: photoUri || snap?.profileImage || '' }} style={s.photo} />
+                      ) : (
+                        <View style={s.photoEmpty}>
+                          <Ionicons name="person-outline" size={26} color="rgba(255,255,255,0.5)" />
+                        </View>
+                      )}
+                      <View style={s.photoBadge}>
+                        <Ionicons name={hasPhoto ? 'refresh' : 'add'} size={13} color="#fff" />
+                      </View>
+                    </View>
+                    <View style={s.photoText}>
+                      <Text style={s.photoH}>Your photo</Text>
+                      <Text style={s.photoP} numberOfLines={2}>
+                        {hasPhoto ? 'Tap to choose a different one.' : 'Designs that use one look better with it. The rest show your initials.'}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.35)" />
+                  </TouchableOpacity>
+
+                  <View style={s.sectionRow}>
+                    <Text style={s.section}>YOUR SIGNATURE</Text>
+                    {hasSign && (
+                      <View style={s.savedPill}>
+                        <Ionicons name="checkmark" size={11} color={E.mint} />
+                        <Text style={s.savedTx}>SAVED</Text>
                       </View>
                     )}
-                    <View style={s.photoBadge}>
-                      <Ionicons name={photoUri || snap?.profileImage ? 'refresh' : 'add'} size={15} color="#fff" />
-                    </View>
-                  </TouchableOpacity>
-                  <Text style={s.photoTx}>
-                    {photoUri || snap?.profileImage ? 'Tap to choose a different one' : 'Tap to choose a photo'}
-                  </Text>
+                  </View>
+                  <SignatureStudio
+                    name={fullName}
+                    existing={signUri || snap?.signature}
+                    onCaptured={saveSignature}
+                    onEmpty={() => Alert.alert('Nothing to save', 'Draw your signature, or pick a hand.')}
+                  />
                 </>
               )}
 
               {step === 2 && (
-                <>
-                  <Text style={s.lede}>Signed letters get read. This goes at the bottom of your cover letters.</Text>
-                  <SignaturePad onCaptured={saveSignature} onEmpty={() => Alert.alert('Nothing to save', 'Draw your signature first.')} />
-                  {!!snap?.signature && !signUri && (
-                    <Text style={s.have}>You already have one saved. Drawing a new one replaces it.</Text>
-                  )}
-                </>
-              )}
-
-              {step === 3 && (
                 <>
                   <Text style={s.lede}>Either is fine. We turn whatever you give us into a proper resume.</Text>
                   <View style={s.laneRow}>
@@ -453,7 +660,7 @@ export default function MakeYours() {
                 </>
               )}
 
-              {step === 4 && (
+              {step === 3 && (
                 <BuildStep
                   stage={stage}
                   error={genErr}
@@ -468,9 +675,9 @@ export default function MakeYours() {
       )}
 
       {/* footer — hidden on the build step, which owns its own action */}
-      {!booting && step < STEPS.length - 1 && (
+      {!booting && step < LAST && (
         <View style={[s.footer, { paddingBottom: insets.bottom + 12 }]}>
-          {(step === 1 || step === 2) && (
+          {step === 1 && (
             <TouchableOpacity style={s.skip} activeOpacity={0.8} onPress={() => goTo(step + 1)}>
               <Text style={s.skipTx}>Skip for now</Text>
             </TouchableOpacity>
@@ -493,6 +700,62 @@ export default function MakeYours() {
             </LinearGradient>
           </TouchableOpacity>
         </View>
+      )}
+
+      <CountrySheet
+        open={sheet != null}
+        mode={sheet === 'dial' ? 'dial' : 'country'}
+        selectedIso={country?.iso}
+        onPick={(c) => { if (sheet === 'dial') setDial(c.dial); else chooseCountry(c); }}
+        onClose={() => setSheet(null)}
+      />
+
+      {/* ⚠️ ANDROID RENDERS THE NATIVE DIALOG DIRECTLY — mounting it inside a Modal shows two.
+          This is App.js's own pattern for the same component; it is not worth diverging from. */}
+      {dobOpen && Platform.OS === 'android' && (
+        <DateTimePicker
+          value={dobDraft}
+          mode="date"
+          display="default"
+          maximumDate={new Date()}
+          minimumDate={new Date(1930, 0, 1)}
+          onChange={(e: any, d?: Date) => {
+            setDobOpen(false);
+            if (e?.type === 'set' && d) { setDobDraft(d); setDob(iso(d)); }
+          }}
+        />
+      )}
+      {Platform.OS === 'ios' && (
+        <Modal transparent visible={dobOpen} animationType="slide" onRequestClose={() => setDobOpen(false)}>
+          <View style={s.dobBackdrop}>
+            <Pressable style={s.flex} onPress={() => setDobOpen(false)} />
+            <View style={[s.dobSheet, { paddingBottom: insets.bottom + 10 }]}>
+              <Text style={s.dobTitle}>Date of birth</Text>
+              <DateTimePicker
+                value={dobDraft}
+                mode="date"
+                display="spinner"
+                themeVariant="dark"
+                maximumDate={new Date()}
+                minimumDate={new Date(1930, 0, 1)}
+                onChange={(_: any, d?: Date) => { if (d) setDobDraft(d); }}
+                style={s.dobPicker}
+              />
+              <View style={s.dobBtns}>
+                <TouchableOpacity style={s.dobGhost} activeOpacity={0.85} onPress={() => setDobOpen(false)}>
+                  <Text style={s.dobGhostTx}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={s.dobSet}
+                  activeOpacity={0.9}
+                  onPress={() => { setDob(iso(dobDraft)); setDobOpen(false); }}
+                >
+                  <Text style={s.dobSetTx}>Set date</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       )}
     </View>
   );
@@ -587,28 +850,22 @@ function BuildStep({
 
 /* ── bits ────────────────────────────────────────────────────────────────────────────────────── */
 
-function Field({
-  label, value, onChange, placeholder, hint, keyboardType, autoCapitalize,
+/** One line of the details card: icon, name, and the answer on the right. */
+function Row({
+  icon, label, focused, children,
 }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; hint?: string;
-  keyboardType?: any; autoCapitalize?: any;
+  icon: any; label: string; focused?: boolean; children: React.ReactNode;
 }) {
   return (
-    <View style={{ marginTop: 16 }}>
-      <Text style={s.label}>{label}</Text>
-      <TextInput
-        style={s.input}
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor="rgba(255,255,255,0.3)"
-        keyboardType={keyboardType}
-        autoCapitalize={autoCapitalize || 'none'}
-      />
-      {!!hint && <Text style={s.hint} numberOfLines={2}>{hint}</Text>}
+    <View style={[s.row, focused && s.rowOn]}>
+      <Ionicons name={icon} size={16} color={focused ? E.mint : 'rgba(255,255,255,0.42)'} />
+      <Text style={[s.rowLabel, focused && s.rowLabelOn]}>{label}</Text>
+      <View style={s.rowValue}>{children}</View>
     </View>
   );
 }
+
+const Rule = () => <View style={s.rule} />;
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: E.stage },
@@ -633,42 +890,93 @@ const s = StyleSheet.create({
   fillWrap: { ...StyleSheet.absoluteFillObject },
   fill: { flex: 1 },
 
-  body: { paddingHorizontal: 22, paddingTop: 26 },
+  body: { paddingHorizontal: 20, paddingTop: 20 },
   kicker: { fontSize: 11, fontWeight: '800', letterSpacing: 1.6, textTransform: 'uppercase', color: 'rgba(255,255,255,0.45)' },
-  h1: { fontSize: 30, fontWeight: '800', color: '#fff', letterSpacing: -0.9, marginTop: 6 },
-  lede: { fontFamily: SERIF, fontStyle: 'italic', fontSize: 17, color: 'rgba(255,255,255,0.66)', marginTop: 10, lineHeight: 24 },
+  h1: { fontSize: 28, fontWeight: '800', color: '#fff', letterSpacing: -0.9, marginTop: 5 },
+  lede: { fontFamily: SERIF, fontStyle: 'italic', fontSize: 16, color: 'rgba(255,255,255,0.66)', marginTop: 8, lineHeight: 22 },
 
-  label: { fontSize: 11.5, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)', marginBottom: 7, marginTop: 16 },
-  input: {
-    height: 52, borderRadius: 15, paddingHorizontal: 15, fontSize: 15.5, fontWeight: '600', color: '#fff',
-    backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder,
+  /* the details card */
+  card: {
+    marginTop: 18, borderRadius: 18, overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.055)', borderWidth: 1, borderColor: E.glassBorder,
   },
-  hint: { fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.4)', marginTop: 6, lineHeight: 16, flexShrink: 1 },
+  row: { height: 54, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, gap: 10 },
+  rowOn: { backgroundColor: 'rgba(94,234,212,0.07)' },
+  rowLabel: { width: 74, fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.5)' },
+  rowLabelOn: { color: 'rgba(255,255,255,0.78)' },
+  rowValue: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
+  rule: { height: StyleSheet.hairlineWidth, marginLeft: 44, backgroundColor: 'rgba(255,255,255,0.10)' },
+  value: { flexShrink: 1, fontSize: 15, fontWeight: '700', color: '#fff', textAlign: 'right', padding: 0 },
+  placeholder: { fontSize: 15, fontWeight: '600', color: 'rgba(255,255,255,0.28)' },
+  pickRow: { flexDirection: 'row', alignItems: 'center', gap: 7, flexShrink: 1, paddingVertical: 8 },
+  flag: { fontSize: 17 },
+  dialBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 3, height: 32, paddingHorizontal: 9,
+    borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: E.glassBorder,
+  },
+  dialTx: { fontSize: 13.5, fontWeight: '800', color: '#fff' },
+  phoneInput: { flex: 1, minWidth: 60 },
 
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  genderRow: { flexDirection: 'row', alignItems: 'center', marginTop: 16, gap: 10 },
+  genderLabel: { fontSize: 10.5, fontWeight: '800', letterSpacing: 1.1, color: 'rgba(255,255,255,0.42)' },
+  chips: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', gap: 7 },
   chip: {
-    paddingHorizontal: 14, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder,
+    paddingHorizontal: 12, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: E.glassBorder,
   },
   chipOn: { backgroundColor: 'rgba(79,141,255,0.22)', borderColor: 'rgba(150,186,255,0.6)' },
-  chipTx: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.62)', flexShrink: 1 },
+  chipTx: { fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.6)', flexShrink: 1 },
   chipTxOn: { color: '#fff' },
 
-  photoWrap: { alignSelf: 'center', marginTop: 30 },
-  photo: { width: 132, height: 132, borderRadius: 66, borderWidth: 2, borderColor: 'rgba(255,255,255,0.22)' },
+  note: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 18, paddingHorizontal: 2 },
+  noteTx: { flex: 1, fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.38)', lineHeight: 16 },
+
+  /* the date sheet */
+  dobBackdrop: { flex: 1, backgroundColor: 'rgba(4,6,14,0.62)', justifyContent: 'flex-end' },
+  dobSheet: {
+    borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: 16, paddingTop: 16,
+    backgroundColor: '#0E1428', borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  dobTitle: { fontSize: 17, fontWeight: '800', color: '#fff', textAlign: 'center', letterSpacing: -0.4 },
+  dobPicker: { height: 196, width: '100%' },
+  dobBtns: { flexDirection: 'row', gap: 10, marginTop: 6 },
+  dobGhost: {
+    flex: 1, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder,
+  },
+  dobGhostTx: { fontSize: 14.5, fontWeight: '700', color: 'rgba(255,255,255,0.6)' },
+  dobSet: { flex: 1.4, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: E.blueDeep },
+  dobSetTx: { fontSize: 14.5, fontWeight: '800', color: '#fff' },
+
+  /* photo + signature */
+  photoRow: {
+    marginTop: 18, flexDirection: 'row', alignItems: 'center', gap: 14, padding: 13, borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.055)', borderWidth: 1, borderColor: E.glassBorder,
+  },
+  photo: { width: 62, height: 62, borderRadius: 31, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.22)' },
   photoEmpty: {
-    width: 132, height: 132, borderRadius: 66, alignItems: 'center', justifyContent: 'center',
+    width: 62, height: 62, borderRadius: 31, alignItems: 'center', justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1.5, borderColor: E.glassBorder, borderStyle: 'dashed',
   },
   photoBadge: {
-    position: 'absolute', right: -2, bottom: -2, width: 38, height: 38, borderRadius: 19,
+    position: 'absolute', right: -3, bottom: -3, width: 26, height: 26, borderRadius: 13,
     alignItems: 'center', justifyContent: 'center', backgroundColor: E.blueDeep,
-    borderWidth: 3, borderColor: E.stage,
+    borderWidth: 2.5, borderColor: '#0B1024',
   },
-  photoTx: { textAlign: 'center', marginTop: 16, fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.5)', flexShrink: 1 },
-  have: { marginTop: 12, fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.45)', textAlign: 'center', flexShrink: 1 },
+  photoText: { flex: 1, minWidth: 0 },
+  photoH: { fontSize: 15, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
+  photoP: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.48)', marginTop: 3, lineHeight: 16.5 },
 
-  laneRow: { flexDirection: 'row', gap: 10, marginTop: 20 },
+  sectionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 20, marginBottom: 10 },
+  section: { fontSize: 10.5, fontWeight: '800', letterSpacing: 1.3, color: 'rgba(255,255,255,0.45)' },
+  savedPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 3, height: 18, paddingHorizontal: 7, borderRadius: 6,
+    backgroundColor: 'rgba(20,184,166,0.14)', borderWidth: 1, borderColor: 'rgba(20,184,166,0.3)',
+  },
+  savedTx: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.7, color: E.mint },
+
+  /* experience */
+  laneRow: { flexDirection: 'row', gap: 10, marginTop: 18 },
   lane: {
     flex: 1, height: 50, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
     backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: E.glassBorder,
@@ -678,21 +986,21 @@ const s = StyleSheet.create({
   laneTxOn: { color: '#fff' },
 
   hintCard: {
-    flexDirection: 'row', gap: 9, alignItems: 'flex-start', marginTop: 16, padding: 13, borderRadius: 14,
+    flexDirection: 'row', gap: 9, alignItems: 'flex-start', marginTop: 14, padding: 13, borderRadius: 14,
     backgroundColor: 'rgba(94,234,212,0.09)', borderWidth: 1, borderColor: 'rgba(94,234,212,0.24)',
   },
   hintTx: { flex: 1, fontSize: 12.5, fontWeight: '600', color: 'rgba(255,255,255,0.78)', lineHeight: 18 },
 
   area: {
-    marginTop: 14, minHeight: 190, borderRadius: 16, padding: 15, fontSize: 15, lineHeight: 22,
+    marginTop: 12, minHeight: 178, borderRadius: 16, padding: 15, fontSize: 15, lineHeight: 22,
     fontWeight: '500', color: '#fff',
     backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: E.glassBorder,
   },
-  areaShort: { minHeight: 110 },
-  count: { marginTop: 9, fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.42)', textAlign: 'right', flexShrink: 1 },
+  areaShort: { minHeight: 104 },
+  count: { marginTop: 8, fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.42)', textAlign: 'right', flexShrink: 1 },
 
   drop: {
-    marginTop: 16, paddingVertical: 26, paddingHorizontal: 18, borderRadius: 18, alignItems: 'center', gap: 7,
+    marginTop: 14, paddingVertical: 24, paddingHorizontal: 18, borderRadius: 18, alignItems: 'center', gap: 7,
     backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1.5, borderColor: E.glassBorder, borderStyle: 'dashed',
   },
   dropTx: { fontSize: 15, fontWeight: '800', color: '#fff', flexShrink: 1 },
@@ -716,7 +1024,7 @@ const s = StyleSheet.create({
 });
 
 const b = StyleSheet.create({
-  wrap: { alignItems: 'center', paddingTop: 34 },
+  wrap: { alignItems: 'center', paddingTop: 30 },
   h: { fontSize: 22, fontWeight: '800', color: '#fff', letterSpacing: -0.6, textAlign: 'center', flexShrink: 1 },
   p: { fontSize: 13.5, fontWeight: '600', color: 'rgba(255,255,255,0.55)', textAlign: 'center', marginTop: 9, lineHeight: 20, flexShrink: 1 },
 

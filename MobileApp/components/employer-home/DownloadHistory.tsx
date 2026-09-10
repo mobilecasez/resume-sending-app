@@ -590,7 +590,10 @@ export default function DownloadHistory({
 }
 
 const s = StyleSheet.create({
-  wrap: { paddingHorizontal: 16, paddingTop: 26 },
+  // ⚠️ 14, NOT 26. The hero above now ends where its content ends and melts across the last
+  // 118pt, so this section starts immediately after that ramp. A second 26pt of air on top
+  // of it re-opened the same gap the melt was shortened to close.
+  wrap: { paddingHorizontal: 16, paddingTop: 14 },
 
   head: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: 12 },
   // The same values the section this replaced used, so it reads as its sibling.
