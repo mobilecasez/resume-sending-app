@@ -654,22 +654,41 @@ export default function EmployerHome({
         onPick={(value, extra) => {
           setAddOpen(false);
           const hasListing = !!(extra?.jobUrl || extra?.jobText);
-          track('home_add_employer_pick', { url: /^https?:\/\//i.test(value), listing: hasListing });
+          // The sheet always hands on a website now, so a url flag would always be true; and it does
+          // not say whether the site came from a result or was typed, so there is no honest flag to
+          // send in its place. ⚠️ Never the name or the website itself: that is the user's job hunt.
+          track('home_add_employer_pick', { listing: hasListing });
+          // The website is what the hub searches (it resolves a real URL best — a guessed
+          // www.{name}.com is what we are avoiding), but the hub has no param for a label. ⚠️ So the
+          // name the user picked goes through storage, like the listing below, with the website it
+          // belongs to and a timestamp, so the hub labels the pill "Nordex SE" and not the URL — and
+          // only for THIS add. Cleared when there is no name so a later add cannot inherit the last one.
+          // (Stopgap: this hand-off goes away when the add moves onto Home next round.)
+          const writes: Promise<unknown>[] = [
+            extra?.name
+              ? AsyncStorage.setItem('pending_employer_name', JSON.stringify({ website: value, name: extra.name, at: Date.now() }))
+              : AsyncStorage.removeItem('pending_employer_name'),
+          ];
           // ⚠️ A pasted job description NEVER travels as a route param — it can be thousands of
           // characters and params end up in the URL. It goes through storage; the param only says
           // that there is one to collect.
           if (hasListing) {
-            AsyncStorage.setItem('pending_job_listing', JSON.stringify({
+            writes.push(AsyncStorage.setItem('pending_job_listing', JSON.stringify({
               jobUrl: extra?.jobUrl || '', jobText: extra?.jobText || '',
-            })).catch(() => {});
+            })));
           }
           // The Job Hub owns the add itself: it prechecks credits, spots job portals and recovers
           // in-flight searches. Home only decides WHICH employer, and for WHICH posting.
-          nav()?.push?.({
-            pathname: '/(ai-hub)',
-            params: hasListing
-              ? { tab: 'search', addCompany: value, withListing: '1' }
-              : { tab: 'search', addCompany: value },
+          // ⚠️ Navigate only once the writes have landed: the hub reads both keys in its mount effect,
+          // and a fire-and-forget write could lose that race (no label, or no listing). A failed write
+          // still navigates — the add must not die on a storage error, it just loses the extras.
+          Promise.all(writes).catch(() => {}).then(() => {
+            nav()?.push?.({
+              pathname: '/(ai-hub)',
+              params: hasListing
+                ? { tab: 'search', addCompany: value, withListing: '1' }
+                : { tab: 'search', addCompany: value },
+            });
           });
         }}
       />

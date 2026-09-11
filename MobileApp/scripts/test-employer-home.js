@@ -39,6 +39,18 @@ const dbInit = R('../../db-init.js');
 const skelSrc = R('../components/employer-home/PaperSkeleton.tsx');
 const aiHubCtl = R('../../server/controllers/aiHubController.js');
 const discC = strip(discSrc), docsC = strip(docsSrc), skelC = strip(skelSrc), aiHubC = strip(aiHubCtl);
+const lookupSrc = R('../../server/services/companyLookup.js');
+const resolverSrc = R('../../server/services/applyUrlResolver.js');
+const lookupC = strip(lookupSrc);
+// Pull a JS array literal of strings out of a source file, so two copies of a list can be compared.
+// ⚠️ Comments are stripped FIRST: both lists carry explanatory comments with apostrophes in them
+// ("the employer's site"), and a naive '…' scan reads those as hosts.
+const listOf = (src, name) => {
+  const m = src.match(new RegExp('const ' + name + ' = \\[([\\s\\S]*?)\\n\\];'));
+  if (!m) return null;
+  const body = m[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return [...body.matchAll(/'([^']+)'/g)].map((x) => x[1].toLowerCase());
+};
 const studioSrc = R('../components/onboarding/SignatureStudio.tsx');
 const countrySheetSrc = R('../components/onboarding/CountrySheet.tsx');
 const countrySheetC = strip(countrySheetSrc);
@@ -325,12 +337,17 @@ ok('the carousel NEVER renders a blank hole while it waits to be measured',
 
 console.log('── add employer ──');
 ok('the button says what it does', /Add employer/.test(homeC) && !/Find a job/.test(homeC));
+// ⚠️ The job-feed fallback (fetchDiscoverJobs) is GONE, deliberately: it derived "websites" from
+// global_jobs.employer_domain, which on production is a job board or ATS for 73% of employers that
+// have a domain at all (arbetsformedlingen.se alone stands in for 4,014 of them).
 ok('the sheet only SEARCHES — it never adds, because adding costs credits',
-  !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC) && /fetchDiscoverJobs/.test(sheetC));
+  !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC)
+  && /\/discover\/employers/.test(sheetC) && !/fetchDiscoverJobs/.test(sheetC));
 ok('…and hands the choice to the one audited add flow', /tab: 'search', addCompany: value/.test(homeC));
 ok('the hub consumes it exactly once', /handedOver\.current = true;/.test(hubC) && /typeof explicit === 'string' \? explicit : inputValue/.test(hubC));
-ok('it can take a pasted careers URL as well as a name', /looksLikeUrl/.test(sheetC) && /Use this careers page/.test(sheetC));
-ok('region filters the search and suggests a design', /country: ctry \|\| ''/.test(sheetC) && /bestDesignForCountry/.test(strip(svc)));
+ok('it can take a pasted website as well as a name', /Use this website/.test(sheetC) && /take\(fieldWebsite\)/.test(sheetC));
+ok('region filters the search and suggests a design',
+  /country=\$\{encodeURIComponent\(ctry \|\| ''\)\}/.test(sheetC) && /bestDesignForCountry/.test(strip(svc)));
 
 console.log('── cover letters ──');
 ok('letter mode does NOT borrow the resume carousel', /mode === 'letter' \? \(\s*<LetterPanel/.test(homeC));
@@ -366,24 +383,24 @@ ok('the formats WRAP instead of scrolling out of the panel',
 ok('…and a long format name shrinks rather than overflowing', /letterChipTx: \{ flexShrink: 1/.test(homeC));
 
 console.log('── add employer: recognisable results, and a way out when they are not listed ──');
-ok('the field says what it takes', /placeholder=\{urlMode \? "https:\/\/careers\.company\.com" : "Employer name or URL"\}/.test(sheetC));
+ok('the field says what it takes', /placeholder="Employer name or website"/.test(sheetC));
 ok('a result is identifiable: name, website, location', /h\.domain/.test(sheetC) && /h\.location/.test(sheetC) && /globe-outline/.test(sheetC) && /location-outline/.test(sheetC));
 ok('…and results are cards, not bare rows', /hit: \{[\s\S]{0,180}borderRadius: 14/.test(sheetC));
-ok('not in the list → add their URL instead',
-  /setUrlMode\(true\)/.test(sheetC) && /Add their careers URL so we watch it/.test(sheetC));
-// ⚠️ The field is CLEARED on the way into urlMode and the name is remembered instead. Keeping the
-// name in the box looked friendlier and was worse: `selectTextOnFocus` is applied on a focus EVENT,
-// the row that flips the mode sits under keyboardShouldPersistTaps so the input never blurs, and a
-// pasted URL therefore landed at the caret — "NordexNordexhttps://…".
-ok('…and the typed name is remembered, so the way back is not a retype',
-  /setKeptName\(typed\)/.test(sheetC) && /setUrlMode\(true\); setHits\(\[\]\); setQ\(''\)/.test(sheetC));
-ok('…offered whether or not there were hits', /hits\.length \? 'Not the right one\?' :/.test(sheetC));
+ok('not in the list → add their website', /Not listed\? Add their website/.test(sheetC));
+// ⚠️ NO SEPARATE MODE ANY MORE. The add-website box sits INLINE in the results. The old urlMode had to
+// clear the field and remember the name, because `selectTextOnFocus` only fires on a focus EVENT and a
+// pasted URL landed at the caret ("NordexNordexhttps://…"). A field that never switches meaning has no
+// such trap, so the mode and everything that existed to patch it are gone.
+ok('…inline, with no mode switch to patch around', !/urlMode/.test(sheetC) && !/keptName/.test(sheetC) && /s\.siteField/.test(sheetC));
+ok('…offered whether or not there were hits', /hits\.length\s*\?\s*'Add their website'/.test(sheetC));
 
 // ── Round 6: the posting the user is applying to, end to end ────────────────────────────────────
 const builder = strip(R('../app/(resume-builder)/index.tsx'));
 
 console.log('── the sheet asks for the listing, and asking stays free ──');
-ok('there is an optional listing disclosure', /Applying to a specific role\? Add the listing/.test(sheetC) && /optional/.test(sheetC));
+// The user's rule (3): "there will be an option always that will say to build for specific job".
+ok('building for a specific job is always offered',
+  /Building for a specific job\? Add the job link or paste the description/.test(sheetC));
 ok('…taking a link OR pasted text', /placeholder="Link to the job posting"/.test(sheetC) && /paste the job description here/.test(sheetC));
 ok('…and it still never searches or charges', !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC));
 
@@ -676,12 +693,20 @@ ok('⚠️ only a real 42883/42704 latches the flag off', /e\.code === '42883' \
 ok('…and a transient probe failure leaves it unset, so the next request re-asks', /trgmAvailable = null/.test(discC));
 ok('there is an anchored prefix term the btree can actually serve', /prefix/.test(discC) && /LIKE/.test(discC));
 
-console.log('── ⚠️ THE TYPED NAME IS ALWAYS USABLE ──');
-// This is what makes "it wont miss any employer" true. An employer, for the purpose of writing a
-// resume, is a NAME. It never needed a row in our jobs index.
-ok('the sheet offers what the user typed as a first-class action', /canUseTyped/.test(sheetC));
-ok('…not only when the list came back empty', !/hits\.length === 0 && canUseTyped/.test(sheetC));
-ok('⚠️ …and never at the same time as the paste-a-URL prompt', /!urlMode && canUseTyped/.test(sheetC));
+console.log('── ⚠️ A WEBSITE IS REQUIRED — A BARE NAME NEVER PROCEEDS ──');
+// ⚠️ THIS SECTION USED TO SAY THE OPPOSITE, AND THAT WAS A DECISION THE USER OVERRULED. It pinned "the typed
+// name is always usable": an employer, for writing a resume, is a name. The user's reply, verbatim: "if you
+// are not able to find out a website then mention to add employer website instead of job posting... because
+// for resume building or cover letter building we need the website". A name gives the builder nothing to
+// research. So a pick ALWAYS carries a website, and when none is found the sheet says so and asks for one.
+ok('⚠️ there is no bare-name path out of the sheet', !/canUseTyped/.test(sheetC));
+ok('…every pick carries a website', /const take = \(website: string, name\?: string\)/.test(sheetC) && /website: string;/.test(sheetC));
+// ⚠️ "We couldn't find a website" is a FACTUAL claim, so it is made only on a real 'ok' answer. A failed
+// lookup, or a 'degraded' one from the fallback provider, proves nothing about whether a website exists.
+ok('⚠️ "no website found" is only ever said on a real answer',
+  /lookup === 'ok'\s*\?\s*`We couldn't find a website for/.test(sheetC) && /We couldn't look up websites right now/.test(sheetC));
+ok('…and a job posting is never offered INSTEAD of the website',
+  !/add (a|the) job (link|posting) instead/i.test(sheetC));
 ok('the sheet still spends nothing', !/deductCredits|generate-ai|ai-search/.test(sheetC));
 ok('a miss is reported without the raw query', /home_add_employer_miss/.test(sheetC) && !/q: q\b/.test(sheetC));
 
@@ -748,6 +773,76 @@ ok('⚠️ it goes BACK to a preview already below rather than pushing a second 
 // ⚠️ `previews` is mounted state and ensurePreviews early-returns on a cached id, so without this
 // the gallery shows pre-edit renders after the one thing a button called Edit invites you to do.
 ok('⚠️ returning from the editor invalidates the preview cache', /useFocusEffect/.test(galC) && /setPreviews\(\{\}\)/.test(galC));
+
+console.log('── ⚠️ THE WEBSITE COMES FROM A LOOKUP, NEVER FROM A GUESS ──');
+// Measured before this was built: Clearbit's keyless autocomplete answered "nordex" with Nordex SE —
+// nordex-online.com. The old add flow's last resort FABRICATED https://www.{slug}.com, which for Nordex
+// is the wrong website entirely, and that fabricated host then keyed the employer row and its cache.
+ok('there is a company website lookup', /function lookupWebsites/.test(lookupC) && /autocomplete\.clearbit\.com/.test(lookupSrc));
+ok('⚠️ it never fabricates a www.{slug}.com', !/`https:\/\/www\.\$\{/.test(lookupC) && !/'https:\/\/www\.' \+/.test(lookupC));
+ok('the endpoint runs the lookup and the database IN PARALLEL', /Promise\.all/.test(empHandler) && /lookupWebsites/.test(discC));
+ok('every response says whether the lookup ran', /websiteLookup: web\.status/.test(discC));
+// ⚠️ Only the company name may leave the server. The first version forwarded anything up to 80 chars —
+// an email, a pasted posting URL with candidate tokens, a pasted job description.
+ok('⚠️ the privacy gate lives IN the lookup, not in its caller', /'refused'/.test(lookupC) && /@/.test(lookupC));
+// ⚠️ ...and the first gate refused every '/', so "Novo Nordisk A/S" and "Petrobras S/A" came back as
+// "no website found". The Danish and Brazilian legal forms are common in this app's user base.
+ok('⚠️ a legal form with a slash (A/S, S/A) is not refused', /a\/s|A\/S/.test(lookupSrc));
+// ⚠️ A breaker that reacts only to failures still lets a long Clearbit outage become sustained
+// per-keystroke Wikimedia traffic, which its UA policy warns can get the IP blocked.
+ok('the fallback provider is rate-capped, not just breaker-guarded', /bucket|Bucket/.test(lookupC) && /tripped\(\)/.test(lookupC));
+ok('⚠️ a timeout WE imposed never trips the upstream\'s breaker', /budget: true|budget = true/.test(lookupC));
+
+console.log('── ⚠️ 73% OF JOB-DERIVED "WEBSITES" WERE JOB BOARDS ──');
+// Production, 2026-09-11: of 9,053 employers in global_jobs with any employer_domain, 6,604 sit on a host
+// shared by 3+ different employers — a board or an ATS. employer_domain is the host of the POSTING.
+ok('a host shared by many employers is recognised from the data, not only from a list',
+  /function sharedPostingHosts/.test(discC) && /count\(DISTINCT lower\(employer_name\)\) >= \$1/.test(discC)
+  && /SHARED_HOST_MIN_NAMES = 3\b/.test(discC));
+ok('…refreshed in the background, never awaited by a request', /sharedPostingHosts\(\)/.test(discC));
+// ⚠️ But a company's OWN careers portal is shared by its own subsidiaries (Zalando, Zalando SE, Zalando
+// Finland Oy). Without this, q=zalando answered "no website found" for a 64-job employer.
+ok('⚠️ a host named after the employer is theirs even when their subsidiaries share it', /function ownsHost/.test(discC));
+// ⚠️ An ATS tenant subdomain carries the employer's name (acme.softgarden.io, nordan.varbi.com), so a
+// name test on the whole host lets it through. Only the REGISTRABLE label counts.
+ok('⚠️ only the registrable label counts, so an ATS tenant subdomain is not a website', /function registrableLabel/.test(discC));
+ok('the job-derived domains are ranked by postings, not alphabetically', /ORDER BY host_jobs DESC/.test(discC));
+// ⚠️ The apex of a job board IS that company's own site — someone applying TO LinkedIn has one.
+ok('⚠️ only a SUBDOMAIN of a job host is refused, never its apex', /host !== h && host\.endsWith\('\.' \+ h\)/.test(discC));
+// ⚠️ q=xqzvnotacompany matched a tracked employer literally named "Company": pg_trgm's default 0.3
+// threshold, similarity('company','xqzvnotacompany') = 0.333. A similarity floor cannot fix it —
+// 'nordex'→'Nordeus' scores HIGHER (0.50) than the real typo 'nordx'→'Nordex' (0.44).
+ok('⚠️ a trigram-only match must be a genuine typo, measured as edit distance', /function isTypoOf/.test(discC));
+ok('⚠️ a name made only of generic words is not searchable', /function hasCoreName/.test(discC));
+// ⚠️ ...and the first version of that read an Arabic name as "only generic words" and dropped the Oman
+// Ministry of Labour (mol.gov.om) from its own search.
+ok('⚠️ a name in a script the tokeniser cannot read still passes', /aliasKeysOf\(s\)\.size === 0\)\) return true/.test(discC));
+ok('⚠️ a different company that shares a word is not marked unverified', /function strictName/.test(discC));
+
+console.log('── ⚠️ ONE LIST OF JOB HOSTS, IN TWO PLACES, THAT MUST NOT DRIFT ──');
+// The app keeps verbatim copies because it cannot import server code. The first copy was missing ~25 hosts
+// and accepted a pasted web103.reachmee.com link as an employer's website that the server rejected.
+for (const name of ['AGGREGATOR_HOSTS', 'ATS_HOSTS']) {
+  const server = listOf(resolverSrc, name);
+  const client = listOf(sheetSrc, name);
+  const missing = server && client ? server.filter((h) => !client.includes(h)) : ['(list not found)'];
+  const extra = server && client ? client.filter((h) => !server.includes(h)) : [];
+  ok(`⚠️ the app's ${name} matches the server's exactly`, !missing.length && !extra.length, { missing, extra });
+}
+// ⚠️ A denylist of posting URL shapes is always one job board behind: the first one passed
+// glassdoor.com/job-listing/… and jobs.ch/en/vacancies/detail/123/ as "the employer's website".
+ok('⚠️ on a job board, only the board\'s own pages are allowed — an allowlist, not a denylist',
+  /BOARD_SELF_PATH/.test(sheetC) && !/POSTING_PATH/.test(sheetC));
+{
+  const selfPath = new RegExp((sheetSrc.match(/const BOARD_SELF_PATH = \/(.*)\/;/) || [])[1] || '^$');
+  const jobQuery = new RegExp((sheetSrc.match(/const JOB_QUERY = \/(.*)\/i;/) || [])[1] || '^$', 'i');
+  ok('…the bare board and /about are its own site', selfPath.test('') && selfPath.test('/about') && selfPath.test('/en/'));
+  // ⚠️ linkedin.com/company/nordex is NORDEX's page; taking it as LinkedIn's website is the same mistake.
+  ok('…a posting OR another company\'s page on the board is not',
+    !selfPath.test('/job-listing/senior-engineer-JV_IC123.htm') && !selfPath.test('/en/vacancies/detail/123/')
+    && !selfPath.test('/company/nordex'));
+  ok('…and a job key anywhere in the query is caught, prefixed or not', jobQuery.test('?vjk=0123') && jobQuery.test('?jk=1'));
+}
 
 console.log('── the preview harness can still see the whole screen ──');
 const previewSrc = R('../app/(dev)/home-preview.tsx');

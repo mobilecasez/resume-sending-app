@@ -1730,9 +1730,10 @@ export default function AIHubScreen() {
   }, [pills, removeEmployerCore]);
 
   const [liAddUrl, setLiAddUrl] = useState('');
-  const handleAddPill = useCallback((explicit?: unknown) => {
+  const handleAddPill = useCallback((explicit?: unknown, explicitLabel?: unknown) => {
     // ⚠️ This is also used directly as onPress={handleAddPill}, which would hand us a press event —
-    // only a real string is treated as a value.
+    // only a real string is treated as a value. explicitLabel is DISPLAY ONLY (the pill's title);
+    // the search, the in-flight record, the credit check and the charge all keep using `trimmed`.
     const source = typeof explicit === 'string' ? explicit : inputValue;
     let trimmed = source.trim();
     if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
@@ -1759,7 +1760,8 @@ export default function AIHubScreen() {
     }
 
     const pillId = `pill-${Date.now()}`;
-    setPills((prev) => [...prev, { id: pillId, label: trimmed, colorVariant: COLOR_CYCLE[prev.length % 3] }]);
+    const pillLabel = typeof explicitLabel === 'string' && explicitLabel.trim() ? explicitLabel.trim() : trimmed;
+    setPills((prev) => [...prev, { id: pillId, label: pillLabel, colorVariant: COLOR_CYCLE[prev.length % 3] }]);
     setLoadingCompanies((prev) => [...prev, trimmed]);
     setInputValue('');
     setModalVisible(false);
@@ -1830,21 +1832,37 @@ export default function AIHubScreen() {
     const v = typeof params?.addCompany === 'string' ? params.addCompany.trim() : '';
     if (!v || handedOver.current) return;
     handedOver.current = true;                    // one-shot: a re-render must not re-run the search
-    // A posting came with it. Read it once and clear it, so a later unrelated add cannot inherit
-    // the last one's job description.
-    if (params?.withListing === '1') {
-      AsyncStorage.getItem('pending_job_listing')
-        .then((raw) => {
-          AsyncStorage.removeItem('pending_job_listing').catch(() => {});
-          let listing = null;
-          try { listing = raw ? JSON.parse(raw) : null; } catch {}
-          if (listing && (listing.jobUrl || listing.jobText)) savePendingListing(v, listing);
-          handleAddPill(v);
-        })
-        .catch(() => handleAddPill(v));
-      return;
-    }
-    handleAddPill(v);
+    // Home passes the WEBSITE (what we search) and puts the name the user picked in storage. Use the
+    // name as the pill's label only when it belongs to this exact website and was written moments ago;
+    // otherwise the pill is titled with what was searched, as before. Read once and cleared either way.
+    // (Stopgap: this hand-off goes away when the add moves onto Home next round.)
+    AsyncStorage.getItem('pending_employer_name')
+      .then((raw) => {
+        AsyncStorage.removeItem('pending_employer_name').catch(() => {});
+        let p: any = null;
+        try { p = raw ? JSON.parse(raw) : null; } catch {}
+        const fresh = p && typeof p.at === 'number' && Date.now() - p.at < 2 * 60 * 1000;
+        return fresh && typeof p.website === 'string' && p.website.trim() === v
+          && typeof p.name === 'string' && p.name.trim() ? p.name.trim() as string : undefined;
+      })
+      .catch(() => undefined)
+      .then((name) => {
+        // A posting came with it. Read it once and clear it, so a later unrelated add cannot inherit
+        // the last one's job description.
+        if (params?.withListing === '1') {
+          AsyncStorage.getItem('pending_job_listing')
+            .then((raw) => {
+              AsyncStorage.removeItem('pending_job_listing').catch(() => {});
+              let listing = null;
+              try { listing = raw ? JSON.parse(raw) : null; } catch {}
+              if (listing && (listing.jobUrl || listing.jobText)) savePendingListing(v, listing);
+              handleAddPill(v, name);
+            })
+            .catch(() => handleAddPill(v, name));
+          return;
+        }
+        handleAddPill(v, name);
+      });
   }, [params?.addCompany, params?.withListing, handleAddPill]);
 
 

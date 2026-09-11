@@ -31,6 +31,20 @@ const AGGREGATOR_HOSTS = [
   'totaljobs.com', 'reed.co.uk', 'seek.com.au', 'naukri.com', 'yourfirm.de', 'xing.com',
   'jooble.org', 'adzuna.com', 'careerjet.com', 'neuvoo.com', 'talent.com', 'jobrapido.com',
   'simplyhired.com', 'ziprecruiter.com', 'glassdoor.co.uk', 'irishjobs.ie', 'jobsite.co.uk',
+  // ── 2026-09-11, from production global_jobs (hosts shared by 3+ employer names; each followed live).
+  // RULE: a host goes HERE only when its page is not the form — a board, or a multiposting REDIRECTOR
+  // that bounces to someone else's site. If the host itself serves the application form, it belongs
+  // in ATS_HOSTS instead, because classify() reads ATS_HOSTS as "the form is here".
+  'easyapply.jobs',   // VONQ tracking redirect (/r/<id>) → the employer's own careers page
+  'aplitrak.com',     // Broadbean multiposting: a meta-refresh to whichever ATS the advertiser uses
+  'go.talentech.io',  // Talentech publishing short link → the employer's page (⚠️ NOT bare talentech.io:
+                      // the apex is their product login, and the link does not land on a form)
+  // ⚠️ Deliberately NOT listed, though they top the shared-host counts:
+  //  • amazon.jobs — Amazon's own careers site with its own forms, not a board.
+  //  • recruitment/staffing agencies (recruto.se, staffrec.se, academicwork.se) — real companies that
+  //    post for clients; the employer search handles them with its data-driven 3+-employers rule.
+  //  • forms.gle — Google Forms short links: a generic form host, not a job system (14 employers use it
+  //    as an ad-hoc application form); listing it either way would misdescribe every other Google Form.
 ];
 
 // Hosts that ARE the form — an ATS. Present so a resolver never "resolves" away from a good URL.
@@ -40,6 +54,25 @@ const ATS_HOSTS = [
   'bamboohr.com', 'jobvite.com', 'successfactors.com', 'successfactors.eu', 'icims.com',
   'taleo.net', 'join.com', 'pinpointhq.com', 'talentadore.com', 'hrmdirect.com',
   'applytojob.com', 'breezy.hr', 'jazzhr.com', 'rippling.com', 'ashby.hq',
+  // ── 2026-09-11, from production global_jobs (hosts shared by 3+ employer names; each followed live).
+  // RULE: listed only when the vendor's page IS the application form (verified: an upload/email form,
+  // an /apply route, or the vendor's own apply config). ⚠️ endsWithHost matches every subdomain, so a
+  // registrable domain goes in bare only when the WHOLE domain is the job system; when it also carries
+  // a real company's site or unrelated products, list the most specific host that is only recruiting.
+  // Nordic ATSs (most of the Swedish Platsbanken feed applies through these)
+  'varbi.com', 'reachmee.com', 'jobylon.com', 'ponty-system.se', 'recman.page', 'hr-manager.net',
+  'cruitive.com', 'workspacerecruit.com', 'vismatalent.com',
+  'recruit.visma.com',  // Visma Recruit's /spa/public/apply form — ⚠️ never bare visma.com, a real company
+  // International ATSs
+  'softgarden.io', 'avature.net', 'myworkdaysite.com', 'dvinci-hr.com', 'eightfold.ai',
+  'csod.com',           // Cornerstone: /ux/ats/careersite (the same tenant hosts also serve its LMS)
+  'smrtr.io',           // SmartRecruiters' own short link → jobs.smartrecruiters.com, so still the form
+  // Oracle Recruiting (HCM) lives on Fusion pods: <pod>.fa.<datacentre>.oraclecloud.com/hcmUI/CandidateExperience.
+  // ⚠️ Not bare oraclecloud.com — that also serves OCI object storage and customers' own apps. The suffix
+  // match cannot wildcard the datacentre label, so these are the ones production actually holds; a new
+  // datacentre in the data needs its own line here.
+  'fa.em2.oraclecloud.com', 'fa.ocs.oraclecloud.com', 'fa.us6.oraclecloud.com', 'fa.us2.oraclecloud.com',
+  'fa.ca3.oraclecloud.com',
 ];
 
 function hostOf(url) {

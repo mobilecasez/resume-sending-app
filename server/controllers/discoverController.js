@@ -28,7 +28,9 @@ const geoContext = require('../services/geoContext');   // …and the per-user a
 // same employer?" (legal suffixes stripped, a URL reduced to its label); the employer SEARCH has to
 // give the same answer, or "Siemens AG" and "Siemens" are two rows in the picker and one scope in
 // the paywall.
-const { aliasKeysOf, employerKeyOf } = require('../services/downloads');
+const { aliasKeysOf, employerKeyOf, sameEmployer } = require('../services/downloads');
+const { lookupWebsites, normaliseDomain } = require('../services/companyLookup');   // free keyless name → website
+const { ATS_HOSTS, AGGREGATOR_HOSTS } = require('../services/applyUrlResolver');   // job-board / ATS host lists
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -264,7 +266,7 @@ async function discoverFacets(req, res) {
   }
 }
 
-// ─── Employer NAME search (FREE: two table reads, no AI) ───────────────────────
+// ─── Employer search (FREE: two table reads + a keyless website lookup, no AI) ─
 // ⚠️ THIS EXISTS BECAUSE "ADD EMPLOYER" WAS RUNNING A JOB SEARCH. The sheet called
 // GET /discover/jobs?q=… and deduped company names out of the returned job rows — and that search
 // matches title and location too, so on prod q=Siemens came back as 50 jobs whose companies were
@@ -274,10 +276,17 @@ async function discoverFacets(req, res) {
 // IDENTITY, not a job row: match employer NAMES only, and look in `employers` — the identity table
 // the app already builds — before looking at the firehose at all.
 //
+// ⚠️ EVERY ROW HAS A WEBSITE, OR IT IS NOT A ROW. A résumé or letter is built from the employer's
+// website; a bare name cannot be built for, and a job posting is not a substitute. So a company
+// neither table knows (Nordex again) is looked up on the web by name (services/companyLookup), and
+// a name that ends the merge with no website is left out rather than offered. `websiteLookup` tells
+// the client whether an empty list means "no website was found" ('ok') or "the lookup failed right
+// now" ('unavailable') — only the first may ask the user to add the website themselves.
+//
 // ⚠️ FREE, AND IT HAS TO STAY FREE: the sheet calls this on a 320ms keystroke debounce, so one
-// typed word is several requests. No Gemini, no grounding, no chargeCredits, no outbound HTTP —
-// this handler reads `employers` and `global_jobs` and nothing else. Anything added here that costs
-// money charges the user for typing.
+// typed word is several requests. No Gemini, no grounding, no chargeCredits. The ONE outbound call
+// is companyLookup — keyless public autocomplete, cached in memory, only the typed name leaves the
+// server. Anything added here that costs money charges the user for typing.
 
 // ⚠️ pg_trgm MAY NOT EXIST. Migration 045 runs CREATE EXTENSION pg_trgm, but that needs a superuser
 // role and db-init's col() swallows the refusal — the '✅ Migration 045' line prints either way, so
@@ -391,30 +400,94 @@ async function trackedEmployerHits(q, prefix, contains, cand, trgm) {
 // Source 2: employers the firehose has seen.
 // ⚠️ employer_name ONLY. Widening this to title or location is the exact bug this endpoint replaces:
 // that is what put Randstad and Experis at the top of a search for Siemens, on the strength of ad copy.
+// ⚠️ EVERY DISTINCT POSTING HOST, NOT ONE. This read MIN(employer_domain) — the alphabetically
+// smallest host — and boards.greenhouse.io < careers.acme.com, so once websiteOf nulled the board the
+// employer was DROPPED even though another of its postings carried the real site. The candidates
+// come back as a capped array; discoverEmployers picks the one that is a website (postingWebsite).
+// ⚠️ THE CAP KEEPS THE BUSIEST HOSTS, NOT THE FIRST ONES. array_agg(DISTINCT …)[1:10] sorted the hosts
+// alphabetically before cutting, so an employer posting from 11+ hosts lost its real site to ten
+// earlier-sorting board hosts — the MIN bug again at a larger cap. So the subquery counts postings per
+// (employer_name, employer_domain) and the aggregate is ordered by that count before the cut. A
+// window, not a GROUP BY, in the subquery: the outer COUNT(*) and mode(country) must still see one
+// row per posting, and it stays one statement.
+const DOMAINS_PER_EMPLOYER = 10;
 async function jobEmployerHits(q, prefix, contains, cand, country, trgm) {
   const params = [];
   const P = (v) => { params.push(v); return '$' + params.length; };
   const pExact = P(q), pPrefix = P(prefix), pContains = P(contains);
   const sim = trgm ? `similarity(lower(employer_name), ${pExact})` : '0';
+  const tierSql = nameTierSql('lower(employer_name)', pExact, pPrefix, pContains);
   const where = [`is_active`, `employer_name IS NOT NULL`, `employer_name <> ''`,
     nameWhereSql('lower(employer_name)', pExact, pPrefix, pContains, trgm)];
   if (country) where.push(`country = ${P(country)}`);
+  // Trigram-only rows (tier 3) are ordered by SIMILARITY before job count: they are filtered by the
+  // typo floor AFTER this LIMIT, so ordering them by jobs let a 253-job near-miss (Airbnb for
+  // "airbus") take the slot of the few-job typo the user actually meant.
   const rows = await dbConfig.query(
     `SELECT employer_name AS name,
-            MIN(NULLIF(employer_domain, '')) AS domain,
+            (array_agg(employer_domain ORDER BY host_jobs DESC, employer_domain)
+               FILTER (WHERE host_first AND employer_domain IS NOT NULL AND employer_domain <> ''))[1:${DOMAINS_PER_EMPLOYER}] AS domains,
             mode() WITHIN GROUP (ORDER BY country) FILTER (WHERE country IS NOT NULL AND country <> '') AS location,
             COUNT(*)::int AS jobs,
-            ${nameTierSql('lower(employer_name)', pExact, pPrefix, pContains)} AS tier,
+            ${tierSql} AS tier,
             ${sim} AS sim
-       FROM global_jobs
-      WHERE ${where.join(' AND ')}
+       FROM (SELECT employer_name, employer_domain, country,
+                    count(*) OVER host AS host_jobs,
+                    (row_number() OVER host) = 1 AS host_first
+               FROM global_jobs
+              WHERE ${where.join(' AND ')}
+             WINDOW host AS (PARTITION BY employer_name, employer_domain)) j
       GROUP BY employer_name
-      ORDER BY tier, jobs DESC, sim DESC
+      ORDER BY tier, ${trgm ? `CASE WHEN ${tierSql} = 3 THEN ${sim} END DESC, ` : ''}jobs DESC, sim DESC
       LIMIT ${P(cand)}`, params);
   return (rows || []).map((r) => ({
-    name: r.name, domain: r.domain || null, location: r.location || null,
+    name: r.name, domain: null, location: r.location || null,
+    domains: Array.isArray(r.domains) ? r.domains
+      : typeof r.domains === 'string' ? r.domains.replace(/^\{|\}$/g, '').split(',').filter(Boolean) : [],
     jobs: Number(r.jobs) || 0, source: 'jobs', tier: Number(r.tier), sim: Number(r.sim) || 0,
   }));
+}
+
+// ⚠️ A HOST THAT 3+ DIFFERENT EMPLOYER NAMES POST FROM IS A JOB BOARD OR AN ATS, NOT A COMPANY SITE.
+// Measured on prod 2026-09-11: of the 9,053 employers in global_jobs with any employer_domain, 6,604
+// (73%) sit on a host shared by 3+ distinct names — arbetsformedlingen.se alone carries 4,014,
+// amazon.jobs 764, job-boards.greenhouse.io 339, recruit.visma.com 232, easyapply.jobs 109,
+// recruto.se 68, staffrec.se 11 … Half of those are on no host list, and the lists will always lag
+// the data, so the data itself is asked. A group careers portal (jobs.zalando.com, 19 names) goes
+// too, by design: it is a portal, and the web lookup supplies the group's own site.
+// ⚠️ NEVER ON THE REQUEST PATH. One GROUP BY over active global_jobs, cached in module memory and
+// refreshed at most every 6h, in the background: a request serves the set it has — the previous
+// one while a refresh runs, an EMPTY one on first boot (the lists and namedAfter still apply) —
+// and never awaits the query. A failed refresh keeps the old set and is retried after 5 min, not
+// on every keystroke.
+const SHARED_HOST_MIN_NAMES = 3;
+const SHARED_HOST_TTL_MS = 6 * 60 * 60 * 1000;
+const SHARED_HOST_RETRY_MS = 5 * 60 * 1000;
+let sharedHosts = new Set();
+let sharedHostsNextAt = 0;
+let sharedHostsLoading = false;
+function sharedPostingHosts() {
+  if (!sharedHostsLoading && Date.now() >= sharedHostsNextAt) {
+    sharedHostsLoading = true;
+    sharedHostsNextAt = Date.now() + SHARED_HOST_RETRY_MS;
+    Promise.resolve()
+      .then(() => dbConfig.query(
+        `SELECT regexp_replace(lower(employer_domain), '^www\\.', '') AS host
+           FROM global_jobs
+          WHERE is_active AND employer_domain IS NOT NULL AND employer_domain <> ''
+            AND employer_name IS NOT NULL AND employer_name <> ''
+          GROUP BY 1
+         HAVING count(DISTINCT lower(employer_name)) >= $1`, [SHARED_HOST_MIN_NAMES]))
+      .then((rows) => {
+        const next = new Set();
+        for (const r of rows || []) { const h = normaliseDomain(r.host); if (h) next.add(h); }
+        sharedHosts = next;
+        sharedHostsNextAt = Date.now() + SHARED_HOST_TTL_MS;
+      })
+      .catch((e) => console.warn('[discover] employers: shared-host refresh failed, keeping the previous set —', e.message))
+      .finally(() => { sharedHostsLoading = false; });
+  }
+  return sharedHosts;
 }
 
 // ⚠️ ONE EMPLOYER, ONE ROW. "Siemens AG" in `employers` and "Siemens" in `global_jobs` are the same
@@ -447,14 +520,295 @@ function mergeEmployerHits(hits) {
   return out;
 }
 
+// ⚠️ A `domain` COLUMN IN OUR TABLES IS NOT THE EMPLOYER'S WEBSITE UNTIL PROVEN OTHERWISE.
+//  • global_jobs.employer_domain is domainOf(job_url) — the host of the POSTING. 1,231 of the 1,237
+//    boards in data/global_job_sources.json are ATS-hosted (Greenhouse, Ashby, Lever, …), and the
+//    national feeds post through job-room.ch, arbeitsagentur.de, francetravail.fr.
+//  • employers.domain holds synthetic identity keys ("web-acme", "linkedin-acme", "search:…") and
+//    name slugs (extractDomain("Nordex SE") = "nordex-se"), and jobCapture stores the capture URL's
+//    host, which can be the job board the user was on.
+// Offering any of those as "the website" is the job-board-as-employer bug, so a stored domain counts
+// only when it is a real hostname and not a known ATS or job board (applyUrlResolver's lists — the
+// same ones Auto Fill trusts; extend them there, not here. Oracle HCM's Fusion pod hosts,
+// fa.<datacentre>.oraclecloud.com, are listed there now — ⚠️ one entry per datacentre label, so a
+// datacentre that first appears in the data needs its own line in applyUrlResolver.js).
+// ⚠️ A SUBDOMAIN OF A LISTED HOST IS REFUSED; THE APEX IS NOT, BY ITSELF. de.indeed.com and
+// acme.softgarden.io are postings, but linkedin.com and indeed.com are also the websites of LinkedIn
+// and Indeed — refusing the apex dropped the row for someone applying TO LinkedIn whenever the web
+// lookup was unavailable (the client already accepts the apex). What keeps an apex from being handed
+// to the employers that merely POST there instead:
+//  • it counts only for an employer whose name IS its registrable label (ownsHost) — linkedin.com for
+//    "LinkedIn Corporation", never for "Acme". Tracked rows need this most: jobCapture stores the host
+//    of the page the user captured from, which for a LinkedIn posting is linkedin.com;
+//  • firehose rows also face sharedPostingHosts: an apex 3+ employer names post from
+//    (arbetsformedlingen.se, 4,014 names) is refused there unless, again, the name owns it.
+const LISTED_HOSTS = [...ATS_HOSTS, ...AGGREGATOR_HOSTS];
+function websiteOf(raw, name) {
+  const host = normaliseDomain(raw);
+  if (!host) return null;
+  if (LISTED_HOSTS.some((h) => host !== h && host.endsWith('.' + h))) return null;
+  if (LISTED_HOSTS.includes(host)) return ownsHost(name, host) ? host : null;
+  return host;
+}
+
+// Is this host's registrable label EXACTLY one of the employer's alias keys (zalando ↔
+// jobs.zalando.com, amazon ↔ amazon.jobs, linkedin ↔ linkedin.com)? Stricter than namedAfter, which
+// also accepts the name as a PREFIX of the label (easy ↔ easyapply.jobs) — that looser test is fine
+// for a host nobody else posts from, and wrong for a board or portal.
+function ownsHost(name, host) {
+  const label = registrableLabel(host);
+  if (!label) return false;
+  const l = label.replace(/-/g, '');
+  return spellingsOf(name).some((s) => aliasKeysOf(s).has(l));
+}
+
+// ⚠️ A POSTING HOST IS THE EMPLOYER'S WEBSITE ONLY WHEN IT IS NAMED AFTER THE EMPLOYER. The lists
+// above cannot name every group careers portal or regional board a feed links out to. Measured on
+// dev data: jobs.zalando.com carries 19 employer names, among them "Tradebyte Software GmbH" — so
+// without this, searching Tradebyte offered jobs.zalando.com as Tradebyte's website, and every
+// Zalando subsidiary got the group portal too. So a FIREHOSE domain counts only when one of its
+// labels is the employer's name (an alias key: "SAP" ↔ jobs.sap.com, "Zalando SE" ↔
+// jobs.zalando.com), or that name plus more ("Air Arabia" ↔ airarabiagroupcareers.com). The reverse
+// — a longer name on a shorter label, "Zalando Payments GmbH" ↔ zalando — is how a subsidiary looks
+// on its parent's portal, and is rejected; the web lookup can still give it a site of its own.
+// ⚠️ Firehose rows only. A tracked domain can come from a URL the user pasted (tcs.com for "Tata
+// Consultancy Services"), which no name test would pass.
+// ⚠️ ONLY THE REGISTRABLE LABEL COUNTS, NOT ANY LABEL. An ATS tenant subdomain IS the employer's
+// name — acme.softgarden.io, acme.wd3.myworkdaysite.com, nordan.varbi.com — so "any label" handed
+// the board to the employer as its website. The label the company actually registered is the one
+// directly before the public suffix: jobs.sap.com → sap, careers.acme.co.uk → acme,
+// acme.softgarden.io → softgarden.
+function namedAfter(name, host) {
+  const label = registrableLabel(host);
+  if (!label) return false;
+  const l = label.replace(/-/g, '');
+  const keys = new Set();
+  for (const s of spellingsOf(name)) for (const k of aliasKeysOf(s)) if (!k.includes(' ')) keys.add(k);
+  return [...keys].some((k) => l === k || (k.length >= 3 && l.startsWith(k)));
+}
+
+// The public suffix, where it has two parts. Not the full Public Suffix List (no dependency for it):
+// a 2-letter country TLD under co/com/net/org/gov/ac/edu is the shape that matters for employer sites
+// — co.uk, com.au, co.jp, com.br, co.in, com.tr, co.nz, co.za, com.mx, com.sg …
+const SECOND_LEVEL = /^(?:co|com|net|org|gov|ac|edu)$/;
+function registrableLabel(host) {
+  const labels = String(host || '').split('.').filter(Boolean);
+  const n = labels.length;
+  const twoPart = n >= 2 && labels[n - 1].length === 2 && SECOND_LEVEL.test(labels[n - 2]);
+  const i = twoPart ? n - 3 : n - 2;
+  return i >= 0 ? labels[i] : null;   // "co.uk" alone has no registrable label
+}
+
+// ⚠️ aliasKeysOf keeps only [a-z0-9], so an accent DELETES the letter: "Société Générale" keys to
+// "socitgnrale" and never matches careers.societegenerale.com; "Würth" never matches wuerth.com. So
+// a name is also compared deaccented (NFD, combining marks stripped, plus the letters NFD does not
+// decompose: ß ø æ œ ł đ) and with the German transliteration (ä→ae ö→oe ü→ue) that German
+// companies register their domains under. The letters are \u escapes on purpose: a tool round-trip
+// has turned escapes into raw bytes in this repo before (a NUL made git call a file binary).
+const FOLD = { '\u00df': 'ss', '\u00f8': 'o', '\u00e6': 'ae', '\u0153': 'oe', '\u0142': 'l', '\u0111': 'd' };
+const UMLAUT = { '\u00e4': 'ae', '\u00f6': 'oe', '\u00fc': 'ue' };
+const foldAccents = (s) => s.replace(/[\u00df\u00f8\u00e6\u0153\u0142\u0111]/g, (c) => FOLD[c])
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+// [as typed, deaccented, transliterated] — positional, so sameName can pair like with like; an
+// all-ASCII name is only itself.
+function spellingsOf(name) {
+  const lower = String(name || '').normalize('NFC').toLowerCase();
+  if (!/[^\x00-\x7f]/.test(lower)) return [lower];
+  return [lower, foldAccents(lower), foldAccents(lower.replace(/[\u00e4\u00f6\u00fc]/g, (c) => UMLAUT[c]))];
+}
+
+// sameEmployer — the download pass's identity rule, unchanged — asked of each spelling in turn, so
+// "Societe Generale" and "Société Générale" are one company.
+function sameName(a, b) {
+  if (sameEmployer(a, b)) return true;
+  const A = spellingsOf(a), B = spellingsOf(b);
+  if (A.length === 1 && B.length === 1) return false;
+  const at = (S, i) => S[Math.min(i, S.length - 1)];
+  return sameEmployer(at(A, 1), at(B, 1)) || sameEmployer(at(A, 2), at(B, 2));
+}
+
+// ⚠️ sameName IS LOOSE ON PURPOSE, TOO LOOSE TO ACCUSE A ROW WITH. It matches on the core key, with
+// group/international/global/holdings stripped, which is right for folding "Siemens AG" into "Siemens"
+// and wrong for saying a stored site is contradicted: q=atlas marked tracked Atlas (atlascopco.com)
+// unverified because the lookup had found Atlas Group (atlasgroup.cz), a different company. So the
+// strict test compares the FULL key — every word kept, only case and punctuation normalised — per
+// spelling, paired the way sameName pairs them. aliasKeysOf inserts that full key first.
+function strictName(a, b) {
+  const A = spellingsOf(a), B = spellingsOf(b);
+  const full = (s) => [...aliasKeysOf(s)][0] || null;
+  const at = (S, i) => S[Math.min(i, S.length - 1)];
+  return [0, 1, 2].some((i) => { const k = full(at(A, i)); return !!k && k === full(at(B, i)); });
+}
+
+// Does anything of this name survive once its legal/generic words are dropped? "Company", "Group",
+// "Global Holdings" do not: their only alias key is the generic word itself, which any near-miss query
+// hits. ⚠️ downloads.js owns LEGAL_WORDS and does not export it, and a copy here would drift — so
+// aliasKeysOf is asked directly: put a word in front that is on no legal list; if the core key it
+// returns is that word ALONE, the name contributed no core word. (The name is reduced to its full key
+// first, so a URL-shaped name is judged by its label, as aliasKeysOf judges it.)
+const CORE_PROBE = 'zq0probe';
+function hasCoreName(name) {
+  // ⚠️ A NAME WITH NO LATIN LETTERS IS NOT A GENERIC NAME — IT IS OUTSIDE WHAT THIS TEST CAN READ.
+  // aliasKeysOf keeps only [a-z0-9], so an Arabic, Greek, Korean or Chinese name has no alias key at all,
+  // and the first version read that emptiness as "made only of legal words" and dropped the row. Found on
+  // production: employers {'وزارة العمل', 'mol.gov.om'} — the Oman Ministry of Labour's real site —
+  // vanished from its own search. The generic-word filter exists to stop 'Company' matching nonsense; it
+  // has nothing to say about a script it cannot tokenise, so such a name passes.
+  if (spellingsOf(name).every((s) => aliasKeysOf(s).size === 0)) return true;
+  return spellingsOf(name).some((s) => {
+    const full = [...aliasKeysOf(s)][0];
+    return !!full && !aliasKeysOf(CORE_PROBE + ' ' + full).has(CORE_PROBE);
+  });
+}
+
+// ⚠️ THE TRIGRAM ARM IS NOT A NAME MATCH, IT IS A CANDIDATE. pg_trgm's `%` means similarity ≥ 0.3,
+// and that is how q=xqzvnotacompany returned the tracked employer "Company" (swisslinx.com):
+// similarity('company', 'xqzvnotacompany') = 0.333 — six shared trigrams (com omp mpa pan any "ny ")
+// out of eighteen. And q=airbus returned Airbnb (0.40). A raw similarity floor cannot separate them
+// from a real typo: 'nordx'→'nordex' is 0.44, but 'nordex'→'Nordeus' is 0.50 and 'nordx'→'Nordex SE'
+// only 0.33. So a row that matched ONLY by trigram (tier 3) must be a TYPO of the query: at most one
+// edit per six letters (Damerau: a transposition is one edit) between the query and the employer's
+// name — the whole name, or a run of its words, legal suffixes dropped. nordx→nordex: 1 edit in 6,
+// kept. airbus→airbnb: 2 in 6, dropped. nordex→nordeus: 2 in 7, dropped. bosch→busch: 1 in 5, dropped
+// (a five-letter substitution is a different company as often as it is a typo).
+const TYPO_EDITS_PER = 6;
+function editDistance(a, b) {
+  const m = a.length, n = b.length;
+  let prev2 = null, prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) cur[j] = Math.min(cur[j], prev2[j - 2] + 1);
+    }
+    prev2 = prev; prev = cur;
+  }
+  return prev[n];
+}
+function isTypoOf(q, name) {
+  const compact = (s) => [...new Set(spellingsOf(s).flatMap((v) => [...aliasKeysOf(v)]))];
+  const qs = compact(q).filter((k) => !k.includes(' '));
+  const runs = new Set();
+  for (const key of compact(name)) {
+    const w = key.split(' ').slice(0, 6);
+    for (let i = 0; i < w.length; i++) for (let j = i + 1; j <= w.length; j++) runs.add(w.slice(i, j).join(''));
+  }
+  return qs.some((k) => [...runs].some((r) => {
+    const max = Math.max(k.length, r.length);
+    if (Math.abs(k.length - r.length) * TYPO_EDITS_PER > max) return false;   // cannot pass; skip the DP
+    return editDistance(k, r) * TYPO_EDITS_PER <= max;
+  }));
+}
+
+// The one posting host that is this employer's website: not a listed board/ATS, not a host 3+
+// employer names share, and named after the employer. When several pass (jobs.zalando.com and
+// zalando.com), the one closest to the root is the company's site rather than a section of it.
+// ⚠️ A SHARED HOST THE EMPLOYER OWNS IS STILL ITS OWN. The firehose groups by employer_name, so
+// "Zalando", "Zalando SE" and "Zalando Finland Oy" are three names on jobs.zalando.com — a group's
+// subsidiaries alone put its portal over the 3-name line, and q=zalando answered "no website found"
+// for a 64-job employer whenever the lookup came back empty. So the shared rule is skipped when the
+// host's registrable label IS the name (ownsHost). It still applies to a prefix-only match
+// (easyapply.jobs for "Easy") and to every host no name test passes (jobs.zalando.com for Tradebyte).
+function postingWebsite(name, domains, shared) {
+  const ok = [];
+  for (const raw of domains || []) {
+    const d = websiteOf(raw, name);
+    if (d && (!shared.has(d) || ownsHost(name, d)) && namedAfter(name, d) && !ok.includes(d)) ok.push(d);
+  }
+  ok.sort((a, b) => a.split('.').length - b.split('.').length || a.localeCompare(b));
+  return ok[0] || null;
+}
+
+// Fold web lookup hits into the DB rows — ONE EMPLOYER, ONE ROW, ONE WEBSITE PER ROW.
+// Pass 1, hits that belong to a row we already have:
+//  • a row already carrying the hit's domain IS that company — the DB row keeps its name, jobs and
+//    location (it knows more than an autocomplete does), and the lookup has now VERIFIED its site;
+//  • a DB row that is the same employer (sameEmployer — the download pass's identity rule, not a
+//    second one) takes the hit's domain when it has no website, or when its website is only a
+//    SUBDOMAIN of the hit's (jobs.zalando.com → zalando.com: the company's site, which is what the
+//    user asked for).
+// Pass 2, the rest: autocomplete lists one company's country sites as separate hits (Zalando:
+// .de .fr .it .com .pl — measured), so a hit folds into any row that has a website — stored or
+// looked up — when the names match AND the two sites share a registrable label (zalando.de ↔ zalando.com);
+// anything else becomes its own row, source 'web', jobs 0.
+// ⚠️ THE NAME ALONE IS NOT ENOUGH TO FOLD. sameEmployer strips group/international/global/holdings,
+// so "atlas group" folded atlasgroup.cz, atlasgroupua.com and atlasgroupinc.com — a Czech, a
+// Ukrainian and a US company — into one row and hid two of them.
+// ⚠️ A ROW THAT ALREADY HAD THE HIT'S EXACT DOMAIN MUST JOIN fromWeb TOO. It did not, so a tracked
+// {Zalando SE, zalando.com} could not absorb .de/.fr/.it/.pl, and one company came back as two rows.
+// ⚠️ A DB row whose own website DISAGREES with the lookup is NOT overwritten and does NOT absorb the
+// hit: employers.domain can be resolveCareersUrl's fabricated www.{slug}.com (nordex.com for Nordex
+// SE). Both rows are shown — never silently delete what we stored — but the web-verified row ranks
+// FIRST and the DB row is marked domainUnverified: tier then source used to put the fabricated
+// nordex.com above the real nordex-online.com.
+// Web tier mirrors nameTierSql, except that "same employer" counts as exact: "Nordex SE" is an
+// exact match for "nordex", not a prefix one. A folded hit lends its tier to the row it joins.
+function mergeWebHits(rows, hits, q) {
+  const out = rows.slice();
+  const byDomain = new Map();
+  for (const r of out) if (r.domain) byDomain.set(r.domain, r);
+  const fromWeb = new Set();              // rows whose website the lookup supplied or confirmed
+  const typedHost = normaliseDomain(q);   // someone who types "nordex-online.com" means that site
+  const qs = spellingsOf(q);
+  const tierOf = (h) => {
+    if (h.domain === typedHost || sameName(h.name, q)) return 0;
+    const names = spellingsOf(h.name);
+    return names.some((n) => qs.some((x) => n.startsWith(x))) ? 1 : names.some((n) => qs.some((x) => n.includes(x))) ? 2 : 3;
+  };
+  const rest = [];
+  for (const h of hits) {
+    const tier = tierOf(h);
+    const same = byDomain.get(h.domain);
+    if (same) { same.tier = Math.min(same.tier, tier); fromWeb.add(same); continue; }
+    const owner = rows.find((r) => (!r.domain || r.domain.endsWith('.' + h.domain)) && sameName(r.name, h.name));
+    if (!owner) { rest.push({ h, tier }); continue; }
+    if (owner.domain) byDomain.delete(owner.domain);
+    owner.domain = h.domain;
+    owner.tier = Math.min(owner.tier, tier);
+    byDomain.set(h.domain, owner);
+    fromWeb.add(owner);
+  }
+  for (const { h, tier } of rest) {
+    const label = registrableLabel(h.domain);
+    // ⚠️ ANY ROW WITH A SITE, NOT ONLY ONE ALREADY IN fromWeb. A DB row reaches fromWeb in pass 1 only
+    // on the EXACT domain, so tracked {Zalando SE, zalando.com} with hits zalando.de + zalando.fr was
+    // never a target: zalando.de became a web row, and the loop below marked the row WITH the jobs
+    // unverified and sorted it underneath. A shared registrable label under the same name is the
+    // lookup agreeing with the stored site, so the row joins fromWeb. `out` keeps DB rows first.
+    const twin = label && out.find((r) => r.domain && registrableLabel(r.domain) === label && sameName(r.name, h.name));
+    if (twin) { twin.tier = Math.min(twin.tier, tier); fromWeb.add(twin); continue; }
+    const row = { name: h.name, domain: h.domain, location: null, jobs: 0, source: 'web', tier, sim: 0 };
+    out.push(row);
+    byDomain.set(h.domain, row);
+    fromWeb.add(row);
+  }
+  for (const r of out) {
+    if (!r.domain || fromWeb.has(r)) continue;
+    // ⚠️ STRICT NAME, and never against a verified site on the same registrable label: see strictName
+    // (Atlas vs Atlas Group) and pass 2 above (zalando.com vs zalando.de agree, they do not contradict).
+    const label = registrableLabel(r.domain);
+    const twins = out.filter((w) => fromWeb.has(w) && w.domain !== r.domain && strictName(w.name, r.name));
+    if (!twins.length || twins.some((w) => label && registrableLabel(w.domain) === label)) continue;
+    r.domainUnverified = true;
+    r.tier = Math.max(r.tier, twins[0].tier);
+  }
+  return out;
+}
+
 async function discoverEmployers(req, res) {
   try {
     const q = String(req.query.q || '').trim().toLowerCase().slice(0, 80);
     const country = String(req.query.country || '').trim().slice(0, 40);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 25);
-    // One letter matches half of both tables and means nothing. Answer without touching the DB —
-    // on a keystroke debounce this is the most-hit branch there is.
-    if (q.length < 2) return res.json({ success: true, employers: [] });
+    // One letter matches half of both tables and means nothing. Answer without touching the DB or
+    // the web — on a keystroke debounce this is the most-hit branch there is. ('ok': nothing failed;
+    // the client must not read a 1-letter empty list as "no website exists".)
+    if (q.length < 2) return res.json({ success: true, employers: [], websiteLookup: 'ok' });
+
+    // Started BEFORE the first DB await so the network never queues behind the database. It never
+    // rejects (companyLookup resolves every failure to status 'unavailable'), so a DB error below
+    // cannot leave an unhandled rejection behind.
+    const webLookup = lookupWebsites(q);
 
     // The user's own '%' is a character they typed, not a wildcard that matches the whole table.
     const esc = q.replace(/[\\%_]/g, (c) => '\\' + c);
@@ -463,15 +817,36 @@ async function discoverEmployers(req, res) {
     const cand = Math.min(limit * 4, 100);   // over-fetch both sources, merge, then cut to `limit`
     const trgm = await hasTrigram();
 
-    const [tracked, fromJobs] = await Promise.all([
+    const [tracked, fromJobs, web] = await Promise.all([
       withTrigramFallback((t) => trackedEmployerHits(q, prefix, contains, cand, t), trgm),
       withTrigramFallback((t) => jobEmployerHits(q, prefix, contains, cand, country, t), trgm),
+      webLookup,
     ]);
     // ⚠️ `country` narrows the firehose only — `employers` has no country column, and dropping
     // tracked hits for want of one would hide exactly the employers this endpoint exists to surface.
-    const merged = mergeEmployerHits([...tracked, ...fromJobs]);
+    // The web lookup has no country either.
+    // ⚠️ A TRIGRAM-ONLY ROW (tier 3) IS A CANDIDATE UNTIL IT IS A TYPO OF THE QUERY (isTypoOf):
+    // this is the clause that answered "xqzvnotacompany" with "Company" and "airbus" with Airbnb.
+    // A nonsense query must come back EMPTY, so the sheet asks for the website instead.
+    // ⚠️ …AND A NAME MADE ONLY OF LEGAL/GENERIC WORDS IS NOT SEARCHABLE AT ALL. "Company" keys to
+    // 'company', so every one-edit query (acompany, xcompany) was a "typo" of it and got swisslinx.com.
+    const plausible = (h) => hasCoreName(h.name) && (h.tier < 3 || isTypoOf(q, h.name));
+    const shared = sharedPostingHosts();
+    // ⚠️ GATE BEFORE MERGING: mergeEmployerHits keeps the first domain it sees, so a synthetic
+    // "web-acme" on the tracked row would otherwise shadow a real website on the firehose row.
+    const trackedRows = tracked.filter(plausible);
+    const jobRows = fromJobs.filter(plausible);
+    for (const h of trackedRows) h.domain = websiteOf(h.domain, h.name);
+    for (const h of jobRows) h.domain = postingWebsite(h.name, h.domains, shared);
+    const identities = mergeEmployerHits([...trackedRows, ...jobRows]);
+    const merged = mergeWebHits(identities, web.hits, q).filter((e) => e.domain);   // no website, no row
     merged.sort((a, b) =>
+      // Tier first, for every row alike: this is where a web row is placed by name match quality,
+      // so an exact web match ("Nordex SE" for "nordex") sits above weak DB contains-matches.
+      // (So a trigram-only DB row, tier 3, can never sit above an exact web match, tier 0.)
       a.tier - b.tier
+      // A stored website the lookup contradicted goes below the one it verified (mergeWebHits).
+      || (a.domainUnverified ? 1 : 0) - (b.domainUnverified ? 1 : 0)
       // ⚠️ SOURCE BEFORE JOB COUNT — this is where the header's promise ("look in `employers` …
       // before looking at the firehose at all") is actually kept. A tracked employer the firehose
       // has never crawled merges in with jobs: 0 and no location, so a domain-then-jobs tiebreak
@@ -479,18 +854,26 @@ async function discoverEmployers(req, res) {
       // this endpoint exists to surface lands under "Nordex Energy Spain". A merged row keeps
       // source 'tracked' (tracked hits are merged first), so a company BOTH sources know about
       // rides this term too rather than being penalised for also being in the firehose.
+      // Within a tier, then, what we already know (tracked, then crawled with jobs) stays above
+      // what we only looked up: a web row has jobs 0 and sim 0.
       || (b.source === 'tracked' ? 1 : 0) - (a.source === 'tracked' ? 1 : 0)
-      || (b.domain ? 1 : 0) - (a.domain ? 1 : 0)   // a company we can reach outranks a bare name
       || b.jobs - a.jobs
       || b.sim - a.sim
       || a.name.length - b.name.length
       || String(a.name).localeCompare(String(b.name)));
+    // ONE WEBSITE, ONE ROW. mergeWebHits never hands a domain to a second row, but two DB rows can
+    // still arrive carrying the same one (a tracked and a firehose spelling the alias keys do not
+    // join); the higher-ranked row keeps it.
+    const seen = new Set();
+    const rows = merged.filter((e) => !seen.has(e.domain) && seen.add(e.domain));
 
     res.json({
       success: true,
-      employers: merged.slice(0, limit).map((e) => ({
-        name: e.name, domain: e.domain || null, location: e.location || null,
+      websiteLookup: web.status,
+      employers: rows.slice(0, limit).map((e) => ({
+        name: e.name, domain: e.domain, location: e.location || null,
         jobs: e.jobs || 0, source: e.source,
+        domainUnverified: !!e.domainUnverified,   // the web lookup named a different site for this employer
       })),
     });
   } catch (e) {
