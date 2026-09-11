@@ -58,12 +58,22 @@ router.post('/resume-score/enhance-pass', authenticateToken, async (req, res) =>
 // GET /api/resume-score/source-text — the user's current résumé as editable prose.
 // This is what makes "pull the résumé" literal: the builder opens with their real résumé already
 // in the box, so the only thing left to do is ADD to it.
+// ?base=1 — the résumé as it read before any employer tailoring (see narrativeFor). A build for a
+// new employer must start from THIS, or every company's tailoring is layered on the last one's.
+// ⚠️ hasText:false is an ANSWER ("you have no résumé" → the app says "upload one first"), so it is
+// only ever sent for a résumé that is genuinely empty. A read that FAILED is a 503: answering a DB
+// blip with hasText:false told users who have a résumé to upload one. (strict makes narrativeFor
+// throw on a failed read instead of degrading to null.)
 router.get('/resume-score/source-text', authenticateToken, async (req, res) => {
   try {
-    const n = await scorer.narrativeFor(req.user.id);
+    const base = req.query && String(req.query.base || '') === '1';
+    const n = await scorer.narrativeFor(req.user.id, base ? { base: true, env: req, strict: true } : { strict: true });
     if (!n) return res.json({ hasText: false });
     res.json({ hasText: true, text: n.text, source: n.source });
-  } catch (e) { res.json({ hasText: false }); }
+  } catch (e) {
+    console.warn('[resumeScore] source-text failed:', e.message);
+    res.status(503).json({ error: 'source_text_unavailable' });
+  }
 });
 
 // POST /api/resume-score/refresh — user-initiated re-score. Still obeys the admin switch and caps.

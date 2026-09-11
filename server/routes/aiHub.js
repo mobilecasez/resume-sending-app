@@ -13,6 +13,7 @@ const {
     getJobFullHandler,
     getAllJobStatuses,
     removeDashboardItem,
+    trackEmployer,
     verifyEmail,
     addContactToJob,
     getJobContacts,
@@ -64,6 +65,8 @@ router.get('/credits', authenticateToken, getCreditBalance);
 router.post('/deduct-credits', authenticateToken, deductCredits);
 
 // ── Recruiter finder ──────────────────────────────────────────────────────────
+// FREE: add an employer to Home as 'watching' without starting a job search (no scrape, no charge).
+router.post('/employers/track', authenticateToken, trackEmployer);
 router.get('/employers/:employerId/recruiters', authenticateToken, getRecruiters);
 router.post('/employers/:employerId/find-recruiters', authenticateToken, asJob('find_recruiters')(findRecruiters));
 router.post('/employers/:employerId/find-emails', authenticateToken, asJob('find_emails')(findRecruiterEmails));

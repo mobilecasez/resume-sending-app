@@ -13,6 +13,7 @@ const entitlements = require('../services/entitlements');
 const downloads = require('../services/downloads');
 const history = require('../services/downloadHistory');
 const jobService = require('../services/jobService');
+const employerDocs = require('../services/employerDocs');
 
 /**
  * Tell the client where a long generation has actually got to.
@@ -98,6 +99,227 @@ async function ensureResumeTable() {
     // The design the user picked in the gallery — every downstream file (Auto Fill attach, email
     // attachment, home thumbnail) renders THIS template, so what gets sent is what they chose.
     await dbConfig.run(`ALTER TABLE user_resumes ADD COLUMN IF NOT EXISTS preferred_template TEXT`).catch(() => {});
+    // The employer key (downloads.employerKeyOf) this row was tailored for, or NULL when the row IS
+    // the user's base resume. ⚠️ It is what tells source-text?base=1 that the row in front of it is
+    // one company's version and the real base is the snapshot — see snapshotBaseBeforeTailoring.
+    await dbConfig.run(`ALTER TABLE user_resumes ADD COLUMN IF NOT EXISTS tailored_for TEXT`).catch(() => {});
+}
+
+/**
+ * Keep the user's BASE resume safe before a tailored build overwrites the only row they have.
+ *
+ * ⚠️ user_resumes is UNIQUE(user_id). Without this, tailoring for employer A destroys the base, the
+ * next build for employer B is written from A's version, and every company inherits the last one's
+ * emphasis. So: if the row about to be overwritten is still the base (tailored_for IS NULL), it is
+ * copied into employerDocs under the '(none)' scope with a fixed marker fingerprint first.
+ *
+ * If the row is already tailored the base was saved earlier; it is re-put unchanged, which only bumps
+ * its updated_at — ⚠️ employerDocs.prune keeps the newest 40 resume rows per user, and a base written
+ * once and then never touched is exactly the row that ages out behind forty companies.
+ *
+ * Call it immediately before the overwrite, not at the start of the build: a /save the user makes
+ * during the minute the AI runs is part of their base, and an early snapshot would miss it.
+ * Never throws — a lost snapshot degrades source-text?base=1 to the upload, it must not fail a build.
+ */
+async function snapshotBaseBeforeTailoring(userId, env) {
+    try {
+        const { BASE_SNAPSHOT_FP } = require('../services/resumeScorer');
+        const cur = await dbConfig.get('SELECT resume_data, tailored_for FROM user_resumes WHERE user_id = $1', [userId]);
+        if (!cur || !cur.resume_data) return;
+        let payload = cur.resume_data;
+        if (cur.tailored_for) {
+            const prev = await employerDocs.get(userId, 'resume', downloads.NONE, BASE_SNAPSHOT_FP, env);
+            if (!prev || !prev.payload || !Object.keys(prev.payload).length) return;   // nothing to keep alive
+            payload = prev.payload;
+        } else if (typeof payload === 'string') {
+            try { payload = JSON.parse(payload); } catch { return; }
+        }
+        if (!payload || typeof payload !== 'object' || !Object.keys(payload).length) return;
+        await employerDocs.put({
+            userId, kind: 'resume', employer: downloads.NONE, jobUrl: '', jobTitle: '',
+            fingerprint: BASE_SNAPSHOT_FP, model: 'base-snapshot', payload, env,
+        });
+    } catch (e) { console.warn('[resumeBuilder] base snapshot failed:', e.message); }
+}
+
+/**
+ * Overwrite the stored base snapshot with `payload` (a user's save that is now their base — see
+ * saveResume). Never throws: the row it follows already carries tailored_for NULL, which makes the row
+ * itself the base, so a lost snapshot write cannot resurrect the old base.
+ */
+async function refreshBaseSnapshot(userId, payload, env) {
+    try {
+        const { BASE_SNAPSHOT_FP } = require('../services/resumeScorer');
+        let p = payload;
+        if (typeof p === 'string') { try { p = JSON.parse(p); } catch { return; } }
+        if (!p || typeof p !== 'object' || !Object.keys(p).length) return;
+        await employerDocs.put({
+            userId, kind: 'resume', employer: downloads.NONE, jobUrl: '', jobTitle: '',
+            fingerprint: BASE_SNAPSHOT_FP, model: 'base-snapshot', payload: p, env,
+        });
+    } catch (e) { console.warn('[resumeBuilder] base snapshot refresh failed:', e.message); }
+}
+
+/**
+ * The generation upsert: the resume, and which employer (key) it was tailored for — NULL = the base.
+ *
+ * ⚠️ BY THE TIME THIS RUNS THE USER HAS ALREADY BEEN CHARGED. ensureResumeTable swallows a failed
+ * ALTER, so if tailored_for could not be added this INSERT would throw and turn a paid-for resume into
+ * "we could not finish generating" with nothing saved. The old column list is the fallback: the resume
+ * is kept, only the tailoring marker is lost (source-text?base=1 then serves this row, as it always did).
+ */
+async function saveResumeRow(userId, resumeData, tailoredFor) {
+    const json = JSON.stringify(resumeData);
+    try {
+        await dbConfig.run(
+            `INSERT INTO user_resumes (user_id, resume_data, tailored_for, updated_at)
+             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+             ON CONFLICT (user_id) DO UPDATE
+             SET resume_data  = EXCLUDED.resume_data,
+                 tailored_for = EXCLUDED.tailored_for,
+                 updated_at   = CURRENT_TIMESTAMP`,
+            [userId, json, tailoredFor]
+        );
+    } catch (e) {
+        console.warn('[resumeBuilder] tailored_for save failed, saving without it:', e.message);
+        await dbConfig.run(
+            `INSERT INTO user_resumes (user_id, resume_data, updated_at)
+             VALUES ($1, $2, CURRENT_TIMESTAMP)
+             ON CONFLICT (user_id) DO UPDATE
+             SET resume_data = EXCLUDED.resume_data,
+                 updated_at  = CURRENT_TIMESTAMP`,
+            [userId, json]
+        );
+    }
+}
+
+// Bump when the employer block's instructions change shape — folded into the cache fingerprint so a
+// resume written to the old instructions is not served as if it answered the new ones. 'none' says no
+// web research feeds the prompt yet; when research lands, its revision belongs here.
+const RESEARCH_REV = 'none';
+const RESUME_MODEL = 'gemini-2.5-flash';
+
+/**
+ * resume_metadata columns that describe the PARSE, not the résumé.
+ * ⚠️ THESE MUST NEVER REACH THE FINGERPRINT. parsed_at and parse_error used to be hashed, so re-parsing
+ * an unchanged upload (a retry, a re-queue, a parser deploy) moved the fingerprint and the next build
+ * for an employer the user already paid for missed the cache and charged again. The same list as
+ * resumeScorer.uploadContentFor, plus two narrow patterns so a future `last_parsed_at` / `parse_attempts`
+ * column cannot quietly re-open it. The model never needed any of them either, so the prompt drops them too.
+ * ⚠️ Deliberately NOT a broad `_status` / `_error` rule: a column like `visa_status` is a résumé FACT, and
+ * stripping it would silently take it out of the prompt.
+ */
+const UPLOAD_BOOKKEEPING = new Set(['id', 'user_id', 'parse_status', 'parse_error', 'parsed_at', 'created_at', 'updated_at']);
+const isUploadBookkeeping = (k) => UPLOAD_BOOKKEEPING.has(k) || /_at$/.test(k) || /^pars(e|ed|ing)_/.test(k);
+
+/** The parsed uploaded resume as the prompt sees it, or '' — ONE definition for the prompt and the cache fingerprint. */
+async function uploadedResumeContextFor(userId) {
+    try {
+        const meta = await dbConfig.get('SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?', [userId, 'done']);
+        if (meta) {
+            const rest = {};
+            for (const [k, v] of Object.entries(meta)) if (!isUploadBookkeeping(k)) rest[k] = v;
+            console.log(`[resumeBuilder] including uploaded resume content for user ${userId}`);
+            return JSON.stringify(rest, null, 2);
+        }
+        console.log(`[resumeBuilder] includeUploadedResume set but no parsed resume found for user ${userId}`);
+    } catch (e) { console.warn('[resumeBuilder] uploaded resume merge failed:', e.message); }
+    return '';
+}
+
+/**
+ * The per-employer cache fingerprint of a build — ONE function, called by generateAI AND the gate.
+ *
+ * ⚠️ IF THESE TWO EVER COMPUTE DIFFERENT FINGERPRINTS, THE GATE LIES ABOUT MONEY: it would send a user
+ * with no quota to Plans (or ask them for credits) for a build that is a free cache hit, or promise a
+ * free hit that then charges. So every input lives here and nowhere else:
+ *   base text  — `rawText` when the caller has it (the build: it is literally what the prompt reads, so
+ *                a stored document is labelled with the text it was written from), otherwise the
+ *                server-side BASE narrative (the gate). Home sends source-text?base=1 verbatim as
+ *                rawText, and fingerprint() collapses whitespace, so for Home's build the two are the
+ *                same string. A user who hand-edits the text box gets a fingerprint the gate cannot
+ *                foresee — the gate then under-promises (a miss), never over-promises.
+ *   upload     — uploadedResumeContextFor (bookkeeping columns stripped — see UPLOAD_BOOKKEEPING).
+ *   job fields — title, description, url, website, as sent.
+ *   research   — RESEARCH_REV.
+ * Returns null when the base text cannot be read (a strict read failed) — a caller must then skip the
+ * cache, never hash a guess.
+ */
+async function generationFingerprint(userId, { rawText, includeUploadedResume, job, env, readUploaded }) {
+    let baseText = rawText;
+    if (baseText == null) {
+        try {
+            const scorer = require('../services/resumeScorer');
+            const n = await scorer.narrativeFor(userId, { base: true, env, strict: true });
+            if (!n || !n.text) return null;
+            baseText = n.text;
+        } catch (e) {
+            console.warn('[resumeBuilder] fingerprint base read failed:', e.message);
+            return null;
+        }
+    }
+    const uploaded = readUploaded ? await readUploaded()
+        : (includeUploadedResume ? await uploadedResumeContextFor(userId) : '');
+    const j = job || {};
+    return employerDocs.fingerprint({
+        baseText: [baseText, uploaded].join('\n'),
+        jobText: [j.title, j.description, j.url, j.website].map((v) => String(v || '')).join('\n'),
+        researchRev: RESEARCH_REV,
+    });
+}
+
+/**
+ * Stable deep equality for two resume payloads.
+ * ⚠️ NOT JSON.stringify(a) === JSON.stringify(b): resume_data is JSONB, and Postgres hands its keys back
+ * in its own order, so the SAME resume re-saved would compare as an edit.
+ */
+function sameResumePayload(a, b) {
+    const parse = (v) => { if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch { return v; } };
+    const canon = (v) => {
+        if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+        if (v && typeof v === 'object') {
+            return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}`;
+        }
+        return JSON.stringify(v === undefined ? null : v);
+    };
+    return canon(parse(a)) === canon(parse(b));
+}
+
+/**
+ * Credit-lane verification — did consumeOnSuccess ACTUALLY deduct credits?
+ *
+ * ⚠️ { via: 'credits' } IS NOT PROOF OF PAYMENT. consumeOnSuccess calls eventCosts.chargeCredits, which
+ * on a short balance returns { charged:false, insufficient:true } WITHOUT throwing — and consumeOnSuccess
+ * ignores that result, writes the ledger row anyway and reports 'credits'. canConsumeMany does not
+ * reserve, so two overlapping builds both pass the gate on one build's worth of credits: the second is
+ * "charged" nothing, and if it then wrote the cache that document would be a PERMANENT FREE HIT.
+ * entitlements.js exposes nothing else, so we read what the charge leaves behind: chargeCredits writes a
+ * credit_usage_history row ONLY after a real deduction, consumeOnSuccess writes a usage_ledger row every
+ * time. Marked just before the call, "every credits ledger row since has a paid history row" is the
+ * answer. It is CONSERVATIVE: two builds consuming in the same instant with one charge between them both
+ * read unpaid (the paid one merely skips its cache write), and a lost history insert reads unpaid. It
+ * can only under-report a payment, never invent one — a balance before/after diff could, since an
+ * overlapping build's deduction would look like ours, which is exactly the GE1 race.
+ */
+async function creditMarksFor(userId) {
+    try {
+        const h = await dbConfig.get('SELECT COALESCE(MAX(id), 0) AS id FROM credit_usage_history WHERE user_id = $1', [userId]);
+        const l = await dbConfig.get('SELECT COALESCE(MAX(id), 0) AS id FROM usage_ledger WHERE user_id = $1', [userId]);
+        return { h: Number(h && h.id) || 0, l: Number(l && l.id) || 0 };
+    } catch (e) { console.warn('[resumeBuilder] credit marks unreadable:', e.message); return null; }
+}
+async function creditsDeductedSince(userId, marks) {
+    if (!marks) return { paid: false, cost: 0 };
+    try {
+        const h = await dbConfig.get(
+            `SELECT COUNT(*)::int AS n, COALESCE(MAX(credits_used), 0)::int AS cost FROM credit_usage_history
+              WHERE user_id = $1 AND id > $2 AND action_type = 'resume_ai_generate' AND credits_used > 0`, [userId, marks.h]);
+        const l = await dbConfig.get(
+            `SELECT COUNT(*)::int AS n FROM usage_ledger
+              WHERE user_id = $1 AND id > $2 AND kind = 'resume' AND source = 'credits'`, [userId, marks.l]);
+        const paidRows = Number(h && h.n) || 0, owedRows = Number(l && l.n) || 0;
+        return { paid: owedRows >= 1 && paidRows >= owedRows, cost: Number(h && h.cost) || 0 };
+    } catch (e) { console.warn('[resumeBuilder] credit verification unreadable:', e.message); return { paid: false, cost: 0 }; }
 }
 
 // ── URL extraction from free-form text ───────────────────────────────────────
@@ -145,7 +367,7 @@ async function callGemini(prompt) {
     const { GoogleGenerativeAI } = require('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-        model: 'gemini-2.5-flash',
+        model: RESUME_MODEL,
         generationConfig: { temperature: 0.4, maxOutputTokens: 32768, responseMimeType: 'application/json' },
     });
 
@@ -201,6 +423,39 @@ ${job.url ? `Link:    ${job.url}\n` : ''}${job.description ? `Posting text:\n---
 `
         : '';
 
+    // ── The employer this resume is FOR, when there is no posting ─────────────────────────────────
+    // ⚠️ SEPARATE FROM THE ROLE BLOCK ON PURPOSE. Without it a build that names only a company (the
+    // Home "add an employer" flow) was not tailored at all — the role block needs a title or posting
+    // text. Stuffing the company website into job.url to trigger that block would scrape a homepage in
+    // as "Posting text" and tailor the resume to careers-page chrome, so the website is identifying
+    // context here and nothing else: it is never fetched.
+    // ⚠️ THE MODEL KNOWS LESS ABOUT A GIVEN EMPLOYER THAN IT WILL CLAIM. No research runs in this round,
+    // so every sentence it writes "about" the employer is a guess with our name on it. Hence the rule
+    // against claiming anything about the company that it cannot support.
+    const empCompany = job && String(job.company || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    const empWebsite = job && String(job.website || '').replace(/\s+/g, '').trim().slice(0, 300);
+    const employerBlock = (job && empCompany && !(job.title || job.description))
+        ? `
+=== THE EMPLOYER THIS RESUME IS BEING WRITTEN FOR (no job posting was given) ===
+Company: ${empCompany}
+${empWebsite ? `Website: ${empWebsite}   (given only to identify the company — it has NOT been opened; do not describe it)\n` : ''}
+=== HOW TO USE IT (emphasis and ordering ONLY) ===
+- The ZERO-MISS rule below still applies in full. Writing for an employer never drops anything.
+- NEVER add a skill, tool, employer, qualification, certification, claim or fact that is not in the
+  candidate's own text above. Never imply more experience than they wrote.
+- Order the candidate's EXISTING experience highlights, projects and skills so the ones most relevant
+  to what this employer does come first. Do not delete the others.
+- Write \`personal_info.title\` and \`summary\` with this employer in mind, using only what the
+  candidate has actually done.
+- Do NOT state or imply knowledge of this employer you cannot support: no products, projects,
+  customers, figures, values, culture or news. If you are not sure what this employer does, keep
+  the emphasis to the industry it is plainly in, or leave the resume general.
+- Do NOT write this employer's name into the title, the summary or any entry — unless the
+  candidate's own text already names it (for example they worked there), in which case keep it
+  exactly as they wrote it. The resume stays the candidate's own record; only its emphasis changes.
+`
+        : '';
+
     return `You are an expert executive resume writer AND veteran corporate recruiter. Your task is to parse the candidate information below and return a single, clean JSON object — NO markdown, NO code fences, NO conversational text, ONLY the raw JSON.
 
 === CANDIDATE DETAILS ===
@@ -214,7 +469,7 @@ ${rawText}
 ${uploadedBlock}
 === SCRAPED PROJECT PAGES (enrichment context) ===
 ${projectContext}
-${jobBlock}
+${jobBlock}${employerBlock}
 
 === ⚠️ ZERO-MISS RULE (most important rule — read first) ===
 You MUST capture EVERY single piece of information the candidate has written.
@@ -384,12 +639,55 @@ PART 2 — CANDIDATE'S ROLE: The candidate's title/role in the project, then 2-3
 async function generateAI(req, res) {
     const userId = req.user.id;
     const { name, email, phone, location, rawText, includeUploadedResume, isRegenerate, job } = req.body;
+    // ⚠️ coveredOnly: Home sends true for a build it AUTO-started. Its gate answer is a snapshot taken
+    // seconds before this request; without this flag, a build whose last plan unit was spent in between
+    // (another device, another build) would silently fall through to the legacy-credits lane and take
+    // 2 credits nobody agreed to. With it, only plan / free / pass / cache may pay, or this is a 402.
+    // false is sent only after the user explicitly confirmed a credit charge.
+    const coveredOnly = !!(req.body && req.body.coveredOnly === true);
 
     if (!rawText || rawText.trim().length < 20) {
-        return res.status(400).json({ error: 'Please provide more detail about your experience.' });
+        return res.status(400).json({ error: 'Please provide more detail about your experience.', reason: 'no_resume' });
     }
 
     try {
+        const report = makeReporter(req);
+        const passEmployer = (job && (job.company || '').trim()) || null;
+        const env = downloads.envOf(req);
+        const readUploaded = (() => {
+            let once = null;
+            return () => (once = once || (includeUploadedResume ? uploadedResumeContextFor(userId) : Promise.resolve('')));
+        })();
+
+        // ── THE PER-EMPLOYER CACHE — read BEFORE every gate that consumes, reserves or binds ─────────
+        // ⚠️ A HIT IS FREE OR THIS IS A BILLING BUG WITH A CACHE ATTACHED. It returns before the regen
+        // lane, before canConsumeMany and before passCoversGeneration (which BINDS a pass when quota is
+        // gone), so a hit spends nothing, reserves nothing, calls no AI and leaves regen_count alone.
+        // ⚠️ A REGENERATE NEVER READS IT: "give me a different one" answered with the stored one is the
+        // regenerate button not working — and it would skip the regen ledger the free lane relies on.
+        // The fingerprint is every input the prompt sees, so an edit anywhere is a miss, never a stale hit.
+        // ⚠️ generationFingerprint is shared with generationGate — see its header before changing inputs.
+        let cacheFp = null;
+        if (passEmployer) {
+            cacheFp = await generationFingerprint(userId, { rawText, includeUploadedResume, job, env, readUploaded });
+            if (cacheFp && !isRegenerate) {
+                const hit = await employerDocs.get(userId, 'resume', passEmployer, cacheFp, env);
+                const cachedResume = hit && hit.payload && hit.payload.personal_info ? hit.payload : null;
+                if (cachedResume) {
+                    await report('cached', `Found your ${passEmployer} resume`, 90);
+                    if (name)     cachedResume.personal_info.full_name = name;
+                    if (email)    cachedResume.personal_info.email     = email;
+                    if (phone)    cachedResume.personal_info.phone     = phone;
+                    if (location) cachedResume.personal_info.location  = location;
+                    await ensureResumeTable();
+                    await snapshotBaseBeforeTailoring(userId, env);
+                    await saveResumeRow(userId, cachedResume, downloads.employerKeyOf(passEmployer));
+                    console.log(`[resumeBuilder] cache hit for "${passEmployer}" — no AI call, nothing charged`);
+                    return res.json({ success: true, resumeData: cachedResume, cached: true, tailoredFor: passEmployer });
+                }
+            }
+        }
+
         // ── Regenerate is its OWN lane, because the free plan's quota is 1 resume/30 days: the
         // first build consumes it, so "regenerate once free" can only be true if that one
         // regeneration BYPASSES the quota gate. Paid plans regenerate through their quota as a
@@ -399,7 +697,7 @@ async function generateAI(req, res) {
         if (isRegenerate && !sub) {
             await ensureResumeTable();
             const rrow = await dbConfig.get('SELECT regen_count FROM user_resumes WHERE user_id = $1', [userId]);
-            if (!rrow) return res.status(404).json({ error: 'No resume to regenerate yet — generate one first.' });
+            if (!rrow) return res.status(404).json({ error: 'No resume to regenerate yet — generate one first.', reason: 'no_resume' });
             if ((rrow.regen_count || 0) >= 1) {
                 return res.status(403).json({
                     error: 'Your free plan includes one regeneration, and you have used it. Upgrade to keep refining your resume.',
@@ -417,14 +715,26 @@ async function generateAI(req, res) {
         // this employer may pay (they bought it for precisely this); once quota is gone the pass is
         // consulted in full — and that call RESERVES it, so two generations for two companies
         // inside one AI minute cannot both ride the same pass.
-        const passEmployer = (job && (job.company || '').trim()) || null;
+        // (passEmployer — job.company — is read at the top: the cache must key on this same string.)
         const quota = freeRegen ? { allowed: true } : await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        // Under coveredOnly the credits lane does not exist, so a quota that is "allowed" only through
+        // credits is exhausted as far as this build is concerned — and the pass is consulted in full,
+        // exactly as it is for a user with no quota at all (generationGate answers the same way).
+        const quotaCovers = !!quota.allowed && !(coveredOnly && quota.via === 'credits');
         const viaPass = (!freeRegen && passEmployer)
-            ? await downloads.passCoversGeneration(userId, 'resume', passEmployer, req, { boundOnly: quota.allowed }).catch(() => false)
+            ? await downloads.passCoversGeneration(userId, 'resume', passEmployer, req, { boundOnly: quota.allowed && quotaCovers }).catch(() => false)
             : false;
         const gate = (freeRegen || viaPass) ? { allowed: true } : quota;
         if (!gate.allowed) {
             return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
+        }
+        if (coveredOnly && !freeRegen && !viaPass && !quotaCovers) {
+            // Before ANY AI call: nothing is spent, reserved or generated.
+            console.log(`[resumeBuilder] coveredOnly build for user ${userId} refused — only legacy credits could pay`);
+            return res.status(402).json({
+                error: 'Your plan does not cover this resume right now. Open Plans & Usage to continue.',
+                reason: 'quota_exhausted',
+            });
         }
 
         // ⚠️ NEVER CHARGE FOR AN ANSWER THE CLIENT CAN NO LONGER RECEIVE.
@@ -444,7 +754,6 @@ async function generateAI(req, res) {
             return res.status(402).json({ error: creditCheck.message, creditsRequired: RESUME_CREDIT_COST, creditsRemaining: creditCheck.remaining });
         }
 
-        const report = makeReporter(req);
         await report('reading', 'Reading what you gave us', 8);
 
         const urls = extractUrls(rawText);
@@ -456,19 +765,12 @@ async function generateAI(req, res) {
             : [];
 
         // Point 5: optionally fold in the user's already-parsed uploaded resume.
+        // ⚠️ The SAME read the cache fingerprint was taken over (readUploaded memoises it), so the
+        // prompt and the stored document's signature cannot describe two different uploads.
         let uploadedResumeContext = '';
         if (includeUploadedResume) {
             await report('resume', 'Going through your experience', 22);
-            try {
-                const meta = await dbConfig.get('SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?', [userId, 'done']);
-                if (meta) {
-                    const { id, user_id, parse_status, created_at, updated_at, ...rest } = meta;
-                    uploadedResumeContext = JSON.stringify(rest, null, 2);
-                    console.log(`[resumeBuilder] including uploaded resume content for user ${userId}`);
-                } else {
-                    console.log(`[resumeBuilder] includeUploadedResume set but no parsed resume found for user ${userId}`);
-                }
-            } catch (e) { console.warn('[resumeBuilder] uploaded resume merge failed:', e.message); }
+            uploadedResumeContext = await readUploaded();
         }
 
         // The posting the user is applying to, when they gave us one. A link with no text is
@@ -491,8 +793,14 @@ async function generateAI(req, res) {
             }
             console.log(`[resumeBuilder] tailoring for "${jobTarget.title || jobTarget.url}"`);
         }
+        // A company with no posting still tailors, through the prompt's employer block. ⚠️ website
+        // rides as its OWN field and is never copied into url — url is a posting, and is scraped.
+        const promptJob = jobTarget
+            ? { ...jobTarget, website: job.website || '' }
+            : (passEmployer ? { company: passEmployer, website: job.website || '' } : null);
+        if (!jobTarget && passEmployer) console.log(`[resumeBuilder] tailoring for employer "${passEmployer}" (no posting)`);
 
-        const prompt = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext, jobTarget);
+        const prompt = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext, promptJob);
 
         // Up to 3 attempts: a truncated or malformed AI response is retried silently
         // (identical prompt — exactly what a user's manual "try again" did) instead of
@@ -504,7 +812,7 @@ async function generateAI(req, res) {
             // client timeout: attempts two and three looked identical to the first from outside.
             await report(
                 attempt === 1 ? 'writing' : 'retry',
-                attempt === 1 ? 'Writing your resume' : 'Taking another pass at it',
+                attempt === 1 ? (passEmployer ? `Writing your ${passEmployer} resume` : 'Writing your resume') : 'Taking another pass at it',
                 attempt === 1 ? 38 : 38 + attempt * 6,
             );
             try {
@@ -531,6 +839,7 @@ async function generateAI(req, res) {
 
         resumeData._buildMethod = 'ai';
 
+        let charged = false;   // did something actually pay for this run — the cache write depends on it
         try {
             // Deduct only now — the resume was actually generated. Pool + ledger via entitlements.
             // The free regeneration bypassed the gate, so it must not be counted against the quota
@@ -546,27 +855,75 @@ async function generateAI(req, res) {
                     const claimed = await downloads.claimGeneration(userId, 'resume', passEmployer, req);
                     spentPass = !!claimed.charged;
                 }
-                if (!spentPass && !freeRegen) await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
+                if (!spentPass && !freeRegen) {
+                    // ⚠️ coveredOnly, re-asked at the moment of payment. The gate above ran a minute ago
+                    // (the AI call sat in between), and canConsumeMany never reserves: the plan unit it
+                    // saw may be gone, or the pass claim above lost a race. Then consumeOnSuccess would
+                    // pick credits — the one lane this build must never use. Refuse without charging
+                    // or saving: handing it over free would make racing builds a free-resume machine.
+                    if (coveredOnly) {
+                        const now = await entitlements.canConsumeMany(userId, 'resume', 1, req);
+                        if (!now.allowed || now.via === 'credits') {
+                            console.warn(`[resumeBuilder] coveredOnly build for user ${userId} lost its cover during the run — refused, nothing charged`);
+                            return res.status(402).json({
+                                error: 'Your plan allowance was used up while this resume was being written. Open Plans & Usage to continue.',
+                                reason: 'quota_exhausted',
+                            });
+                        }
+                    }
+                    const marks = await creditMarksFor(userId);
+                    const used = await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
+                    if (!used || used.via === 'error') {
+                        charged = false;                 // consumeOnSuccess never throws; 'error' means nothing was recorded
+                    } else if (used.via === 'credits') {
+                        // ⚠️ GE1 — see creditMarksFor: 'credits' is what was ATTEMPTED, not what was paid.
+                        const d = await creditsDeductedSince(userId, marks);
+                        charged = d.paid;
+                        if (!d.paid) console.warn(`[resumeBuilder] credits lane for user ${userId} deducted nothing (short balance or a racing build) — not cached`);
+                        if (coveredOnly) {
+                            // The residual race between the re-check above and consumeOnSuccess: give it back.
+                            if (d.paid) {
+                                const { refundCredits } = require('../services/eventCosts');
+                                if (typeof refundCredits === 'function') await refundCredits(userId, 'resume_ai_generate', { charged: true, cost: d.cost });
+                            }
+                            return res.status(402).json({
+                                error: 'Your plan allowance was used up while this resume was being written. Open Plans & Usage to continue.',
+                                reason: 'quota_exhausted',
+                            });
+                        }
+                    } else {
+                        charged = true;                  // plan / trial: the ledger row IS the charge
+                    }
+                }
+                if (spentPass) charged = true;
             }
         } catch (e) { console.warn('[resumeBuilder] usage record failed:', e.message); }
 
         await report('saving', 'Saving your resume', 95);
         await ensureResumeTable();
-        await dbConfig.run(
-            `INSERT INTO user_resumes (user_id, resume_data, updated_at)
-             VALUES ($1, $2, CURRENT_TIMESTAMP)
-             ON CONFLICT (user_id) DO UPDATE
-             SET resume_data = EXCLUDED.resume_data,
-                 updated_at  = CURRENT_TIMESTAMP`,
-            [userId, JSON.stringify(resumeData)]
-        );
+        // A tailored build must not destroy the base it was built from — snapshot it first, right
+        // before the overwrite. A build with no employer IS a new base, so it clears the marker.
+        if (passEmployer) await snapshotBaseBeforeTailoring(userId, env);
+        await saveResumeRow(userId, resumeData, passEmployer ? downloads.employerKeyOf(passEmployer) : null);
         // A regenerate spends the allowance; a fresh build restores it.
-        await dbConfig.run(
+        // ⚠️ The free regeneration's only ledger IS this bump, so it counts as charged only once it lands.
+        const regenLanded = await dbConfig.run(
             isRegenerate ? 'UPDATE user_resumes SET regen_count = regen_count + 1 WHERE user_id = $1'
                          : 'UPDATE user_resumes SET regen_count = 0 WHERE user_id = $1',
-            [userId]).catch(() => {});
+            [userId]).then(() => true, () => false);
+        if (freeRegen && !clientGone && regenLanded) charged = true;
 
-        return res.json({ success: true, resumeData });
+        // ⚠️ WRITE THE CACHE ONLY FOR A BUILD SOMEONE PAID FOR. A stored document is a free hit for
+        // ever after; storing one the sync lane waived (clientGone) or whose charge did not record
+        // would turn a single uncharged run into unlimited free copies for that employer.
+        if (passEmployer && cacheFp && charged) {
+            await employerDocs.put({
+                userId, kind: 'resume', employer: passEmployer, jobUrl: (job && job.url) || '', jobTitle: (job && job.title) || '',
+                fingerprint: cacheFp, model: RESUME_MODEL, payload: resumeData, env,
+            });
+        }
+
+        return res.json({ success: true, resumeData, cached: false, tailoredFor: passEmployer });
     } catch (e) {
         // Never forward internal error text (JSON SyntaxErrors, DB errors, API errors)
         // to the user — log it here, send a friendly message out.
@@ -576,6 +933,113 @@ async function generateAI(req, res) {
             ? 'The AI took too long to respond. Please try again — it usually works on the second attempt.'
             : 'We could not finish generating your resume. Please tap Generate again.';
         return res.status(isTimeout ? 504 : 500).json({ error: userMessage, isTimeout });
+    }
+}
+
+/**
+ * Would a pass pay for this employer's AI resume? The READ-ONLY twin of downloads.passCoversGeneration.
+ *
+ * ⚠️ passCoversGeneration with boundOnly=false is not a question, it is a RESERVATION: it binds the
+ * user's oldest unspent pass to this employer with an UPDATE. Asking it from a dry run would spend the
+ * one company a pass buys on a company the user merely looked at. downloads.js has no read-only
+ * variant, so this answers the same two questions from reads alone, clause for clause:
+ *   1. a pass ALREADY bound to this employer (boundPassFor — alias-aware, the same read the real gate
+ *      makes) whose resume generation is still unused → covered;
+ *   2. only when boundOnly is false: a TAKEABLE pass exists — the exact WHERE of the reservation's
+ *      sub-select (this environment, resume column unused, unbound or parked on '(none)') → covered.
+ * A nameless employer is never covered, and an unreadable pass is not a pass — both as downloads.js.
+ * ⚠️ If downloads.passCoversGeneration's selection ever changes, this must change with it.
+ */
+async function passWouldCoverResume(userId, employer, req, { boundOnly }) {
+    if (downloads.employerKeyOf(employer) === downloads.NONE) return false;
+    const env = downloads.envOf(req);
+    try {
+        const owned = await downloads.boundPassFor(userId, employer, env);
+        if (owned) {
+            const free = await dbConfig.get(
+                `SELECT id FROM download_passes WHERE id = $1 AND resume_generated_at IS NULL LIMIT 1`, [owned.id]);
+            if (free) return true;
+        }
+        if (boundOnly) return false;
+        const takeable = await dbConfig.get(
+            `SELECT id FROM download_passes
+              WHERE user_id = $1 AND environment = $2 AND resume_generated_at IS NULL
+                AND (bound_at IS NULL OR employer_key = $3)
+              LIMIT 1`, [userId, env, downloads.NONE]);
+        return !!takeable;
+    } catch { return false; }
+}
+
+/**
+ * POST /api/resume-builder/generation-gate   body { employer, job?: { title?, url?, description?, website? } }
+ *   200 { covered, via: 'plan'|'free'|'pass'|'cache'|'credits'|null, credits: number|null,
+ *         reason: 'quota_exhausted'|'regen_limit'|null }
+ *
+ * The question the app asks BEFORE it auto-starts a build: "would this be paid for by something the
+ * user already has?" ⚠️ STANDING RULE (a real incident): never generate-and-charge silently. An explicit
+ * Add is consent to use the plan, the free allowance or a pass — it is NOT consent to spend legacy
+ * credits, so those come back covered:false via:'credits' and the app asks first.
+ *
+ * ⚠️ THE CACHE IS ASKED FIRST, because generateAI asks it first. A stored document for this employer
+ * and these exact inputs is served before any quota is looked at and costs nothing — so a user with no
+ * quota left must hear covered:true via:'cache', not be sent to Plans for a free document. The
+ * fingerprint comes from generationFingerprint, the one function generateAI also uses, fed the build
+ * Home sends: the server-side base narrative as rawText, the upload included, these job fields.
+ * A regenerate never reads the cache (in either place), so it skips this step.
+ *
+ * ⚠️ THEN A TRUE DRY RUN, IN generateAI's ORDER: regen lane → canConsumeMany → pass. canConsumeMany
+ * checks and never reserves (it may lazily create the free-plan anchor row, which every status read
+ * does too). The pass is asked through passWouldCoverResume, never through passCoversGeneration.
+ * Nothing here consumes, reserves or binds. The pass is consulted IN FULL when only credits could pay,
+ * because Home builds with coveredOnly:true, under which generateAI does exactly that.
+ */
+async function generationGate(req, res) {
+    const userId = req.user.id;
+    const body = req.body || {};
+    const employer = String(body.employer || '').trim().slice(0, 160) || null;
+    const regenerate = body.regenerate === true;
+    const rawJob = body.job && typeof body.job === 'object' ? body.job : {};
+    const job = {
+        title: String(rawJob.title || ''), url: String(rawJob.url || ''),
+        description: String(rawJob.description || ''), website: String(rawJob.website || ''),
+    };
+    const answer = (covered, via, credits, reason) => res.json({ covered, via, credits, reason });
+    try {
+        if (employer && !regenerate) {
+            const env = downloads.envOf(req);
+            // A null fingerprint (base unreadable) is "cannot tell" — fall through to the dry run, which
+            // can only under-promise: the build itself still reads the cache before charging anything.
+            const fp = await generationFingerprint(userId, { includeUploadedResume: true, job, env });
+            if (fp) {
+                const hit = await employerDocs.get(userId, 'resume', employer, fp, env);
+                if (hit && hit.payload && hit.payload.personal_info) return answer(true, 'cache', null, null);
+            }
+        }
+        // Same subscription read, same (Production-default) environment, as generateAI's regen lane.
+        const sub = await entitlements.activeSubscription(userId).catch(() => null);
+        if (regenerate && !sub) {
+            await ensureResumeTable();
+            const rrow = await dbConfig.get('SELECT regen_count FROM user_resumes WHERE user_id = $1', [userId]);
+            if (!rrow) return answer(false, null, null, null);
+            if ((rrow.regen_count || 0) >= 1) return answer(false, null, null, 'regen_limit');
+            return answer(true, 'free', null, null);
+        }
+        const quota = await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        const quotaCovers = !!quota.allowed && (quota.via === 'plan' || quota.via === 'free');
+        const viaPass = employer ? await passWouldCoverResume(userId, employer, req, { boundOnly: quotaCovers }) : false;
+        // generateAI spends the pass first whenever it covered — so the pass is what pays.
+        if (viaPass) return answer(true, 'pass', null, null);
+        if (!quota.allowed) return answer(false, null, null, 'quota_exhausted');
+        if (quotaCovers) return answer(true, quota.via, null, null);
+        if (quota.via === 'credits') {
+            const price = await getEventCost('resume_ai_generate');
+            return answer(false, 'credits', Number(price) || 0, null);
+        }
+        // An allowance we cannot name is not one we may spend without asking.
+        return answer(false, null, null, null);
+    } catch (e) {
+        console.warn('[resumeBuilder] generation-gate failed:', e.message);
+        return res.status(500).json({ covered: false, via: null, credits: null, reason: null, error: 'Could not check your plan.' });
     }
 }
 
@@ -618,14 +1082,36 @@ async function saveResume(req, res) {
     if (!resumeData) return res.status(400).json({ error: 'resumeData is required' });
     try {
         await ensureResumeTable();
-        await dbConfig.run(
-            `INSERT INTO user_resumes (user_id, resume_data, updated_at)
-             VALUES ($1, $2, CURRENT_TIMESTAMP)
-             ON CONFLICT (user_id) DO UPDATE
-             SET resume_data = EXCLUDED.resume_data,
-                 updated_at  = CURRENT_TIMESTAMP`,
-            [userId, JSON.stringify(resumeData)]
-        );
+        // ⚠️ AN EDIT TO A TAILORED RESUME BECOMES THE USER'S BASE. This upsert never touched tailored_for,
+        // so after one tailored build every later editor save was invisible: source-text?base=1 kept
+        // serving the pre-tailoring snapshot, and the next build's re-snapshot kept re-putting it. The
+        // user's corrections were silently dropped from every future tailored resume.
+        // The trade-off, chosen on purpose: a user editing their Nordex resume is editing their OWN FACTS
+        // (a new job, a fixed date, a skill they forgot), which every future tailoring must start from.
+        // What they lose is the untailored wording of the old base — acceptable, because the alternative
+        // is building every company's resume from facts they have already corrected. It also moves the
+        // cache fingerprint, so the next build for an employer pays once for the corrected resume.
+        // Re-saving the tailored payload UNCHANGED (the builder saving what it was shown) is not an edit
+        // and must not clear the marker — hence the order-insensitive comparison.
+        let cur = null;
+        try { cur = await dbConfig.get('SELECT resume_data, tailored_for FROM user_resumes WHERE user_id = $1', [userId]); }
+        catch { cur = null; }   // no tailored_for column = nothing was ever tailored; the plain save below is right
+        const editsTailored = !!(cur && cur.tailored_for) && !sameResumePayload(cur.resume_data, resumeData);
+        if (editsTailored) {
+            // Row first: if the snapshot write then fails, the untailored row IS the base, so nothing is lost.
+            await saveResumeRow(userId, resumeData, null);
+            await refreshBaseSnapshot(userId, resumeData, downloads.envOf(req));
+            console.log(`[resumeBuilder] user ${userId} edited their resume tailored for "${cur.tailored_for}" — it is the base now`);
+        } else {
+            await dbConfig.run(
+                `INSERT INTO user_resumes (user_id, resume_data, updated_at)
+                 VALUES ($1, $2, CURRENT_TIMESTAMP)
+                 ON CONFLICT (user_id) DO UPDATE
+                 SET resume_data = EXCLUDED.resume_data,
+                     updated_at  = CURRENT_TIMESTAMP`,
+                [userId, JSON.stringify(resumeData)]
+            );
+        }
         if (preferredTemplate && TEMPLATE_IDS.includes(preferredTemplate)) {
             await dbConfig.run('UPDATE user_resumes SET preferred_template = $1 WHERE user_id = $2', [preferredTemplate, userId]).catch(() => {});
         }
@@ -1546,4 +2032,4 @@ async function buildResumePdfForRegion(userId, region, mode) {
     return { filePath, fileName, template: tplId };
 }
 
-module.exports = { previewFile, readPreviewCache, writePreviewCache, generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt };   // buildParsePrompt exported for tests only
+module.exports = { previewFile, readPreviewCache, writePreviewCache, generateAI, generationGate, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt };   // buildParsePrompt exported for tests only

@@ -88,16 +88,27 @@ function invalidate() { _cache = null; _at = 0; }
 async function chargeCredits(userId, eventKey, metadata = {}) {
   const cost = await getEventCost(eventKey);
   if (!cost || cost <= 0) return { charged: false, cost: 0 };
-  const acct = await dbConfig.get('SELECT credits_remaining FROM user_credits WHERE user_id = ?', [userId]);
-  const remaining = acct ? (acct.credits_remaining || 0) : 0;
-  if (!acct || remaining < cost) return { charged: false, cost, insufficient: true, remaining };
-  await dbConfig.run('UPDATE user_credits SET credits_remaining = credits_remaining - ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', [cost, userId]);
+  // ⚠️ ONE GUARDED STATEMENT, NOT A READ AND THEN A WRITE. This was SELECT-balance, compare, UPDATE — the
+  // same shape fixed at four sites in aiHubController (7ba19cb). canConsumeMany does not reserve, so two
+  // resume builds overlapping inside the AI minute both reached here with the same balance, both passed
+  // the compare and both debited: the balance went negative, or a build believed it had paid when it had
+  // not — and generateAI caches a build only when it was really charged, so a lie here would turn into a
+  // PERMANENT free cached resume. The WHERE decides; a zero-row answer is insufficient funds.
+  const debited = await dbConfig.get(
+    `UPDATE user_credits SET credits_remaining = credits_remaining - ?, updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = ? AND credits_remaining >= ? RETURNING credits_remaining`,
+    [cost, userId, cost]);
+  if (!debited) {
+    const acct = await dbConfig.get('SELECT credits_remaining FROM user_credits WHERE user_id = ?', [userId]).catch(() => null);
+    return { charged: false, cost, insufficient: true, remaining: acct ? (acct.credits_remaining || 0) : 0 };
+  }
+  const remaining = debited.credits_remaining || 0;
   try {
     await dbConfig.run(
       'INSERT INTO credit_usage_history (user_id, credits_used, action_type, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
       [userId, cost, eventKey]);
   } catch (e) { /* history is best-effort */ }
-  return { charged: true, cost, remaining: remaining - cost };
+  return { charged: true, cost, remaining };
 }
 
 // Give back a charge when the work it paid for could not be delivered (e.g. the AI was unavailable).

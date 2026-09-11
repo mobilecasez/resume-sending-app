@@ -26,6 +26,9 @@ router.get('/job-status/:jobId', authenticateToken, async (req, res) => {
 
         if (job.status === 'failed') {
             response.error = job.error;
+            // Why it failed, when the handler said (asyncJob keeps a 4xx body's `reason` in result):
+            // 'quota_exhausted' must open Plans, not a "try again" that ends at the same refusal.
+            response.reason = (response.data && typeof response.data.reason === 'string') ? response.data.reason : null;
         }
 
         res.json(response);

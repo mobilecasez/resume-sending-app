@@ -1,6 +1,9 @@
 const dbConfig = require('../../db-config');
 const geoRank = require('../utils/geoRank');       // country-then-distance comparator (shared with the feed)
 const geoContext = require('./geoContext');        // …and the per-user anchor + honest-fallback decision
+// ⚠️ LAZY: discoverController requires aiHubController, which requires this module — a top-level
+// require here would hand one side a half-built exports object. Resolved on first dashboard read.
+const websiteOf = (raw, name) => require('../controllers/discoverController').websiteOf(raw, name);
 
 /**
  * The geo ORDER-BY prefix for the tracked-employer job lists. These rows live in `jobs`, not
@@ -145,6 +148,89 @@ async function upsertEmployer(domain, name, subInfo, logoColor, logoInitial) {
         [domain, name, subInfo, JSON.stringify(logoColor), logoInitial]
     );
     return result[0].id;
+}
+
+/**
+ * Home "Add employer" (POST /employers/track): make sure an employers row owns `domain`, then put it
+ * on the user's Home as 'watching' — the cap checks, the insert and the track in ONE transaction.
+ * Returns { row, inserted } on success, or { limit: 'watching' | 'daily' } when a cap refuses it.
+ *
+ * ⚠️ INSERT-IF-ABSENT, NOT upsertEmployer. Its ON CONFLICT rewrites name + sub_info and stamps
+ * last_scraped_at, and `employers` is SHARED: one signed-in user typing "Acme Ltd" would rename the
+ * real row for every user (their Job Hub cards, the Add-employer name search, the Gemini prompts in
+ * findRecruiters / generateJobCoverLetter), wipe its sub_info, and make getRecentEmployerData serve a
+ * stale board from the 24h cache to the next searcher. So a conflict does NOTHING and the caller
+ * reads back the STORED name. That is correct for a shared identity table.
+ *
+ * ⚠️ last_scraped_at is written as NULL on purpose. The column's default is CURRENT_TIMESTAMP
+ * (nullable), which would make an empty, never-scraped row look fresh: getRecentEmployerData would
+ * "cache hit" it and answer the first real search with zero jobs. NULL is never fresh, and the first
+ * real search's upsertEmployer stamps it. No scrape-path row is NULL (prod 2026-09-11: 0 of 328), so
+ * NULL marks "user-added, unverified" — which is why discover's name search shows such a row only to
+ * a user who tracks it.
+ *
+ * ⚠️ THE 60-WATCHING CAP WAS A TOCTOU. count-then-insert as separate statements let N parallel
+ * requests all read 59 and all insert. A conditional INSERT … WHERE (SELECT COUNT(*)) < 60 does NOT
+ * fix that under READ COMMITTED (each statement's snapshot misses the other's uncommitted row), so
+ * the count and the track run under a per-USER transaction-scoped advisory lock: one user's tracks
+ * serialise, different users never wait on each other, and the lock dies with the transaction.
+ *
+ * ⚠️ THE DAILY INSERT LIMIT IS WHAT BOUNDS THE SHARED TABLE. Archiving frees a watching slot but the
+ * employers row stays, so "track 60, archive 60, repeat" filled `employers` forever. There is no
+ * created_by column, and none is needed: the employers INSERT and the user_tracked_employers INSERT
+ * both write created_at = CURRENT_TIMESTAMP inside this ONE transaction, and CURRENT_TIMESTAMP is the
+ * transaction's start time — so "this user's endpoint created that row" is exactly
+ * e.created_at = ute.created_at AND e.last_scraped_at IS NULL. A re-track never touches either
+ * created_at (ON CONFLICT updates status/updated_at only), a row another user created has an older
+ * e.created_at, and archiving keeps the ute row, so an archived insert still counts for the day.
+ */
+async function trackEmployerForUser(userId, { domain, name, logoColor, logoInitial }, { maxWatching, maxInsertsPerDay }) {
+    return dbConfig.withTransaction(async (tx) => {
+        await tx.query(`SELECT pg_advisory_xact_lock(hashtext('ai_hub.track_employer'), $1::int)`, [userId]);
+
+        let row = await tx.get(
+            `SELECT id, name, sub_info, logo_color FROM employers WHERE domain = $1`, [domain]);
+        const w = await tx.get(
+            `SELECT COUNT(*)::int AS n, COALESCE(bool_or(employer_id = $2::uuid), FALSE) AS already
+               FROM user_tracked_employers
+              WHERE user_id = $1 AND status = 'watching'`,
+            [userId, row ? row.id : null]);
+        // Re-adding one you already watch is never refused — by either cap (it has a row, so the
+        // insert branch below cannot run for it).
+        if (!(w && w.already) && ((w && w.n) || 0) >= maxWatching) return { limit: 'watching' };
+
+        let inserted = false;
+        if (!row) {
+            const made = await tx.get(
+                `SELECT COUNT(*)::int AS n
+                   FROM user_tracked_employers ute
+                   JOIN employers e ON e.id = ute.employer_id
+                  WHERE ute.user_id = $1
+                    AND e.last_scraped_at IS NULL
+                    AND e.created_at = ute.created_at
+                    AND ute.created_at > CURRENT_TIMESTAMP - INTERVAL '1 day'`,
+                [userId]);
+            if (((made && made.n) || 0) >= maxInsertsPerDay) return { limit: 'daily' };
+            const ins = await tx.run(
+                `INSERT INTO employers (domain, name, sub_info, logo_color, logo_initial, last_scraped_at, created_at)
+                 VALUES ($1, $2, NULL, $3, $4, NULL, CURRENT_TIMESTAMP)
+                 ON CONFLICT (domain) DO NOTHING
+                 RETURNING id, name, sub_info, logo_color`,
+                [domain, name, JSON.stringify(logoColor), logoInitial]);
+            inserted = ins.rows.length > 0;
+            // A concurrent insert by ANOTHER user (a different lock) made ours a no-op; READ COMMITTED
+            // gives this statement a fresh snapshot, so their committed row is visible now.
+            row = inserted ? ins.rows[0]
+                : await tx.get(`SELECT id, name, sub_info, logo_color FROM employers WHERE domain = $1`, [domain]);
+            if (!row) throw new Error(`employer row for ${domain} vanished between insert and read`);
+        }
+        await tx.run(
+            `INSERT INTO user_tracked_employers (user_id, employer_id, status, created_at)
+             VALUES ($1, $2, 'watching', CURRENT_TIMESTAMP)
+             ON CONFLICT (user_id, employer_id) DO UPDATE SET status = 'watching', updated_at = CURRENT_TIMESTAMP`,
+            [userId, row.id]);
+        return { row, inserted };
+    });
 }
 
 async function getEmployerByDomain(domain) {
@@ -491,6 +577,16 @@ async function getUserDashboard(userId) {
                 subInfo: emp.sub_info || '',
                 logoColor,
                 logoInitial: (emp.name[0] || '?').toUpperCase(),
+                // The employer's bare host — Home's employer chips send it as job.website for a
+                // tailored build. ⚠️ employers.domain also holds synthetic identity keys ('search:…',
+                // 'web-acme', 'linkedin-acme'), name slugs ('nordex-se'), jobCapture's capture-page
+                // host (linkedin.com, boards.greenhouse.io) and resolveCareersUrl's Gemini answers
+                // (often an ATS board). websiteOf — the SAME vetting the Add-employer search applies —
+                // nulls the non-hosts AND any listed job-board/ATS host the name does not own, so a
+                // board never reaches the client as "the website". (A guessed www.{slug}.com that
+                // resolves is a real, unlisted host: nothing here can tell it from the real site.)
+                // Adding a field changes every ETag once (md5 of the body): one full 200, then 304s.
+                domain: websiteOf(emp.domain, emp.name) || null,
                 status: jobs.length > 0 ? 'active' : 'watching',
                 jobs,
                 totalJobs,
@@ -752,6 +848,7 @@ module.exports = {
     cleanupOldJobs,
     requeueStuckJobs,
     upsertEmployer,
+    trackEmployerForUser,
     getEmployerByDomain,
     upsertLocation,
     upsertSkill,

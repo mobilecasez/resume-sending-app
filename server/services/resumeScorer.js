@@ -45,6 +45,19 @@ async function resumeContentFor(userId) {
       if (text && text.length > 120) return { text: text.slice(0, 24000), source: 'builder' };
     }
   } catch (e) { console.warn('[resumeScore] builder read failed:', e.message); }
+  return uploadContentFor(userId);
+}
+
+/**
+ * A read failure a `strict` caller must hear about, as opposed to "there is nothing there".
+ * ⚠️ An absent table or column (42P01 / 42703 — user_resumes is created lazily, tailored_for by a
+ * swallowed ALTER) IS "nothing there": reporting it as an outage would 5xx every user for ever.
+ */
+const isMissingSchema = (e) => !!e && (e.code === '42P01' || e.code === '42703');
+const rethrowIfStrict = (strict, e) => { if (strict && !isMissingSchema(e)) throw e; };
+
+/** The uploaded résumé alone, as { text, source: 'upload' } or null. `strict` rethrows a DB failure. */
+async function uploadContentFor(userId, { strict = false } = {}) {
   try {
     // ⚠️ SELECT *, not a column list. database/postgres-schema.sql describes a resume_metadata with
     // `full_text`; PRODUCTION has no such column — it has raw_text plus structured skills /
@@ -66,7 +79,7 @@ async function resumeContentFor(userId) {
       const text = parts.join('\n\n');
       if (text.trim().length > 120) return { text: text.slice(0, 24000), source: 'upload' };
     }
-  } catch (e) { console.warn('[resumeScore] metadata read failed:', e.message); }
+  } catch (e) { console.warn('[resumeScore] metadata read failed:', e.message); rethrowIfStrict(strict, e); }
   return null;
 }
 
@@ -120,18 +133,77 @@ function flattenResume(rd) {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** Readable résumé text to prefill the builder with. Returns { text, source } or null. */
-async function narrativeFor(userId) {
+/**
+ * The builder résumé as it read BEFORE any employer tailoring — see narrativeFor's `base`.
+ *
+ * Stored by resumeBuilderController through employerDocs under the '(none)' employer scope with this
+ * FIXED fingerprint, so there is exactly one per user per environment and it is findable without
+ * knowing what it was built from. ⚠️ The marker must never collide with a real fingerprint: those
+ * are 64 hex chars, and this is not hex.
+ */
+const BASE_SNAPSHOT_FP = 'base-resume-before-tailoring:v1';
+
+async function baseSnapshotFor(userId, reqOrEnv) {
+  const docs = require('./employerDocs');          // lazy: keeps this module's require graph light
+  const { NONE } = require('./downloads');
+  const hit = await docs.get(userId, 'resume', NONE, BASE_SNAPSHOT_FP, reqOrEnv);
+  return hit && hit.payload && typeof hit.payload === 'object' && Object.keys(hit.payload).length ? hit.payload : null;
+}
+
+/**
+ * Readable résumé text to prefill the builder with. Returns { text, source } or null.
+ *
+ * `base: true` asks for the résumé the user OWNS rather than the one they last had tailored.
+ * ⚠️ WHY: user_resumes is one row per user and a tailored build overwrites it. A rebuild for employer
+ * B that pulls the current row is written FROM employer A's tailored résumé — the tailoring compounds
+ * with every company, and the cache fingerprints drift because the "base" text keeps changing.
+ * So when the row is marked tailored_for, the pre-tailoring snapshot is the base.
+ *
+ * ⚠️ NO SNAPSHOT IS NOT PERMISSION TO SERVE THE TAILORED ROW. A user whose only résumé was an upload
+ * never had a builder row to snapshot, so their base is the upload; a snapshot lost to prune() is the
+ * same story. The current (tailored) row is only the last resort, because it is the compounding bug.
+ *
+ * `strict: true` — a failed READ throws instead of degrading to "no résumé".
+ * ⚠️ WHY: null means "this user has no résumé", and the app answers that with "upload your resume
+ * first". Swallowing a DB blip into null told a user who HAS a résumé to upload one — the first step
+ * towards them overwriting it. Only a genuinely empty result may be null in strict mode. (A corrupt
+ * resume_data that will not JSON.parse is empty, not a blip: it would fail identically for ever.)
+ * ⚠️ Known gap: employerDocs.get swallows its own errors, so a failed SNAPSHOT read still degrades to
+ * the upload / current row here — never to null while either exists.
+ */
+async function narrativeFor(userId, { base = false, env = null, strict = false } = {}) {
+  if (base) {
+    let tailored = false;
+    try {
+      const row = await dbConfig.get('SELECT tailored_for FROM user_resumes WHERE user_id = ?', [userId]);
+      tailored = !!(row && row.tailored_for);
+    } catch (e) { rethrowIfStrict(strict, e); /* no tailored_for column yet = nothing has ever been tailored */ }
+    if (tailored) {
+      try {
+        const snap = await baseSnapshotFor(userId, env);
+        const text = snap ? flattenResume(snap) : '';
+        if (text.length > 80) return { text: text.slice(0, 18000), source: 'builder' };
+      } catch (e) { console.warn('[resumeScore] base snapshot read failed:', e.message); rethrowIfStrict(strict, e); }
+      const up = await uploadContentFor(userId, { strict });
+      if (up) return { text: up.text.slice(0, 18000), source: 'upload' };
+      console.warn(`[resumeScore] user ${userId} is tailored but has no base snapshot or upload — serving the current row`);
+    }
+  }
+  let built = null;
   try {
-    const built = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = ?', [userId]);
-    if (built && built.resume_data) {
+    built = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = ?', [userId]);
+  } catch (e) { console.warn('[resumeScore] narrative builder read failed:', e.message); rethrowIfStrict(strict, e); }
+  if (built && built.resume_data) {
+    try {
       const rd = typeof built.resume_data === 'string' ? JSON.parse(built.resume_data) : built.resume_data;
       const text = flattenResume(rd || {});
       if (text.length > 80) return { text: text.slice(0, 18000), source: 'builder' };
-    }
-  } catch (e) { console.warn('[resumeScore] narrative builder read failed:', e.message); }
-  const raw = await resumeContentFor(userId);
-  if (raw && raw.source === 'upload') return { text: raw.text.slice(0, 18000), source: 'upload' };
+    } catch (e) { console.warn('[resumeScore] narrative builder row unreadable:', e.message); }
+  }
+  // The upload directly — resumeContentFor would re-read the builder row just read above, and a row
+  // too thin to narrate but long as JSON made it answer 'builder', which this then dropped as null.
+  const up = await uploadContentFor(userId, { strict });
+  if (up) return { text: up.text.slice(0, 18000), source: 'upload' };
   return null;
 }
 
@@ -438,4 +510,4 @@ function startScheduler() {
   return { started: true, everyMs };
 }
 
-module.exports = { scoreOne, runSweep, latestFor, mark, startScheduler, resumeContentFor, narrativeFor, fingerprintOf, bandFor, _normalise: normalise, _flattenResume: flattenResume };
+module.exports = { scoreOne, runSweep, latestFor, mark, startScheduler, resumeContentFor, uploadContentFor, narrativeFor, BASE_SNAPSHOT_FP, fingerprintOf, bandFor, _normalise: normalise, _flattenResume: flattenResume };

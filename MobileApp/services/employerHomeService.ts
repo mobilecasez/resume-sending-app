@@ -26,6 +26,9 @@ export type Target = {
   location?: string;
   /** The posting's own URL — the identity the whole server agrees on. */
   applyUrl?: string | null;
+  /** The employer's site, for an employer-level chip (no posting yet). ⚠️ NEVER a posting URL —
+   *  the generator scrapes job.url as posting text, and a homepage read as a posting is nonsense. */
+  website?: string | null;
 };
 
 export type HomeCard = { id: string; name: string; accent?: string; ats?: number | null; image?: string | null };
@@ -42,6 +45,10 @@ export const gradFor = (s?: string): [string, string] => {
 };
 /** At most this many postings per employer in the chip row. */
 const PER_EMPLOYER = 3;
+/** The whole chip row. */
+const MAX_CHIPS = 12;
+/** At most this many employer-level (no posting) chips lead the row; any others queue behind the postings. */
+const LEAD_EMPLOYER_CHIPS = 4;
 
 /**
  * The posting's identity. Byte-identical to the server's own cleaner
@@ -193,6 +200,7 @@ export async function fetchTargets(): Promise<Target[]> {
     getJson('/discover/saved-jobs'),
   ]);
   const out: Target[] = [];
+  const employerChips: Target[] = [];
 
   // (A) tracked employers — one chip per POSTING, not per company. Two roles at the same employer
   // are two different applications: they want different resumes and different letters, so
@@ -200,9 +208,32 @@ export async function fetchTargets(): Promise<Target[]> {
   // ⚠️ Capped per employer so one company with a large careers page cannot fill the whole row.
   for (const row of (dash?.dashboard || [])) {
     const e = row?.employer;
-    if (!e || !Array.isArray(e.jobs) || !e.jobs.length) continue;
+    if (!e || !Array.isArray(e.jobs)) continue;
     const colors: [string, string] = Array.isArray(e.logoColor) && e.logoColor.length >= 2
       ? [e.logoColor[0], e.logoColor[1]] : gradFor(e.name);
+    // An employer added from Home has no postings yet (the add is free and never searches), and
+    // it used to be skipped here — so the chip the user just added simply never appeared. It is
+    // ONE employer-level chip instead, keyed on the employer id: there is no posting URL to key on.
+    if (!e.jobs.length) {
+      // ⚠️ Only a SETTLED row. A search still pending/processing has no jobs YET — as an employer
+      // chip it would lead the row, then vanish the moment its postings stream in. (A processing row
+      // that already has partial postings still shows them below; this only stops the empty stand-in.)
+      if (row.status === 'pending' || row.status === 'processing') continue;
+      employerChips.push({
+        key: 'emp_' + e.id,
+        jobId: null,
+        employerId: String(e.id),
+        company: e.name || 'Employer',
+        role: '',
+        initial: e.logoInitial || initialOf(e.name),
+        colors,
+        match: null,
+        skills: [],
+        location: '',
+        website: e.domain ? 'https://' + e.domain : null,
+      });
+      continue;
+    }
     const ranked = [...e.jobs].sort((a: any, b: any) => (b?.matchScore ?? -1) - (a?.matchScore ?? -1));
     for (const j of ranked.slice(0, PER_EMPLOYER)) {
       if (!j) continue;
@@ -249,9 +280,20 @@ export async function fetchTargets(): Promise<Target[]> {
     });
   }
 
-  // Scored first, best match leading; unscored keep their order behind them.
+  // Postings: scored first, best match leading; unscored keep their order behind them.
   out.sort((a, b) => (b.match ?? -1) - (a.match ?? -1));
-  return out.slice(0, 12);
+  // ⚠️ The newest employer-level chips go FIRST, in the dashboard's own order (updated_at DESC = most
+  // recently tracked leading), and the cap is applied AFTER. Sorting them in with the postings would
+  // put a match of null behind every scored role, and the 12-cap would then drop the employer the
+  // user added a second ago — Home scrolls to that chip and starts building for it, so it must exist.
+  // ⚠️ But only a FEW lead: completed searches that found nothing are employer-level chips too (about
+  // a third of searches return zero), and letting all of them lead pushed every real posting out of
+  // the 12. The rest follow the postings, filling the row only where there is room.
+  return [
+    ...employerChips.slice(0, LEAD_EMPLOYER_CHIPS),
+    ...out,
+    ...employerChips.slice(LEAD_EMPLOYER_CHIPS),
+  ].slice(0, MAX_CHIPS);
 }
 
 export type HomeCards = {

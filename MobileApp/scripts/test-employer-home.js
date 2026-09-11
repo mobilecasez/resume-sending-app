@@ -42,6 +42,14 @@ const discC = strip(discSrc), docsC = strip(docsSrc), skelC = strip(skelSrc), ai
 const lookupSrc = R('../../server/services/companyLookup.js');
 const resolverSrc = R('../../server/services/applyUrlResolver.js');
 const lookupC = strip(lookupSrc);
+// The Home add-and-build flow: free tracking, a gated build, the overlay, and the money rules around it.
+const addSvcSrc = R('../services/homeAddEmployer.ts');
+const overlaySrc = R('../components/employer-home/BuildingOverlay.tsx');
+const jobSvcSrc = R('../../server/services/jobService.js');
+const costsSrc = R('../../server/services/eventCosts.js');
+const asyncJobSrc = R('../../server/middleware/asyncJob.js');
+const addSvcC = strip(addSvcSrc), overlayC = strip(overlaySrc), jobSvcC = strip(jobSvcSrc), costsC = strip(costsSrc);
+const fnBody = (src, name) => (src.match(new RegExp('async function ' + name + '\\([\\s\\S]*?\\n\\}')) || [''])[0];
 // Pull a JS array literal of strings out of a source file, so two copies of a list can be compared.
 // ⚠️ Comments are stripped FIRST: both lists carry explanatory comments with apostrophes in them
 // ("the employer's site"), and a naive '…' scan reads those as hosts.
@@ -343,7 +351,12 @@ ok('the button says what it does', /Add employer/.test(homeC) && !/Find a job/.t
 ok('the sheet only SEARCHES — it never adds, because adding costs credits',
   !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC)
   && /\/discover\/employers/.test(sheetC) && !/fetchDiscoverJobs/.test(sheetC));
-ok('…and hands the choice to the one audited add flow', /tab: 'search', addCompany: value/.test(homeC));
+// ⚠️ RETARGETED — THE USER OVERRULED THIS. It pinned "hand the choice to the Job Hub's audited add flow".
+// The user: "when adding it took me to the jobs page... it should not ... from resume page it should stay
+// there and the card should be addedd to start". And the hub it handed to rendered NOTHING for the add —
+// its add-company list is dead code. The add now happens here: free safe tracking + a gated build.
+ok('⚠️ adding an employer never leaves Home for the Job Hub', !/addCompany: value/.test(homeC) && !/tab: 'search', addCompany/.test(homeC));
+ok('…it tracks the employer and builds from here', /trackEmployer\(/.test(homeC) && /buildForEmployer\(/.test(homeC));
 ok('the hub consumes it exactly once', /handedOver\.current = true;/.test(hubC) && /typeof explicit === 'string' \? explicit : inputValue/.test(hubC));
 ok('it can take a pasted website as well as a name', /Use this website/.test(sheetC) && /take\(fieldWebsite\)/.test(sheetC));
 ok('region filters the search and suggests a design',
@@ -405,8 +418,10 @@ ok('…taking a link OR pasted text', /placeholder="Link to the job posting"/.te
 ok('…and it still never searches or charges', !/deductSearchCredits/.test(sheetC) && !/fetchJobMatches/.test(sheetC));
 
 console.log('── ⚠️ a pasted description never travels as a route param ──');
-ok('it goes through storage', /AsyncStorage\.setItem\('pending_job_listing'/.test(homeC));
-ok('…and the param only says there is one', /withListing: '1'/.test(homeC));
+// There is no route any more, so there is no param to leak into; the listing still goes through storage
+// (savePendingListing) for the section editor, and straight into the build as jobUrl/jobText.
+ok('it goes through storage', /savePendingListing\(/.test(homeC));
+ok('…and no description ever rides a route param', !/withListing/.test(homeC) && !/params:[\s\S]{0,80}jobText/.test(homeC));
 ok('the hub reads it exactly once and clears it', /removeItem\('pending_job_listing'\)/.test(hubC) && /savePendingListing\(v, listing\)/.test(hubC));
 
 console.log('── the listing survives to generation ──');
@@ -849,6 +864,85 @@ ok('⚠️ on a job board, only the board\'s own pages are allowed — an allowl
     && !selfPath.test('/company/nordex'));
   ok('…and a job key anywhere in the query is caught, prefixed or not', jobQuery.test('?vjk=0123') && jobQuery.test('?jk=1'));
 }
+
+console.log('── ⚠️ ADDING AN EMPLOYER ON HOME: FREE, AND IT CANNOT RENAME ANYONE ELSE\'S ──');
+const trackFn = fnBody(aiHubC, 'trackEmployer');
+ok('there is a free tracking endpoint', /router\.post\('\/employers\/track'/.test(R('../../server/routes/aiHub.js')) && trackFn.length > 200);
+ok('⚠️ tracking never starts the paid scrape pipeline', !/processJobSearch|createJob/.test(trackFn));
+// ⚠️ jobService.upsertEmployer does ON CONFLICT (domain) DO UPDATE SET name = EXCLUDED.name: reused for a
+// user-typed name, ANY signed-in user could rename a real employer for EVERY user — and it stamps
+// last_scraped_at, so the 24h cache would serve that employer's stale jobs to the next searcher.
+ok('⚠️ …and never calls the upsert that renames a shared employer', !/upsertEmployer/.test(trackFn));
+ok('⚠️ the write is insert-if-absent', /ON CONFLICT \(domain\) DO NOTHING/.test(jobSvcC));
+ok('⚠️ a user-added row never looks freshly scraped', /last_scraped_at/.test(jobSvcC));
+ok('⚠️ a job board or ATS host is not an employer identity', /websiteOf\(/.test(trackFn));
+// ⚠️ PRIVACY: a user-created row is exactly one whose last_scraped_at IS NULL. It used to appear in EVERY
+// user's name search — anyone could publish "Siemens → evil-example.com" to everybody.
+ok('⚠️ a user-added employer is visible in search only to users who track it',
+  /last_scraped_at IS NOT NULL\s*OR EXISTS \(SELECT 1 FROM user_tracked_employers/.test(discC));
+ok('⚠️ the watching cap is enforced under a lock, not read-then-write', /pg_advisory_xact_lock/.test(jobSvcC));
+ok('⚠️ shared-table growth is bounded per day, not only per watching slot', /TRACK_MAX_INSERTS_PER_DAY = \d+/.test(aiHubC));
+
+console.log('── ⚠️ A BUILD STARTS ON ITS OWN ONLY WHEN SOMETHING THAT IS NOT CREDITS PAYS ──');
+// The user's standing rule (the letters auto-regen incident): never charge silently. After the free build
+// (1 per 30 days) or the plan quota is used, canConsumeMany falls through to LEGACY CREDITS (2) and
+// consumeOnSuccess takes them with no prompt. So Home asks a dry-run gate first.
+ok('there is a dry-run gate the build is checked against', /router\.post\('\/generation-gate'/.test(routes));
+ok('⚠️ the gate knows the per-employer cache, so a resume already paid for is never paywalled',
+  /via: 'cache'|via:'cache'/.test(ctl));
+// ⚠️ The gate is a snapshot seconds before the build and canConsumeMany does not reserve, so the last plan
+// unit can go in between. coveredOnly makes the SERVER refuse the credits lane rather than fall into it.
+ok('⚠️ an auto-started build cannot fall through to credits', /const coveredOnly = !!\(req\.body && req\.body\.coveredOnly === true\)/.test(ctl));
+ok('…re-asked at the moment of payment, because the AI minute sits in between', /lost its cover during the run/.test(ctl));
+ok('⚠️ credits are spent only after an explicit confirm', /runBuild\(final, 'credits', false\)/.test(homeC));
+ok('⚠️ an unknown gate answer asks first, never auto-builds', /gate\.reason === 'unknown'/.test(homeC));
+
+console.log('── ⚠️ ONE BUILD, ONE CHARGE — ACROSS A LOST RESPONSE AND A RETRY ──');
+// A dropped connection just after the server created the job left it running and charging while the app
+// said 'network'; Try again then charged a second time.
+ok('⚠️ the app sends an idempotency key, persisted BEFORE the request', /clientBuildId/.test(addSvcC) && /writeInflight\(/.test(addSvcC));
+ok('⚠️ the server dedupes on it, surviving a restart', /clientBuildId/.test(asyncJobSrc) && /input->>'clientBuildId'/.test(asyncJobSrc));
+ok('⚠️ a polling deadline is "pending", which never offers a rebuild', /'pending'/.test(addSvcC) && /case 'pending':/.test(overlaySrc));
+// ⚠️ 'charged' used to be read off consumeOnSuccess's { via: 'credits' }, which is what was ATTEMPTED:
+// chargeCredits returns { charged:false, insufficient:true } on a short balance WITHOUT throwing. A cache
+// write for a build nobody paid for is a permanent free resume.
+ok('⚠️ a build counts as charged only by what was actually deducted', /creditsDeductedSince\(/.test(ctl));
+ok('⚠️ the cache is written only for a build someone paid for', /if \(passEmployer && cacheFp && charged\)/.test(ctl));
+ok('⚠️ the resume is saved only AFTER payment is settled',
+  ctl.indexOf('lost its cover during the run') > 0 && ctl.indexOf('lost its cover during the run') < ctl.indexOf('await saveResumeRow(userId, resumeData'));
+// ⚠️ The same read-then-subtract bug fixed at four aiHubController sites lived on in chargeCredits.
+ok('⚠️ chargeCredits is one guarded statement', /WHERE user_id = \? AND credits_remaining >= \? RETURNING credits_remaining/.test(costsC)
+  && !/SELECT credits_remaining FROM user_credits WHERE user_id = \?', \[userId\]\);\s*const remaining/.test(costsC));
+
+console.log('── ⚠️ TAILORING STARTS FROM YOUR RESUME, NOT FROM THE LAST EMPLOYER\'S ──');
+// user_resumes is ONE row per user and every build overwrites it; a rebuild's source text was read from that
+// row — so Siemens' resume was written from the Nordex-tailored one, and tailoring compounded.
+ok('⚠️ the base is snapshotted before a tailored build overwrites it', /await snapshotBaseBeforeTailoring\(userId, env\)/.test(ctl));
+ok('…and the build asks for the BASE text', /source-text\?base=1/.test(addSvcSrc));
+ok('⚠️ a company website is context, never scraped in as a "posting"', !/url: [a-z.]*website/i.test(addSvcC));
+
+console.log('── ⚠️ NOTHING OF ONE ACCOUNT SURVIVES INTO THE NEXT ──');
+// App.js logout resets React state but never reloads the bundle, so module state AND AsyncStorage outlive a
+// sign-out: the next account saw the previous account's employers leading its row.
+ok('⚠️ one account identity, defined once', /export async function signedInAccount/.test(addSvcC) && !/async function signedInAccount/.test(homeC));
+ok('⚠️ the in-flight build record belongs to an account', /j\.account !== me/.test(addSvcC) && /\{ \.\.\.v, account \}/.test(addSvcC));
+
+console.log('── the overlay never claims a paid build failed ──');
+ok('"refresh" is a built resume whose pages did not reload', /case 'refresh':/.test(overlaySrc));
+// "That build didn't finish" is allowed for the KNOWN 'failed' reason only: once the polling deadline moved to
+// 'pending' (A5), 'failed' means the server reported a real failure. What must be neutral is the fallback.
+{
+  const dflt = (overlaySrc.match(/default:\s*[\s\S]{0,260}?title:\s*("[^"]*"|'[^']*')/) || [])[1] || '';
+  ok('⚠️ a reason it does not recognise gets a neutral title', /couldn.t confirm/i.test(dflt) && !/didn.t finish|failed/i.test(dflt), dflt);
+  ok('…and "didn\'t finish" is never said for a build that may still be running',
+    !/case 'pending':[\s\S]{0,300}didn.t finish/.test(overlaySrc));
+}
+ok('⚠️ a recovered build has no honest "before", so a fresh load is the proof',
+  /sigBefore === null \|\| cardsSig\(got\.cards\.cards\) !== sigBefore/.test(homeC));
+ok('⚠️ a queued build does not keep a website the server refused',
+  /queuedBuild = \{ \.\.\.queuedBuild, job: \{ \.\.\.queuedBuild\.job, website: '' \} \}/.test(homeC));
+ok('⚠️ every overlay animation is native-driver', !/useNativeDriver: false/.test(overlaySrc));
+ok('the chip row does not re-attach animations on every progress tick', /const EmployerChip = React\.memo\(/.test(homeC));
 
 console.log('── the preview harness can still see the whole screen ──');
 const previewSrc = R('../app/(dev)/home-preview.tsx');

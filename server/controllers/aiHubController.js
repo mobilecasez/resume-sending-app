@@ -26,6 +26,7 @@ const { emit } = require('../services/track');   // first-party analytics
 const geoRank = require('../utils/geoRank');            // ONE country-then-distance comparator, shared app-wide
 const geoContext = require('../services/geoContext');   // …and the per-user anchor/mode behind it
 const { classifyAiError, isOutage, noteAiFailure, outageResponse } = require('../services/aiHealth');
+const { normaliseDomain } = require('../services/companyLookup');   // website → bare host or null (trackEmployer)
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
 // How many job-detail pages to scrape + process per Gemini call
@@ -3622,6 +3623,143 @@ async function removeDashboardItem(req, res) {
     }
 }
 
+// ─── Track an employer WITHOUT searching it (Home "Add employer") ─────────────
+//
+// ⚠️ 60 WATCHING EMPLOYERS A USER. The dashboard ships up to 20 jobs per watched employer in ONE
+// md5-ETagged body, so 60 is already ~1,200 job cards; nobody applies to more than a few dozen
+// employers at once, and archiving one (DELETE /dashboard/:id) frees a slot. It only stops NEW rows
+// through THIS endpoint — re-adding one you already watch always succeeds, and the search path and
+// existing rows are untouched, so a heavy account over the cap loses nothing it has.
+const TRACK_MAX_WATCHING = 60;
+// ⚠️ …30 NEW employers rows a user a day. Archiving frees a watching slot but the shared employers
+// row stays, so the 60 cap alone never bounded the table ("track 60, archive 60, repeat"). Only
+// INSERTS count — re-tracking an employer that already exists is free of this limit. Counted in the
+// database, not in memory, so a restart or a second process does not reset it (see
+// jobService.trackEmployerForUser for how an insert is attributed without a created_by column).
+const TRACK_MAX_INSERTS_PER_DAY = 30;
+// ⚠️ …and 10 tracks a minute a user. Tracking is free, and every call can write a row into the
+// SHARED employers table, so a looping client (or a script with a token) must not be able to fill
+// it. In-memory per process is enough for that: a restart forgets it, which only ever lets a real
+// user through sooner. (The global apiLimiter stays unmounted on purpose — it would throttle every
+// route, not this one.)
+const TRACK_WINDOW_MS = 60 * 1000;
+const TRACK_MAX_PER_WINDOW = 10;
+const _trackHits = new Map();   // userId → timestamps of reserved/successful tracks inside the window
+
+// ⚠️ ONLY A SUCCESSFUL TRACK KEEPS ITS SLOT. This used to record the timestamp before any DB work, so
+// cap-429s and 500s burned slots and a user at the 60 cap, retrying, got "too many at once" instead of
+// the real reason. The slot is RESERVED up front (so ten parallel requests still cannot all pass the
+// check before any records) and handed back with release() on every non-success.
+// Returns { wait } (seconds until a slot frees) or { release }.
+function reserveTrackSlot(userId, now = Date.now()) {
+    const recent = (_trackHits.get(userId) || []).filter((t) => now - t < TRACK_WINDOW_MS);
+    if (recent.length >= TRACK_MAX_PER_WINDOW) {
+        _trackHits.set(userId, recent);
+        return { wait: Math.max(1, Math.ceil((TRACK_WINDOW_MS - (now - recent[0])) / 1000)) };
+    }
+    recent.push(now);
+    _trackHits.set(userId, recent);
+    // Bounded: drop idle users once the map gets big, so it cannot grow for the life of the process.
+    if (_trackHits.size > 5000) {
+        for (const [k, v] of _trackHits) if (!v.length || now - v[v.length - 1] >= TRACK_WINDOW_MS) _trackHits.delete(k);
+    }
+    let released = false;
+    return {
+        release() {
+            if (released) return;
+            released = true;
+            const list = _trackHits.get(userId);
+            const i = list ? list.indexOf(now) : -1;
+            if (i >= 0) list.splice(i, 1);
+        },
+    };
+}
+
+/**
+ * POST /api/ai-hub/employers/track   { name, website }
+ * Puts an employer on the user's Home/Job Hub as 'watching'. FREE, and it never starts a job search:
+ * no createJob, no processJobSearch — the scrape pipeline only runs when the user searches.
+ */
+async function trackEmployer(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const body = req.body || {};
+    // ⚠️ typeof checks first: String({}) is "[object Object]", which would pass a length test.
+    const name = typeof body.name === 'string' ? body.name.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim() : '';
+    if (!name || name.length > 120) {
+        return res.status(400).json({ error: 'Please enter the employer name (up to 120 characters).', reason: 'invalid_name' });
+    }
+    // normaliseDomain returns the bare host the employers table keys on (lowercase, no scheme, no
+    // www., subdomains kept) — or null for anything that is not a public hostname, which is also
+    // what keeps a user from writing a synthetic 'search:' / 'web-' / 'linkedin-' key.
+    const website = typeof body.website === 'string' && body.website.length <= 2048 ? body.website : '';
+    if (!normaliseDomain(website)) {
+        return res.status(400).json({ error: "That doesn't look like a website. Try something like nordex-online.com.", reason: 'invalid_website' });
+    }
+    // ⚠️ A REAL HOSTNAME IS NOT YET AN EMPLOYER'S WEBSITE. normaliseDomain only checks shape, so
+    // "Acme → boards.greenhouse.io" or "Acme → de.indeed.com" became Acme's identity row — and, since
+    // domain is the unique key, the FIRST user to do it claimed that host for every user after them.
+    // websiteOf is the employer search's own vetting (lazy: discoverController requires this module):
+    // a listed ATS/job-board host, or a subdomain of one, is refused unless the name owns the host
+    // (LinkedIn → linkedin.com still works).
+    const domain = require('./discoverController').websiteOf(website, name);
+    if (!domain) {
+        return res.status(400).json({ error: "That's a job board or careers platform, not the employer's own website. Try the company's site, like nordex-online.com.", reason: 'invalid_website' });
+    }
+
+    // Throttle BEFORE any database work — it exists to protect the database.
+    const slot = reserveTrackSlot(userId);
+    if (slot.wait) {
+        res.set('Retry-After', String(slot.wait));
+        return res.status(429).json({ error: 'Too many employers added at once. Try again in a minute.', reason: 'limit' });
+    }
+
+    try {
+        const out = await jobService.trackEmployerForUser(
+            userId,
+            { domain, name, logoColor: logoColorFor(name), logoInitial: (name[0] || '?').toUpperCase() },
+            { maxWatching: TRACK_MAX_WATCHING, maxInsertsPerDay: TRACK_MAX_INSERTS_PER_DAY });
+        if (out.limit) {
+            slot.release();
+            return res.status(429).json({
+                error: out.limit === 'watching'
+                    ? `You're following ${TRACK_MAX_WATCHING} employers already. Remove one to add another.`
+                    : `You've added ${TRACK_MAX_INSERTS_PER_DAY} new employers today. Try again tomorrow.`,
+                reason: 'limit',
+            });
+        }
+        const row = out.row;
+        emit(req, 'employer_track', { domain });
+
+        // When the domain already existed the STORED name wins over what this user typed: `employers`
+        // is one identity table shared by every user, so a different spelling must not rename it.
+        const storedName = row.name || name;
+        const logoColor = safeParseJSON(row.logo_color, null);
+        return res.json({
+            success: true,
+            employer: {
+                id: String(row.id),
+                name: storedName,
+                domain,
+                logoColor: Array.isArray(logoColor) && logoColor.length === 2 ? logoColor : logoColorFor(storedName),
+                logoInitial: (storedName[0] || '?').toUpperCase(),
+                subInfo: row.sub_info || '',
+                status: 'watching',
+                // Always empty here, even when this re-tracks an employer the user already searched:
+                // this call reads no jobs. The dashboard reload fills them in.
+                jobs: [],
+                totalJobs: 0,
+                totalContacts: 0,
+            },
+        });
+    } catch (err) {
+        slot.release();
+        console.error('[aiHub] trackEmployer error:', err);
+        return res.status(500).json({ error: 'Could not add that employer. Please try again.' });
+    }
+}
+
 async function verifyEmail(req, res) {
     try {
         const { email } = req.body;
@@ -6936,6 +7074,7 @@ module.exports = {
     getJobFullHandler,
     getAllJobStatuses,
     removeDashboardItem,
+    trackEmployer,
     verifyEmail,
     addContactToJob,
     getJobContacts,

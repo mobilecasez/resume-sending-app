@@ -378,16 +378,27 @@ function nameWhereSql(col, pExact, pPrefix, pContains, trgm) {
 // ⚠️ employers.sub_info is NOT a location: aiHubController overwrites it with "N open roles" on every
 // research path, so showing it as one would put "12 open roles" in a location chip. A tracked
 // employer's location can only come from the firehose rows it merges with, or stay null.
-async function trackedEmployerHits(q, prefix, contains, cand, trgm) {
+// ⚠️ A USER-ADDED ROW IS PRIVATE TO WHOEVER TRACKS IT. POST /employers/track writes an employers row
+// from a name and a website the user TYPED, and those are exactly the rows with last_scraped_at IS
+// NULL (jobService.trackEmployerForUser). Returned to everyone, one account could publish
+// "Siemens → evil-example.com" into every other user's Add-employer picker — and the picker hands that
+// site on as job.website for a tailored build. So an unscraped row reaches only a user with a
+// user_tracked_employers row for it (any status); scraped rows are unaffected. A missing user id
+// (impossible behind authenticateToken) shows NO unscraped rows, never all of them.
+async function trackedEmployerHits(q, prefix, contains, cand, trgm, userId) {
   const params = [];
   const P = (v) => { params.push(v); return '$' + params.length; };
   const pExact = P(q), pPrefix = P(prefix), pContains = P(contains);
+  const pUser = P(/^\d{1,9}$/.test(String(userId ?? '')) ? Number(userId) : null);
   const sim = trgm ? `similarity(lower(name), ${pExact})` : '0';
   const rows = await dbConfig.query(
     `SELECT name, domain, ${nameTierSql('lower(name)', pExact, pPrefix, pContains)} AS tier, ${sim} AS sim
        FROM employers
       WHERE name IS NOT NULL AND name <> ''
         AND ${nameWhereSql('lower(name)', pExact, pPrefix, pContains, trgm)}
+        AND (last_scraped_at IS NOT NULL
+             OR EXISTS (SELECT 1 FROM user_tracked_employers ute
+                         WHERE ute.employer_id = employers.id AND ute.user_id = ${pUser}::int))
       ORDER BY tier, (domain IS NOT NULL AND domain <> '') DESC, sim DESC, length(name)
       LIMIT ${P(cand)}`, params);
   return (rows || []).map((r) => ({
@@ -838,7 +849,7 @@ async function discoverEmployers(req, res) {
     const trgm = await hasTrigram();
 
     const [tracked, fromJobs, web] = await Promise.all([
-      withTrigramFallback((t) => trackedEmployerHits(q, prefix, contains, cand, t), trgm),
+      withTrigramFallback((t) => trackedEmployerHits(q, prefix, contains, cand, t, req.user?.id), trgm),
       withTrigramFallback((t) => jobEmployerHits(q, prefix, contains, cand, country, t), trgm),
       webLookup,
     ]);
@@ -1730,4 +1741,8 @@ async function getGlobalJobById(req, res) {
 module.exports = { discoverJobs, discoverFacets, discoverEmployers, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard, getGlobalJobById,
   // Exported for reuse ONLY (behaviour unchanged): the admin "matched jobs" view scores jobs with the
   // EXACT same expression + résumé-skill normalisation as the user's own feed, so the two never drift.
-  matchExprSql, getResume, skillsOf };
+  matchExprSql, getResume, skillsOf,
+  // ⚠️ ONE ANSWER TO "IS THIS HOST THE EMPLOYER'S WEBSITE?" — POST /employers/track vets a typed site
+  // with it, and the dashboard vets employers.domain with it, so a board this search refuses can never
+  // come back in through either door. (Require it lazily there: this module requires aiHubController.)
+  websiteOf };

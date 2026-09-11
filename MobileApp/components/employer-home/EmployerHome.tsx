@@ -12,12 +12,23 @@
 // keeps the mockup's shape and honesty ("preview is free, pay to download") and routes to the
 // real paid-plan gate instead of an invented checkout.
 //
+// ADDING AN EMPLOYER HAPPENS ON THIS SCREEN. It used to hand the pick to the Job Hub (/(ai-hub)
+// with addCompany), which walked the user off the page they were designing on. Now the chip lands
+// at the FRONT of the row, the row scrolls back to it, and the tailored resume starts building
+// behind BuildingOverlay; the carousel shows it when it lands. Tracking the employer is free and
+// never starts a job search (services/homeAddEmployer).
+// ⚠️ NEVER A SILENT CHARGE (the letters auto-regen drain): the build auto-starts ONLY when the
+// server's dry-run gate says the plan, the free allowance, a download pass or the cache covers it,
+// and then it is sent coveredOnly so the server refuses rather than fall through to credits. Legacy
+// credits, or a gate we could not read, is a question first; exhausted quota is the plans screen.
+//
 // ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): one driver per view tree, no mixing.
 // This file and its two children (MeshStage, PaperCarousel) use useNativeDriver:true ONLY, on
 // transform/opacity, and contain no JS-driven Animated.Value — a self-contained native tree.
-// The JS-driven overlays it shares a screen with (JourneyCoach, ResumeScoreModal) are separate
-// trees mounted as siblings, which the rule allows.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// That includes the new-chip entrance in EmployerChip. The overlays it shares a screen with
+// (JourneyCoach, ResumeScoreModal, BuildingOverlay) are separate trees mounted as siblings, which
+// the rule allows.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Animated, Easing,
   ActivityIndicator, RefreshControl, Alert, Platform, Image,
@@ -38,12 +49,17 @@ import { E, SERIF, sweepWords } from './theme';
 import MeshStage from './MeshStage';
 import PaperCarousel, { PaperCard } from './PaperCarousel';
 import PaperZoom, { OriginRect } from './PaperZoom';
-import AddEmployerSheet from './AddEmployerSheet';
+import AddEmployerSheet, { type EmployerPick } from './AddEmployerSheet';
+import BuildingOverlay from './BuildingOverlay';
 import {
   fetchTargets, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS,
-  fetchDownloadHistory, cachedDownloadHistory, redownload,
+  fetchDownloadHistory, cachedDownloadHistory, redownload, gradFor, savePendingListing,
   Target, HomeCard, HomeCards, DownloadHistory as HistoryPayload, DownloadHistoryItem,
 } from '../../services/employerHomeService';
+import {
+  trackEmployer, checkBuildGate, gateJobFor, buildForEmployer, resumeInflightBuild, signedInAccount,
+  type BuildGate, type BuildStage, type BuildResult,
+} from '../../services/homeAddEmployer';
 import DownloadHistory from './DownloadHistory';
 import DownloadPaywallSheet from '../downloads/DownloadPaywallSheet';
 import { fetchProfileSnapshot, ProfileSetup } from '../../services/profileSetupService';
@@ -53,6 +69,172 @@ import { track } from '../../services/analytics';
 const nav = () => require('expo-router').router;
 
 type Mode = 'resume' | 'letter';
+
+/* ── employers added on THIS screen ─────────────────────────────────────── */
+
+/**
+ * The employers the user added from Home, most recent first.
+ *
+ * ⚠️ MODULE SCOPE, NOT STATE. EmployerHome unmounts whenever the Dashboard is shown, and load()
+ * replaces the chip row wholesale from the server — so a chip held only in state would vanish on
+ * the next focus, or the moment a /dashboard answer that does not have it yet (tracking failed, or
+ * raced the read) landed. Every load merges these IN FRONT, and a server copy of the same employer
+ * takes the pending chip's place rather than showing up twice.
+ */
+const PENDING = 'emp_pending_';
+let addedEmployers: Target[] = [];
+// The React key an added chip was FIRST rendered under. Tracking swaps 'emp_pending_x' for
+// 'emp_<id>' a moment after the add; keyed on the raw key, the chip would remount mid-entrance and
+// its animation would snap. Held here so that swap is invisible.
+const renderKeyOf = new Map<string, string>();
+// Chips this screen invented, so a merge never mistakes its own earlier chip for the server's copy.
+let LOCAL = new WeakSet<Target>();
+
+type BuildJob = {
+  company: string; website: string; jobUrl?: string; jobText?: string;
+  /** The chip's RENDER key — it survives the pending → tracked key swap, so a build finds its chip. */
+  rk: string;
+};
+// The build Home started, for a Home that remounts mid-build (Dashboard round trip). It does not
+// survive a relaunch — resumeInflightBuild recovers the job itself; this only adds the company
+// name and what the pages looked like before, so "done" can be checked against them.
+let homeBuild: { company: string; rk: string; sigBefore: string; t0: number } | null = null;
+/**
+ * The ONE build waiting behind the running one. An Add during a build used to be dropped silently
+ * (or re-showed the OLD company's overlay); now it waits here and goes through the gate when the
+ * current one ends. One slot: a newer Add replaces an older wait, so builds never stack up.
+ * ⚠️ Module scope for the same reason as addedEmployers (a Dashboard round trip remounts Home), and
+ * it EXPIRES: a wait from long ago is not consent to spend a plan build now.
+ */
+let queuedBuild: { job: BuildJob; at: number } | null = null;
+const QUEUE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * ⚠️ WHOSE CACHE THIS IS. Everything above is module scope, and App.js's logout does not reload the
+ * bundle — so the next account to sign in saw the previous account's employers leading its chip row,
+ * and that account's company in the build overlay. The cache is owned by the signed-in user id (a
+ * token hash for a session without one) and wiped whenever a different account — or nobody — is found.
+ */
+let cacheOwner: string | null = null;
+
+function forgetAccountCache() {
+  addedEmployers = [];
+  renderKeyOf.clear();
+  LOCAL = new WeakSet<Target>();
+  homeBuild = null;
+  queuedBuild = null;
+}
+
+// signedInAccount lives in services/homeAddEmployer — ONE definition, shared with the in-flight record.
+
+/** Make the module cache belong to whoever is signed in now. True when another account's was wiped. */
+async function claimAccountCache(): Promise<boolean> {
+  const who = await signedInAccount();
+  if (who === cacheOwner) return false;
+  // The first claim after the bundle loads has no owner to compare against: anything already here was
+  // added moments ago by whoever is signed in now, so it is adopted rather than wiped.
+  const wipe = cacheOwner !== null || who === null;
+  cacheOwner = who;
+  if (wipe) forgetAccountCache();
+  return wipe;
+}
+
+/**
+ * Did the server reject this session? Asked ONLY after a load came back with nothing at all: the
+ * Home services swallow status codes, so an expired token looks exactly like a network blip.
+ * ⚠️ 401 AND 403: server/middleware/auth.js answers an invalid or expired token with 403.
+ */
+async function sessionRejected(): Promise<boolean> {
+  try {
+    const tok = JSON.parse((await SecureStore.getItemAsync('userSession')) || '{}')?.token;
+    if (!tok) return true;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000);
+    try {
+      const r = await fetch(`${API_BASE}/users/profile`, { headers: { Authorization: `Bearer ${tok}` }, signal: ctl.signal });
+      return r.status === 401 || r.status === 403;
+    } finally { clearTimeout(timer); }
+  } catch { return false; }   // no answer is not a rejection
+}
+
+const hostOf = (u?: string | null) => String(u || '').trim().toLowerCase()
+  .replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0] || '';
+const sameName = (a?: string, b?: string) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+const rkOf = (t: Target) => renderKeyOf.get(t.key) || t.key;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function rememberAdded(t: Target, replacesKey?: string) {
+  LOCAL.add(t);
+  if (replacesKey) {
+    renderKeyOf.set(t.key, renderKeyOf.get(replacesKey) || replacesKey);
+    addedEmployers = addedEmployers.map((a) => (a.key === replacesKey ? t : a));
+  } else {
+    const h = hostOf(t.website);
+    addedEmployers = [t, ...addedEmployers.filter((a) => a.key !== t.key && !(h && hostOf(a.website) === h))];
+  }
+  addedEmployers = addedEmployers.filter((a, i, all) => all.findIndex((b) => b.key === a.key) === i).slice(0, 8);
+}
+
+/**
+ * The server's list with the employers added here in front.
+ * ⚠️ MATCHED BY employerId FIRST. The host is only a stand-in while the id is unknown (tracking has not
+ * answered): the dashboard now withholds a domain that fails vetting, and two employers can share one.
+ * ⚠️ A SWAP IS PERMANENT AND CARRIES THE PIN. When a server copy takes a pending chip's place under a
+ * different key, addedEmployers keeps the copy (so the next load does not swap all over again) and the
+ * user's pin moves with it — left behind, load() found no chip under the old key and jumped to index 0.
+ */
+function mergeAdded(list: Target[], pin?: { current: string | null }): Target[] {
+  if (!addedEmployers.length) return list;
+  const used = new Set<Target>();
+  addedEmployers = addedEmployers.map((a) => {
+    const h = hostOf(a.website);
+    const copy = list.find((t) => !LOCAL.has(t) && !used.has(t) && t.key.startsWith('emp_') && !t.key.startsWith(PENDING)
+      && (a.employerId ? t.employerId === a.employerId : (!!h && hostOf(t.website) === h)));
+    if (!copy) return a;
+    used.add(copy);
+    if (copy.key !== a.key) {
+      renderKeyOf.set(copy.key, renderKeyOf.get(a.key) || a.key);
+      if (pin && pin.current === a.key) pin.current = copy.key;
+    }
+    return copy;
+  }).filter((a, i, all) => all.findIndex((b) => b.key === a.key) === i);
+  const frontKeys = new Set(addedEmployers.map((t) => t.key));
+  return [...addedEmployers, ...list.filter((t) => !used.has(t) && !LOCAL.has(t) && !t.key.startsWith(PENDING) && !frontKeys.has(t.key))];
+}
+
+/** What the pages look like now — compared after a build, so "done" means the NEW resume is up. */
+const cardsSig = (cs: HomeCard[]) => cs.map((c) => `${c.id}:${(c.image || '').length}:${(c.image || '').slice(-40)}`).join('|');
+
+type Overlay = {
+  visible: boolean; company: string; stage: BuildStage | null; done: boolean;
+  error: { reason: string; message: string } | null;
+  /** What Retry does: recover-then-rebuild (re-gated), or only reload the pages it already built. */
+  retry: 'build' | 'refresh' | null;
+};
+const OVERLAY_CLOSED: Overlay = { visible: false, company: '', stage: null, done: false, error: null, retry: null };
+const GATE_COPY: Record<'quota_exhausted' | 'regen_limit', string> = {
+  quota_exhausted: 'You have used the resume builds your plan includes. See plans to build this one.',
+  regen_limit: 'Your free plan includes one AI rebuild, and it has been used. See plans to tailor a resume for every employer.',
+};
+/**
+ * After the chip's hold, how long the dry-run gate may take before it counts as unread. The service
+ * allows a request 20s; past this the answer is 'unknown', which ASKS — never a guess that it was covered.
+ */
+const GATE_WAIT_MS = 8000;
+/** The overlay's neutral state while the gate is read: it starts nothing and claims nothing. */
+const CHECKING: BuildStage = { stage: 'checking', label: 'Checking your plan…', pct: 0 };
+
+/** The dry-run gate for exactly the build that would run, with Home's own shorter deadline. */
+async function readGate(job: BuildJob): Promise<BuildGate> {
+  const unread: BuildGate = { covered: false, via: null, reason: 'unknown' };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      checkBuildGate(job.company, gateJobFor(job)),
+      new Promise<BuildGate>((r) => { timer = setTimeout(() => r(unread), GATE_WAIT_MS); }),
+    ]);
+  } catch { return unread; } finally { if (timer) clearTimeout(timer); }
+}
 
 export default function EmployerHome({
   firstName, onOpenDashboard, onOpenMenu, onOpenNotifications, unreadCount = 0, handleReview,
@@ -117,6 +299,7 @@ export default function EmployerHome({
   const [shots, setShots] = useState<Record<string, string>>({});
   const dead = useRef<Record<string, true>>({});
   const hydrating = useRef(false);
+  const [hydrateNudge, setHydrateNudge] = useState(0);
   const [cardIdx, setCardIdx] = useState(0);
   const [mode, setMode] = useState<Mode>('resume');
   const [loading, setLoading] = useState(true);
@@ -149,15 +332,48 @@ export default function EmployerHome({
   const loadHistory = loaders?.history || fetchDownloadHistory;
   const loadSetup = loaders?.setup || (async () => (await fetchProfileSnapshot())?.setup ?? null);
 
-  const load = useCallback(async (force = false) => {
-    if (!force && Date.now() - lastLoad.current < 60_000) return;
+  // ⚠️ READ THROUGH A REF, SO load() NEVER CHANGES IDENTITY. loadPaid/loadSetup above are new
+  // arrow functions on every render, and load used to depend on them — so load was a new function
+  // every render and useFocusEffect re-ran it: any render more than 60s after the last load fired a
+  // full reload. A build re-renders Home on every progress tick, which made that a reload storm that
+  // could replace the chip row mid-build.
+  const live = useRef({ loaders, loadTargets, loadCards, loadPaid, loadSetup });
+  live.current = { loaders, loadTargets, loadCards, loadPaid, loadSetup };
+  // ⚠️ SEQUENCE GUARD: two loads can overlap (focus + pull-to-refresh + a build's refresh), and a
+  // slower OLDER one landing last would put the pre-build pages back on screen.
+  const loadSeq = useRef(0);
+
+  /**
+   * `freshPages` clears the per-design page images in the SAME commit as the new cards, never
+   * before: clearing first sets the hydrator off alongside this load's own cold render and queues a
+   * run of serial chromium renders (single-process chromium dies after ~4-5).
+   * Resolves undefined when throttled or superseded, else what it fetched.
+   */
+  const load = useCallback(async (force = false, freshPages = false):
+    Promise<{ cards: HomeCards | 'none' | null; targets: Target[] } | undefined> => {
+    if (!force && Date.now() - lastLoad.current < 60_000) return undefined;
     lastLoad.current = Date.now();
-    const [t, c, cat] = await Promise.all([
+    const seq = ++loadSeq.current;
+    const { loaders, loadTargets, loadCards, loadPaid, loadSetup } = live.current;
+    const [fetched, c, cat, wiped] = await Promise.all([
       loadTargets(),
       loadCards(),
       (loaders?.catalogue || fetchTemplateCatalogue)().catch(() => [] as HomeCard[]),
+      // ⚠️ BEFORE the merge below: another account's added employers must never lead this row.
+      // The preview harness has no account, and claiming would wipe its fixtures on every load.
+      loaders ? Promise.resolve(false) : claimAccountCache(),
     ]);
+    if (wiped) pickedKey.current = null;
+    // Nothing came back at all: if that was the server refusing the session, the cache goes too.
+    if (!loaders && !fetched.length && c === null && (await sessionRejected())) {
+      forgetAccountCache();
+      cacheOwner = null;
+      pickedKey.current = null;
+    }
+    if (seq !== loadSeq.current) return undefined;
     if (cat.length) setSlots(cat);
+    // Employers added on this screen lead, whether or not the server has them yet.
+    const t = mergeAdded(fetched, pickedKey);
     setTargets(t);
     if (pickedKey.current) {
       const j = t.findIndex((x) => x.key === pickedKey.current);
@@ -168,12 +384,17 @@ export default function EmployerHome({
     // A transient failure leaves cards AND noResume exactly as they were: at worst the user sees
     // the retry state, never a CTA that would spend a generation rewriting a resume they have.
     if (c === 'none') { setCards([]); setNoResume(true); setLoadFailed(false); }
-    else if (c) { setCards(c.cards); setNoResume(false); setSample(!!c.sample); setLoadFailed(false); }
+    else if (c) {
+      if (freshPages) { dead.current = {}; setShots({}); }
+      setCards(c.cards); setNoResume(false); setSample(!!c.sample); setLoadFailed(false);
+    }
     else { setLoadFailed(true); }
     setLoading(false);
-    setIsPaid(await loadPaid());
+    const paid = await loadPaid();
+    if (seq === loadSeq.current) setIsPaid(paid);
     loadSetup().then((st) => setSetup(st)).catch(() => {});
-  }, [loadTargets, loadCards, loadPaid, loadSetup]);
+    return { cards: c, targets: t };
+  }, []);
 
   /**
    * The library, per kind.
@@ -315,11 +536,15 @@ export default function EmployerHome({
         }
       } finally {
         hydrating.current = false;
+        // ⚠️ A wave cancelled by a deck change (a build's fresh pages, say) used to leave nothing
+        // scheduled: the run the change queued found the mutex still held and returned, so the new
+        // resume's designs stayed blank until the user swiped. Knock once so it runs again.
+        if (cancelled) setHydrateNudge((n) => n + 1);
       }
     };
     const id = setTimeout(run, 260);
     return () => { cancelled = true; clearTimeout(id); };
-  }, [cardIdx, deck, noResume, loaders]);
+  }, [cardIdx, deck, noResume, loaders, hydrateNudge]);
 
   const card: PaperCard | undefined = deck[cardIdx];
 
@@ -332,6 +557,495 @@ export default function EmployerHome({
     try { Haptics.selectionAsync(); } catch {}
     setTimeout(() => setReshaping(false), 950);
     track('home_employer_pick', { i });
+  };
+  // ⚠️ ONE IDENTITY FOR THE LIFE OF THE SCREEN, so the memoised chips stay memoised: a fresh
+  // `() => pickEmployer(i)` per chip per render re-rendered every chip on every build-stage tick.
+  const pickRef = useRef(pickEmployer);
+  pickRef.current = pickEmployer;
+  const onPickChip = useCallback((i: number) => pickRef.current(i), []);
+
+  /* ── add an employer, and build for it, without leaving Home ── */
+
+  const [overlay, setOverlayState] = useState<Overlay>(OVERLAY_CLOSED);
+  // ⚠️ THE REF IS WRITTEN WITH THE STATE, NOT AT THE NEXT RENDER. The flow reads overlayRef to decide
+  // whether a build is on screen (a done stamp vs a notice, whether a queued build may start). Synced
+  // only at render, a result that arrived before React re-rendered read the PREVIOUS overlay — a build
+  // on screen looked hidden, and its "ready" became a notice under a spinner that never stamped done.
+  const overlayRef = useRef(overlay);
+  const setOverlay = useCallback((next: Overlay | ((o: Overlay) => Overlay)) => {
+    const v = typeof next === 'function' ? next(overlayRef.current) : next;
+    overlayRef.current = v;
+    setOverlayState(v);
+  }, []);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Which chip plays the entrance: keyed by render key AND a counter, so only the newly added chip
+  // animates, and adding the same employer twice replays it.
+  const [enter, setEnter] = useState<{ key: string; n: number } | null>(null);
+  const chipRowRef = useRef<ScrollView>(null);
+  const alive = useRef(true);
+  // One build at a time from this screen, held from the gate read through the page refresh.
+  const building = useRef(false);
+  // Set once THIS instance starts a build, so a recovered one from before a remount never also
+  // lands its result here.
+  const localBuild = useRef(false);
+  // The job being gated or built right now (a queued Add's notice names it), and the last one, for
+  // Try again. `lastSig` is what the pages looked like when that build started.
+  const current = useRef<BuildJob | null>(null);
+  const lastJob = useRef<BuildJob | null>(null);
+  const lastSig = useRef<{ sig: string; t0: number } | null>(null);
+  // The mount-time recovery has finished, so a focus may start a queued build without racing it.
+  const recovered = useRef(false);
+  // A line to show once the overlay is closed (it would expire unseen behind the modal).
+  const noteOnClose = useRef<string | null>(null);
+  const landing = useRef<{ company: string; rk: string; sigBefore: string | null; cached: boolean; t0: number } | null>(null);
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
+  const cardsRef = useRef(cards);
+  cardsRef.current = cards;
+
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(null), 4500);
+    return () => clearTimeout(id);
+  }, [notice]);
+  // "Add employer" is the LAST item in the row, so the user is usually scrolled right when the new
+  // chip lands at the start. From an effect, so the insert has committed before the scroll.
+  useEffect(() => {
+    if (!enter) return;
+    const id = setTimeout(() => chipRowRef.current?.scrollTo({ x: 0, animated: true }), 40);
+    return () => clearTimeout(id);
+  }, [enter]);
+
+  /** Put a new chip row on screen and keep the user's pin on the chip it names. */
+  const applyTargets = (next: Target[]) => {
+    setTargets(next);
+    if (pickedKey.current) {
+      const j = next.findIndex((x) => x.key === pickedKey.current);
+      setEmpIdx(j >= 0 ? j : 0);
+    }
+  };
+
+  /** Select the chip a build was for — by render key, which is stable across the tracking swap. */
+  const pinBuilt = (list: Target[], rk: string) => {
+    const j = rk ? list.findIndex((t) => rkOf(t) === rk) : -1;
+    if (j < 0) return;
+    pickedKey.current = list[j].key;
+    setEmpIdx(j);
+  };
+
+  const followStage = (st: BuildStage) => {
+    if (alive.current) setOverlay((o) => (o.done || o.error ? o : { ...o, stage: st }));
+  };
+
+  /**
+   * Start the build that waited behind the one that just ended — through the gate like any Add, so
+   * waiting in line is never a pre-approved charge. Not while another build or overlay holds the screen.
+   */
+  const drainQueue = () => {
+    const q = queuedBuild;
+    if (!q || building.current || overlayRef.current.visible || !alive.current) return;
+    queuedBuild = null;
+    if (Date.now() - q.at > QUEUE_TTL_MS) return;
+    gateAndBuild(q.job);
+  };
+
+  /**
+   * The build is on the server; this makes the pages on screen BE it.
+   * ⚠️ "Done" is claimed only once fresh cards arrived. A failed refresh only sets loadFailed, which
+   * is invisible while the deck is non-empty — so trusting it would show the OLD resume under the
+   * new ribbon and call it built.
+   * ⚠️ FRESH = PAGES THAT DIFFER FROM BEFORE, OR THE SERVER SAYING IT SERVED ITS CACHE. Nothing else.
+   * Accepting the second refresh "as what the server has" stamped Ready over UNCHANGED pages whenever
+   * the read raced the save; that is the honest 'refresh' state instead (built, pages not in yet).
+   */
+  /**
+   * `sigBefore` is the page signature from BEFORE the build, or null when there is no honest one.
+   * ⚠️ A BUILD RECOVERED AFTER A RELAUNCH HAS NO "BEFORE". Its signature used to be read from the cards
+   * on screen at recovery time — but if the job finished while the app was closed, Home's first load
+   * already shows the NEW pages, so before === after, the freshness check failed, and a landed, charged
+   * build ended on "your pages did not refresh". "Load my pages" re-ran with the same signature, so it
+   * could never clear. With null, a successful fresh load of the server's pages is the proof.
+   */
+  const landBuild = async (company: string, rk: string, cached: boolean, sigBefore: string | null, t0: number) => {
+    building.current = true;
+    landing.current = { company, rk, sigBefore, cached, t0 };
+    setOverlay((o) => ({ ...o, error: null, retry: null, stage: { stage: 'refresh', label: 'Built — refreshing your pages…', pct: 97 } }));
+    let fresh = false;
+    for (let attempt = 0; attempt < 2 && !fresh; attempt++) {
+      if (attempt) await sleep(2500);
+      if (!alive.current) break;
+      const got = await load(true, true).catch(() => undefined);
+      if (!got || !got.cards || got.cards === 'none') continue;
+      if (cached || sigBefore === null || cardsSig(got.cards.cards) !== sigBefore) {
+        fresh = true;
+        pinBuilt(got.targets, rk);
+      }
+    }
+    building.current = false;
+    if (!alive.current) return;
+    if (!fresh) {
+      track('home_build_fail', { reason: 'refresh' });
+      setOverlay((o) => ({
+        ...o, visible: true, company: company || o.company, stage: null, done: false, retry: 'refresh',
+        error: { reason: 'refresh', message: `Your ${company} resume is built, but your pages did not refresh. Try again to load them.` },
+      }));
+      return;
+    }
+    landing.current = null;
+    track('home_build_done', { cached, ms: Date.now() - t0 });
+    try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
+    setReshaping(true);
+    setTimeout(() => { if (alive.current) setReshaping(false); }, 950);
+    // The overlay stamps "done" and dismisses ITSELF (its own hold timer calls onDismiss, which starts
+    // any queued build). One hidden mid-build gets a line instead, and the queue goes straight away.
+    if (!overlayRef.current.visible) {
+      setNotice(`Your ${company} resume is ready.`);
+      setOverlay(OVERLAY_CLOSED);
+      drainQueue();
+      return;
+    }
+    setOverlay((o) => ({ ...o, company: company || o.company, done: true, error: null, retry: null, stage: { stage: 'done', label: 'Ready', pct: 100 } }));
+  };
+
+  const finishBuild = async (company: string, rk: string, r: BuildResult, sigBefore: string | null, t0: number) => {
+    homeBuild = null;
+    if (!alive.current) { building.current = false; return; }
+    if (!r.ok) {
+      building.current = false;
+      const reason: string = r.reason;
+      track('home_build_fail', { reason });
+      if (reason === 'pending') {
+        // ⚠️ A5: the job may still finish AND charge. No rebuild is offered, and nothing waits behind
+        // it: starting the next build now would only be refused while this one runs, or overlap it.
+        const waiting = queuedBuild;
+        queuedBuild = null;
+        const next = waiting ? ` Add ${waiting.job.company} again once your ${company} resume arrives.` : '';
+        if (!overlayRef.current.visible) {
+          setNotice(`Your ${company} resume is taking longer than usual — it may still arrive.${next}`);
+          setOverlay(OVERLAY_CLOSED);
+          return;
+        }
+        // Said once the overlay closes: a notice set now would expire unseen behind the full-screen modal.
+        if (waiting) noteOnClose.current = `${waiting.job.company} was not started.${next}`;
+      }
+      // ⚠️ The chip STAYS. Try again recovers the build the service still holds before it will start
+      // another (retryBuild), and anything new goes back through the gate.
+      setOverlay((o) => ({
+        ...o, visible: true, company: company || o.company, stage: null, done: false,
+        error: { reason, message: r.message },
+        retry: reason === 'network' || reason === 'failed' ? 'build' : null,
+      }));
+      return;
+    }
+    setOverlay((o) => ({ ...o, company: company || o.company }));
+    await landBuild(company, rk, r.cached, sigBefore, t0);
+  };
+
+  /**
+   * `coveredOnly` is the consent: true = the server may spend only plan, free allowance, pass or cache
+   * and must refuse (402 → the plans state) rather than fall through to credits. ⚠️ false ONLY after the
+   * user tapped Build on a dialog that named a credit charge.
+   */
+  const runBuild = async (job: BuildJob, via: string, coveredOnly: boolean, show = true) => {
+    if (building.current) return;
+    building.current = true;
+    localBuild.current = true;
+    current.current = job;
+    lastJob.current = job;
+    const t0 = Date.now();
+    const sigBefore = cardsSig(cardsRef.current);
+    lastSig.current = { sig: sigBefore, t0 };
+    homeBuild = { company: job.company, rk: job.rk, sigBefore, t0 };
+    track('home_build_start', { gate: via, coveredOnly });
+    setOverlay({ visible: show, company: job.company, stage: null, done: false, error: null, retry: null });
+    let r: BuildResult;
+    try {
+      r = await buildForEmployer(
+        { company: job.company, website: job.website, jobUrl: job.jobUrl, jobText: job.jobText, coveredOnly },
+        followStage,
+      );
+    } catch {
+      r = { ok: false, reason: 'failed', message: 'We could not finish building your resume. Please try again.' };
+    }
+    await finishBuild(job.company, job.rk, r, sigBefore, t0);
+  };
+
+  /**
+   * ⚠️ THE STANDING RULE: never regenerate and charge silently. An explicit Add IS the intent to
+   * build, so it starts on its own ONLY when the dry-run gate says plan / free / pass / cache covers
+   * it. Credits are a question with the number in it; a gate we could not read is a question too,
+   * never a guess; exhausted quota shows the plans, not a charge.
+   *
+   * `named` resolves to the job under the name the server STORED once tracking answers — the gate,
+   * the build and the overlay all wait for it, so the chip, the fingerprint and the resume never
+   * disagree about what the employer is called.
+   */
+  const gateAndBuild = async (job: BuildJob, holdMs = 0, named?: Promise<BuildJob | null>) => {
+    if (building.current) {
+      const cur = current.current;
+      const curName = cur?.company || overlayRef.current.company;
+      if ((cur && cur.rk === job.rk) || sameName(curName, job.company)) {
+        // The same employer: that build IS this one — bring it back rather than charging twice.
+        setOverlay((o) => (o.company ? { ...o, visible: true } : o));
+        return;
+      }
+      // Another employer: it waits its turn, and says so.
+      queuedBuild = { job, at: Date.now() };
+      track('home_build_queued', {});
+      setNotice(curName
+        ? `Your ${curName} resume is still building — we'll build ${job.company} next.`
+        : `We'll build ${job.company} as soon as the current build is done.`);
+      return;
+    }
+    building.current = true;   // held through the gate read, so two quick adds cannot both pass it
+    current.current = job;
+    lastJob.current = job;
+    let answered = false;
+    const decided = (async () => {
+      const final = named ? await named.catch(() => job) : job;
+      return { final, gate: final ? await readGate(final) : null };
+    })().finally(() => { answered = true; });
+    // `holdMs` lets the new chip land and glow BEFORE a full-screen overlay or a dialog covers it — the
+    // user asked for "go to that card, THEN build". The gate is read during the hold, not after.
+    await sleep(holdMs);
+    if (!answered) await Promise.race([decided, sleep(holdMs ? 0 : 300)]);
+    // ⚠️ NEVER A SILENT WAIT. Past the hold a slow gate used to leave the screen doing nothing for up
+    // to 20s; now it says what it is doing, and starts nothing while it does.
+    let checking = false;
+    if (!answered && alive.current) {
+      checking = true;
+      setOverlay({ visible: true, company: job.company, stage: CHECKING, done: false, error: null, retry: null });
+    }
+    const { final, gate } = await decided;
+    building.current = false;
+    if (!alive.current) return;
+    // Closing "Checking your plan…" is "carry on without this screen", and the build honours it.
+    const show = !checking || overlayRef.current.visible;
+    if (!final || !gate) {
+      if (checking) setOverlay(OVERLAY_CLOSED);
+      return;   // the session was refused while tracking; the notice already says so
+    }
+    current.current = final;
+    lastJob.current = final;
+    if (gate.covered) { runBuild(final, gate.via, true, show); return; }
+    if (checking) setOverlay(OVERLAY_CLOSED);
+    if (gate.via === 'credits') {
+      const n = gate.credits;
+      Alert.alert(`Build your ${final.company} resume?`, `This uses ${n} credit${n === 1 ? '' : 's'}.`, [
+        { text: 'Cancel', style: 'cancel', onPress: () => { track('home_build_declined', { gate: 'credits' }); drainQueue(); } },
+        { text: 'Build', onPress: () => { runBuild(final, 'credits', false); } },
+      ]);
+      return;
+    }
+    if (gate.reason === 'unknown') {
+      Alert.alert(
+        `Build your ${final.company} resume?`,
+        'We could not check your plan just now, so this build may use your plan allowance or credits.',
+        [
+          { text: 'Not now', style: 'cancel', onPress: () => { track('home_build_declined', { gate: 'unknown' }); drainQueue(); } },
+          // The dialog names credits, so this tap is the explicit consent coveredOnly:false needs.
+          { text: 'Build', onPress: () => { runBuild(final, 'unknown', false); } },
+        ],
+      );
+      return;
+    }
+    track('home_build_fail', { reason: gate.reason });
+    setOverlay({
+      visible: true, company: final.company, stage: null, done: false, retry: null,
+      error: { reason: gate.reason, message: GATE_COPY[gate.reason] },
+    });
+  };
+
+  /** A refused session: the module cache is this account's no longer, and nothing more is built. */
+  const dropAccountOnAuth = () => {
+    forgetAccountCache();
+    cacheOwner = null;
+    pickedKey.current = null;
+    if (!alive.current) return;
+    setTargets((ts) => ts.filter((t) => !t.key.startsWith(PENDING)));
+    setNotice('Please sign in again to add employers.');
+  };
+
+  /**
+   * The pick from AddEmployerSheet. ⚠️ No navigation: the user asked to STAY on the page they were
+   * designing on. The chip is optimistic — it is on screen before the server has heard of it.
+   */
+  const addEmployerHere = (value: string, extra: EmployerPick) => {
+    const website = String(extra?.website || value || '').trim();
+    const host = hostOf(website);
+    const name = String(extra?.name || '').trim() || host || 'Employer';
+    const jobUrl = extra?.jobUrl || undefined;
+    const jobText = extra?.jobText || undefined;
+    const pending: Target = {
+      key: PENDING + (host || name.toLowerCase()), jobId: null, employerId: null,
+      company: name, website, role: '', match: null,
+      initial: name.charAt(0).toUpperCase() || '?', colors: gradFor(name), skills: [],
+    };
+    rememberAdded(pending);
+    const next = mergeAdded(targetsRef.current, pickedKey);
+    const rk = rkOf(next[0]);
+    pickedKey.current = next[0].key;
+    setTargets(next);
+    setEmpIdx(0);
+    setEnter((e) => ({ key: rk, n: (e?.n || 0) + 1 }));
+    try { Haptics.selectionAsync(); } catch {}
+
+    const typed: BuildJob = { company: name, website, jobUrl, jobText, rk };
+    // Tracking is NOT required to build: a failed track keeps the chip, under the typed name, for this
+    // session and says so. A refused SESSION is different — that builds nothing.
+    // ⚠️ THE STORED NAME WINS. The server keeps one shared name per employer; the chip used to keep
+    // what was typed while the dashboard (and the next load) said the stored one.
+    const named: Promise<BuildJob | null> = trackEmployer({ name, website }).then(async (r) => {
+      if (r.ok) {
+        const e = r.employer;
+        const stored = e.name || name;
+        const real: Target = {
+          ...pending, key: 'emp_' + e.employerId, employerId: e.employerId, company: stored,
+          website: e.website || website, initial: e.logoInitial || pending.initial, colors: e.logoColor,
+        };
+        rememberAdded(real, pending.key);
+        if (pickedKey.current === pending.key) pickedKey.current = real.key;
+        if (alive.current) applyTargets(mergeAdded(targetsRef.current, pickedKey));
+        const final: BuildJob = { ...typed, company: stored, website: e.website || website };
+        if (queuedBuild && queuedBuild.job.rk === rk) queuedBuild = { ...queuedBuild, job: final };
+        return final;
+      }
+      // ⚠️ The auth middleware answers an expired token with 403, which the service reports as 'network';
+      // one look at the session on that failure path is what tells the two apart.
+      if (r.reason === 'auth' || (r.reason === 'network' && (await sessionRejected()))) { dropAccountOnAuth(); return null; }
+      if (alive.current) {
+        setNotice(r.reason === 'limit' || r.reason === 'invalid'
+          ? r.message
+          : `We could not save ${name} to your employers yet — it stays here for now.`);
+      }
+      // ⚠️ A website the server refused (a job board or ATS host that is not this employer's) is not
+      // handed to the build either: the generator would research the job board as the employer.
+      // ⚠️ AND NOT TO A QUEUED COPY OF IT. The success branch above rewrites queuedBuild; this one did
+      // not, so an employer added while another build ran kept the refused board host and was built
+      // around boards.greenhouse.io.
+      if (r.reason === 'invalid') {
+        if (queuedBuild && queuedBuild.job.rk === rk) queuedBuild = { ...queuedBuild, job: { ...queuedBuild.job, website: '' } };
+        return { ...typed, website: '' };
+      }
+      return typed;
+    }).catch(() => typed);
+
+    // The listing also rides to the section editor, which looks it up by company or URL — under the
+    // SAME name and site the build uses. Sequential: both writes rewrite the same storage key, and in
+    // parallel the second would drop the first.
+    if (jobUrl || jobText) {
+      named.then((j) => (j
+        ? savePendingListing(j.company, { jobUrl, jobText }).then(() => savePendingListing(j.website, { jobUrl, jobText }))
+        : undefined)).catch(() => {});
+    }
+
+    // Cover letters from Home come later: in letter mode the add only selects the employer.
+    if (mode === 'resume') gateAndBuild(typed, 950, named);
+  };
+
+  // A build that was running when Home unmounted (or the app was killed) is picked back up: the
+  // overlay reopens and the resume it paid for is shown when it lands.
+  useEffect(() => {
+    if (loaders) return;   // the preview harness has no account to build for
+    (async () => {
+      // ⚠️ Claimed FIRST: homeBuild and queuedBuild may belong to the account that just signed out.
+      await claimAccountCache().catch(() => false);
+      try {
+        if (localBuild.current || !alive.current) return;
+        const mem = homeBuild;
+        let opened = false;
+        const open = (st: BuildStage | null) => {
+          if (localBuild.current || !alive.current) return;
+          if (!opened) {
+            opened = true;
+            building.current = true;
+            setOverlay({ visible: true, company: mem?.company || '', stage: st, done: false, error: null, retry: null });
+          } else if (st) {
+            setOverlay((o) => (o.done || o.error ? o : { ...o, stage: st }));
+          }
+        };
+        if (mem) open(null);
+        const res = await resumeInflightBuild(open).catch(() => null);
+        if (localBuild.current || !alive.current) return;
+        if (!res) {
+          if (opened) { building.current = false; setOverlay(OVERLAY_CLOSED); }
+          if (!queuedBuild) return;
+          // Nothing in flight, so a build queued behind one that ended while Home was away can go — once
+          // the pages are in. ⚠️ Started before them, its "before" would be empty and ANY pages that
+          // came back would count as the new resume.
+          for (let k = 0; k < 20 && !cardsRef.current.length && alive.current; k++) await sleep(250);
+          recovered.current = true;
+          drainRef.current();
+          return;
+        }
+        open(null);
+        recovered.current = true;
+        const rk = mem && sameName(mem.company, res.company) ? mem.rk : '';
+        // No remembered signature means no honest "before" — see landBuild.
+        await finishBuild(res.company, rk, res.result, mem?.sigBefore ?? null, mem?.t0 ?? Date.now());
+      } finally { recovered.current = true; }
+    })().catch(() => { recovered.current = true; });
+    // Once per mount, on purpose: this recovers a build, it does not follow prop changes.
+  }, []);
+
+  // Back on Home (from the plans screen, say) with a build still waiting in line.
+  const drainRef = useRef(drainQueue);
+  drainRef.current = drainQueue;
+  useFocusEffect(useCallback(() => {
+    if (!loaders && recovered.current && queuedBuild) drainRef.current();
+  }, [loaders]));
+
+  /**
+   * ⚠️ TRY AGAIN NEVER STARTS A SECOND PAID BUILD ON TOP OF THE FIRST. 'network' and 'failed' can both
+   * mean the job is still running (a lost 202, a dropped poll): the service kept that entry and re-uses
+   * its clientBuildId, which the server dedupes. So Try again first picks that build back up; then, if
+   * nothing is in flight, looks at the pages in case it landed meanwhile; only then does a new build
+   * start — and that one goes back through the gate.
+   */
+  const retryBuild = async () => {
+    const job = lastJob.current;
+    if (!job || building.current) return;
+    building.current = true;
+    setOverlay((o) => ({
+      ...o, visible: true, company: job.company, done: false, error: null, retry: null,
+      stage: { stage: 'checking', label: 'Checking on your resume…', pct: 0 },
+    }));
+    const res = await resumeInflightBuild(followStage).catch(() => null);
+    if (!alive.current) { building.current = false; return; }
+    const before = lastSig.current;
+    if (res) {
+      const rk = sameName(res.company, job.company) ? job.rk : '';
+      await finishBuild(res.company, rk, res.result, before?.sig ?? cardsSig(cardsRef.current), before?.t0 ?? Date.now());
+      return;
+    }
+    const got = await load(true, true).catch(() => undefined);
+    building.current = false;
+    if (!alive.current) return;
+    if (before && got && got.cards && got.cards !== 'none' && cardsSig(got.cards.cards) !== before.sig) {
+      pinBuilt(got.targets, job.rk);
+      track('home_build_done', { cached: false, ms: Date.now() - before.t0, recovered: true });
+      setOverlay((o) => ({ ...o, done: true, error: null, retry: null, stage: { stage: 'done', label: 'Ready', pct: 100 } }));
+      return;
+    }
+    setOverlay(OVERLAY_CLOSED);
+    gateAndBuild(job);
+  };
+
+  const retryOverlay = () => {
+    const o = overlayRef.current;
+    const l = landing.current;
+    if (o.retry === 'refresh' && l) { landBuild(l.company, l.rk, l.cached, l.sigBefore, l.t0); return; }
+    if (o.retry === 'build') retryBuild();
+  };
+
+  /** Hiding a running build keeps it going; closing a finished or failed one lets the queue move. */
+  const dismissOverlay = () => {
+    const o = overlayRef.current;
+    if (!(o.done || o.error)) { setOverlay({ ...o, visible: false }); return; }
+    setOverlay(OVERLAY_CLOSED);
+    if (noteOnClose.current) { setNotice(noteOnClose.current); noteOnClose.current = null; }
+    drainQueue();
   };
 
   const switchMode = (m: Mode) => {
@@ -414,10 +1128,20 @@ export default function EmployerHome({
           {loading ? (
             <View style={s.chipsRow}><View style={s.chipSkeleton} /><View style={s.chipSkeleton} /></View>
           ) : targets.length ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipsRow}>
-              {targets.map((t, i) => (
-                <EmployerChip key={t.key} t={t} on={i === empIdx} onPress={() => pickEmployer(i)} />
-              ))}
+            <ScrollView ref={chipRowRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipsRow}>
+              {targets.map((t, i) => {
+                const rk = rkOf(t);
+                return (
+                  <EmployerChip
+                    key={rk}
+                    t={t}
+                    index={i}
+                    on={i === empIdx}
+                    enterToken={enter && enter.key === rk ? enter.n : 0}
+                    onPick={onPickChip}
+                  />
+                );
+              })}
               <TouchableOpacity
                 style={s.chipAdd}
                 activeOpacity={0.85}
@@ -437,6 +1161,13 @@ export default function EmployerHome({
               <Text style={s.emptyTargetsTx}>Add an employer to design your resume around</Text>
               <Ionicons name="arrow-forward" size={14} color="rgba(255,255,255,0.6)" />
             </TouchableOpacity>
+          )}
+          {/* Non-blocking: a failed track or a finished background build is worth a line, never a dialog. */}
+          {!!notice && (
+            <View style={s.addNotice}>
+              <Ionicons name="information-circle" size={13} color={E.mint} />
+              <Text style={s.addNoticeTx} numberOfLines={2}>{notice}</Text>
+            </View>
           )}
         </View>
 
@@ -658,39 +1389,27 @@ export default function EmployerHome({
           // not say whether the site came from a result or was typed, so there is no honest flag to
           // send in its place. ⚠️ Never the name or the website itself: that is the user's job hunt.
           track('home_add_employer_pick', { listing: hasListing });
-          // The website is what the hub searches (it resolves a real URL best — a guessed
-          // www.{name}.com is what we are avoiding), but the hub has no param for a label. ⚠️ So the
-          // name the user picked goes through storage, like the listing below, with the website it
-          // belongs to and a timestamp, so the hub labels the pill "Nordex SE" and not the URL — and
-          // only for THIS add. Cleared when there is no name so a later add cannot inherit the last one.
-          // (Stopgap: this hand-off goes away when the add moves onto Home next round.)
-          const writes: Promise<unknown>[] = [
-            extra?.name
-              ? AsyncStorage.setItem('pending_employer_name', JSON.stringify({ website: value, name: extra.name, at: Date.now() }))
-              : AsyncStorage.removeItem('pending_employer_name'),
-          ];
-          // ⚠️ A pasted job description NEVER travels as a route param — it can be thousands of
-          // characters and params end up in the URL. It goes through storage; the param only says
-          // that there is one to collect.
-          if (hasListing) {
-            writes.push(AsyncStorage.setItem('pending_job_listing', JSON.stringify({
-              jobUrl: extra?.jobUrl || '', jobText: extra?.jobText || '',
-            })));
-          }
-          // The Job Hub owns the add itself: it prechecks credits, spots job portals and recovers
-          // in-flight searches. Home only decides WHICH employer, and for WHICH posting.
-          // ⚠️ Navigate only once the writes have landed: the hub reads both keys in its mount effect,
-          // and a fire-and-forget write could lose that race (no label, or no listing). A failed write
-          // still navigates — the add must not die on a storage error, it just loses the extras.
-          Promise.all(writes).catch(() => {}).then(() => {
-            nav()?.push?.({
-              pathname: '/(ai-hub)',
-              params: hasListing
-                ? { tab: 'search', addCompany: value, withListing: '1' }
-                : { tab: 'search', addCompany: value },
-            });
-          });
+          // ⚠️ NO NAVIGATION. This used to push to the Job Hub with addCompany, and the user was
+          // walked off the page they were designing on. The add, the chip and the build all happen
+          // here now; the pasted listing goes straight to the build (and to device storage for the
+          // section editor), never through a route param.
+          addEmployerHere(value, extra);
         }}
+      />
+
+      {/* Mounted as a SIBLING of the scroll view, never inside the hero: its own tree, so whatever
+          driver it animates with never meets the hero's native one. */}
+      <BuildingOverlay
+        visible={overlay.visible}
+        company={overlay.company}
+        stage={overlay.stage}
+        done={overlay.done}
+        error={overlay.error}
+        onDismiss={dismissOverlay}
+        onRetry={overlay.retry === 'refresh' || (overlay.retry === 'build' && !!lastJob.current) ? retryOverlay : undefined}
+        onSeePlans={overlay.error && (overlay.error.reason === 'quota_exhausted' || overlay.error.reason === 'regen_limit')
+          ? () => { setOverlay(OVERLAY_CLOSED); nav()?.push?.('/(subscription)/plans'); }
+          : undefined}
       />
 
       {/* ⚠️ The SAME sheet a first download offers. A row goes locked when the plan that paid for it
@@ -790,8 +1509,46 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
 // ⚠️ Selection is a GLASS state, never a white pill. A white chip on the dark hero was the single
 // loudest thing on the screen and fought every other surface; the selected chip should read as the
 // same material, lit. Dropping the role line is what makes it narrow enough to scan.
-function EmployerChip({ t, on, onPress }: { t: Target; on: boolean; onPress: () => void }) {
+// ⚠️ MEMOISED, with a stable onPick and its index instead of a per-render closure: Home re-renders on
+// every build-stage tick, and each re-render used to re-render every chip in the row with it.
+const EmployerChip = React.memo(function EmployerChip({ t, index, on, onPick, enterToken = 0 }: {
+  t: Target; index: number; on: boolean; onPick: (i: number) => void;
+  /** Non-zero only on the chip that was just added; a new value replays the entrance. */
+  enterToken?: number;
+}) {
+  const onPress = useCallback(() => onPick(index), [onPick, index]);
+  // ⚠️ NATIVE DRIVER, transform + opacity ONLY: this chip lives inside the hero's native tree
+  // (see ANIMATION DRIVER RULE). A chip that is not new starts at rest and never animates.
+  const pop = useRef(new Animated.Value(enterToken ? 0 : 1)).current;
+  const glow = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!enterToken) return;
+    pop.setValue(0);
+    glow.setValue(0);
+    const a = Animated.parallel([
+      Animated.spring(pop, { toValue: 1, friction: 6, tension: 90, useNativeDriver: true }),
+      Animated.sequence([
+        Animated.delay(160),
+        Animated.timing(glow, { toValue: 1, duration: 260, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        Animated.timing(glow, { toValue: 0.3, duration: 380, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(glow, { toValue: 1, duration: 300, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(glow, { toValue: 0, duration: 720, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+      ]),
+    ]);
+    a.start();
+    // ⚠️ Settle, not just stop: when another chip is added the token here drops to 0 mid-entrance,
+    // and a stopped value would leave this chip frozen half-scaled.
+    return () => { a.stop(); pop.setValue(1); glow.setValue(0); };
+  }, [enterToken, pop, glow]);
+  // Built once per value, not per render: a fresh interpolate() re-creates the native animated nodes
+  // and re-attaches them, mid-entrance, for nothing.
+  const popStyle = useMemo(() => ({
+    opacity: pop.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 1, 1], extrapolate: 'clamp' }),
+    transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] }) }],
+  }), [pop]);
+  const glowStyle = useMemo(() => [s.chipGlow, { opacity: glow }], [glow]);
   return (
+    <Animated.View style={popStyle}>
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.85}
@@ -814,8 +1571,12 @@ function EmployerChip({ t, on, onPress }: { t: Target; on: boolean; onPress: () 
         </View>
       )}
     </TouchableOpacity>
+      {/* INSET, not a halo: the horizontal ScrollView clips to its 48pt row, so anything drawn
+          outside the chip would be cut flat top and bottom. */}
+      <Animated.View pointerEvents="none" style={glowStyle} />
+    </Animated.View>
   );
-}
+});
 
 // ⚠️ A letter is written FOR A POSTING, and no letter exists until one is generated — there is no
 // cached letter-thumbnail endpoint to page through the way the resume side does. So this shows the
@@ -940,6 +1701,12 @@ const s = StyleSheet.create({
   chipPctTxOn: { color: '#fff' },
   chipAdd: { height: 48, paddingHorizontal: 13, borderRadius: 100, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.32)', flexDirection: 'row', alignItems: 'center', gap: 6 },
   chipAddTx: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  chipGlow: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 16,
+    borderWidth: 1.5, borderColor: 'rgba(143,247,228,0.95)', backgroundColor: 'rgba(45,224,192,0.16)',
+  },
+  addNotice: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 16, marginTop: 8 },
+  addNoticeTx: { flex: 1, fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.72)', lineHeight: 15.5 },
   chipSkeleton: { width: 150, height: 48, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.07)' },
   emptyTargets: { marginHorizontal: 16, paddingHorizontal: 14, height: 48, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', gap: 8 },
   emptyTargetsTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: '#fff' },

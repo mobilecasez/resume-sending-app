@@ -37,14 +37,20 @@ ok('the used-up case is a 403 with reason regen_limit', /regen_limit/.test(ctl))
 ok('the one free regen BYPASSES the quota gate',
   /const quota = freeRegen \? \{ allowed: true \} : await entitlements\.canConsumeMany/.test(ctl)
   && /const gate = \(freeRegen \|\| viaPass\) \? \{ allowed: true \} : quota;/.test(ctl));
+// ⚠️ boundOnly is now `quota.allowed && quotaCovers`. Without coveredOnly the two are identical, so this is
+// the old rule. WITH coveredOnly (a build Home auto-started), a quota "allowed" only through legacy credits
+// does not cover it — so the pass is consulted in full instead, exactly as for a user with no quota at all.
 ok('⚠️ …and so does a single-employer pass, which includes one AI resume',
-  /passCoversGeneration\(userId, 'resume', passEmployer, req, \{ boundOnly: quota\.allowed \}\)/.test(ctl));
+  /passCoversGeneration\(userId, 'resume', passEmployer, req, \{ boundOnly: quota\.allowed && quotaCovers \}\)/.test(ctl)
+  && /const quotaCovers = !!quota\.allowed && !\(coveredOnly && quota\.via === 'credits'\)/.test(ctl));
 // ⚠️ ORDER, NOT JUST PRESENCE. Asking the pass first burned the one-off someone had bought while
 // their plan or free allowance could have paid — destroying it and handing back nothing.
 ok('⚠️ …but the PLAN is asked first, so an unspent one-off is not burned ahead of quota',
   ctl.indexOf('canConsumeMany(userId, \'resume\', 1, req)') < ctl.indexOf('passCoversGeneration(userId, \'resume\''));
+// The rule is unchanged — the plan is charged only when no pass paid and it was not the free regen — but
+// the call now sits in a block that re-asks coveredOnly at the moment of payment first.
 ok('…and is not double-counted on success',
-  /if \(!spentPass && !freeRegen\) await entitlements\.consumeOnSuccess/.test(ctl));
+  /if \(!spentPass && !freeRegen\) \{[\s\S]{0,1400}await entitlements\.consumeOnSuccess/.test(ctl));
 ok('⚠️ …and a pass is spent BEFORE the plan, never both',
   ctl.indexOf("claimGeneration(userId, 'resume'") < ctl.indexOf('if (!spentPass && !freeRegen)'));
 ok('a fresh build resets the allowance', /regen_count = 0 WHERE user_id/.test(ctl));
