@@ -3716,10 +3716,19 @@ async function trackEmployer(req, res) {
     }
 
     try {
+        // ⚠️ ADMINS ARE EXEMPT FROM THE WATCHING CAP — AND ONLY FROM THAT ONE. Measured on production
+        // (2026-09-11): 64 accounts watch any employer, the median watches 1, p90 watches 2, and the largest
+        // after the founder watches 6 — so 60 is generous for every real user. The single account over it
+        // is the founder's test account at 258, reached through the Jobs tab (which has no cap). Capping only
+        // THIS path would lock that account out of adding any new employer from Home while doing nothing to
+        // shrink its dashboard. The DAILY INSERT LIMIT still applies to admins: that is what bounds the shared
+        // employers table, and it is not a test inconvenience worth widening.
+        const admin = await dbConfig.get('SELECT role FROM users WHERE id = ?', [userId])
+            .then((r) => !!r && r.role === 'admin', () => false);
         const out = await jobService.trackEmployerForUser(
             userId,
             { domain, name, logoColor: logoColorFor(name), logoInitial: (name[0] || '?').toUpperCase() },
-            { maxWatching: TRACK_MAX_WATCHING, maxInsertsPerDay: TRACK_MAX_INSERTS_PER_DAY });
+            { maxWatching: admin ? Infinity : TRACK_MAX_WATCHING, maxInsertsPerDay: TRACK_MAX_INSERTS_PER_DAY });
         if (out.limit) {
             slot.release();
             return res.status(429).json({

@@ -882,6 +882,10 @@ ok('⚠️ a user-added employer is visible in search only to users who track it
   /last_scraped_at IS NOT NULL\s*OR EXISTS \(SELECT 1 FROM user_tracked_employers/.test(discC));
 ok('⚠️ the watching cap is enforced under a lock, not read-then-write', /pg_advisory_xact_lock/.test(jobSvcC));
 ok('⚠️ shared-table growth is bounded per day, not only per watching slot', /TRACK_MAX_INSERTS_PER_DAY = \d+/.test(aiHubC));
+// Production, 2026-09-11: median watching = 1, p90 = 2, largest non-founder = 6; the only account over 60 is the
+// founder's test account (258, via the Jobs tab, which has no cap). Admins skip the WATCHING cap only.
+ok('⚠️ admins skip the watching cap — and ONLY that cap',
+  /maxWatching: admin \? Infinity : TRACK_MAX_WATCHING, maxInsertsPerDay: TRACK_MAX_INSERTS_PER_DAY/.test(aiHubC));
 
 console.log('── ⚠️ A BUILD STARTS ON ITS OWN ONLY WHEN SOMETHING THAT IS NOT CREDITS PAYS ──');
 // The user's standing rule (the letters auto-regen incident): never charge silently. After the free build
