@@ -20,3 +20,9 @@ extras/
 marketing/
 Landing Website/
 Icons
+# ⚠️ A LITERAL DIRECTORY NAMED "~" — a 5.4 GB Android SDK (~/Library/Android/sdk) that some tool
+# installed INTO THE REPO because a "~" in a path was never expanded. .gitignore's *~ pattern hides it
+# from git, but railway up does not read that pattern, so every deploy tried to upload it and timed out
+# (2026-09-11: three consecutive "operation timed out"). Do not delete the folder without checking
+# ANDROID_HOME first — local Android builds may point at this exact path.
+~/
