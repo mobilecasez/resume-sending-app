@@ -819,6 +819,12 @@ ok('⚠️ a name made only of generic words is not searchable', /function hasCo
 ok('⚠️ a name in a script the tokeniser cannot read still passes', /aliasKeysOf\(s\)\.size === 0\)\) return true/.test(discC));
 ok('⚠️ a different company that shares a word is not marked unverified', /function strictName/.test(discC));
 
+// ⚠️ The lookup strips a legal form before asking Clearbit, but the ranking compared hits against the RAW
+// query — so for "Novo Nordisk A/S" the real Novo Nordisk matched as nothing, sat in the bottom tier beside
+// the junk, and "Namn — novonordisk-utbildningar.se" came back FIRST. Measured on production.
+ok('⚠️ web results are ranked against the name the lookup searched for, not the raw query',
+  /const core = coreOf\(q\);/.test(discC) && /sameName\(h\.name, core\)/.test(discC) && /function coreOf/.test(discC));
+
 console.log('── ⚠️ ONE LIST OF JOB HOSTS, IN TWO PLACES, THAT MUST NOT DRIFT ──');
 // The app keeps verbatim copies because it cannot import server code. The first copy was missing ~25 hosts
 // and accepted a pasted web103.reachmee.com link as an employer's website that the server rejected.

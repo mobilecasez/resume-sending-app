@@ -743,15 +743,35 @@ function postingWebsite(name, domains, shared) {
 // nordex.com above the real nordex-online.com.
 // Web tier mirrors nameTierSql, except that "same employer" counts as exact: "Nordex SE" is an
 // exact match for "nordex", not a prefix one. A folded hit lends its tier to the row it joins.
+/**
+ * The company name inside a query: slash legal forms (Danish A/S, Brazilian S/A, K/S, I/S, P/S, A/B, c/o)
+ * removed, then trailing legal words peeled off while the name still means the same employer — the same
+ * trimming companyLookup applies before it asks Clearbit, so the ranking and the search agree on who was
+ * asked for. Never returns empty: a query that is ALL legal form keeps its original text.
+ */
+const SLASH_FORM = /(?:^|\s)(?:a\/s|s\/a|k\/s|i\/s|p\/s|a\/b|c\/o)\.?(?=\s|$)/gi;
+function coreOf(q) {
+  const s = String(q || '').replace(SLASH_FORM, ' ').replace(/\s+/g, ' ').trim();
+  let words = s.split(' ');
+  while (words.length > 1 && sameEmployer(s, words.slice(0, -1).join(' '))) words = words.slice(0, -1);
+  return words.join(' ').replace(/[\s,.;:&+-]+$/, '') || String(q || '').trim();
+}
+
 function mergeWebHits(rows, hits, q) {
   const out = rows.slice();
   const byDomain = new Map();
   for (const r of out) if (r.domain) byDomain.set(r.domain, r);
   const fromWeb = new Set();              // rows whose website the lookup supplied or confirmed
   const typedHost = normaliseDomain(q);   // someone who types "nordex-online.com" means that site
-  const qs = spellingsOf(q);
+  // ⚠️ RANK AGAINST THE NAME THE LOOKUP ACTUALLY SEARCHED FOR, NOT THE RAW QUERY. companyLookup strips a
+  // legal form before asking Clearbit ("Novo Nordisk A/S" → "novo nordisk"), but this tier compared
+  // every hit against the raw "novo nordisk a/s" — so the real "Novo Nordisk" matched as nothing, fell
+  // to tier 3 beside the junk, and Clearbit's own order put "Namn — novonordisk-utbildningar.se" (a
+  // training sub-portal under a placeholder name) FIRST. Measured on production, 2026-09-11.
+  const core = coreOf(q);
+  const qs = [...new Set([...spellingsOf(q), ...spellingsOf(core)])];
   const tierOf = (h) => {
-    if (h.domain === typedHost || sameName(h.name, q)) return 0;
+    if (h.domain === typedHost || sameName(h.name, q) || sameName(h.name, core)) return 0;
     const names = spellingsOf(h.name);
     return names.some((n) => qs.some((x) => n.startsWith(x))) ? 1 : names.some((n) => qs.some((x) => n.includes(x))) ? 2 : 3;
   };
