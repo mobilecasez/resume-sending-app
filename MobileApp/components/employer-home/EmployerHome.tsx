@@ -4,7 +4,7 @@
 //
 // Built from the Claude Design mockup "cvApplyr Home Employer Focus". People use this app to
 // generate a resume or a cover letter, so Home now leads with exactly that: pick the employer
-// you are applying to, watch your real document reshape for them, download it.
+// you are applying to, see your real document rewritten for them, download it.
 //
 // ⚠️ WHAT THIS DELIBERATELY DOES **NOT** COPY FROM THE MOCKUP: its pay sheet sells a single PDF
 // for €1.99 ("one-time purchase · no subscription"). This app shipped a SUBSCRIPTION model to
@@ -12,29 +12,42 @@
 // keeps the mockup's shape and honesty ("preview is free, pay to download") and routes to the
 // real paid-plan gate instead of an invented checkout.
 //
-// ADDING AN EMPLOYER HAPPENS ON THIS SCREEN. It used to hand the pick to the Job Hub (/(ai-hub)
-// with addCompany), which walked the user off the page they were designing on. Now the chip lands
-// at the FRONT of the row, the row scrolls back to it, and the tailored resume starts building
-// behind BuildingOverlay; the carousel shows it when it lands. Tracking the employer is free and
-// never starts a job search (services/homeAddEmployer).
-// ⚠️ NEVER A SILENT CHARGE (the letters auto-regen drain): the build auto-starts ONLY when the
-// server's dry-run gate says the plan, the free allowance, a download pass or the cache covers it,
-// and then it is sent coveredOnly so the server refuses rather than fall through to credits. Legacy
-// credits, or a gate we could not read, is a question first; exhausted quota is the plans screen.
+// EVERY EMPLOYER HAS ITS OWN DOCUMENTS. The AI rewrites the resume (and the cover letter) for one
+// employer, ranks every design for it, and the server stores the result (user_employer_documents).
+// Picking a chip shows THAT employer's document straight from the database — its pages, its designs
+// best fit first with a fit % (useTargetDoc / useDocDeck). A chip with nothing saved shows the base
+// resume and ONE explicit action (Tailor my resume / Write my cover letter); a saved document the
+// resume has since moved past says so, with a Refresh.
+//
+// ADDING AN EMPLOYER HAPPENS ON THIS SCREEN. "+ Add employer" sits on the "Designing for" row, and
+// the chip lands at the FRONT of the chip row. Tracking the employer is free and never starts a job
+// search (services/homeAddEmployer). If a document is already saved for that employer (added again
+// after its chip was removed) it is simply shown — no AI call; otherwise its build starts behind
+// BuildingOverlay. The X on a chip removes it softly, with Undo; the documents stay saved.
+// ⚠️ NEVER A SILENT CHARGE (the letters auto-regen drain): a build starts only from an explicit tap —
+// Add, Tailor, Write or Refresh — through useHomeBuilds, which auto-starts ONLY when the server's
+// dry-run gate says the plan, the free allowance, a download pass or the cache covers it, and then
+// sends it coveredOnly so the server refuses rather than fall through to credits. Legacy credits, or
+// a gate we could not read, is a question first; exhausted quota is the plans screen. Switching chips
+// or modes, focusing or mounting this screen READS documents; it never builds one.
+//
+// BUILDS RUN IN THE BACKGROUND, PER EMPLOYER (services/homeBuilds holds their live state): the chip
+// shows its progress, the carousel writes the pages with a live % and a tap reopens the overlay.
 //
 // ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): one driver per view tree, no mixing.
-// This file and its two children (MeshStage, PaperCarousel) use useNativeDriver:true ONLY, on
-// transform/opacity, and contain no JS-driven Animated.Value — a self-contained native tree.
-// That includes the new-chip entrance in EmployerChip. The overlays it shares a screen with
-// (JourneyCoach, ResumeScoreModal, BuildingOverlay) are separate trees mounted as siblings, which
-// the rule allows.
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// This file and its children (MeshStage, PaperCarousel, EmployerChip) use useNativeDriver:true ONLY,
+// on transform/opacity, and contain no JS-driven Animated.Value — a self-contained native tree.
+// ⚠️ A TICKING PERCENTAGE NEVER LIVES HERE: it is React state inside a small memo component (the chip's
+// build line, the carousel's read-out). This screen subscribes to a build's PHASE only, so a stage
+// tick re-renders a chip, never the whole of Home. The overlays it shares a screen with (JourneyCoach,
+// ResumeScoreModal, BuildingOverlay, PaperZoom) are separate trees mounted as siblings, which the rule
+// allows.
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Animated, Easing,
-  ActivityIndicator, RefreshControl, Alert, Platform, Image,
+  ActivityIndicator, RefreshControl, Alert, Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -51,15 +64,25 @@ import PaperCarousel, { PaperCard } from './PaperCarousel';
 import PaperZoom, { OriginRect } from './PaperZoom';
 import AddEmployerSheet, { type EmployerPick } from './AddEmployerSheet';
 import BuildingOverlay from './BuildingOverlay';
+import EmployerChip from './EmployerChip';
+import { useHomeBuilds, forgetHomeBuilds, type HomeBuildJob } from './useHomeBuilds';
+import { useDocList, useTargetDoc, useDocDeck, type DocLoaders } from './useTargetDoc';
 import {
   fetchTargets, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS,
   fetchDownloadHistory, cachedDownloadHistory, redownload, gradFor, savePendingListing,
+  hideTarget, unhideTarget, untrackEmployer, fetchHiddenKeys, jobKeyForUrl,
   Target, HomeCard, HomeCards, DownloadHistory as HistoryPayload, DownloadHistoryItem,
 } from '../../services/employerHomeService';
 import {
-  trackEmployer, checkBuildGate, gateJobFor, buildForEmployer, resumeInflightBuild, signedInAccount,
-  type BuildGate, type BuildStage, type BuildResult,
+  trackEmployer, checkBuildGate, gateJobFor, signedInAccount,
+  type BuildGate, type DocKind, type InflightMeta,
 } from '../../services/homeAddEmployer';
+import {
+  docLookupOf, fetchCurrentDoc, cachedCurrentDoc, rememberDoc, forgetDocs, fetchDoc, fetchDocList,
+  matchDocToTarget, sameEmployerName,
+  type DocMeta, type DocLookup, type DocCard, type DocListItem,
+} from '../../services/employerDocs';
+import { buildFor, getBuilds, subscribeBuilds, storeKeyOf, type BuildPhase } from '../../services/homeBuilds';
 import DownloadHistory from './DownloadHistory';
 import DownloadPaywallSheet from '../downloads/DownloadPaywallSheet';
 import { fetchProfileSnapshot, ProfileSetup } from '../../services/profileSetupService';
@@ -69,6 +92,35 @@ import { track } from '../../services/analytics';
 const nav = () => require('expo-router').router;
 
 type Mode = 'resume' | 'letter';
+/** The mode switch speaks screen ('letter'); documents, builds and the server speak 'cover_letter'. */
+const kindOfMode = (m: Mode): DocKind => (m === 'letter' ? 'cover_letter' : 'resume');
+const modeOfKind = (k: DocKind): Mode => (k === 'cover_letter' ? 'letter' : 'resume');
+const nounOf = (k: DocKind) => (k === 'cover_letter' ? 'cover letter' : 'resume');
+
+/** How long a new chip lands and glows before an overlay or a dialog may cover it. */
+const HOLD_MS = 950;
+/** A removed chip's exit — EmployerChip plays it over the same time, then the row closes up. */
+const EXIT_MS = 180;
+/** How long "Removed X · Undo" stays up. */
+const UNDO_MS = 5000;
+/**
+ * How long a notice may wait behind a live Undo before it is too old to be worth showing. ⚠️ An Undo is never
+ * pre-empted (see showNotice), so everything else queues — and a line about something that happened half a
+ * minute ago reads as news about now.
+ */
+const NOTICE_WAIT_MS = 20000;
+/**
+ * After a build lands, how long its chip counts as "document on its way" while the lookup refetches it. ⚠️ The
+ * refetch is the only thing that can say the document exists, and until it answers the chip still holds the
+ * answer from BEFORE the build ("nothing saved") — which drew "Tailor my resume" (and read the gate) for a
+ * document the user had just paid for. Bounded, so a lookup that never finds it gives the action back.
+ */
+const LANDED_WAIT_MS = 15000;
+/** At most this many chips' saved documents are read ahead of a tap, per list answer. */
+const PREWARM_MAX = 6;
+
+/** The letter designs as pages with no pixels — what a letter deck shows while it is being written. */
+const LETTER_SLOTS: PaperCard[] = LETTER_DESIGNS.map((d) => ({ id: d.id, name: d.name, accent: d.accent, image: null }));
 
 /* ── employers added on THIS screen ─────────────────────────────────────── */
 
@@ -85,35 +137,96 @@ const PENDING = 'emp_pending_';
 let addedEmployers: Target[] = [];
 // The React key an added chip was FIRST rendered under. Tracking swaps 'emp_pending_x' for
 // 'emp_<id>' a moment after the add; keyed on the raw key, the chip would remount mid-entrance and
-// its animation would snap. Held here so that swap is invisible.
+// its animation would snap. Held here so that swap is invisible — and builds are keyed on it too
+// (services/homeBuilds), so a build started for the pending chip still finds the tracked one.
 const renderKeyOf = new Map<string, string>();
 // Chips this screen invented, so a merge never mistakes its own earlier chip for the server's copy.
 let LOCAL = new WeakSet<Target>();
 
-type BuildJob = {
-  company: string; website: string; jobUrl?: string; jobText?: string;
-  /** The chip's RENDER key — it survives the pending → tracked key swap, so a build finds its chip. */
+/* ── chips removed on THIS screen ───────────────────────────────────────── */
+
+type Removal = {
+  t: Target;
   rk: string;
+  /** Where the chip was, so Undo puts it back in place. */
+  at: number;
+  /** Its slot in addedEmployers (-1 = a server chip), so an employer added here still leads after Undo. */
+  addedAt: number;
+  /** The server side of the removal (untrack / hide); resolves true when the server did it. null = none yet. */
+  server: Promise<boolean> | null;
+  /** An add whose chip was removed while tracking ran: what tracking returned before it was untracked again. */
+  trackedAs: Target | null;
+  /** Undone, failed, or answered by adding the employer again: nothing about it may act any more. */
+  undone: boolean;
+  /** When the X was tapped (the registry below forgets it after REMOVED_HOLD_MS). */
+  madeAt: number;
+  /** The account epoch it belongs to: an Undo from before a sign-out must never track under the next account. */
+  gen: number;
+  /** Its "Removed X · Undo" notice, so the notice goes when the removal stops being undoable. */
+  noticeId: number | null;
 };
-// The build Home started, for a Home that remounts mid-build (Dashboard round trip). It does not
-// survive a relaunch — resumeInflightBuild recovers the job itself; this only adds the company
-// name and what the pages looked like before, so "done" can be checked against them.
-let homeBuild: { company: string; rk: string; sigBefore: string; t0: number } | null = null;
+
 /**
- * The ONE build waiting behind the running one. An Add during a build used to be dropped silently
- * (or re-showed the OLD company's overlay); now it waits here and goes through the gate when the
- * current one ends. One slot: a newer Add replaces an older wait, so builds never stack up.
- * ⚠️ Module scope for the same reason as addedEmployers (a Dashboard round trip remounts Home), and
- * it EXPIRES: a wait from long ago is not consent to spend a plan build now.
+ * Chips the user removed, by chip key → until when (ms).
+ * ⚠️ LAID OVER EVERY LOAD. The X is optimistic: the chip leaves at once while the untrack / hide is still
+ * on its way, so a load that read the server before that landed would put the chip straight back. Held
+ * well past any request, and dropped by Undo, by a failed removal, or by adding the employer again.
  */
-let queuedBuild: { job: BuildJob; at: number } | null = null;
-const QUEUE_TTL_MS = 10 * 60 * 1000;
+const removedKeys = new Map<string, number>();
+const REMOVED_HOLD_MS = 5 * 60 * 1000;
+/**
+ * Adds whose chip was removed BEFORE tracking answered, by render key. A request cannot be taken back
+ * mid-flight, so the add flow reads this when tracking answers: it untracks what it just tracked and
+ * builds nothing — and records what it untracked on the Removal, so Undo can track it again.
+ */
+const removedAdds = new Map<string, Removal>();
+/**
+ * Every removal made on this screen that may still be on its way to the server, oldest first.
+ * ⚠️ WHY A REGISTRY: adding an employer again while its untrack (or a posting's hide) is still in flight used
+ * to send the track straight away — two requests racing, and an untrack landing second left the employer
+ * the user had just re-added untracked on the server. A re-add now waits for the removal it answers, the same
+ * way Undo waits for the removal it undoes. Forgotten after REMOVED_HOLD_MS; every request is long settled by then.
+ */
+let removals: Removal[] = [];
+/** Bumped with every account wipe: removals, and their Undo, belong to the account they were made under. */
+let accountGen = 0;
+
+function removedNow(key: string): boolean {
+  const until = removedKeys.get(key);
+  if (until === undefined) return false;
+  if (until > Date.now()) return true;
+  removedKeys.delete(key);
+  return false;
+}
+
+/** The live removals, pruned of expired and other accounts' entries. */
+function liveRemovals(): Removal[] {
+  const now = Date.now();
+  removals = removals.filter((r) => r.gen === accountGen && now - r.madeAt < REMOVED_HOLD_MS);
+  return removals;
+}
+
+/** A removal's server side, settled either way — for sequencing only, never read as an answer. */
+const settledOf = (r: Removal): Promise<unknown> => (r.server ? r.server.catch(() => false) : Promise.resolve(false));
+
+/**
+ * The live removals this add answers — the same employer, by site first and then by name (a re-add has no
+ * employer id until tracking returns one). Newest first, so a chip removed and re-added twice is sequenced
+ * behind both of its removals.
+ */
+function removalsFor(name: string, website: string): Removal[] {
+  const h = hostOf(website);
+  return liveRemovals()
+    .filter((r) => !r.undone && ((h && hostOf(r.t.website) === h) || sameEmployerName(r.t.company, name)))
+    .reverse();
+}
 
 /**
  * ⚠️ WHOSE CACHE THIS IS. Everything above is module scope, and App.js's logout does not reload the
  * bundle — so the next account to sign in saw the previous account's employers leading its chip row,
  * and that account's company in the build overlay. The cache is owned by the signed-in user id (a
  * token hash for a session without one) and wiped whenever a different account — or nobody — is found.
+ * The saved documents and the builds on screen are that account's too, so they go with it.
  */
 let cacheOwner: string | null = null;
 
@@ -121,11 +234,15 @@ function forgetAccountCache() {
   addedEmployers = [];
   renderKeyOf.clear();
   LOCAL = new WeakSet<Target>();
-  homeBuild = null;
-  queuedBuild = null;
+  removedKeys.clear();
+  removedAdds.clear();
+  removals = [];
+  accountGen++;
+  forgetDocs();
+  forgetHomeBuilds();
 }
 
-// signedInAccount lives in services/homeAddEmployer — ONE definition, shared with the in-flight record.
+// signedInAccount lives in services/homeAddEmployer — ONE definition, shared with the in-flight records.
 
 /** Make the module cache belong to whoever is signed in now. True when another account's was wiped. */
 async function claimAccountCache(): Promise<boolean> {
@@ -159,9 +276,7 @@ async function sessionRejected(): Promise<boolean> {
 
 const hostOf = (u?: string | null) => String(u || '').trim().toLowerCase()
   .replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0] || '';
-const sameName = (a?: string, b?: string) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 const rkOf = (t: Target) => renderKeyOf.get(t.key) || t.key;
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function rememberAdded(t: Target, replacesKey?: string) {
   LOCAL.add(t);
@@ -202,39 +317,107 @@ function mergeAdded(list: Target[], pin?: { current: string | null }): Target[] 
   return [...addedEmployers, ...list.filter((t) => !used.has(t) && !LOCAL.has(t) && !t.key.startsWith(PENDING) && !frontKeys.has(t.key))];
 }
 
-/** What the pages look like now — compared after a build, so "done" means the NEW resume is up. */
-const cardsSig = (cs: HomeCard[]) => cs.map((c) => `${c.id}:${(c.image || '').length}:${(c.image || '').slice(-40)}`).join('|');
-
-type Overlay = {
-  visible: boolean; company: string; stage: BuildStage | null; done: boolean;
-  error: { reason: string; message: string } | null;
-  /** What Retry does: recover-then-rebuild (re-gated), or only reload the pages it already built. */
-  retry: 'build' | 'refresh' | null;
-};
-const OVERLAY_CLOSED: Overlay = { visible: false, company: '', stage: null, done: false, error: null, retry: null };
-const GATE_COPY: Record<'quota_exhausted' | 'regen_limit', string> = {
-  quota_exhausted: 'You have used the resume builds your plan includes. See plans to build this one.',
-  regen_limit: 'Your free plan includes one AI rebuild, and it has been used. See plans to tailor a resume for every employer.',
-};
 /**
- * After the chip's hold, how long the dry-run gate may take before it counts as unread. The service
- * allows a request 20s; past this the answer is 'unknown', which ASKS — never a guess that it was covered.
+ * The build for a chip, spelled from docLookupOf and nothing else.
+ * ⚠️ ONE SPELLING. A saved document is found again by (employer, posting URL): a build that sent a URL,
+ * a listing or a website the lookup does not send would save a document no chip can ever show — paid
+ * for, invisible, and offered again as "Tailor my resume" — or one that reads as stale forever.
  */
-const GATE_WAIT_MS = 8000;
-/** The overlay's neutral state while the gate is read: it starts nothing and claims nothing. */
-const CHECKING: BuildStage = { stage: 'checking', label: 'Checking your plan…', pct: 0 };
-
-/** The dry-run gate for exactly the build that would run, with Home's own shorter deadline. */
-async function readGate(job: BuildJob): Promise<BuildGate> {
-  const unread: BuildGate = { covered: false, via: null, reason: 'unknown' };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      checkBuildGate(job.company, gateJobFor(job)),
-      new Promise<BuildGate>((r) => { timer = setTimeout(() => r(unread), GATE_WAIT_MS); }),
-    ]);
-  } catch { return unread; } finally { if (timer) clearTimeout(timer); }
+function jobFor(t: Target, kind: DocKind): HomeBuildJob {
+  const q = docLookupOf(t);
+  return {
+    kind, rk: rkOf(t), company: q.employer, website: q.website || '',
+    employerId: q.employerId ?? null, country: q.country ?? null,
+    ...(q.jobUrl ? { jobUrl: q.jobUrl } : {}),
+    // The posting the build reads, when it is not the identity: the link pasted in Add employer rides an
+    // EMPLOYER chip (whose identity job_url is '') as posting context. The lookup spells it the same way.
+    ...(q.postingUrl ? { postingUrl: q.postingUrl } : {}),
+    ...(q.jobText ? { jobText: q.jobText } : {}),
+    ...(q.jobTitle ? { jobTitle: q.jobTitle } : {}),
+  };
 }
+
+/**
+ * A Refresh of a saved document: the SAME chip identity (jobFor), rebuilt from the job the document was built
+ * from. ⚠️ NOT FROM THIS DEVICE'S LISTING CACHE. The pasted listing lives in a bounded device store that evicts,
+ * and a refresh spelled from an evicted listing rebuilt the resume WITHOUT the posting — and saved that
+ * poorer input as the document's own. The server stores the exact job it fingerprinted (jobInput) and judges
+ * `stale` against it, so a refresh from it reproduces that input and only the resume moves on.
+ */
+function refreshJobFor(t: Target, kind: DocKind, d: DocMeta): HomeBuildJob {
+  const base = jobFor(t, kind);
+  const ji = d.jobInput;
+  if (!ji) return base;
+  // Identity (kind, chip, employer, id, country, identity job_url) stays the chip's; the fingerprint inputs are
+  // replaced wholesale — a field the stored job did not have must not be filled back in from the device.
+  const job: HomeBuildJob = { ...base };
+  delete job.postingUrl;
+  delete job.jobText;
+  delete job.jobTitle;
+  // Exactly as stored: re-spelling a field (trimming, say) could fingerprint a different job.
+  const s = (v: unknown) => (typeof v === 'string' ? v : '');
+  job.website = s(ji.website);
+  if (s(ji.url)) job.postingUrl = s(ji.url);
+  if (s(ji.description)) job.jobText = s(ji.description);
+  if (s(ji.title)) job.jobTitle = s(ji.title);
+  return job;
+}
+
+/**
+ * The chip a build belongs to, for a build recovered after a remount or a relaunch.
+ * ⚠️ IT CAN RUN BEFORE THE FIRST LOAD — recovery starts on mount, with no chips on screen yet. So after
+ * the chips (and the employers added here, which are module state) it names the key the chip WILL have
+ * wherever that is certain: a posting chip is keyed on its cleaned URL (fetchTargets' own spelling), and
+ * an employer added here maps through renderKeyOf. An employer chip that is only a guess is left null —
+ * useHomeBuilds then marks its record provisional and moves it once the chips have loaded, which a
+ * confident wrong answer from here would stop it doing.
+ */
+function rkForMeta(meta: InflightMeta, list: Target[]): string | null {
+  const url = String(meta.jobUrl || '').trim();
+  const same = (t: Target) => String(docLookupOf(t).jobUrl || '').trim() === url
+    && ((!!meta.employerId && !!t.employerId && String(t.employerId) === String(meta.employerId))
+      || sameEmployerName(t.company, meta.company));
+  const hit = list.find(same) || addedEmployers.find(same);
+  if (hit) return rkOf(hit);
+  if (url) {
+    // ⚠️ jobKeyForUrl, never a hand-rolled spelling: it is fetchTargets' own, and the two cannot drift.
+    const key = jobKeyForUrl(url);
+    return renderKeyOf.get(key) || key;
+  }
+  if (!meta.employerId) return null;
+  const key = 'emp_' + meta.employerId;
+  return renderKeyOf.get(key) || (list.length ? key : null);
+}
+
+/** A callback whose identity never changes but which always runs the latest render's function. */
+function useStableFn<A extends any[], R>(fn: (...a: A) => R): (...a: A) => R {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useCallback((...a: A) => ref.current(...a), []);
+}
+
+/**
+ * One chip's build phase, as a PRIMITIVE. ⚠️ Not the record: the record is replaced on every stage
+ * tick, and holding it here would re-render the whole screen every poll of every build. A phase changes
+ * a handful of times per build.
+ */
+function useBuildPhase(kind: DocKind, rk: string | null): BuildPhase | null {
+  const snap = useCallback(() => (rk ? buildFor(kind, rk)?.phase ?? null : null), [kind, rk]);
+  return useSyncExternalStore(subscribeBuilds, snap, snap);
+}
+
+type NoticeAction = { label: string; run: () => void };
+/**
+ * One line on the notice row.
+ * ⚠️ `at` AND `shownAt` ARE DIFFERENT MOMENTS, because a notice can WAIT (an Undo is never pre-empted —
+ * see showNotice). `at` is when the thing it reports happened, and a line that waited longer than
+ * `maxWait` is dropped rather than shown as news; `shownAt` is when it actually reached the line, and
+ * `ms` is counted from there.
+ */
+type Notice = {
+  id: number; text: string; action?: NoticeAction; ms: number;
+  at: number; shownAt: number; maxWait: number;
+};
 
 export default function EmployerHome({
   firstName, onOpenDashboard, onOpenMenu, onOpenNotifications, unreadCount = 0, handleReview,
@@ -256,6 +439,20 @@ export default function EmployerHome({
     /** The library section. Injected so the preview harness can render it from fixtures. */
     history?: (kind: 'resume' | 'cover_letter') => Promise<HistoryPayload | null>;
     setup?: () => Promise<ProfileSetup | null>;
+    /** A chip's saved document (POST /employer-docs/current). ⚠️ With `loaders`, no document read touches the network. */
+    doc?: (kind: DocKind, q: DocLookup) => Promise<DocMeta | null | 'error'>;
+    /** Page images for a saved document's designs. */
+    docCards?: (kind: DocKind, docId: number, ids: string[]) => Promise<{ cards: DocCard[] } | 'gone' | null>;
+    /** Every saved document of a kind, slim — the chips' "tailored" dots. */
+    docList?: (kind: DocKind) => Promise<DocListItem[] | null>;
+    /**
+     * The server side of a chip's X (untrack an employer / hide a posting); true = removed. ⚠️ With `loaders`
+     * a removal never touches the network: one the harness did not supply succeeds locally, so Remove → Undo
+     * can be looked at signed-out.
+     */
+    remove?: (t: Target) => Promise<boolean>;
+    /** The server side of Undo, and of a re-add restoring a hidden posting (track again / un-hide); true = back. */
+    unhide?: (t: Target) => Promise<boolean>;
   };
 }) {
   // The dark stage runs edge to edge under the status bar (HomeScreen drops its top safe-area
@@ -307,6 +504,12 @@ export default function EmployerHome({
   const [loadFailed, setLoadFailed] = useState(false);
   // These pages are a stand-in built from the account's name and email — say so.
   const [sample, setSample] = useState(false);
+  // Whether the account has a resume a build can read: a builder resume OR an uploaded one (the server's
+  // /home-cards `hasResume`). null = the server did not say (an older one), and `sample` stands in for it.
+  // ⚠️ NOT THE SAME QUESTION AS `sample`. The pages are a stand-in for someone who only UPLOADED a resume
+  // (the builder row is what renders pages), yet the build lanes read the upload — gating Write and Tailor
+  // on `sample` told exactly those people to "Build your resume first".
+  const [hasResume, setHasResume] = useState<boolean | null>(null);
   const [isPaid, setIsPaid] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reshaping, setReshaping] = useState(false);
@@ -326,6 +529,56 @@ export default function EmployerHome({
   // (best match first) is still free to move.
   const pickedKey = useRef<string | null>(null);
 
+  const kind = kindOfMode(mode);
+  // When the saved documents were last asked for: listToken re-reads the chips' dots, docToken the
+  // selected chip's own document. Bumped by a landed build, a pull-to-refresh and a return to Home —
+  // all READS.
+  const [listToken, setListToken] = useState(0);
+  const [docToken, setDocToken] = useState(0);
+  // Builds that just landed, by store key → the document id they produced. While a chip is in here and its
+  // lookup has not yet shown that document, the chip is "document on its way" — never "nothing saved".
+  const [landed, setLanded] = useState<Record<string, number>>({});
+  const landedTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => () => {
+    for (const k of Object.keys(landedTimers.current)) clearTimeout(landedTimers.current[k]);
+  }, []);
+  /** This landing has been answered (or has waited long enough): the chip's own lookup speaks for it again. */
+  const forgetLanded = useCallback((key: string) => {
+    const timer = landedTimers.current[key];
+    if (timer) { clearTimeout(timer); delete landedTimers.current[key]; }
+    if (!alive.current) return;
+    setLanded((m) => {
+      if (m[key] === undefined) return m;
+      const n = { ...m };
+      delete n[key];
+      return n;
+    });
+  }, []);
+  /**
+   * A build landed with a document for this chip. ⚠️ HELD UNTIL THE LOOKUP SHOWS THAT DOCUMENT: until it
+   * answers, the chip still holds the answer from BEFORE the build ("nothing saved"), which drew
+   * "Tailor my resume" — and read the gate — for a document the user had just paid for. Bounded by
+   * LANDED_WAIT_MS, so a lookup that never finds it gives the action back rather than hiding it forever.
+   */
+  const markLanded = useCallback((key: string, docId: number) => {
+    if (!alive.current) return;
+    const timer = landedTimers.current[key];
+    if (timer) clearTimeout(timer);
+    landedTimers.current[key] = setTimeout(() => forgetLanded(key), LANDED_WAIT_MS);
+    setLanded((m) => (m[key] === docId ? m : { ...m, [key]: docId }));
+  }, [forgetLanded]);
+  // ⚠️ THE REFS ARE MOVED WITH THE STATE, NOT ONLY AT THE NEXT RENDER (see commitTargets): the add,
+  // remove and landing flows read them from timers and resolved requests, and a value synced only at
+  // render would name the chip row from before the change that just happened.
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
+  const empIdxRef = useRef(empIdx);
+  empIdxRef.current = empIdx;
+  const kindRef = useRef(kind);
+  kindRef.current = kind;
+
   const loadTargets = loaders?.targets || fetchTargets;
   const loadCards = loaders?.cards || fetchHomeCards;
   const loadPaid = loaders?.paid || (async () => { try { const st = await fetchSubscriptionStatus(); return !!st?.subscription; } catch { return false; } });
@@ -335,12 +588,12 @@ export default function EmployerHome({
   // ⚠️ READ THROUGH A REF, SO load() NEVER CHANGES IDENTITY. loadPaid/loadSetup above are new
   // arrow functions on every render, and load used to depend on them — so load was a new function
   // every render and useFocusEffect re-ran it: any render more than 60s after the last load fired a
-  // full reload. A build re-renders Home on every progress tick, which made that a reload storm that
-  // could replace the chip row mid-build.
+  // full reload. A build re-renders Home as it moves, which made that a reload storm that could
+  // replace the chip row mid-build.
   const live = useRef({ loaders, loadTargets, loadCards, loadPaid, loadSetup });
   live.current = { loaders, loadTargets, loadCards, loadPaid, loadSetup };
-  // ⚠️ SEQUENCE GUARD: two loads can overlap (focus + pull-to-refresh + a build's refresh), and a
-  // slower OLDER one landing last would put the pre-build pages back on screen.
+  // ⚠️ SEQUENCE GUARD: two loads can overlap (focus + pull-to-refresh + a landed build), and a
+  // slower OLDER one landing last would put the previous pages back on screen.
   const loadSeq = useRef(0);
 
   /**
@@ -363,7 +616,12 @@ export default function EmployerHome({
       // The preview harness has no account, and claiming would wipe its fixtures on every load.
       loaders ? Promise.resolve(false) : claimAccountCache(),
     ]);
-    if (wiped) pickedKey.current = null;
+    if (wiped) {
+      pickedKey.current = null;
+      // The documents on screen were the previous account's: ask again for this one.
+      setListToken((n) => n + 1);
+      setDocToken((n) => n + 1);
+    }
     // Nothing came back at all: if that was the server refusing the session, the cache goes too.
     if (!loaders && !fetched.length && c === null && (await sessionRejected())) {
       forgetAccountCache();
@@ -372,8 +630,10 @@ export default function EmployerHome({
     }
     if (seq !== loadSeq.current) return undefined;
     if (cat.length) setSlots(cat);
-    // Employers added on this screen lead, whether or not the server has them yet.
-    const t = mergeAdded(fetched, pickedKey);
+    // Employers added on this screen lead, whether or not the server has them yet — and a chip removed
+    // here stays gone even when this answer was read before the server heard about the removal.
+    const t = mergeAdded(fetched.filter((x) => !removedNow(x.key)), pickedKey);
+    targetsRef.current = t;
     setTargets(t);
     if (pickedKey.current) {
       const j = t.findIndex((x) => x.key === pickedKey.current);
@@ -387,6 +647,9 @@ export default function EmployerHome({
     else if (c) {
       if (freshPages) { dead.current = {}; setShots({}); }
       setCards(c.cards); setNoResume(false); setSample(!!c.sample); setLoadFailed(false);
+      // ⚠️ Only a real boolean counts: an older server that does not send it leaves this null, and `sample`
+      // stands in — never `false`, which would tell someone with a resume to build one.
+      setHasResume(typeof c.hasResume === 'boolean' ? c.hasResume : null);
     }
     else { setLoadFailed(true); }
     setLoading(false);
@@ -485,11 +748,116 @@ export default function EmployerHome({
     return (hit && hit.accent) || E.blue;
   }, [slots, cards]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // Back on Home from the editor, the gallery or the plans screen, a saved document may have been edited
+  // (new pages) or gone stale, so the documents are asked for again — a READ, never a build. The very first
+  // focus is the mount, which asks anyway.
+  const focusCount = useRef(0);
+  useFocusEffect(useCallback(() => {
+    load();
+    if (focusCount.current++ > 0) { setDocToken((n) => n + 1); setListToken((n) => n + 1); }
+  }, [load]));
 
-  const onRefresh = async () => { setRefreshing(true); await load(true); setRefreshing(false); };
+  const onRefresh = async () => {
+    setRefreshing(true);
+    setDocToken((n) => n + 1);
+    setListToken((n) => n + 1);
+    await load(true);
+    setRefreshing(false);
+  };
+
+  /* ── the selected employer's own document ── */
+
+  // ⚠️ Injected loaders REPLACE the network, including a loader the harness did not supply: a
+  // harness that forgot one must render "nothing saved", not quietly call the production API.
+  const docLoaders: DocLoaders | undefined = useMemo(() => (loaders ? {
+    current: loaders.doc || (async () => null),
+    cards: loaders.docCards || (async () => null),
+    list: loaders.docList || (async () => []),
+  } : undefined), [loaders]);
+  const docLoadersRef = useRef(docLoaders);
+  docLoadersRef.current = docLoaders;
 
   const target: Target | undefined = targets[empIdx];
+  const selRk = target ? rkOf(target) : null;
+  const selRkRef = useRef(selRk);
+  selRkRef.current = selRk;
+  const { list: docList } = useDocList(kind, listToken, docLoaders);
+  const { doc, state: docState, reload: reloadDoc } = useTargetDoc(kind, target || null, { refreshToken: docToken, loaders: docLoaders });
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  const { deck: docDeck, gone: docGone } = useDocDeck(
+    kind, doc, kind === 'cover_letter' ? LETTER_DESIGNS : slots, cardIdx, { loaders: docLoaders, enabled: !!doc },
+  );
+  const selPhase = useBuildPhase(kind, selRk);
+  const selBuilding = selPhase === 'checking' || selPhase === 'queued' || selPhase === 'building';
+
+  // A different document is a different deck, and it opens on its best design — reset in the SAME
+  // render (not an effect), so the new deck is never drawn for a frame at the old deck's position.
+  const deckId = doc ? `doc:${doc.docId}` : `base:${kind}`;
+  const [shownDeckId, setShownDeckId] = useState(deckId);
+  if (shownDeckId !== deckId) {
+    setShownDeckId(deckId);
+    if (cardIdx !== 0) setCardIdx(0);
+  }
+
+  // The server no longer has the document these pages belong to (pruned, or replaced): ask again rather
+  // than show designs that will never fill in.
+  useEffect(() => { if (docGone) reloadDoc(); }, [docGone, reloadDoc]);
+
+  // The slim list already says which chips have a document. For a chip that does, a lookup still on its
+  // way must never paint the BASE resume under that employer's name — the "wrong company" flash.
+  const listDoc = target && docList ? matchDocToTarget(docList, target, kind) : null;
+  // A build that just landed for this chip: its document is on its way (see LANDED_WAIT_MS and onLanded).
+  const landedDocId = selRk ? landed[storeKeyOf(kind, selRk)] : undefined;
+  const landedWait = landedDocId !== undefined;
+  const docPending = !doc && ((docState === 'loading' && !!listDoc) || landedWait);
+  const docPendingRef = useRef(docPending);
+  docPendingRef.current = docPending;
+  // The landed document is on screen (and current): the chip's own answer speaks for it from here on. Until
+  // then — or until LANDED_WAIT_MS — the landing holds. ⚠️ Keyed on the document id, not on "a doc is shown":
+  // a Refresh lands over the OLD document, which is on screen the whole time and must not end the wait.
+  useEffect(() => {
+    if (!doc || !selRk || landedDocId === undefined) return;
+    if (doc.docId === landedDocId && !doc.stale) forgetLanded(storeKeyOf(kind, selRk));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, kind, selRk, landedDocId]);
+  // An account with nothing a build can read has nothing to rewrite: its action is the builder. ⚠️ The server's
+  // hasResume decides (an upload counts); `sample` only stands in when the server did not say.
+  const noResumeYet = noResume || !(hasResume ?? !sample);
+
+  const docRks = useMemo(() => {
+    const out = new Set<string>();
+    if (docList && docList.length) for (const t of targets) if (matchDocToTarget(docList, t, kind)) out.add(rkOf(t));
+    return out;
+  }, [docList, targets, kind]);
+
+  /**
+   * Chips that have a saved document are read ahead, so picking one paints its own pages at once
+   * instead of a spinner. ⚠️ Bounded, one request at a time, and only for chips the list says HAVE a
+   * document: a lookup computes `stale` on the server, which reads the resume from the database.
+   */
+  useEffect(() => {
+    if (!docList || !docList.length || !targets.length) return;
+    const k = kind;
+    const wanted = targets
+      .filter((t, i) => i !== empIdxRef.current && !!matchDocToTarget(docList, t, k))
+      .map((t) => docLookupOf(t))
+      .filter((q) => cachedCurrentDoc(k, q) === undefined)
+      .slice(0, PREWARM_MAX);
+    if (!wanted.length) return;
+    let cancelled = false;
+    (async () => {
+      const read = docLoadersRef.current?.current || fetchCurrentDoc;
+      for (const q of wanted) {
+        if (cancelled || !alive.current) return;
+        let got: DocMeta | null | 'error' = 'error';
+        try { got = await read(k, q); } catch { got = 'error'; }
+        if (got !== 'error') rememberDoc(k, q, got);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [docList, targets, kind]);
+
   // What the carousel actually shows. With a catalogue we show EVERY design — the ones the server
   // already rendered lead, the rest follow as slots and fill in on approach.
   const deck: PaperCard[] = React.useMemo(() => {
@@ -502,10 +870,19 @@ export default function EmployerHome({
     return [...lead, ...rest];
   }, [cards, slots, shots]);
 
+  // The designs with no pixels — a saved document's deck while its lookup is still on the way.
+  const slotCards: PaperCard[] = useMemo(
+    () => slots.map((sl) => ({ id: sl.id, name: sl.name, accent: sl.accent, image: null })), [slots]);
+
+  // ⚠️ THE BASE DECK HYDRATES ONLY WHILE IT IS THE DECK ON SCREEN. A saved document's deck fills its own
+  // pages (useDocDeck) behind its own single-flight; two hydrators running at once would put two waves
+  // on the one serial renderer — the stampede both caps exist to prevent.
+  const baseOnScreen = mode === 'resume' && !doc && !docPending;
+
   // Fill in the pages around the one being looked at, a few at a time and never two waves at once:
   // renders are serial server-side and the preview browser recycles every 3 pages.
   useEffect(() => {
-    if (!deck.length || noResume || loaders) return;
+    if (!deck.length || noResume || loaders || !baseOnScreen) return;
     let cancelled = false;
     const run = async () => {
       if (hydrating.current) return;
@@ -536,7 +913,7 @@ export default function EmployerHome({
         }
       } finally {
         hydrating.current = false;
-        // ⚠️ A wave cancelled by a deck change (a build's fresh pages, say) used to leave nothing
+        // ⚠️ A wave cancelled by a deck change (fresh pages, say) used to leave nothing
         // scheduled: the run the change queued found the mutex still held and returned, so the new
         // resume's designs stayed blank until the user swiped. Knock once so it runs again.
         if (cancelled) setHydrateNudge((n) => n + 1);
@@ -544,9 +921,28 @@ export default function EmployerHome({
     };
     const id = setTimeout(run, 260);
     return () => { cancelled = true; clearTimeout(id); };
-  }, [cardIdx, deck, noResume, loaders, hydrateNudge]);
+  }, [cardIdx, deck, noResume, loaders, hydrateNudge, baseOnScreen]);
 
-  const card: PaperCard | undefined = deck[cardIdx];
+  // The deck on screen: the chip's own document when it has one (ranked, with fit), the base resume
+  // when it does not, and the letter formats as blank pages while a letter is being written.
+  let shown: { cards: PaperCard[]; fit: boolean } | null = null;
+  if (doc && docDeck.length) shown = { cards: docDeck, fit: true };
+  else if (mode === 'letter') {
+    if (selBuilding || docPending) shown = { cards: LETTER_SLOTS, fit: false };
+  } else if (!noResume) {
+    if (docPending && slotCards.length) shown = { cards: slotCards, fit: false };
+    else if (deck.length) shown = { cards: deck, fit: false };
+  }
+  const card: PaperCard | undefined = shown ? shown.cards[cardIdx] : undefined;
+  const buildingProp = useMemo(
+    () => (selBuilding && selRk && target ? { kind, rk: selRk, company: target.company } : null),
+    [selBuilding, kind, selRk, target?.company],
+  );
+
+  const flashReshape = () => {
+    setReshaping(true);
+    setTimeout(() => { if (alive.current) setReshaping(false); }, 950);
+  };
 
   // Picking an employer "reshapes" the page — the scan pulse the mockup plays over the card.
   const pickEmployer = (i: number) => {
@@ -559,303 +955,435 @@ export default function EmployerHome({
     track('home_employer_pick', { i });
   };
   // ⚠️ ONE IDENTITY FOR THE LIFE OF THE SCREEN, so the memoised chips stay memoised: a fresh
-  // `() => pickEmployer(i)` per chip per render re-rendered every chip on every build-stage tick.
+  // `() => pickEmployer(i)` per chip per render re-rendered every chip on every render of Home.
   const pickRef = useRef(pickEmployer);
   pickRef.current = pickEmployer;
   const onPickChip = useCallback((i: number) => pickRef.current(i), []);
 
-  /* ── add an employer, and build for it, without leaving Home ── */
+  /* ── notices, and the chip row as the flows change it ── */
 
-  const [overlay, setOverlayState] = useState<Overlay>(OVERLAY_CLOSED);
-  // ⚠️ THE REF IS WRITTEN WITH THE STATE, NOT AT THE NEXT RENDER. The flow reads overlayRef to decide
-  // whether a build is on screen (a done stamp vs a notice, whether a queued build may start). Synced
-  // only at render, a result that arrived before React re-rendered read the PREVIOUS overlay — a build
-  // on screen looked hidden, and its "ready" became a notice under a spinner that never stamped done.
-  const overlayRef = useRef(overlay);
-  const setOverlay = useCallback((next: Overlay | ((o: Overlay) => Overlay)) => {
-    const v = typeof next === 'function' ? next(overlayRef.current) : next;
-    overlayRef.current = v;
-    setOverlayState(v);
+  /**
+   * ONE notice line, and ⚠️ AN UNDO ON IT IS NEVER PRE-EMPTED. "Removed X · Undo" is the only way back for a
+   * removed chip, and a build finishing in the background (or any other line) used to replace it inside its
+   * window — the chip gone, the Undo with it. So while an Undo is up, every other notice waits in line and
+   * shows when the Undo ends (a newer Undo still replaces it: that is the chip the user just removed).
+   * A line that waited past its maxWait is dropped: news about half a minute ago is not news.
+   * Returns the notice's id, so a removal can take its own Undo down once there is nothing left to undo.
+   */
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const noticeRef = useRef<Notice | null>(null);
+  const noticeQueue = useRef<Notice[]>([]);
+  const noticeSeq = useRef(0);
+  const isUndo = (n: Notice | null | undefined) => !!n && n.action?.label === 'Undo';
+  /** Put a notice on the line (null clears it), moving the ref with the state for the flows that read it. */
+  const putNotice = useCallback((n: Notice | null) => {
+    noticeRef.current = n ? { ...n, shownAt: Date.now() } : null;
+    if (alive.current) setNotice(noticeRef.current);
   }, []);
-  const [notice, setNotice] = useState<string | null>(null);
+  /** The line is free: the next queued notice that is still worth showing, or nothing. */
+  const nextNotice = useCallback(() => {
+    const now = Date.now();
+    let next: Notice | null = null;
+    while (noticeQueue.current.length) {
+      const q = noticeQueue.current.shift()!;
+      if (now - q.at <= q.maxWait) { next = q; break; }
+    }
+    putNotice(next);
+  }, [putNotice]);
+  const showNotice = useCallback((text: string, action?: NoticeAction, ms = 4500, maxWait = NOTICE_WAIT_MS): number => {
+    const n: Notice = { id: ++noticeSeq.current, text, action, ms, at: Date.now(), shownAt: 0, maxWait };
+    const cur = noticeRef.current;
+    if (cur && isUndo(cur) && !isUndo(n) && Date.now() - cur.shownAt < cur.ms) {
+      // The same line twice in the queue says nothing new; the newest copy keeps its place at the back.
+      noticeQueue.current = [...noticeQueue.current.filter((q) => q.text !== text), n].slice(-4);
+      return n.id;
+    }
+    putNotice(n);
+    return n.id;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [putNotice]);
+  /** Take one notice down, wherever it is — on the line (the next one then shows) or still waiting. */
+  const dismissNotice = useCallback((id: number | null) => {
+    if (id == null) return;
+    noticeQueue.current = noticeQueue.current.filter((q) => q.id !== id);
+    if (noticeRef.current && noticeRef.current.id === id) nextNotice();
+  }, [nextNotice]);
+  /** A signed-out account: nothing queued for it may show, and no Undo of its may be tapped. */
+  const clearNotices = useCallback(() => {
+    noticeQueue.current = [];
+    putNotice(null);
+  }, [putNotice]);
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => {
+      if (noticeRef.current && noticeRef.current.id === notice.id) nextNotice();
+    }, notice.ms);
+    return () => clearTimeout(id);
+  }, [notice, nextNotice]);
+  /** "Loading your saved version…" — a tap on pages that stand in for a document still on its way. Short-lived. */
+  const sayLoadingDoc = () => { showNotice('Loading your saved version…', undefined, 2500, 1500); };
+  /** A saved document is on its way for the chip on screen, so the pages drawn in its place are not its pages. */
+  const docOnItsWay = () => !docRef.current && docPendingRef.current;
   // Which chip plays the entrance: keyed by render key AND a counter, so only the newly added chip
   // animates, and adding the same employer twice replays it.
   const [enter, setEnter] = useState<{ key: string; n: number } | null>(null);
   const chipRowRef = useRef<ScrollView>(null);
-  const alive = useRef(true);
-  // One build at a time from this screen, held from the gate read through the page refresh.
-  const building = useRef(false);
-  // Set once THIS instance starts a build, so a recovered one from before a remount never also
-  // lands its result here.
-  const localBuild = useRef(false);
-  // The job being gated or built right now (a queued Add's notice names it), and the last one, for
-  // Try again. `lastSig` is what the pages looked like when that build started.
-  const current = useRef<BuildJob | null>(null);
-  const lastJob = useRef<BuildJob | null>(null);
-  const lastSig = useRef<{ sig: string; t0: number } | null>(null);
-  // The mount-time recovery has finished, so a focus may start a queued build without racing it.
-  const recovered = useRef(false);
-  // A line to show once the overlay is closed (it would expire unseen behind the modal).
-  const noteOnClose = useRef<string | null>(null);
-  const landing = useRef<{ company: string; rk: string; sigBefore: string | null; cached: boolean; t0: number } | null>(null);
-  const targetsRef = useRef(targets);
-  targetsRef.current = targets;
-  const cardsRef = useRef(cards);
-  cardsRef.current = cards;
-
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  useEffect(() => {
-    if (!notice) return;
-    const id = setTimeout(() => setNotice(null), 4500);
-    return () => clearTimeout(id);
-  }, [notice]);
-  // "Add employer" is the LAST item in the row, so the user is usually scrolled right when the new
-  // chip lands at the start. From an effect, so the insert has committed before the scroll.
+  // Chips playing their exit, by render key, and the timers that close the row up behind them.
+  const [exiting, setExiting] = useState<Record<string, true>>({});
+  const exitTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Chips whose add is still being answered (tracking, then the saved-document lookup): their action
+  // waits, or a tap would race the add into a second build.
+  const [adding, setAdding] = useState<Record<string, true>>({});
+  useEffect(() => () => {
+    for (const k of Object.keys(exitTimers.current)) clearTimeout(exitTimers.current[k]);
+  }, []);
+  // A new chip lands at the start of the row, and the user may be scrolled right along it. From an
+  // effect, so the insert has committed before the scroll.
   useEffect(() => {
     if (!enter) return;
     const id = setTimeout(() => chipRowRef.current?.scrollTo({ x: 0, animated: true }), 40);
     return () => clearTimeout(id);
   }, [enter]);
 
-  /** Put a new chip row on screen and keep the user's pin on the chip it names. */
-  const applyTargets = (next: Target[]) => {
-    setTargets(next);
-    if (pickedKey.current) {
-      const j = next.findIndex((x) => x.key === pickedKey.current);
-      setEmpIdx(j >= 0 ? j : 0);
-    }
-  };
-
-  /** Select the chip a build was for — by render key, which is stable across the tracking swap. */
-  const pinBuilt = (list: Target[], rk: string) => {
-    const j = rk ? list.findIndex((t) => rkOf(t) === rk) : -1;
-    if (j < 0) return;
-    pickedKey.current = list[j].key;
-    setEmpIdx(j);
-  };
-
-  const followStage = (st: BuildStage) => {
-    if (alive.current) setOverlay((o) => (o.done || o.error ? o : { ...o, stage: st }));
-  };
-
-  /**
-   * Start the build that waited behind the one that just ended — through the gate like any Add, so
-   * waiting in line is never a pre-approved charge. Not while another build or overlay holds the screen.
-   */
-  const drainQueue = () => {
-    const q = queuedBuild;
-    if (!q || building.current || overlayRef.current.visible || !alive.current) return;
-    queuedBuild = null;
-    if (Date.now() - q.at > QUEUE_TTL_MS) return;
-    gateAndBuild(q.job);
-  };
-
-  /**
-   * The build is on the server; this makes the pages on screen BE it.
-   * ⚠️ "Done" is claimed only once fresh cards arrived. A failed refresh only sets loadFailed, which
-   * is invisible while the deck is non-empty — so trusting it would show the OLD resume under the
-   * new ribbon and call it built.
-   * ⚠️ FRESH = PAGES THAT DIFFER FROM BEFORE, OR THE SERVER SAYING IT SERVED ITS CACHE. Nothing else.
-   * Accepting the second refresh "as what the server has" stamped Ready over UNCHANGED pages whenever
-   * the read raced the save; that is the honest 'refresh' state instead (built, pages not in yet).
-   */
-  /**
-   * `sigBefore` is the page signature from BEFORE the build, or null when there is no honest one.
-   * ⚠️ A BUILD RECOVERED AFTER A RELAUNCH HAS NO "BEFORE". Its signature used to be read from the cards
-   * on screen at recovery time — but if the job finished while the app was closed, Home's first load
-   * already shows the NEW pages, so before === after, the freshness check failed, and a landed, charged
-   * build ended on "your pages did not refresh". "Load my pages" re-ran with the same signature, so it
-   * could never clear. With null, a successful fresh load of the server's pages is the proof.
-   */
-  const landBuild = async (company: string, rk: string, cached: boolean, sigBefore: string | null, t0: number) => {
-    building.current = true;
-    landing.current = { company, rk, sigBefore, cached, t0 };
-    setOverlay((o) => ({ ...o, error: null, retry: null, stage: { stage: 'refresh', label: 'Built — refreshing your pages…', pct: 97 } }));
-    let fresh = false;
-    for (let attempt = 0; attempt < 2 && !fresh; attempt++) {
-      if (attempt) await sleep(2500);
-      if (!alive.current) break;
-      const got = await load(true, true).catch(() => undefined);
-      if (!got || !got.cards || got.cards === 'none') continue;
-      if (cached || sigBefore === null || cardsSig(got.cards.cards) !== sigBefore) {
-        fresh = true;
-        pinBuilt(got.targets, rk);
-      }
-    }
-    building.current = false;
+  const markAdding = (rk: string, on: boolean) => {
     if (!alive.current) return;
-    if (!fresh) {
-      track('home_build_fail', { reason: 'refresh' });
-      setOverlay((o) => ({
-        ...o, visible: true, company: company || o.company, stage: null, done: false, retry: 'refresh',
-        error: { reason: 'refresh', message: `Your ${company} resume is built, but your pages did not refresh. Try again to load them.` },
-      }));
-      return;
-    }
-    landing.current = null;
-    track('home_build_done', { cached, ms: Date.now() - t0 });
-    try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
-    setReshaping(true);
-    setTimeout(() => { if (alive.current) setReshaping(false); }, 950);
-    // The overlay stamps "done" and dismisses ITSELF (its own hold timer calls onDismiss, which starts
-    // any queued build). One hidden mid-build gets a line instead, and the queue goes straight away.
-    if (!overlayRef.current.visible) {
-      setNotice(`Your ${company} resume is ready.`);
-      setOverlay(OVERLAY_CLOSED);
-      drainQueue();
-      return;
-    }
-    setOverlay((o) => ({ ...o, company: company || o.company, done: true, error: null, retry: null, stage: { stage: 'done', label: 'Ready', pct: 100 } }));
-  };
-
-  const finishBuild = async (company: string, rk: string, r: BuildResult, sigBefore: string | null, t0: number) => {
-    homeBuild = null;
-    if (!alive.current) { building.current = false; return; }
-    if (!r.ok) {
-      building.current = false;
-      const reason: string = r.reason;
-      track('home_build_fail', { reason });
-      if (reason === 'pending') {
-        // ⚠️ A5: the job may still finish AND charge. No rebuild is offered, and nothing waits behind
-        // it: starting the next build now would only be refused while this one runs, or overlap it.
-        const waiting = queuedBuild;
-        queuedBuild = null;
-        const next = waiting ? ` Add ${waiting.job.company} again once your ${company} resume arrives.` : '';
-        if (!overlayRef.current.visible) {
-          setNotice(`Your ${company} resume is taking longer than usual — it may still arrive.${next}`);
-          setOverlay(OVERLAY_CLOSED);
-          return;
-        }
-        // Said once the overlay closes: a notice set now would expire unseen behind the full-screen modal.
-        if (waiting) noteOnClose.current = `${waiting.job.company} was not started.${next}`;
-      }
-      // ⚠️ The chip STAYS. Try again recovers the build the service still holds before it will start
-      // another (retryBuild), and anything new goes back through the gate.
-      setOverlay((o) => ({
-        ...o, visible: true, company: company || o.company, stage: null, done: false,
-        error: { reason, message: r.message },
-        retry: reason === 'network' || reason === 'failed' ? 'build' : null,
-      }));
-      return;
-    }
-    setOverlay((o) => ({ ...o, company: company || o.company }));
-    await landBuild(company, rk, r.cached, sigBefore, t0);
-  };
-
-  /**
-   * `coveredOnly` is the consent: true = the server may spend only plan, free allowance, pass or cache
-   * and must refuse (402 → the plans state) rather than fall through to credits. ⚠️ false ONLY after the
-   * user tapped Build on a dialog that named a credit charge.
-   */
-  const runBuild = async (job: BuildJob, via: string, coveredOnly: boolean, show = true) => {
-    if (building.current) return;
-    building.current = true;
-    localBuild.current = true;
-    current.current = job;
-    lastJob.current = job;
-    const t0 = Date.now();
-    const sigBefore = cardsSig(cardsRef.current);
-    lastSig.current = { sig: sigBefore, t0 };
-    homeBuild = { company: job.company, rk: job.rk, sigBefore, t0 };
-    track('home_build_start', { gate: via, coveredOnly });
-    setOverlay({ visible: show, company: job.company, stage: null, done: false, error: null, retry: null });
-    let r: BuildResult;
-    try {
-      r = await buildForEmployer(
-        { company: job.company, website: job.website, jobUrl: job.jobUrl, jobText: job.jobText, coveredOnly },
-        followStage,
-      );
-    } catch {
-      r = { ok: false, reason: 'failed', message: 'We could not finish building your resume. Please try again.' };
-    }
-    await finishBuild(job.company, job.rk, r, sigBefore, t0);
-  };
-
-  /**
-   * ⚠️ THE STANDING RULE: never regenerate and charge silently. An explicit Add IS the intent to
-   * build, so it starts on its own ONLY when the dry-run gate says plan / free / pass / cache covers
-   * it. Credits are a question with the number in it; a gate we could not read is a question too,
-   * never a guess; exhausted quota shows the plans, not a charge.
-   *
-   * `named` resolves to the job under the name the server STORED once tracking answers — the gate,
-   * the build and the overlay all wait for it, so the chip, the fingerprint and the resume never
-   * disagree about what the employer is called.
-   */
-  const gateAndBuild = async (job: BuildJob, holdMs = 0, named?: Promise<BuildJob | null>) => {
-    if (building.current) {
-      const cur = current.current;
-      const curName = cur?.company || overlayRef.current.company;
-      if ((cur && cur.rk === job.rk) || sameName(curName, job.company)) {
-        // The same employer: that build IS this one — bring it back rather than charging twice.
-        setOverlay((o) => (o.company ? { ...o, visible: true } : o));
-        return;
-      }
-      // Another employer: it waits its turn, and says so.
-      queuedBuild = { job, at: Date.now() };
-      track('home_build_queued', {});
-      setNotice(curName
-        ? `Your ${curName} resume is still building — we'll build ${job.company} next.`
-        : `We'll build ${job.company} as soon as the current build is done.`);
-      return;
-    }
-    building.current = true;   // held through the gate read, so two quick adds cannot both pass it
-    current.current = job;
-    lastJob.current = job;
-    let answered = false;
-    const decided = (async () => {
-      const final = named ? await named.catch(() => job) : job;
-      return { final, gate: final ? await readGate(final) : null };
-    })().finally(() => { answered = true; });
-    // `holdMs` lets the new chip land and glow BEFORE a full-screen overlay or a dialog covers it — the
-    // user asked for "go to that card, THEN build". The gate is read during the hold, not after.
-    await sleep(holdMs);
-    if (!answered) await Promise.race([decided, sleep(holdMs ? 0 : 300)]);
-    // ⚠️ NEVER A SILENT WAIT. Past the hold a slow gate used to leave the screen doing nothing for up
-    // to 20s; now it says what it is doing, and starts nothing while it does.
-    let checking = false;
-    if (!answered && alive.current) {
-      checking = true;
-      setOverlay({ visible: true, company: job.company, stage: CHECKING, done: false, error: null, retry: null });
-    }
-    const { final, gate } = await decided;
-    building.current = false;
-    if (!alive.current) return;
-    // Closing "Checking your plan…" is "carry on without this screen", and the build honours it.
-    const show = !checking || overlayRef.current.visible;
-    if (!final || !gate) {
-      if (checking) setOverlay(OVERLAY_CLOSED);
-      return;   // the session was refused while tracking; the notice already says so
-    }
-    current.current = final;
-    lastJob.current = final;
-    if (gate.covered) { runBuild(final, gate.via, true, show); return; }
-    if (checking) setOverlay(OVERLAY_CLOSED);
-    if (gate.via === 'credits') {
-      const n = gate.credits;
-      Alert.alert(`Build your ${final.company} resume?`, `This uses ${n} credit${n === 1 ? '' : 's'}.`, [
-        { text: 'Cancel', style: 'cancel', onPress: () => { track('home_build_declined', { gate: 'credits' }); drainQueue(); } },
-        { text: 'Build', onPress: () => { runBuild(final, 'credits', false); } },
-      ]);
-      return;
-    }
-    if (gate.reason === 'unknown') {
-      Alert.alert(
-        `Build your ${final.company} resume?`,
-        'We could not check your plan just now, so this build may use your plan allowance or credits.',
-        [
-          { text: 'Not now', style: 'cancel', onPress: () => { track('home_build_declined', { gate: 'unknown' }); drainQueue(); } },
-          // The dialog names credits, so this tap is the explicit consent coveredOnly:false needs.
-          { text: 'Build', onPress: () => { runBuild(final, 'unknown', false); } },
-        ],
-      );
-      return;
-    }
-    track('home_build_fail', { reason: gate.reason });
-    setOverlay({
-      visible: true, company: final.company, stage: null, done: false, retry: null,
-      error: { reason: gate.reason, message: GATE_COPY[gate.reason] },
+    setAdding((m) => {
+      if (on ? m[rk] : !m[rk]) return m;
+      const n = { ...m };
+      if (on) n[rk] = true; else delete n[rk];
+      return n;
     });
   };
+  const stopExit = (rk: string) => {
+    const timer = exitTimers.current[rk];
+    if (timer) { clearTimeout(timer); delete exitTimers.current[rk]; }
+    if (!alive.current) return;
+    setExiting((m) => {
+      if (!m[rk]) return m;
+      const n = { ...m };
+      delete n[rk];
+      return n;
+    });
+  };
+
+  /** Put a chip row on screen, moving the refs the flows read in the same breath (see targetsRef). */
+  const commitTargets = (next: Target[], sel?: number) => {
+    targetsRef.current = next;
+    setTargets(next);
+    if (sel !== undefined) { empIdxRef.current = sel; setEmpIdx(sel); }
+  };
+
+  /** Put a new chip row on screen and keep the user's pin on the chip it names. */
+  const applyTargets = (next: Target[]) => {
+    let sel: number | undefined;
+    if (pickedKey.current) {
+      const j = next.findIndex((x) => x.key === pickedKey.current);
+      sel = j >= 0 ? j : 0;
+    }
+    commitTargets(next, sel);
+  };
+
+  /** Select a chip for the user (a build they watched, a notice they tapped) — pinned, like a tap. */
+  const selectAt = (j: number) => {
+    const t = targetsRef.current[j];
+    if (!t) return;
+    pickedKey.current = t.key;
+    if (j === empIdxRef.current) return;
+    empIdxRef.current = j;
+    setEmpIdx(j);
+    flashReshape();
+  };
+
+  /** Bring a build's chip (and its kind of document) on screen, and its overlay unless it already landed. */
+  const focusBuild = (k: DocKind, rk: string) => {
+    if (k !== kindRef.current) { kindRef.current = k; setMode(modeOfKind(k)); }
+    const j = targetsRef.current.findIndex((t) => rkOf(t) === rk);
+    if (j >= 0) selectAt(j);
+    const b = buildFor(k, rk);
+    if (b && b.phase !== 'done') KRef.current.openOverlayFor(k, rk);
+  };
+
+  /** Have a chip's document in memory before it is picked, so the pick paints it at once. A read. */
+  const prewarmDoc = (k: DocKind, t: Target) => {
+    const q = docLookupOf(t);
+    const read = docLoadersRef.current?.current || fetchCurrentDoc;
+    Promise.resolve()
+      .then(() => read(k, q))
+      .then((got) => { if (got !== 'error') rememberDoc(k, q, got); })
+      .catch(() => {});
+  };
+
+  /* ── builds: started, queued, watched and recovered by useHomeBuilds ── */
+
+  /**
+   * A build finished. ⚠️ THE SELECTION MOVES ONLY FOR THE USER: to the chip whose build they WATCHED
+   * land, or not at all. A build finishing behind another chip used to pull the row onto itself, which
+   * yanked the user off the employer they were reading. Its document is read into memory instead, so
+   * picking that chip later paints it at once.
+   */
+  const onLanded = useStableFn((job: HomeBuildJob, docId: number | null, cached: boolean, watched: boolean) => {
+    if (!alive.current) return;
+    track('home_doc_landed', { kind: job.kind, cached, watched, doc: docId != null });
+    // ⚠️ BEFORE THE REFETCH IS ASKED FOR, not after it answers: between the two the chip's held answer is
+    // still "nothing saved", and that flashed "Tailor my resume" over a document the user had just bought.
+    if (docId != null && job.rk) markLanded(storeKeyOf(job.kind, job.rk), docId);
+    setListToken((n) => n + 1);
+    const list = targetsRef.current;
+    const j = list.findIndex((t) => rkOf(t) === job.rk);
+    const onScreen = j >= 0 && j === empIdxRef.current && job.kind === kindRef.current;
+    if (watched || onScreen) {
+      if (job.kind !== kindRef.current) { kindRef.current = job.kind; setMode(modeOfKind(job.kind)); }
+      if (j >= 0) selectAt(j);
+      setDocToken((n) => n + 1);
+      setCardIdx(0);
+      flashReshape();
+      try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
+      return;
+    }
+    if (j >= 0) prewarmDoc(job.kind, list[j]);
+  });
+
+  const onBuildNotice = useStableFn((text: string, action?: { label: string; kind: DocKind; rk: string }) => {
+    if (!alive.current) return;
+    showNotice(text, action ? { label: action.label, run: () => focusBuild(action.kind, action.rk) } : undefined, action ? 6500 : 4500);
+  });
+  const rkForRecovered = useStableFn((meta: InflightMeta) => rkForMeta(meta, targetsRef.current));
+  const isAlive = useStableFn(() => alive.current);
+  const seePlans = useStableFn(() => { nav()?.push?.('/(subscription)/plans'); });
+
+  const K = useHomeBuilds({
+    alive: isAlive,
+    rkFor: rkForRecovered,
+    onLanded,
+    onNotice: onBuildNotice,
+    onSeePlans: seePlans,
+  });
+  const KRef = useRef(K);
+  KRef.current = K;
+
+  /** An explicit Tailor / Write / Refresh for the chip on screen — through the gate, like every build. */
+  const requestBuild = (why: 'tailor' | 'write' | 'refresh') => {
+    const t = targetsRef.current[empIdxRef.current];
+    if (!t) return;
+    if (loaders) { Alert.alert('Preview only', 'Building a document needs a signed-in account.'); return; }
+    // ⚠️ A REFRESH REBUILDS THE DOCUMENT'S OWN JOB, NOT THIS DEVICE'S LISTING CACHE (see refreshJobFor):
+    // the pasted listing lives in a store that evicts, and a refresh spelled from an evicted one rebuilt
+    // the resume WITHOUT the posting — then saved that poorer input as the document's.
+    const d = docRef.current;
+    const job = why === 'refresh' && d ? refreshJobFor(t, kindRef.current, d) : jobFor(t, kindRef.current);
+    try { Haptics.selectionAsync(); } catch {}
+    track('home_build_request', { kind: job.kind, why });
+    KRef.current.request(job, { explicit: true });
+  };
+
+  const openBuilding = useStableFn(() => {
+    const rk = selRkRef.current;
+    if (rk) KRef.current.openOverlayFor(kindRef.current, rk);
+  });
+
+  const openPaper = useStableFn((i: number, rect: OriginRect) => {
+    const rk = selRkRef.current;
+    const k = kindRef.current;
+    // "Tap its card to see why": a build that did not finish explains itself from its card — unless a
+    // saved document is on screen, whose pages are worth opening in their own right.
+    const b = rk ? buildFor(k, rk) : null;
+    if (rk && b && b.phase === 'error' && !docRef.current) { KRef.current.openOverlayFor(k, rk); return; }
+    // ⚠️ THESE PAGES ARE NOT THIS CHIP'S PAGES YET (docPending). The deck under a chip whose document is
+    // still on its way is the BASE resume — or, for a letter, blank slots — so zooming one opened the base
+    // resume's editor and gallery under the employer's name, and a letter's Download had nothing to take.
+    // The document is seconds away: say so instead of acting on the stand-in.
+    if (docOnItsWay()) { sayLoadingDoc(); return; }
+    setCardIdx(i);
+    setZoom({ i, rect });
+    track('home_paper_open', { i, doc: !!docRef.current });
+  });
+
+  const onOpenBuildNotice = useStableFn((k: DocKind, rk: string) => {
+    track('home_build_notice_open', { kind: k });
+    focusBuild(k, rk);
+  });
+
+  /* ── the gate, read ahead so the action can say what it costs ── */
+
+  const lookupSig = target ? `${kind}|${JSON.stringify(docLookupOf(target))}` : '';
+  // ⚠️ AND NOT WHILE A DOCUMENT IS ON ITS WAY (docPending). A build that has just landed, or a lookup still
+  // running for a chip the list says HAS a document, both sit at docState 'none' for a moment — and this is
+  // what draws "Tailor my resume" / "Write my cover letter" and reads the gate behind it.
+  const wantsAction = !!target && !doc && docState === 'none' && !selBuilding && !noResumeYet && !docPending;
+  const [gateHint, setGateHint] = useState<{ sig: string; text: string; warn: boolean } | null>(null);
+  // ⚠️ A DRY RUN: the gate reserves, binds and charges nothing. Debounced so flicking along the chips
+  // asks once, and an answer for a chip the user has already left is dropped.
+  useEffect(() => {
+    if (loaders || !wantsAction || !lookupSig) return;
+    let stale = false;
+    const id = setTimeout(async () => {
+      const t = targetsRef.current[empIdxRef.current];
+      if (!t) return;
+      const job = jobFor(t, kindRef.current);
+      let g: BuildGate;
+      try {
+        g = await checkBuildGate(job.company, gateJobFor(job), job.kind, { employerId: job.employerId, country: job.country });
+      } catch { return; }
+      if (stale || !alive.current) return;
+      const text = g.covered ? 'Included in your plan'
+        : g.via === 'credits' ? `Uses ${g.credits} credit${g.credits === 1 ? '' : 's'}`
+          : g.reason === 'quota_exhausted' || g.reason === 'regen_limit' ? 'Plan limit reached' : null;
+      setGateHint(text ? { sig: lookupSig, text, warn: !g.covered } : null);
+    }, 400);
+    return () => { stale = true; clearTimeout(id); };
+  }, [lookupSig, wantsAction, loaders]);
+  const hint = gateHint && gateHint.sig === lookupSig ? gateHint : null;
+
+  /* ── remove a chip, softly ── */
+
+  /**
+   * The X. ⚠️ NO DIALOG: the chip leaves at once, and Undo is on screen for five seconds.
+   * ⚠️ SOFT, AND IT KEEPS THE DOCUMENTS: an employer chip is untracked (archived for this user), a posting
+   * chip is only hidden from Home (the posting row is shared, never ours to delete). Adding the employer
+   * again brings its saved resume and letter straight back, with no AI call.
+   * ⚠️ A BUILD ALREADY RUNNING FOR IT IS LEFT TO FINISH: it is paid for, and nothing can stop the job on the
+   * server anyway. Only a build still waiting in line is cancelled.
+   */
+  const removeChip = (i: number) => {
+    const t = targetsRef.current[i];
+    if (!t) return;
+    const rk = rkOf(t);
+    if (exitTimers.current[rk]) return;
+    const posting = t.key.startsWith('job_');
+    const pending = t.key.startsWith(PENDING);
+    try { Haptics.selectionAsync(); } catch {}
+    track('home_chip_remove', { what: posting ? 'posting' : pending ? 'adding' : 'employer' });
+    KRef.current.cancelQueued('resume', rk);
+    KRef.current.cancelQueued('cover_letter', rk);
+    const r: Removal = {
+      t, rk, at: i, addedAt: addedEmployers.findIndex((a) => a.key === t.key),
+      server: null, trackedAs: null, undone: false,
+      madeAt: Date.now(), gen: accountGen, noticeId: null,
+    };
+    removedKeys.set(t.key, Date.now() + REMOVED_HOLD_MS);
+    addedEmployers = addedEmployers.filter((a) => a.key !== t.key);
+    if (pending) {
+      // Tracking has not answered: the add flow untracks it when it does (removedAdds).
+      removedAdds.set(rk, r);
+    } else if (loaders) {
+      // ⚠️ With `loaders` a removal never touches the network: one the harness did not supply succeeds
+      // locally, so Remove → Undo can be exercised signed-out.
+      r.server = Promise.resolve(loaders.remove ? loaders.remove(t) : true).then((ok) => !!ok, () => false);
+    } else if (posting) {
+      r.server = hideTarget(t.key).catch(() => false);
+    } else if (t.employerId) {
+      r.server = untrackEmployer(String(t.employerId)).catch(() => false);
+    }
+    // ⚠️ THE REGISTRY, SO A RE-ADD CAN WAIT FOR THIS (see liveRemovals / addEmployerHere). Adding the
+    // employer again while this untrack is still in flight used to send the track straight away — two
+    // requests racing, and the untrack landing second left the re-added employer untracked on the server.
+    removals = [...liveRemovals(), r];
+    r.server?.then((ok) => { if (!ok) failRemoval(r); });
+    setExiting((m) => ({ ...m, [rk]: true }));
+    exitTimers.current[rk] = setTimeout(() => dropChip(rk), EXIT_MS);
+    r.noticeId = showNotice(`Removed ${t.company}`, { label: 'Undo', run: () => undoRemoval(r) }, UNDO_MS);
+  };
+  const onRemoveChip = useStableFn((i: number) => removeChip(i));
+
+  /** The exit has played: close the row up, keeping the selection on the chip the user was on. */
+  const dropChip = (rk: string) => {
+    delete exitTimers.current[rk];
+    if (!alive.current) return;
+    setExiting((m) => {
+      if (!m[rk]) return m;
+      const n = { ...m };
+      delete n[rk];
+      return n;
+    });
+    const list = targetsRef.current;
+    const idx = list.findIndex((x) => rkOf(x) === rk);
+    if (idx < 0) return;
+    const gone = list[idx];
+    const next = list.filter((_, j) => j !== idx);
+    const cur = empIdxRef.current;
+    // Removing the selected chip lands on the one that slid into its place (or the new last one).
+    const sel = Math.max(0, idx < cur ? cur - 1 : idx === cur ? Math.min(idx, next.length - 1) : cur);
+    if (pickedKey.current === gone.key) pickedKey.current = next[sel]?.key ?? null;
+    renderKeyOf.delete(gone.key);
+    commitTargets(next, sel);
+  };
+
+  /** Put a removed chip back where it was — as `as` when tracking gave it a new identity meanwhile. */
+  const restoreChip = (r: Removal, as?: Target) => {
+    const t = as || r.t;
+    stopExit(r.rk);
+    // Same render key as before, so the chip — and any build keyed on it — is the same chip again.
+    if (t.key !== r.rk) renderKeyOf.set(t.key, r.rk);
+    if (r.addedAt >= 0 && !addedEmployers.some((a) => a.key === t.key)) {
+      LOCAL.add(t);
+      addedEmployers = [...addedEmployers.slice(0, r.addedAt), t, ...addedEmployers.slice(r.addedAt)].slice(0, 8);
+    }
+    if (!alive.current) return;
+    const list = targetsRef.current;
+    const idx = list.findIndex((x) => rkOf(x) === r.rk);
+    if (idx >= 0) {
+      // Undo inside the exit: the chip never left the row.
+      if (as && list[idx] !== as) commitTargets(list.map((x, j) => (j === idx ? as : x)));
+      return;
+    }
+    const at = Math.min(Math.max(0, r.at), list.length);
+    const cur = empIdxRef.current;
+    commitTargets([...list.slice(0, at), t, ...list.slice(at)], list.length && at <= cur ? cur + 1 : cur);
+  };
+
+  /** The server would not remove it: it comes back, and says so. */
+  const failRemoval = (r: Removal) => {
+    if (r.undone) return;
+    r.undone = true;   // nothing left to undo — the server never removed it
+    removedKeys.delete(r.t.key);
+    restoreChip(r);
+    // Its Undo goes with it: the chip is already back, so the line would offer to do what just happened.
+    dismissNotice(r.noticeId);
+    r.noticeId = null;
+    if (alive.current) showNotice(`We could not remove ${r.t.company} just now. Please try again.`);
+  };
+
+  /**
+   * Undo. The chip is back at once; the server is told only after the removal it is undoing has
+   * settled, so the two requests can never arrive in the wrong order and leave the employer removed.
+   */
+  const undoRemoval = (r: Removal) => {
+    // ⚠️ AND NOT ACROSS AN ACCOUNT SWITCH. The notice (and its closure over this removal) outlives the wipe
+    // that logout does to everything else here, and tracking again would put the previous account's
+    // employer on this one's Home — under this one's session.
+    if (r.undone || r.gen !== accountGen) return;
+    r.undone = true;
+    track('home_chip_remove_undo', {});
+    // ⚠️ dismissNotice, not setNotice(null): notices that queued behind this Undo (a build finishing, a
+    // failed track) are still waiting, and clearing the line without draining them would lose them all.
+    dismissNotice(r.noticeId);
+    r.noticeId = null;
+    removedKeys.delete(r.t.key);
+    removedAdds.delete(r.rk);
+    const back = r.trackedAs || r.t;
+    removedKeys.delete(back.key);
+    restoreChip(r, r.trackedAs || undefined);
+    // Still being added (tracking has not answered): the add flow simply carries on.
+    if (!r.server) return;
+    r.server.then(async (removedThere) => {
+      if (!removedThere) return;
+      const ok = loaders
+        // Signed-out harness: the un-hide never touches the network either (see the X above).
+        ? await Promise.resolve(loaders.unhide ? loaders.unhide(back) : true).then((x) => !!x, () => false)
+        : back.key.startsWith('job_')
+          ? await unhideTarget(back.key).catch(() => false)
+          : await trackEmployer({ name: back.company, website: String(back.website || '') }).then((x) => x.ok, () => false);
+      if (!ok && alive.current) {
+        // The server kept it removed: the chip leaves again rather than pretend.
+        removedKeys.set(back.key, Date.now() + REMOVED_HOLD_MS);
+        addedEmployers = addedEmployers.filter((a) => a.key !== back.key);
+        dropChip(r.rk);
+        showNotice(`We could not bring ${back.company} back. Add it again from “Add employer”.`);
+      }
+    });
+  };
+
+  /* ── add an employer, and build for it, without leaving Home ── */
 
   /** A refused session: the module cache is this account's no longer, and nothing more is built. */
   const dropAccountOnAuth = () => {
@@ -864,12 +1392,83 @@ export default function EmployerHome({
     pickedKey.current = null;
     if (!alive.current) return;
     setTargets((ts) => ts.filter((t) => !t.key.startsWith(PENDING)));
-    setNotice('Please sign in again to add employers.');
+    // Everything on the line — and everything waiting behind it — belonged to the refused session,
+    // including Undos that would track that account's employers under the next one.
+    clearNotices();
+    showNotice('Please sign in again to add employers.');
+  };
+
+  /**
+   * An employer added again after its POSTING chips were removed.
+   *
+   * ⚠️ ITS SAVED WORK COMES BACK RATHER THAN BEING BOUGHT AGAIN. Removing a posting chip only HIDES it —
+   * every document it has is kept — but a hidden chip is never spelled as a lookup, so the add's own
+   * employer-level lookup answered "nothing saved" and started a fresh, PAID build whose chip then
+   * vanished behind the very same hide. So the saved list is read for this employer, the hidden postings
+   * that have a document are un-hidden, and the newest comes back selected. NOTHING IS BUILT on this path.
+   *
+   * ⚠️ RUNS ONLY AFTER the employer-level document (job_url '') has been looked for and not found: that one
+   * belongs to the chip already on screen, and it is the preferred answer.
+   *
+   * True when something came back — the add then stands its build down.
+   */
+  const restorePostings = async (real: Target, k: DocKind): Promise<boolean> => {
+    const readList = docLoadersRef.current?.list || fetchDocList;
+    let list: DocListItem[] | null = null;
+    try { list = await readList(k); } catch { list = null; }
+    if (!list || !list.length) return false;
+    const id = real.employerId ? String(real.employerId) : null;
+    // Newest first, as the list comes. Matched the way the server matches: the employer id OR the name.
+    const mine = list.filter((d) => !!d && !!String(d.jobUrl || '').trim()
+      && ((id && d.employerId && String(d.employerId) === id) || sameEmployerName(d.employer, real.company)));
+    if (!mine.length) return false;
+    // ⚠️ ONLY CHIPS THIS USER ACTUALLY HID: un-hiding a posting they never removed would put a chip on the
+    // row they did not ask for. null = the server would not say, which is not "none" — fall back to what
+    // this screen removed (which is also the signed-out harness's only honest answer).
+    const server = loaders ? null : await fetchHiddenKeys().catch(() => null);
+    const hidden = new Set(server || [...removedKeys.keys()].filter(removedNow));
+    const wanted = mine.filter((d) => hidden.has(jobKeyForUrl(d.jobUrl))).slice(0, PREWARM_MAX);
+    if (!wanted.length) return false;
+    const back: string[] = [];
+    for (const d of wanted) {
+      // ⚠️ jobKeyForUrl, never a hand-rolled spelling: a key spelled any other way names a chip that never
+      // appears, and the hide it is meant to lift stays where it is.
+      const key = jobKeyForUrl(d.jobUrl);
+      const posting: Target = { ...real, key, jobId: null, applyUrl: d.jobUrl, jobUrl: d.jobUrl, role: d.jobTitle || '' };
+      const ok = loaders
+        ? await Promise.resolve(loaders.unhide ? loaders.unhide(posting) : true).then((x) => !!x, () => false)
+        : await unhideTarget(key).catch(() => false);
+      if (!ok) continue;
+      removedKeys.delete(key);
+      back.push(key);
+    }
+    if (!back.length) return false;
+    // The row is read again so the restored postings arrive as the server's own chips, and the newest one
+    // is the chip on screen. ⚠️ A READ. Nothing on this path spends anything.
+    const got = await load(true).catch(() => undefined);
+    if (!alive.current) return true;
+    const now = got?.targets || targetsRef.current;
+    let j = now.findIndex((x) => x.key === back[0]);
+    if (j < 0) j = now.findIndex((x) => back.includes(x.key));
+    if (j >= 0) selectAt(j);
+    track('home_add_restored', { kind: k, postings: back.length });
+    showNotice(back.length > 1
+      ? `Your saved ${real.company} ${nounOf(k)}s are back`
+      : `Your ${real.company} ${nounOf(k)} is saved — here it is`);
+    return true;
   };
 
   /**
    * The pick from AddEmployerSheet. ⚠️ No navigation: the user asked to STAY on the page they were
    * designing on. The chip is optimistic — it is on screen before the server has heard of it.
+   *
+   * ⚠️ RESTORE BEFORE BUILD. Once tracking answers, the employer's saved document (in the current mode's
+   * kind) is looked up first: an employer added again after its chip was removed gets its resume back
+   * as it was — no AI call, no gate, no charge. Only when nothing is saved does the build go to
+   * useHomeBuilds, which reads the gate and asks before any credit is spent.
+   * ⚠️ THE NAME THE USER PICKED WINS. The server answers with this user's display name for the
+   * employer (a shared employers row can carry whatever a job ingest named that domain), so the chip,
+   * the lookup and the build all use it.
    */
   const addEmployerHere = (value: string, extra: EmployerPick) => {
     const website = String(extra?.website || value || '').trim();
@@ -877,175 +1476,161 @@ export default function EmployerHome({
     const name = String(extra?.name || '').trim() || host || 'Employer';
     const jobUrl = extra?.jobUrl || undefined;
     const jobText = extra?.jobText || undefined;
+    // Where the posting is, when the sheet knows it — it steers the design ranking's region. Never guessed.
+    const country = String(extra?.country || '').trim() || null;
     const pending: Target = {
       key: PENDING + (host || name.toLowerCase()), jobId: null, employerId: null,
-      company: name, website, role: '', match: null,
+      company: name, website, role: '', match: null, country,
       initial: name.charAt(0).toUpperCase() || '?', colors: gradFor(name), skills: [],
     };
+    // Adding it again IS the answer to an earlier removal: nothing about that removal holds any more.
+    // ⚠️ AND THE CHIPS IT REMOVED COME BACK OFF THE "removed" LIST TOO, or the next load would filter out
+    // the very employer the user just re-added.
+    removedKeys.delete(pending.key);
+    const answering = removalsFor(name, website);
+    for (const r of answering) {
+      r.undone = true;
+      dismissNotice(r.noticeId);
+      r.noticeId = null;
+      removedAdds.delete(r.rk);
+      // ⚠️ A POSTING's key STAYS on the removed list until its hide is really lifted (restorePostings):
+      // dropping it here would put the chip back on the row while the server still hides it, and the very
+      // next load would take it away again. It is also how restorePostings knows which chips to ask for
+      // when the server will not say what is hidden.
+      if (r.t.key.startsWith('job_')) continue;
+      removedKeys.delete(r.t.key);
+      if (r.trackedAs) removedKeys.delete(r.trackedAs.key);
+    }
     rememberAdded(pending);
     const next = mergeAdded(targetsRef.current, pickedKey);
     const rk = rkOf(next[0]);
+    removedAdds.delete(rk);
+    stopExit(rk);
     pickedKey.current = next[0].key;
-    setTargets(next);
-    setEmpIdx(0);
+    commitTargets(next, 0);
     setEnter((e) => ({ key: rk, n: (e?.n || 0) + 1 }));
     try { Haptics.selectionAsync(); } catch {}
+    const k = kindRef.current;
+    const t0 = Date.now();
+    markAdding(rk, true);
 
-    const typed: BuildJob = { company: name, website, jobUrl, jobText, rk };
+    // ⚠️ A RE-ADD WAITS FOR THE REMOVAL IT ANSWERS, exactly as Undo does. Sent straight away, the track and
+    // the untrack it answers were two requests racing — and an untrack landing second left the employer the
+    // user had just re-added untracked on the server, with its chip gone again at the next load. The
+    // removal's answer is not read; only its ORDER matters.
+    const sequenced = answering.length
+      ? answering.reduce<Promise<unknown>>((p, r) => p.then(() => settledOf(r)), Promise.resolve())
+      : null;
     // Tracking is NOT required to build: a failed track keeps the chip, under the typed name, for this
     // session and says so. A refused SESSION is different — that builds nothing.
-    // ⚠️ THE STORED NAME WINS. The server keeps one shared name per employer; the chip used to keep
-    // what was typed while the dashboard (and the next load) said the stored one.
-    const named: Promise<BuildJob | null> = trackEmployer({ name, website }).then(async (r) => {
+    const tracked: Promise<Target | null> = (sequenced
+      ? sequenced.then(() => trackEmployer({ name, website }))
+      : trackEmployer({ name, website })).then(async (r) => {
       if (r.ok) {
         const e = r.employer;
-        const stored = e.name || name;
         const real: Target = {
-          ...pending, key: 'emp_' + e.employerId, employerId: e.employerId, company: stored,
+          ...pending, key: 'emp_' + e.employerId, employerId: e.employerId, company: e.name || name,
           website: e.website || website, initial: e.logoInitial || pending.initial, colors: e.logoColor,
         };
+        removedKeys.delete(real.key);
+        const gone = removedAdds.get(rk);
+        if (gone) {
+          // Removed while tracking ran. The user no longer wants it, so it does not stay tracked either;
+          // Undo tracks it again.
+          removedAdds.delete(rk);
+          gone.trackedAs = real;
+          gone.server = loaders
+            ? Promise.resolve(loaders.remove ? loaders.remove(real) : true).then((ok) => !!ok, () => false)
+            : untrackEmployer(e.employerId).catch(() => false);
+          return null;
+        }
         rememberAdded(real, pending.key);
         if (pickedKey.current === pending.key) pickedKey.current = real.key;
         if (alive.current) applyTargets(mergeAdded(targetsRef.current, pickedKey));
-        const final: BuildJob = { ...typed, company: stored, website: e.website || website };
-        if (queuedBuild && queuedBuild.job.rk === rk) queuedBuild = { ...queuedBuild, job: final };
-        return final;
+        return real;
       }
       // ⚠️ The auth middleware answers an expired token with 403, which the service reports as 'network';
       // one look at the session on that failure path is what tells the two apart.
       if (r.reason === 'auth' || (r.reason === 'network' && (await sessionRejected()))) { dropAccountOnAuth(); return null; }
       if (alive.current) {
-        setNotice(r.reason === 'limit' || r.reason === 'invalid'
+        showNotice(r.reason === 'limit' || r.reason === 'invalid'
           ? r.message
           : `We could not save ${name} to your employers yet — it stays here for now.`);
       }
+      if (removedAdds.has(rk)) { removedAdds.delete(rk); return null; }
       // ⚠️ A website the server refused (a job board or ATS host that is not this employer's) is not
-      // handed to the build either: the generator would research the job board as the employer.
-      // ⚠️ AND NOT TO A QUEUED COPY OF IT. The success branch above rewrites queuedBuild; this one did
-      // not, so an employer added while another build ran kept the refused board host and was built
-      // around boards.greenhouse.io.
+      // handed to the build: the generator would research the job board as the employer. ⚠️ AND IT IS
+      // TAKEN OFF THE CHIP TOO: the chip's lookup and its build must spell the target identically, or the
+      // document the build saves reads as stale forever.
       if (r.reason === 'invalid') {
-        if (queuedBuild && queuedBuild.job.rk === rk) queuedBuild = { ...queuedBuild, job: { ...queuedBuild.job, website: '' } };
-        return { ...typed, website: '' };
+        const refused: Target = { ...pending, website: '' };
+        rememberAdded(refused, pending.key);
+        if (alive.current) applyTargets(mergeAdded(targetsRef.current, pickedKey));
+        return refused;
       }
-      return typed;
-    }).catch(() => typed);
+      return pending;
+    }).catch(() => (removedAdds.has(rk) ? null : pending));
 
-    // The listing also rides to the section editor, which looks it up by company or URL — under the
-    // SAME name and site the build uses. Sequential: both writes rewrite the same storage key, and in
-    // parallel the second would drop the first.
-    if (jobUrl || jobText) {
-      named.then((j) => (j
-        ? savePendingListing(j.company, { jobUrl, jobText }).then(() => savePendingListing(j.website, { jobUrl, jobText }))
-        : undefined)).catch(() => {});
-    }
+    // Tracking → the listing → the saved-document lookup. Resolves to the job to build, or null when nothing
+    // may be built: the session was refused, the chip was removed, or a document for this employer is
+    // already saved (and was put on screen instead).
+    const chain: Promise<HomeBuildJob | null> = (async () => {
+      const real = await tracked;
+      // The listing rides with the target under the SAME name and site the build uses — and it must be
+      // stored BEFORE the target is spelled for the lookup and the build, which both read it
+      // (docLookupOf). Sequential: both writes rewrite the same storage key, and in parallel the second
+      // would drop the first.
+      if (real && (jobUrl || jobText)) {
+        await savePendingListing(real.company, { jobUrl, jobText })
+          .then(() => savePendingListing(String(real.website || ''), { jobUrl, jobText }))
+          .catch(() => {});
+      }
+      if (!real || !alive.current || removedAdds.has(rk) || removedNow(real.key)) return null;
+      const q = docLookupOf(real);
+      let saved: DocMeta | null | 'error' = 'error';
+      try { saved = await (docLoadersRef.current?.current || fetchCurrentDoc)(k, q); } catch { saved = 'error'; }
+      if (!alive.current || removedAdds.has(rk) || removedNow(real.key)) return null;
+      if (saved && saved !== 'error') {
+        rememberDoc(k, q, saved);
+        const j = targetsRef.current.findIndex((x) => rkOf(x) === rk);
+        if (j >= 0) selectAt(j);
+        track('home_add_restored', { kind: k });
+        showNotice(`Your ${real.company} ${nounOf(k)} is saved — here it is`);
+        return null;
+      }
+      // Nothing saved for the EMPLOYER — but its postings may each have a document, hidden with their chips
+      // when the user removed them. Bringing those back is what stops a re-add paying for work twice.
+      let restored = false;
+      try { restored = await restorePostings(real, k); } catch { restored = false; }
+      if (restored || !alive.current || removedAdds.has(rk) || removedNow(real.key)) return null;
+      // ⚠️ A lookup that could not answer ('error') is not "nothing saved" — but it is safe to go on: the
+      // gate knows the saved documents too, and a cache hit is free and never touches billing.
+      return jobFor(real, k);
+    })().catch(() => null);
 
-    // Cover letters from Home come later: in letter mode the add only selects the employer.
-    if (mode === 'resume') gateAndBuild(typed, 950, named);
-  };
-
-  // A build that was running when Home unmounted (or the app was killed) is picked back up: the
-  // overlay reopens and the resume it paid for is shown when it lands.
-  useEffect(() => {
-    if (loaders) return;   // the preview harness has no account to build for
-    (async () => {
-      // ⚠️ Claimed FIRST: homeBuild and queuedBuild may belong to the account that just signed out.
-      await claimAccountCache().catch(() => false);
-      try {
-        if (localBuild.current || !alive.current) return;
-        const mem = homeBuild;
-        let opened = false;
-        const open = (st: BuildStage | null) => {
-          if (localBuild.current || !alive.current) return;
-          if (!opened) {
-            opened = true;
-            building.current = true;
-            setOverlay({ visible: true, company: mem?.company || '', stage: st, done: false, error: null, retry: null });
-          } else if (st) {
-            setOverlay((o) => (o.done || o.error ? o : { ...o, stage: st }));
-          }
-        };
-        if (mem) open(null);
-        const res = await resumeInflightBuild(open).catch(() => null);
-        if (localBuild.current || !alive.current) return;
-        if (!res) {
-          if (opened) { building.current = false; setOverlay(OVERLAY_CLOSED); }
-          if (!queuedBuild) return;
-          // Nothing in flight, so a build queued behind one that ended while Home was away can go — once
-          // the pages are in. ⚠️ Started before them, its "before" would be empty and ANY pages that
-          // came back would count as the new resume.
-          for (let k = 0; k < 20 && !cardsRef.current.length && alive.current; k++) await sleep(250);
-          recovered.current = true;
-          drainRef.current();
-          return;
-        }
-        open(null);
-        recovered.current = true;
-        const rk = mem && sameName(mem.company, res.company) ? mem.rk : '';
-        // No remembered signature means no honest "before" — see landBuild.
-        await finishBuild(res.company, rk, res.result, mem?.sigBefore ?? null, mem?.t0 ?? Date.now());
-      } finally { recovered.current = true; }
-    })().catch(() => { recovered.current = true; });
-    // Once per mount, on purpose: this recovers a build, it does not follow prop changes.
-  }, []);
-
-  // Back on Home (from the plans screen, say) with a build still waiting in line.
-  const drainRef = useRef(drainQueue);
-  drainRef.current = drainQueue;
-  useFocusEffect(useCallback(() => {
-    if (!loaders && recovered.current && queuedBuild) drainRef.current();
-  }, [loaders]));
-
-  /**
-   * ⚠️ TRY AGAIN NEVER STARTS A SECOND PAID BUILD ON TOP OF THE FIRST. 'network' and 'failed' can both
-   * mean the job is still running (a lost 202, a dropped poll): the service kept that entry and re-uses
-   * its clientBuildId, which the server dedupes. So Try again first picks that build back up; then, if
-   * nothing is in flight, looks at the pages in case it landed meanwhile; only then does a new build
-   * start — and that one goes back through the gate.
-   */
-  const retryBuild = async () => {
-    const job = lastJob.current;
-    if (!job || building.current) return;
-    building.current = true;
-    setOverlay((o) => ({
-      ...o, visible: true, company: job.company, done: false, error: null, retry: null,
-      stage: { stage: 'checking', label: 'Checking on your resume…', pct: 0 },
-    }));
-    const res = await resumeInflightBuild(followStage).catch(() => null);
-    if (!alive.current) { building.current = false; return; }
-    const before = lastSig.current;
-    if (res) {
-      const rk = sameName(res.company, job.company) ? job.rk : '';
-      await finishBuild(res.company, rk, res.result, before?.sig ?? cardsSig(cardsRef.current), before?.t0 ?? Date.now());
-      return;
-    }
-    const got = await load(true, true).catch(() => undefined);
-    building.current = false;
-    if (!alive.current) return;
-    if (before && got && got.cards && got.cards !== 'none' && cardsSig(got.cards.cards) !== before.sig) {
-      pinBuilt(got.targets, job.rk);
-      track('home_build_done', { cached: false, ms: Date.now() - before.t0, recovered: true });
-      setOverlay((o) => ({ ...o, done: true, error: null, retry: null, stage: { stage: 'done', label: 'Ready', pct: 100 } }));
-      return;
-    }
-    setOverlay(OVERLAY_CLOSED);
-    gateAndBuild(job);
-  };
-
-  const retryOverlay = () => {
-    const o = overlayRef.current;
-    const l = landing.current;
-    if (o.retry === 'refresh' && l) { landBuild(l.company, l.rk, l.cached, l.sigBefore, l.t0); return; }
-    if (o.retry === 'build') retryBuild();
-  };
-
-  /** Hiding a running build keeps it going; closing a finished or failed one lets the queue move. */
-  const dismissOverlay = () => {
-    const o = overlayRef.current;
-    if (!(o.done || o.error)) { setOverlay({ ...o, visible: false }); return; }
-    setOverlay(OVERLAY_CLOSED);
-    if (noteOnClose.current) { setNotice(noteOnClose.current); noteOnClose.current = null; }
-    drainQueue();
+    // ⚠️ NEVER A SILENT WAIT. Tracking and the lookup are usually well inside the chip's hold, and then the
+    // build is asked for once they have answered — a restored document never flashes a build that is not
+    // happening. When they are slow, the build is asked for at the end of the hold WITH the chain still
+    // running (`named`): the chip, its cards and the overlay say "Checking…" instead of nothing, and the
+    // chain's null stands the request down if a saved document turns up after all.
+    let settled = false;
+    let asked = false;
+    const early = setTimeout(() => {
+      if (settled || !alive.current || removedAdds.has(rk) || exitTimers.current[rk]) return;
+      // Only for a chip still on the row: a removed one has nothing to check (and the chain says null).
+      const now = targetsRef.current.find((x) => rkOf(x) === rk);
+      if (!now || removedNow(now.key)) return;
+      asked = true;
+      KRef.current.request(jobFor(now, k), { explicit: true, holdMs: 0, named: chain });
+    }, HOLD_MS);
+    chain.then((job) => {
+      settled = true;
+      clearTimeout(early);
+      if (asked || !job || !alive.current) return;
+      // `holdMs` lets the new chip land and glow BEFORE a full-screen overlay or a dialog covers it — the
+      // user asked for "go to that card, THEN build". Tracking and the lookup already spent part of it.
+      KRef.current.request(job, { explicit: true, holdMs: Math.max(0, HOLD_MS - (Date.now() - t0)), named: Promise.resolve(job) });
+    }).finally(() => markAdding(rk, false));
   };
 
   const switchMode = (m: Mode) => {
@@ -1054,6 +1639,72 @@ export default function EmployerHome({
     try { Haptics.selectionAsync(); } catch {}
     track('home_mode', { mode: m });
   };
+
+  /** Someone with no resume yet: the builder makes one first — nothing on Home can be rewritten. */
+  const buildYoursFirst = () => {
+    track('home_sample_build', { hasTarget: !!target, from: mode });
+    armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
+  };
+
+  /**
+   * A saved cover letter, to the letter picker. ⚠️ THE PICKER READS ITS LETTER FROM STORAGE, so the saved
+   * letter is fetched and written there first — and a write that failed stops here, or the picker would
+   * open on whichever letter was stored before this one.
+   */
+  const openLetterPicker = async (templateId?: string) => {
+    const d = docRef.current;
+    if (!d || d.kind !== 'cover_letter') {
+      // ⚠️ NEVER A SILENT NO-OP. Download is the one button a zoomed letter page has, and while the saved
+      // letter was still being fetched this returned without a word — a button that does nothing reads as
+      // a broken button, not as "not yet".
+      if (docOnItsWay()) sayLoadingDoc();
+      return;
+    }
+    track('home_letter_download', { id: templateId });
+    if (loaders) { Alert.alert('Preview only', 'Downloading needs a signed-in account.'); return; }
+    const full = await fetchDoc(d.docId);
+    if (full === 'gone') {
+      Alert.alert('That letter is gone', `Write your ${d.employer} cover letter again to download it.`);
+      reloadDoc();
+      return;
+    }
+    const p = full && full.payload;
+    if (!full || !p || typeof p.coverLetterHtml !== 'string' || !p.coverLetterHtml) {
+      Alert.alert('Could not open your letter', 'Please try again.');
+      return;
+    }
+    try {
+      await AsyncStorage.setItem('coverLetterPickerContext', JSON.stringify({
+        coverLetterHtml: p.coverLetterHtml,
+        companyName: p.companyName || full.employer,
+        companyAddress: p.companyAddress || '',
+        employer: full.employer,
+        docId: full.docId,
+      }));
+    } catch {
+      Alert.alert('Could not open your letter', 'Please try again.');
+      return;
+    }
+    nav()?.push?.({
+      pathname: '/(cover-letter)/templates',
+      params: { ...(templateId ? { template: templateId } : {}), docId: String(full.docId) },
+    });
+  };
+
+  // What the letter panel's one button does for the chip on screen. ⚠️ Every branch is a tap the user
+  // makes; none of them starts anything on its own.
+  const letterAction: { label: string; busy?: boolean; run: () => void } = !target
+    ? { label: 'Choose an employer', run: () => setAddOpen(true) }
+    : noResumeYet
+      ? { label: 'Build your resume first', run: buildYoursFirst }
+      // ⚠️ THE ERROR IS TESTED BEFORE THE BUSY LABEL, as on the resume side. docPending is true for the
+      // whole of LANDED_WAIT_MS whatever the lookup said, so a build that landed with a doc id whose
+      // refetch then failed sat on a dead "Looking for your saved letter…" for ~15s with no way back.
+      : docState === 'error'
+        ? { label: 'Couldn’t check your saved letters — try again', run: reloadDoc }
+        : (selRk && adding[selRk]) || docState === 'loading' || docPending
+          ? { label: 'Looking for your saved letter…', busy: true, run: () => {} }
+          : { label: `Write my cover letter for ${target.company}`, run: () => requestBuild('write') };
 
   const headline = mode === 'resume' ? 'Design your resume' : 'Write your cover letter';
   const accent = mode === 'resume' ? 'exclusively for the employer.' : 'for this exact posting.';
@@ -1124,7 +1775,27 @@ export default function EmployerHome({
 
         {/* employer chips */}
         <View style={{ paddingTop: 14 }}>
-          <Text style={s.eyebrowDark}>Designing for</Text>
+          {/* ⚠️ THE ADD ACTION RIDES THE LABEL'S ROW. It used to be the LAST chip, so with a full row it sat
+              off-screen to the right — the one place nobody looks for the thing they came to do. */}
+          {/* ⚠️ IT HAS TO SURVIVE THE LARGEST TEXT SIZE ON A 320pt PHONE. At full accessibility scale the
+              uppercase label and the pill together were wider than the screen, and with the pill pushed to
+              the right end the thing the user came to do went off the edge. The label gives way (it is the
+              quiet half), the pill grows in HEIGHT rather than width, and its label is capped. */}
+          <View style={s.forRow}>
+            <Text style={s.eyebrowDark} numberOfLines={1}>Designing for</Text>
+            {(loading || targets.length > 0) && (
+              <TouchableOpacity
+                style={s.addPill}
+                activeOpacity={0.85}
+                hitSlop={8}
+                accessibilityRole="button"
+                onPress={() => { track('home_add_employer_open', { from: 'header' }); setAddOpen(true); }}
+              >
+                <Ionicons name="add" size={14} color="#fff" />
+                <Text style={s.addPillTx} numberOfLines={1} maxFontSizeMultiplier={1.3}>Add employer</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           {loading ? (
             <View style={s.chipsRow}><View style={s.chipSkeleton} /><View style={s.chipSkeleton} /></View>
           ) : targets.length ? (
@@ -1139,17 +1810,14 @@ export default function EmployerHome({
                     on={i === empIdx}
                     enterToken={enter && enter.key === rk ? enter.n : 0}
                     onPick={onPickChip}
+                    onRemove={onRemoveChip}
+                    kind={kind}
+                    rk={rk}
+                    hasDoc={docRks.has(rk) || (i === empIdx && !!doc)}
+                    exiting={!!exiting[rk]}
                   />
                 );
               })}
-              <TouchableOpacity
-                style={s.chipAdd}
-                activeOpacity={0.85}
-                onPress={() => { track('home_add_employer_open', { from: 'chips' }); setAddOpen(true); }}
-              >
-                <Ionicons name="add" size={16} color="#fff" />
-                <Text style={s.chipAddTx}>Add employer</Text>
-              </TouchableOpacity>
             </ScrollView>
           ) : (
             <TouchableOpacity
@@ -1162,42 +1830,67 @@ export default function EmployerHome({
               <Ionicons name="arrow-forward" size={14} color="rgba(255,255,255,0.6)" />
             </TouchableOpacity>
           )}
-          {/* Non-blocking: a failed track or a finished background build is worth a line, never a dialog. */}
+          {/* Non-blocking: a failed track, a removal's Undo or a finished background build is worth a
+              line, never a dialog. */}
           {!!notice && (
-            <View style={s.addNotice}>
+            <TouchableOpacity
+              style={s.addNotice}
+              activeOpacity={notice.action ? 0.7 : 1}
+              disabled={!notice.action}
+              onPress={() => notice.action?.run()}
+              accessibilityRole={notice.action ? 'button' : undefined}
+              accessibilityLabel={notice.action ? `${notice.text} · ${notice.action.label}` : undefined}
+              // ⚠️ Undo is the ONLY way back for a removed chip and it lives on a 15pt line: without this
+              // its real target is about half the 44pt minimum. The slop costs no layout.
+              hitSlop={{ top: 14, bottom: 14, left: 10, right: 10 }}
+            >
               <Ionicons name="information-circle" size={13} color={E.mint} />
-              <Text style={s.addNoticeTx} numberOfLines={2}>{notice}</Text>
-            </View>
+              <Text style={s.addNoticeTx} numberOfLines={2}>
+                {notice.text}
+                {notice.action ? ' · ' : ''}
+                {!!notice.action && <Text style={s.noticeAct}>{notice.action.label}</Text>}
+              </Text>
+            </TouchableOpacity>
           )}
+          <BuildNotice onOpen={onOpenBuildNotice} />
         </View>
 
         {/* the paper */}
         <View style={{ paddingTop: 10 }}>
-          {mode === 'letter' ? (
+          {mode === 'letter' && !shown ? (
             <LetterPanel
               company={target?.company}
+              action={letterAction.label}
+              busy={letterAction.busy}
+              hint={target && wantsAction && hint ? hint.text : null}
+              warn={!!hint?.warn}
               onWrite={() => {
                 track('home_letter_write', { hasTarget: !!target });
-                if (target?.jobId || target?.jobUrl) {
-                  nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } });
-                } else {
-                  setAddOpen(true);
-                }
+                letterAction.run();
               }}
             />
-          ) : noResume ? (
+          ) : mode === 'resume' && noResume ? (
             <NoResume onBuild={() => {
               AsyncStorage.setItem('resume_builder_entry', JSON.stringify({ from: 'home_employer', autoBuild: true })).catch(() => {});
               nav()?.push?.('/(resume-builder)');
             }} />
-          ) : deck.length ? (
+          ) : shown ? (
             <PaperCarousel
-              cards={deck}
+              cards={shown.cards}
               index={cardIdx}
               onIndex={setCardIdx}
               ribbon={target ? { letter: target.initial, short: target.company, colors: target.colors } : null}
-              onOpen={(i, rect) => { setCardIdx(i); setZoom({ i, rect }); track('home_paper_open', { i }); }}
+              onOpen={openPaper}
+              building={buildingProp}
+              onOpenBuilding={openBuilding}
+              showFit={shown.fit}
             />
+          ) : selBuilding ? (
+            <TouchableOpacity style={s.paperLoading} activeOpacity={0.8} onPress={openBuilding}>
+              <ActivityIndicator color="#fff" />
+              <Text style={s.paperFailTx}>Writing your {target?.company} {nounOf(kind)}</Text>
+              <Text style={s.paperFailSub}>Tap to watch</Text>
+            </TouchableOpacity>
           ) : loadFailed ? (
             <TouchableOpacity style={s.paperLoading} activeOpacity={0.8} onPress={() => load(true)}>
               <Ionicons name="cloud-offline-outline" size={22} color="rgba(255,255,255,0.5)" />
@@ -1209,12 +1902,27 @@ export default function EmployerHome({
           )}
 
           {/* caption */}
-          {mode === 'resume' && (
+          {(mode === 'resume' || !!doc || selBuilding) && (
           <View style={s.caption}>
             {reshaping ? (
               <View style={s.rowCenter}>
                 <Ionicons name="sparkles" size={12} color="#C4BBFF" />
                 <Text style={s.captionScan}> Reshaping for {target?.company || 'this employer'}…</Text>
+              </View>
+            ) : selBuilding ? (
+              <View style={s.rowCenter}>
+                <Ionicons name="create" size={12} color="#C4BBFF" />
+                <Text style={s.captionScan} numberOfLines={1}> Writing your {target?.company || 'employer'} {nounOf(kind)}…</Text>
+              </View>
+            ) : doc ? (
+              <View style={s.rowCenter}>
+                <Text style={[s.captionName, s.captionShrink]} numberOfLines={1}>{card?.name || `Your ${nounOf(kind)}`}</Text>
+                <View style={s.capDot} />
+                <Text style={s.captionMeta} numberOfLines={1}>
+                  {card?.fit != null
+                    ? `${card.fit}% fit for ${target?.company || doc.employer}`
+                    : `For ${target?.company || doc.employer}`}
+                </Text>
               </View>
             ) : (
               <View style={s.rowCenter}>
@@ -1229,12 +1937,43 @@ export default function EmployerHome({
             )}
           </View>
           )}
+          {/* Why the top design fits this employer — the ranking's own sentence. */}
+          {!!doc?.design?.headline && !reshaping && !selBuilding && (
+            <Text style={s.docHeadline} numberOfLines={2}>{doc.design.headline}</Text>
+          )}
+
+          {/* ⚠️ THE ONLY WAYS A BUILD STARTS FROM HERE ARE TAPS. A chip with nothing saved offers one
+              action; a saved document the resume has since moved past offers a Refresh. Both go
+              through useHomeBuilds, which reads the gate and asks before any credit is spent. */}
+          {mode === 'resume' && !!target && !doc && !selBuilding && !noResumeYet && (
+            wantsAction && !(selRk && adding[selRk]) ? (
+              <TailorAction
+                label={`Tailor my resume for ${target.company}`}
+                hint={hint ? hint.text : null}
+                warn={!!hint?.warn}
+                onPress={() => requestBuild('tailor')}
+              />
+            ) : docState === 'error' ? (
+              <TouchableOpacity style={s.docPill} activeOpacity={0.8} onPress={reloadDoc} accessibilityRole="button" hitSlop={7}>
+                <Ionicons name="cloud-offline-outline" size={12} color="rgba(255,255,255,0.7)" />
+                <Text style={s.docPillTx} numberOfLines={1}>
+                  Couldn’t check for a saved resume · <Text style={s.docPillAct}>Try again</Text>
+                </Text>
+              </TouchableOpacity>
+            ) : null
+          )}
+          {!!doc && doc.stale && !selBuilding && (
+            <TouchableOpacity style={s.docPill} activeOpacity={0.8} onPress={() => requestBuild('refresh')} accessibilityRole="button" hitSlop={7}>
+              <Ionicons name="refresh" size={12} color={E.mint} />
+              <Text style={s.docPillTx} numberOfLines={1}>
+                Your {nounOf(kind)} changed since this version · <Text style={s.docPillAct}>Refresh</Text>
+              </Text>
+            </TouchableOpacity>
+          )}
 
           {/* ⚠️ INSIDE MeshStage ON PURPOSE. stageH = rootH * 1.18, so the hero is taller than the
               viewport and anything placed after </MeshStage> is below the fold on first paint —
-              a CTA that has to be seen "right below the slider" cannot live down there.
-              It shows only while the profile is unfinished, which is also the only time the
-              library below is empty, so the two never compete for the same space. */}
+              a CTA that has to be seen "right below the slider" cannot live down there. */}
           {!!setup && (() => {
             // ⚠️ NAME WHAT IS ACTUALLY LEFT. `setup` carries four real booleans from the server, so
             // saying "Make yours" to someone who finished two steps last week tells them their work
@@ -1244,10 +1983,15 @@ export default function EmployerHome({
               [setup.signature, 'your signature'], [setup.resume, 'your experience'],
             ] as Array<[boolean, string]>).filter(([done]) => !done).map(([, n]) => n);
             const started = setup.profile || setup.photo || setup.signature || setup.resume;
-            // ⚠️ THE WIZARD IS THE ONLY WAY IN, SO IT IS ALWAYS REACHABLE.
-            // Gating it on an unfinished profile meant that the moment someone completed one, the
-            // door disappeared — and rebuilding a resume from fresh notes is a thing people want to
-            // do repeatedly, not once.
+            // ⚠️ ONCE THE PROFILE IS COMPLETE THIS DOOR IS THE EDITOR, NOT THE WIZARD. The wizard used to
+            // stay the destination for a finished profile too ("rebuilding from fresh notes is a thing
+            // people do repeatedly") — but with a document per employer, what a finished profile wants
+            // from this button is to change the words, and the editor opens on the employer's OWN
+            // version when the chip on screen has one. "Edit details" at the top still reaches the builder.
+            const complete = !!setup.complete;
+            const resumeDoc: DocMeta | null = mode === 'resume'
+              ? doc
+              : (target ? cachedCurrentDoc('resume', docLookupOf(target)) || null : null);
             // ⚠️ AND IT IS MINT, NOT BLUE. The finished state used to be a glass pill, which on a
             // blue-violet hero is the one thing on the screen you cannot see. Every other surface
             // here is blue or violet, so the only colour that can carry a call to action is the
@@ -1255,19 +1999,29 @@ export default function EmployerHome({
             // sweep. Dark ink on a bright fill, rather than white on mid-blue, is what makes it
             // read from across the room. Weight still varies — the glow, not the colour — so a
             // finished profile gets a quieter version of the same button instead of a hidden one.
-            const sub = !started
-              ? 'A few details and we will build your real resume into every design above.'
-              : left.length === 0
-                ? 'New notes, a fresh resume — into every design above.'
-                : left.length === 1
-                  ? `One thing left — ${left[0]}.`
-                  : `${left.length} things left — ${left.slice(0, -1).join(', ')} and ${left[left.length - 1]}.`;
+            const sub = complete
+              ? (resumeDoc ? `Edit your ${resumeDoc.employer} version — every design above follows.` : 'Edit any section — every design above follows.')
+              : !started
+                ? 'A few details and we will build your real resume into every design above.'
+                : left.length === 0
+                  ? 'New notes, a fresh resume — into every design above.'
+                  : left.length === 1
+                    ? `One thing left — ${left[0]}.`
+                    : `${left.length} things left — ${left.slice(0, -1).join(', ')} and ${left[left.length - 1]}.`;
             // "Make your Resume" names the DESTINATION — the wizard that makes one — not a claim
             // that you have not got one. Someone mid-way gets the more useful sentence instead.
-            const label = left.length && started ? 'Pick up where you left off' : 'Make your Resume';
+            const label = complete ? 'Customize your resume' : left.length && started ? 'Pick up where you left off' : 'Make your Resume';
             const go = () => {
               try { Haptics.selectionAsync(); } catch {}
-              track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join('') });
+              track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join(''), complete, doc: !!resumeDoc });
+              if (complete) {
+                // ⚠️ Straight to the section editor — never 'resume_builder_entry' / 'resumeBuilderAction',
+                // which arm a PAID regeneration. The employer rides along for the editor's own download.
+                rememberBuilderEmployer(resumeDoc?.employer || target?.company).finally(() => nav()?.push?.(resumeDoc
+                  ? { pathname: '/(resume-builder)/preview', params: { docId: String(resumeDoc.docId) } }
+                  : '/(resume-builder)/preview'));
+                return;
+              }
               nav()?.push?.('/(onboarding)');
             };
             return (
@@ -1283,7 +2037,7 @@ export default function EmployerHome({
                     end={{ x: 1, y: 1 }}
                     style={s.makeBtn}
                   >
-                    <Ionicons name="sparkles" size={16} color={MAKE_INK} />
+                    <Ionicons name={complete ? 'create' : 'sparkles'} size={16} color={MAKE_INK} />
                     <Text style={s.makeTx} numberOfLines={1}>{label}</Text>
                     <Ionicons name="arrow-forward" size={15} color="rgba(4,33,28,0.6)" />
                   </LinearGradient>
@@ -1293,7 +2047,7 @@ export default function EmployerHome({
             );
           })()}
 
-          {sample && mode === 'resume' && (
+          {sample && mode === 'resume' && !doc && (
             <TouchableOpacity
               style={s.sampleBar}
               activeOpacity={0.9}
@@ -1377,7 +2131,7 @@ export default function EmployerHome({
         </View>
       </View>
 
-      {/* the page, full size, with the only two things you can do with a design */}
+      {/* the page, full size, with the only things you can do with a design */}
       <AddEmployerSheet
         visible={addOpen}
         onClose={() => setAddOpen(false)}
@@ -1388,7 +2142,7 @@ export default function EmployerHome({
           // The sheet always hands on a website now, so a url flag would always be true; and it does
           // not say whether the site came from a result or was typed, so there is no honest flag to
           // send in its place. ⚠️ Never the name or the website itself: that is the user's job hunt.
-          track('home_add_employer_pick', { listing: hasListing });
+          track('home_add_employer_pick', { listing: hasListing, mode });
           // ⚠️ NO NAVIGATION. This used to push to the Job Hub with addCompany, and the user was
           // walked off the page they were designing on. The add, the chip and the build all happen
           // here now; the pasted listing goes straight to the build (and to device storage for the
@@ -1398,17 +2152,22 @@ export default function EmployerHome({
       />
 
       {/* Mounted as a SIBLING of the scroll view, never inside the hero: its own tree, so whatever
-          driver it animates with never meets the hero's native one. */}
+          driver it animates with never meets the hero's native one. Its state is useHomeBuilds'.
+          ⚠️ `buildKey` is overlay.key — storeKeyOf(kind, rk), the SAME key the chip's line and the
+          carousel's card hand to useCreepPct. Without it the overlay's % seeds at the current stage's
+          ceiling, so tapping a chip creeping at 24% opened a screen reading ~38% for the one build. */}
       <BuildingOverlay
-        visible={overlay.visible}
-        company={overlay.company}
-        stage={overlay.stage}
-        done={overlay.done}
-        error={overlay.error}
-        onDismiss={dismissOverlay}
-        onRetry={overlay.retry === 'refresh' || (overlay.retry === 'build' && !!lastJob.current) ? retryOverlay : undefined}
-        onSeePlans={overlay.error && (overlay.error.reason === 'quota_exhausted' || overlay.error.reason === 'regen_limit')
-          ? () => { setOverlay(OVERLAY_CLOSED); nav()?.push?.('/(subscription)/plans'); }
+        visible={K.overlay.visible}
+        kind={K.overlay.kind}
+        company={K.overlay.company}
+        stage={K.overlay.stage}
+        done={K.overlay.done}
+        error={K.overlay.error}
+        buildKey={K.overlay.key || undefined}
+        onDismiss={K.dismissOverlay}
+        onRetry={K.overlay.canRetry ? K.retryOverlay : undefined}
+        onSeePlans={K.overlay.error && (K.overlay.error.reason === 'quota_exhausted' || K.overlay.error.reason === 'regen_limit')
+          ? () => { K.dismissOverlay(); nav()?.push?.('/(subscription)/plans'); }
           : undefined}
       />
 
@@ -1430,31 +2189,42 @@ export default function EmployerHome({
       />
 
       <PaperZoom
-        card={zoom ? deck[zoom.i] || null : null}
+        card={zoom && shown ? shown.cards[zoom.i] || null : null}
         origin={zoom?.rect || null}
+        kind={kind}
         subtitle={target ? `Designed for ${target.company}` : undefined}
         isPaid={isPaid}
-        sample={sample}
+        sample={sample && !doc}
         onClose={() => setZoom(null)}
         onCustomize={() => {
           // ⚠️ Straight to the section editor. Writing 'resume_builder_entry' with autoBuild, or
           // 'resumeBuilderAction', would arm a PAID regeneration — neither is touched.
-          track('home_customize', { mode, sample });
+          track('home_customize', { mode, sample, doc: !!doc });
+          // A saved employer document is edited AS that document: the editor loads it by id and saves
+          // back to it, so the base resume — and every other employer's version — is left alone.
+          if (doc && doc.kind === 'resume') {
+            rememberBuilderEmployer(doc.employer || target?.company)
+              .finally(() => nav()?.push?.({ pathname: '/(resume-builder)/preview', params: { docId: String(doc.docId) } }));
+            return;
+          }
           if (sample) armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
           // Not armBuilderFor: writing 'resume_builder_entry' here would arm a PAID regeneration.
           // Only the employer hint travels, so the editor's download can name the company.
           else rememberBuilderEmployer(target?.company).finally(() => nav()?.push?.('/(resume-builder)/preview'));
         }}
         onViewPdf={() => {
-          const id = zoom ? deck[zoom.i]?.id : undefined;
-          track('home_view_pdf', { id });
+          const id = zoom && shown ? shown.cards[zoom.i]?.id : undefined;
+          if (kind === 'cover_letter') { openLetterPicker(id); return; }
+          track('home_view_pdf', { id, doc: !!doc });
           // The employer travels too: a download pass is bought PER EMPLOYER, so without this the
-          // payment would have nothing to attach to.
+          // payment would have nothing to attach to. A saved document also carries its id, and names
+          // the employer it was saved (and is billed) under.
           nav()?.push?.({
             pathname: '/(resume-builder)/templates',
             params: {
               ...(id ? { template: id } : {}),
               ...(target?.company ? { employer: target.company } : {}),
+              ...(doc ? { docId: String(doc.docId), ...(doc.employer ? { employer: doc.employer } : {}) } : {}),
             },
           });
         }}
@@ -1506,84 +2276,45 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
   );
 }
 
-// ⚠️ Selection is a GLASS state, never a white pill. A white chip on the dark hero was the single
-// loudest thing on the screen and fought every other surface; the selected chip should read as the
-// same material, lit. Dropping the role line is what makes it narrow enough to scan.
-// ⚠️ MEMOISED, with a stable onPick and its index instead of a per-render closure: Home re-renders on
-// every build-stage tick, and each re-render used to re-render every chip in the row with it.
-const EmployerChip = React.memo(function EmployerChip({ t, index, on, onPick, enterToken = 0 }: {
-  t: Target; index: number; on: boolean; onPick: (i: number) => void;
-  /** Non-zero only on the chip that was just added; a new value replays the entrance. */
-  enterToken?: number;
-}) {
-  const onPress = useCallback(() => onPick(index), [onPick, index]);
-  // ⚠️ NATIVE DRIVER, transform + opacity ONLY: this chip lives inside the hero's native tree
-  // (see ANIMATION DRIVER RULE). A chip that is not new starts at rest and never animates.
-  const pop = useRef(new Animated.Value(enterToken ? 0 : 1)).current;
-  const glow = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    if (!enterToken) return;
-    pop.setValue(0);
-    glow.setValue(0);
-    const a = Animated.parallel([
-      Animated.spring(pop, { toValue: 1, friction: 6, tension: 90, useNativeDriver: true }),
-      Animated.sequence([
-        Animated.delay(160),
-        Animated.timing(glow, { toValue: 1, duration: 260, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-        Animated.timing(glow, { toValue: 0.3, duration: 380, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(glow, { toValue: 1, duration: 300, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(glow, { toValue: 0, duration: 720, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-      ]),
-    ]);
-    a.start();
-    // ⚠️ Settle, not just stop: when another chip is added the token here drops to 0 mid-entrance,
-    // and a stopped value would leave this chip frozen half-scaled.
-    return () => { a.stop(); pop.setValue(1); glow.setValue(0); };
-  }, [enterToken, pop, glow]);
-  // Built once per value, not per render: a fresh interpolate() re-creates the native animated nodes
-  // and re-attaches them, mid-entrance, for nothing.
-  const popStyle = useMemo(() => ({
-    opacity: pop.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 1, 1], extrapolate: 'clamp' }),
-    transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] }) }],
-  }), [pop]);
-  const glowStyle = useMemo(() => [s.chipGlow, { opacity: glow }], [glow]);
+/**
+ * The newest build that is actually running, as ONE string — so this line re-renders when a different
+ * build starts or the last one ends, and never on a stage tick.
+ */
+function runningBuildSig(): string {
+  const all = getBuilds();
+  let best: { kind: DocKind; rk: string; company: string; startedAt: number } | null = null;
+  for (const key of Object.keys(all)) {
+    const b = all[key];
+    if (b && b.phase === 'building' && (!best || b.startedAt > best.startedAt)) best = b;
+  }
+  return best ? `${best.kind}${best.rk}${best.company}` : '';
+}
+
+/**
+ * "Building your X resume · tap its card to watch" — for as long as ANY build runs, not a few seconds:
+ * a build kept going in the background is otherwise invisible from every chip but its own.
+ * ⚠️ ISOLATED + MEMOISED: it subscribes to the build store itself, so Home never re-renders for it.
+ */
+const BuildNotice = React.memo(function BuildNotice({ onOpen }: { onOpen: (kind: DocKind, rk: string) => void }) {
+  const sig = useSyncExternalStore(subscribeBuilds, runningBuildSig, runningBuildSig);
+  if (!sig) return null;
+  const [k, rk, company] = sig.split('');
+  const kind: DocKind = k === 'cover_letter' ? 'cover_letter' : 'resume';
   return (
-    <Animated.View style={popStyle}>
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.85}
-      accessibilityRole="button"
-      accessibilityState={{ selected: on }}
-      style={[s.chip, on && s.chipOn]}
-    >
-      <LinearGradient colors={t.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.chipTile}>
-        <Text style={s.chipTileTx}>{t.initial}</Text>
-      </LinearGradient>
-      {/* Two lines, because a chip identifies a POSTING: the same employer can appear twice and the
-          role underneath is the only thing telling the two apart. */}
-      <View style={s.chipText}>
-        <Text style={[s.chipName, on && s.chipNameOn]} numberOfLines={1}>{t.company}</Text>
-        {!!t.role && <Text style={[s.chipRole, on && s.chipRoleOn]} numberOfLines={1}>{t.role}</Text>}
-      </View>
-      {t.match != null && (
-        <View style={[s.chipPct, on && s.chipPctOn]}>
-          <Text style={[s.chipPctTx, on && s.chipPctTxOn]}>{t.match}%</Text>
-        </View>
-      )}
+    <TouchableOpacity style={s.addNotice} activeOpacity={0.7} onPress={() => onOpen(kind, rk)} accessibilityRole="button">
+      <Ionicons name="hourglass-outline" size={13} color={E.mint} />
+      <Text style={s.addNoticeTx} numberOfLines={2}>Building your {company} {nounOf(kind)} · tap its card to watch</Text>
     </TouchableOpacity>
-      {/* INSET, not a halo: the horizontal ScrollView clips to its 48pt row, so anything drawn
-          outside the chip would be cut flat top and bottom. */}
-      <Animated.View pointerEvents="none" style={glowStyle} />
-    </Animated.View>
   );
 });
 
-// ⚠️ A letter is written FOR A POSTING, and no letter exists until one is generated — there is no
-// cached letter-thumbnail endpoint to page through the way the resume side does. So this shows the
-// designs by name and puts ONE explicit action in front of the user. It never generates on its own:
-// generation spends the cover-letter quota, and auto-spending on screen entry is the exact mistake
-// the letters auto-regen drain was.
-function LetterPanel({ company, onWrite }: { company?: string; onWrite: () => void }) {
+// ⚠️ A LETTER IS NEVER WRITTEN ON ITS OWN. Generation spends the cover-letter quota, and auto-spending on
+// screen entry is the exact mistake the letters auto-regen drain was. So a chip with no saved letter
+// shows the formats by name and ONE explicit action; once a letter is saved for the employer, Home shows
+// its pages instead (a PaperCarousel of these formats, ranked for that employer).
+function LetterPanel({ company, action, busy, hint, warn, onWrite }: {
+  company?: string; action: string; busy?: boolean; hint?: string | null; warn?: boolean; onWrite: () => void;
+}) {
   return (
     <View style={s.letterPanel}>
       <View style={s.letterIcon}><Ionicons name="mail-open-outline" size={24} color={E.mint} /></View>
@@ -1591,7 +2322,7 @@ function LetterPanel({ company, onWrite }: { company?: string; onWrite: () => vo
         {company ? `Write a cover letter for ${company}` : 'Write a cover letter'}
       </Text>
       <Text style={s.letterSub} numberOfLines={3}>
-        A letter is written from one posting, so it starts with the employer — then you pick from these {LETTER_DESIGNS.length} formats.
+        Written for this employer from your resume, then ranked across these {LETTER_DESIGNS.length} formats — best fit first.
       </Text>
       {/* ⚠️ WRAPPED, NOT SCROLLED. A horizontal ScrollView inside this centre-aligned card took its
           CONTENT width, so it overflowed the panel on both sides and the row began mid-word — and
@@ -1604,12 +2335,30 @@ function LetterPanel({ company, onWrite }: { company?: string; onWrite: () => vo
           </View>
         ))}
       </View>
-      <TouchableOpacity onPress={onWrite} activeOpacity={0.9} style={{ marginTop: 16 }}>
-        <LinearGradient colors={[E.teal, E.blue]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.letterBtn}>
-          <Ionicons name="create" size={16} color="#fff" />
-          <Text style={s.letterBtnTx} numberOfLines={1}>{company ? `Write for ${company}` : 'Choose an employer'}</Text>
+      <TouchableOpacity onPress={onWrite} activeOpacity={0.9} disabled={busy} style={{ marginTop: 16 }} accessibilityRole="button">
+        <LinearGradient colors={[E.teal, E.blue]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[s.letterBtn, busy && s.btnBusy]}>
+          <Ionicons name={busy ? 'hourglass-outline' : 'create'} size={16} color="#fff" />
+          <Text style={s.letterBtnTx} numberOfLines={1}>{action}</Text>
         </LinearGradient>
       </TouchableOpacity>
+      {!!hint && <Text style={[s.actionHint, warn && s.actionHintWarn]} numberOfLines={1}>{hint}</Text>}
+    </View>
+  );
+}
+
+/** "Tailor my resume for X" — the one explicit way a chip with nothing saved gets its own resume. */
+function TailorAction({ label, hint, warn, onPress }: {
+  label: string; hint?: string | null; warn?: boolean; onPress: () => void;
+}) {
+  return (
+    <View style={s.tailorBox}>
+      <TouchableOpacity style={s.tailorWrap} activeOpacity={0.9} onPress={onPress} accessibilityRole="button">
+        <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.tailorBtn}>
+          <Ionicons name="color-wand" size={16} color="#fff" />
+          <Text style={s.tailorTx} numberOfLines={1}>{label}</Text>
+        </LinearGradient>
+      </TouchableOpacity>
+      {!!hint && <Text style={[s.actionHint, warn && s.actionHintWarn]} numberOfLines={1}>{hint}</Text>}
     </View>
   );
 }
@@ -1677,36 +2426,22 @@ const s = StyleSheet.create({
   mBtn: { width: 36, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   mBtnOn: { backgroundColor: 'rgba(79,141,255,0.34)', borderWidth: 1, borderColor: 'rgba(150,186,255,0.55)' },
 
-  eyebrowDark: { fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)', paddingHorizontal: 16, paddingBottom: 8 },
+  // The label and the add action, one row: the label on the left, the pill on the right.
+  forRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 8, gap: 12 },
+  // flexShrink: at accessibility text sizes the label gives way rather than push the add pill off screen.
+  eyebrowDark: { flexShrink: 1, fontSize: 10, fontWeight: '700', letterSpacing: 1.8, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)' },
+  // Compact and glass: it sits beside a quiet label, so it must not outshout the chips below it.
+  // ⚠️ minHeight, NOT height: a fixed 28 clipped the label's descenders the moment the text scaled up.
+  addPill: {
+    minHeight: 28, paddingLeft: 8, paddingRight: 11, paddingVertical: 4, borderRadius: 100,
+    backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)',
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+  },
+  addPillTx: { fontSize: 11.5, fontWeight: '800', color: '#fff', letterSpacing: -0.1 },
   chipsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, alignItems: 'center' },
-  chip: {
-    height: 48, paddingLeft: 6, paddingRight: 10, borderRadius: 16, borderWidth: 1,
-    borderColor: E.glassBorder, backgroundColor: E.glass,
-    flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: 218,
-  },
-  chipText: { flexShrink: 1 },
-  chipOn: {
-    backgroundColor: 'rgba(79,141,255,0.22)', borderColor: 'rgba(150,186,255,0.6)',
-    ...Platform.select({ ios: { shadowColor: E.blue, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 12 }, default: { elevation: 4 } }),
-  },
-  chipTile: { width: 30, height: 30, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  chipTileTx: { fontSize: 11.5, fontWeight: '800', color: '#fff' },
-  chipName: { fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.8)', letterSpacing: -0.2 },
-  chipRole: { fontSize: 10, fontWeight: '600', color: 'rgba(255,255,255,0.5)', marginTop: 1.5 },
-  chipRoleOn: { color: 'rgba(255,255,255,0.78)' },
-  chipNameOn: { color: '#fff', fontWeight: '800' },
-  chipPct: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.12)' },
-  chipPctOn: { backgroundColor: 'rgba(255,255,255,0.22)' },
-  chipPctTx: { fontSize: 9.5, fontWeight: '800', color: 'rgba(255,255,255,0.7)' },
-  chipPctTxOn: { color: '#fff' },
-  chipAdd: { height: 48, paddingHorizontal: 13, borderRadius: 100, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.32)', flexDirection: 'row', alignItems: 'center', gap: 6 },
-  chipAddTx: { fontSize: 12, fontWeight: '700', color: '#fff' },
-  chipGlow: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 16,
-    borderWidth: 1.5, borderColor: 'rgba(143,247,228,0.95)', backgroundColor: 'rgba(45,224,192,0.16)',
-  },
   addNotice: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 16, marginTop: 8 },
   addNoticeTx: { flex: 1, fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.72)', lineHeight: 15.5 },
+  noticeAct: { fontWeight: '800', color: E.mint },
   chipSkeleton: { width: 150, height: 48, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.07)' },
   emptyTargets: { marginHorizontal: 16, paddingHorizontal: 14, height: 48, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', gap: 8 },
   emptyTargetsTx: { flex: 1, fontSize: 12.5, fontWeight: '700', color: '#fff' },
@@ -1748,13 +2483,41 @@ const s = StyleSheet.create({
   letterChipTx: { flexShrink: 1, fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.8)' },
   letterBtn: { height: 48, paddingHorizontal: 22, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   letterBtnTx: { fontSize: 14.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
+  btnBusy: { opacity: 0.6 },
   paperFailTx: { color: 'rgba(255,255,255,0.72)', fontSize: 13.5, fontWeight: '700', marginTop: 10 },
   paperFailSub: { color: 'rgba(255,255,255,0.42)', fontSize: 12, marginTop: 3 },
-  caption: { alignItems: 'center', marginTop: 8, height: 18 },
+  caption: { alignItems: 'center', marginTop: 8, height: 18, paddingHorizontal: 16 },
   captionName: { fontSize: 13, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
+  // A long design name gives way to "94% fit for Airbus", never the other way round.
+  captionShrink: { flexShrink: 1 },
   capDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.35)', marginHorizontal: 8 },
   captionMeta: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)' },
   captionScan: { fontSize: 12, fontWeight: '600', color: '#C4BBFF' },
+  docHeadline: {
+    marginTop: 6, marginHorizontal: 28, fontSize: 12, fontWeight: '600', lineHeight: 16.5,
+    color: 'rgba(255,255,255,0.66)', textAlign: 'center',
+  },
+  // The Refresh (and try-again) line: glass, centred, one line — information with a verb in it.
+  docPill: {
+    alignSelf: 'center', maxWidth: '92%', marginTop: 10, paddingHorizontal: 11, height: 30, borderRadius: 100,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(20,184,166,0.12)', borderWidth: 1, borderColor: 'rgba(94,234,212,0.30)',
+  },
+  docPillTx: { flexShrink: 1, fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.82)' },
+  docPillAct: { fontWeight: '800', color: E.mint },
+  // ⚠️ Shadow on the outer view, clipping on the inner gradient — the same iOS trap as makeWrap.
+  tailorBox: { marginTop: 12, marginHorizontal: 16, alignItems: 'stretch' },
+  tailorWrap: {
+    borderRadius: 16,
+    shadowColor: E.blue, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.42, shadowRadius: 20, elevation: 8,
+  },
+  tailorBtn: {
+    height: 50, paddingHorizontal: 18, borderRadius: 16, overflow: 'hidden',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+  },
+  tailorTx: { fontSize: 15, fontWeight: '800', color: '#fff', letterSpacing: -0.2, flexShrink: 1 },
+  actionHint: { marginTop: 7, fontSize: 11.5, fontWeight: '700', color: E.mint, textAlign: 'center' },
+  actionHintWarn: { color: 'rgba(255,214,153,0.9)' },
 
 
 

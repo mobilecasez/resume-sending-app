@@ -1727,6 +1727,76 @@ async function runPostgresMigrations(db) {
         await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_employer_trgm ON global_jobs USING gin (lower(employer_name) gin_trgm_ops)`);
         console.log('✅ Migration 045: user_employer_documents + employer name search done');
 
+        // ── Migration 046: EMPLOYER DOCUMENTS BECOME THE DOCUMENT (design, identity, edits) ─────
+        // Home now shows each employer's OWN tailored resume / letter the moment a chip is picked, so
+        // the row has to carry what the gallery needs without another AI call: the ranked designs, the
+        // tracked employer it belongs to, and whether the user has hand-edited it since it was built.
+        //
+        // ⚠️ ALL ADDITIVE AND ALL NULLABLE — AND NONE OF THEM JOINS THE UNIQUE KEY. uq_user_employer_docs
+        // stays (user_id, kind, employer_key, input_fingerprint, environment), every member NOT NULL
+        // (see Migration 045). employer_id / design / edited_at are NULL on every row written before
+        // this deploy, which is exactly why they must never be added to that index: one NULL member and
+        // every upsert becomes an INSERT again.
+        //
+        // ⚠️ employer_id IS A HINT, NOT THE BILLING IDENTITY. Money still keys on employer_key
+        // (downloads.employerKeyOf). The id only lets "this chip's document" survive a display-name
+        // change ("Souq.com for E-Commerce LLC" repaired to "Amazon") without a second paid build.
+        await col(`ALTER TABLE user_employer_documents ADD COLUMN IF NOT EXISTS design JSONB`);
+        await col(`ALTER TABLE user_employer_documents ADD COLUMN IF NOT EXISTS employer_id UUID`);
+        await col(`ALTER TABLE user_employer_documents ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
+        // The exact job fields { title, url, description, website } the fingerprint was hashed from
+        // (employerDocs.put, ≤ 64 KB else NULL). /api/employer-docs/current re-hashes THIS job for the
+        // stale label. ⚠️ Before it, the posting lived only in the phone's evicting listing cache: once
+        // evicted, the recomputed fingerprint could never match and the document read "stale" for ever
+        // (and a Refresh rebuilt it without the posting). NULL on older rows = the client's fields, as before.
+        await col(`ALTER TABLE user_employer_documents ADD COLUMN IF NOT EXISTS job_input JSONB`);
+        // The "current document for this chip" lookup by tracked employer id (employerDocs.currentFor).
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_employer_docs_empid
+                     ON user_employer_documents (user_id, kind, employer_id, updated_at DESC)`);
+
+        // The name the USER picked for a tracked employer. ⚠️ The shared employers row is named by
+        // whichever job ingest reached the domain first — amazon.jobs was "Souq.com for E-Commerce LLC"
+        // — so the chip must show this per-user name and fall back to employers.name only when NULL.
+        await col(`ALTER TABLE user_tracked_employers ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)`);
+        // ⚠️ FREEZE EVERY EXISTING CHIP'S NAME. A NULL display_name FOLLOWS the shared employers row, and
+        // THE SCRAPE PATH STILL RENAMES THAT ROW FOR EVERYONE: upsertEmployer keeps the stored name only
+        // when it owns the host and the incoming one does not (jobService.keepStoredEmployerName), so any
+        // later ingest — for a different user entirely — can rewrite a row whose stored name does not own
+        // its domain. (No user-facing repair does this any more: Home never renames the shared row. The
+        // ingest side alone is reason enough.) Without this backfill such a rename would silently change
+        // every fallback chip's name AND the employer key its passes and cached documents bill under
+        // (downloads.employerKeyOf of the shown name). Copying today's name in leaves a rename touching
+        // only the fallback for rows created later.
+        // Idempotent (only NULLs), and re-freezes any NULL row a pre-freeze writer left on later boots.
+        // An empty shared name is left NULL (the readers trim and fall back anyway); employers.name is
+        // VARCHAR(255) like display_name, the LEFT() only guards a future widening — a single over-long
+        // value would otherwise fail the WHOLE statement (22001), and col() would swallow that.
+        await col(`UPDATE user_tracked_employers ute
+                      SET display_name = LEFT(e.name, 255)
+                     FROM employers e
+                    WHERE e.id = ute.employer_id
+                      AND ute.display_name IS NULL
+                      AND e.name IS NOT NULL AND btrim(e.name) <> ''`);
+
+        // Posting / saved-job chips the user removed from Home (employer chips are archived instead).
+        // ⚠️ A soft hide, never a delete of the job or of its documents: re-adding restores them free.
+        await col(`CREATE TABLE IF NOT EXISTS user_home_hidden_targets (
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            target_key TEXT NOT NULL,
+            hidden_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (user_id, target_key)
+        )`);
+
+        // Web research about an employer, shared by every user (it is public facts about a company,
+        // never anything about the candidate). Keyed by bare host so www./no-www. are one row; the
+        // 30-day TTL lives in services/employerResearch.js, not in the schema.
+        await col(`CREATE TABLE IF NOT EXISTS employer_research_cache (
+            domain     TEXT PRIMARY KEY,
+            research   JSONB NOT NULL,
+            fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        console.log('✅ Migration 046: employer document design/identity + hidden targets + research cache done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

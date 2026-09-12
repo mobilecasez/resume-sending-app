@@ -12,11 +12,20 @@
 // Previews are free for everyone. DOWNLOADING the file is a paid-plan feature: the button is
 // shown to free users too, and tapping it explains + routes to the plans screen. The server
 // enforces the same rule with a 403 reason:'paid_required'.
+//
+// DOC MODE (route param `docId`): the gallery shows ONE EMPLOYER'S OWN résumé — the version rewritten
+// for that company and stored in user_employer_documents — instead of the user's base résumé.
+// Previews render from that doc, the "All designs" order follows the doc's ranked design list (best
+// chance of being picked first, with a fit % on every design), downloads carry the docId so the
+// server renders and bills THAT document, and Edit opens that doc in the editor.
+// ⚠️ Doc mode never writes preferred_template: that column is the BASE résumé's design (Auto Fill
+// attach, email attachment). A tailored version choosing a design must not repaint every other file.
+// Without `docId` every line below behaves exactly as it did before doc mode existed.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
   Alert, ActivityIndicator, Dimensions, Platform, Modal, Pressable,
-  NativeSyntheticEvent, NativeScrollEvent,
+  NativeSyntheticEvent, NativeScrollEvent, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -30,6 +39,7 @@ import { API_BASE } from '../../config';
 import DownloadPaywallSheet from '../../components/downloads/DownloadPaywallSheet';
 import { fetchDownloadState, downloadButtonLabel, type DownloadState } from '../../services/downloadPassService';
 import { fetchSubscriptionStatus } from '../../services/subscriptionService';
+import { fetchDoc, type Design } from '../../services/employerDocs';
 
 const T = {
   bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
@@ -57,6 +67,70 @@ async function getToken() {
   return JSON.parse(raw || '{}')?.token as string | undefined;
 }
 
+/** A route param → a real doc id, or null. Anything that is not a positive integer is "no doc". */
+function docIdOf(raw: unknown): number | null {
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+// ── Doc ranking ─────────────────────────────────────────────────────────────────────────────────
+// pos = the design's place in design.ranked (0 = the best fit for this employer).
+type Rank = { score: number; reason: string; pos: number };
+type Ranking = { byId: Map<string, Rank>; topId: string | null };
+// The fit reason under the pager is a fixed two-line slot (see reasonSlotH): one line's height,
+// and the font-scale cap past which the slot stops growing (the Text is capped to match).
+const REASON_LINE_H = 16;
+const REASON_MAX_SCALE = 1.3;
+
+function rankingOf(design: Design | null | undefined): Ranking | null {
+  const list = Array.isArray(design?.ranked) ? design!.ranked : [];
+  const byId = new Map<string, Rank>();
+  for (const r of list) {
+    if (!r || typeof r.id !== 'string' || byId.has(r.id)) continue;
+    const n = Number(r.score);
+    byId.set(r.id, {
+      score: Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 0,
+      reason: typeof r.reason === 'string' ? r.reason : '',
+      pos: byId.size,
+    });
+  }
+  if (!byId.size) return null;
+  return { byId, topId: byId.keys().next().value ?? null };
+}
+
+/** A family's best place in the ranking — its best-fitting variant decides where the family sits. */
+function bestPosOf(f: Family, rk: Ranking): number {
+  let best = Infinity;
+  for (const id of [f.id, ...(f.variants || []).map((v) => v.id)]) {
+    const r = rk.byId.get(id);
+    if (r && r.pos < best) best = r.pos;
+  }
+  return best;
+}
+
+/** Families ordered best-fit first (stable: unranked families keep catalogue order at the end).
+ *  ⚠️ Returns the SAME array when there is no ranking, so the base gallery is untouched. */
+function orderFamilies(fams: Family[], rk: Ranking | null): Family[] {
+  if (!rk) return fams;
+  return fams
+    .map((f, i) => ({ f, i, b: bestPosOf(f, rk) }))
+    .sort((a, b) => (a.b - b.b) || (a.i - b.i))
+    .map((x) => x.f);
+}
+
+/** The variant of a family that fits this employer best — what the family's page opens on. */
+function bestVariantOf(f: Family, rk: Ranking): string {
+  let bestId = f.id;
+  let best = rk.byId.get(f.id)?.pos ?? Infinity;
+  for (const v of f.variants || []) {
+    const p = rk.byId.get(v.id)?.pos ?? Infinity;
+    if (p < best) { best = p; bestId = v.id; }
+  }
+  return bestId;
+}
+
 export default function ResumeTemplates() {
   const router = useRouter();
   // The (resume-builder) Stack itself — goEdit needs to know WHAT is sitting under this screen
@@ -65,9 +139,20 @@ export default function ResumeTemplates() {
   // Home opens this screen on the design the user tapped. Optional: with no param the gallery
   // behaves exactly as before and starts on the first family.
   const { template: wantTemplate, employer: wantEmployer } = useLocalSearchParams<{ template?: string; employer?: string }>();
+  const { docId: wantDocId } = useLocalSearchParams<{ docId?: string }>();
+  // Doc mode — see the header. A constant for the life of the screen (route params never change
+  // under a mounted screen), so closures below may read it freely.
+  const docId = docIdOf(wantDocId);
+  // The doc's own ranking + employer, once GET /employer-docs/:id answers. null = base gallery, or a
+  // doc whose meta could not be read (previews still render from the doc; only the order is lost).
+  const [ranking, setRanking]   = useState<Ranking | null>(null);
+  const [docEmployer, setDocEmployer] = useState<string | null>(null);
+  // The doc was deleted (404 doc_gone / 410 payload_gone) — say so instead of spinning or retrying.
+  const [docGone, setDocGone]   = useState(false);
   // The company this download is for. A pass is bought per EMPLOYER, so it has to travel with
-  // the request or the payment attaches to nothing.
-  const employer = (Array.isArray(wantEmployer) ? wantEmployer[0] : wantEmployer) || null;
+  // the request or the payment attaches to nothing. In doc mode the server bills the doc's own
+  // employer whatever we send; the doc's name is only the fallback for the download-state label.
+  const employer = (Array.isArray(wantEmployer) ? wantEmployer[0] : wantEmployer) || docEmployer || null;
   const scrollRef = useRef<ScrollView>(null);
   const [families, setFamilies] = useState<Family[]>([]);
   const [regions, setRegions]   = useState<Region[]>([]);
@@ -121,11 +206,14 @@ export default function ResumeTemplates() {
           const res = await fetch(`${API_BASE}/resume-builder/preview-templates`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: batch }),
+            body: JSON.stringify(docId ? { ids: batch, docId } : { ids: batch }),
             signal: controller.signal,
           });
           const json = await res.json();
           if (cacheGen.current !== gen) return;          // cache was dropped mid-flight → this answer is stale
+          // ⚠️ In doc mode a 404 means THE DOC is gone, not "no résumé" — telling someone with a
+          // perfectly good base résumé to "generate your resume first" would send them to a paid build.
+          if (res.status === 404 && docId && json?.reason === 'doc_gone') { setDocGone(true); return; }
           if (res.status === 404) { setNoResume(true); return; }
           if (!res.ok) throw new Error(json.error || 'Could not build previews');
           const got: Preview[] = json.previews || [];
@@ -168,27 +256,47 @@ export default function ResumeTemplates() {
     try {
       const token = await getToken();
       if (!token) throw new Error('Not logged in');
+      // Doc mode reads the doc's meta (ranking + employer) alongside the catalogue, not after it:
+      // the order decides which family the pager opens on, so it has to be known before the first
+      // prefetch — otherwise the first render goes to a design that is about to move.
+      const docP = docId ? fetchDoc(docId).catch(() => null) : null;
       const res = await fetch(`${API_BASE}/resume-builder/templates`, { headers: { Authorization: `Bearer ${token}` } });
       const json = await res.json();
       if (!res.ok || !json.families?.length) throw new Error(json.error || 'Could not load designs');
+      let rk: Ranking | null = null;
+      let gone = false;
+      if (docP) {
+        const d = await docP;
+        if (d === 'gone') { gone = true; setDocGone(true); }
+        else if (d) {
+          rk = rankingOf(d.design);
+          setRanking(rk);
+          setDocEmployer(d.employer || null);
+          // The page layout the doc was designed for is the sensible default for its download.
+          if (d.design?.mode === 'a4' || d.design?.mode === 'onepage') setMode(d.design.mode);
+        }
+      }
       setFamilies(json.families);
       setRegions(json.regions || []);
+      // "All designs" order: best fit first in doc mode, catalogue order otherwise (same array).
+      const ordered = orderFamilies(json.families as Family[], rk);
       const sel: Record<string, string> = {};
-      for (const f of json.families as Family[]) sel[f.id] = f.id;
+      // Doc mode opens each family on the variant that fits this employer best.
+      for (const f of json.families as Family[]) sel[f.id] = rk ? bestVariantOf(f, rk) : f.id;
       // If we were opened on a specific design, land on ITS family with THAT variant chosen —
       // otherwise the user taps a design on Home and arrives on an unrelated one.
       let start = 0;
       const want = Array.isArray(wantTemplate) ? wantTemplate[0] : wantTemplate;
       if (want) {
-        const fi = (json.families as Family[]).findIndex(
+        const fi = ordered.findIndex(
           (f) => f.id === want || (f.variants || []).some((v: any) => v.id === want),
         );
-        if (fi >= 0) { start = fi; sel[(json.families as Family[])[fi].id] = want; landOn.current = fi; }
+        if (fi >= 0) { start = fi; sel[ordered[fi].id] = want; landOn.current = fi; }
       }
       setChosen(sel);
       setActive(start);
       setLoading(false);
-      prefetchAround(start, json.families, sel);
+      if (!gone) prefetchAround(start, ordered, sel);
     } catch (e: any) {
       setError(e.message || 'Something went wrong. Please try again.');
       setLoading(false);
@@ -205,14 +313,16 @@ export default function ResumeTemplates() {
   // "Recommended" badge while the pager always showed every family — which read as "all designs
   // are under Generic and the chips do nothing" (exactly the report). Now the chip decides WHICH
   // families the pager holds; "All" shows the whole catalogue.
+  // Doc mode: "All" (and every fallback to it) is best-fit first. Base gallery: the same array.
+  const orderedFams = useMemo(() => orderFamilies(families, ranking), [families, ranking]);
   const visibleFams = useMemo(() => {
-    if (region === 'all') return families;
+    if (region === 'all') return orderedFams;
     const r = regions.find((x) => x.id === region);
-    if (!r) return families;
+    if (!r) return orderedFams;
     const famOf = (tid: string) => families.find((f) => f.id === tid || f.variants.some((v) => v.id === tid));
     const picked = r.templates.map(famOf).filter(Boolean) as Family[];
-    return picked.length ? [...new Set(picked)] : families;
-  }, [region, regions, families]);
+    return picked.length ? [...new Set(picked)] : orderedFams;
+  }, [region, regions, families, orderedFams]);
 
   const totalDesigns = useMemo(() => visibleFams.reduce((a, f) => a + f.variants.length, 0), [visibleFams]);
 
@@ -257,17 +367,18 @@ export default function ResumeTemplates() {
     } catch {}
   }, []);
   useEffect(() => {
-    if (!selForSave) return;
+    // ⚠️ Doc mode never records a preferred template — see the header.
+    if (!selForSave || docId) return;
     if (prefTimer.current) clearTimeout(prefTimer.current);
     prefTimer.current = setTimeout(() => { prefTimer.current = null; savePreferred(selForSave); }, 900);
     return () => { if (prefTimer.current) clearTimeout(prefTimer.current); };
-  }, [selForSave, savePreferred]);
+  }, [selForSave, savePreferred, docId]);
   // ⚠️ The cleanup above clears the timer on unmount, so ANY navigation inside that 900ms window
   // silently drops the design the user just chose — the one thing this screen exists to record.
   // goEdit now LEAVES this screen (see below), so the pending save must be fired first; the fetch
   // itself is not tied to the component and finishes after the unmount.
   function flushPreferred() {
-    if (!prefTimer.current) return;
+    if (!prefTimer.current || docId) return;
     clearTimeout(prefTimer.current);
     prefTimer.current = null;
     if (selForSave) savePreferred(selForSave);
@@ -279,12 +390,12 @@ export default function ResumeTemplates() {
     setActive(0);
     scrollRef.current?.scrollTo({ x: 0, animated: false });
     // The new region's first family must start rendering immediately.
-    const fams = id === 'all' ? families : (() => {
+    const fams = id === 'all' ? orderedFams : (() => {
       const r = regions.find((x) => x.id === id);
-      if (!r) return families;
+      if (!r) return orderedFams;
       const famOf = (tid: string) => families.find((f) => f.id === tid || f.variants.some((v) => v.id === tid));
       const picked = r.templates.map(famOf).filter(Boolean) as Family[];
-      return picked.length ? [...new Set(picked)] : families;
+      return picked.length ? [...new Set(picked)] : orderedFams;
     })();
     prefetchAround(0, fams, chosen);
   }
@@ -316,6 +427,8 @@ export default function ResumeTemplates() {
     const below = String(routes[meIdx - 1]?.name || '').split('/').pop();
     if (below === 'preview' && router.canGoBack()) { router.back(); return; }
     returningFromEdit.current = true;   // we stay mounted → arm the stale-preview invalidation
+    // Doc mode edits THAT employer's version; the editor saves it back to the doc, never the base.
+    if (docId) { router.push({ pathname: '/(resume-builder)/preview', params: { docId: String(docId) } } as never); return; }
     router.push('/(resume-builder)/preview' as never);
   }
 
@@ -344,6 +457,17 @@ export default function ResumeTemplates() {
   const selectedId = activeFam ? (chosen[activeFam.id] || activeFam.id) : '';
   const selected = previews[selectedId];
   const selectedMeta = activeFam?.variants.find((v) => v.id === selectedId);
+  // Doc mode only: how well the design on screen fits this employer, and why.
+  const selectedRank = ranking ? ranking.byId.get(selectedId) || null : null;
+  // ⚠️ The reason line is a FIXED two-line slot, not a line that comes and goes. It sits in the
+  // indicator under the flex pager, so a design with no reason (or a one-line one) next to a
+  // two-line one resized the whole pager on every swipe and swatch tap — the card jumped. The
+  // slot is reserved from the moment the ranking lands (ranking is set before the first family
+  // renders, so there is no jump on arrival either). Its height follows the reactive font scale,
+  // capped like the Text itself, so large accessibility sizes cannot reintroduce the jump.
+  const { fontScale } = useWindowDimensions();
+  const reasonSlotH = REASON_LINE_H * 2 * Math.min(Math.max(fontScale || 1, 1), REASON_MAX_SCALE);
+  const fitStyleOf = (n: number) => (n >= 85 ? s.fitHi : n >= 70 ? s.fitMid : s.fitLo);
 
   // ⚠️ Not an Alert any more. An alert could only offer PLANS — there was nowhere to put the
   // one-off — and its "View paid plans" was a dead end for someone who wanted a single file.
@@ -367,12 +491,21 @@ export default function ResumeTemplates() {
       const token = await getToken();
       if (!token) throw new Error('Not logged in');
       const url = fmt === 'docx' ? `${API_BASE}/resume-builder/generate-docx` : `${API_BASE}/resume-builder/generate-pdf`;
-      const res = await fetch(url, {
+      const init = {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ template: selectedId, mode, employer }),
-      });
+      };
+      // Doc mode: the server renders THAT doc and bills its own employer (body.employer ignored).
+      if (docId) init.body = JSON.stringify({ template: selectedId, mode, employer, docId });
+      const res = await fetch(url, init);
       const json = await res.json();
+      if (docId && res.status === 410) {
+        // The doc was deleted between opening the gallery and tapping Download — nothing was charged.
+        setDocGone(true);
+        Alert.alert('This version is gone', 'It is no longer saved. Go back to Home to see your current one.');
+        return;
+      }
       // The server said no — its word beats our cached status (subscription may have lapsed).
       if (res.status === 403 && (json.reason === 'paid_required' || json.reason === 'quota_exhausted')) {
         setIsPaid(false); await refreshDownloadState(); setPendingFmt(fmt); upsellDownload(); return;
@@ -445,6 +578,17 @@ export default function ResumeTemplates() {
           <ActivityIndicator size="large" color={T.blue} />
           <Text style={s.loadingText}>Loading the design catalogue…</Text>
         </View>
+      ) : docGone ? (
+        <View style={s.center}>
+          <Ionicons name="document-text-outline" size={46} color={T.faint} />
+          <Text style={s.errTitle}>
+            {employer ? `This ${employer} version is no longer saved.` : 'This version is no longer saved.'} Go back to Home to see your current one.
+          </Text>
+          <TouchableOpacity onPress={() => router.back()} style={s.retryBtn} activeOpacity={0.85}>
+            <Ionicons name="arrow-back" size={15} color="#fff" />
+            <Text style={s.retryText}>Go back</Text>
+          </TouchableOpacity>
+        </View>
       ) : noResume ? (
         <View style={s.center}>
           <Ionicons name="document-text-outline" size={46} color={T.faint} />
@@ -465,7 +609,11 @@ export default function ResumeTemplates() {
         </View>
       ) : (
         <>
-          <Text style={s.lead}>Swipe layouts · tap a color to restyle · every preview is free</Text>
+          <Text style={s.lead} numberOfLines={ranking ? 1 : undefined}>
+            {ranking && region === 'all'
+              ? `Best fit for ${employer || 'this employer'} first · every preview is free`
+              : 'Swipe layouts · tap a color to restyle · every preview is free'}
+          </Text>
 
           <View style={s.pagerWrap} onLayout={(e) => setPagerH(e.nativeEvent.layout.height)}>
             {pagerH > 0 && (
@@ -516,6 +664,26 @@ export default function ResumeTemplates() {
                             </View>
                           )}
                         </View>
+                        {/* Doc mode: fit for this employer (top-right) and the single best design
+                            (top-left). Siblings of the clip, so the rounded corners never cut them. */}
+                        {!!ranking && (() => {
+                          const r = ranking.byId.get(tid);
+                          return (
+                            <>
+                              {!!r && (
+                                <View style={[s.fitPill, fitStyleOf(r.score)]} pointerEvents="none">
+                                  <Text style={s.fitPillText}>{r.score}% fit</Text>
+                                </View>
+                              )}
+                              {tid === ranking.topId && (
+                                <View style={s.bestBadge} pointerEvents="none">
+                                  <Ionicons name="ribbon" size={11} color="#fff" />
+                                  <Text style={s.bestBadgeText} numberOfLines={1}>Best for {employer || 'this employer'}</Text>
+                                </View>
+                              )}
+                            </>
+                          );
+                        })()}
                       </View>
                     </View>
                   );
@@ -537,6 +705,11 @@ export default function ResumeTemplates() {
               <Text style={s.designName}>{selectedMeta?.name || activeFam?.name || 'Resume'}</Text>
               <Text style={s.famCount}>{visibleFams.length > 1 ? `${active + 1}/${visibleFams.length} layouts` : ''}</Text>
             </View>
+            {!!ranking && (
+              <Text style={[s.fitReason, { minHeight: reasonSlotH }]} numberOfLines={2} maxFontSizeMultiplier={REASON_MAX_SCALE}>
+                {selectedRank?.reason || ''}
+              </Text>
+            )}
             {!!activeFam?.ats && <AtsStars n={activeFam.ats} />}
             {activeFam && activeFam.variants.length > 1 && (
               <View style={s.swatchRow}>
@@ -558,7 +731,7 @@ export default function ResumeTemplates() {
 
       {/* Sticky footer: ONE button — the three-row footer ate the preview's space. Format and
           page options live in the swipe-up sheet, like the filter sheet elsewhere in the app. */}
-      {!loading && families.length > 0 && (
+      {!loading && !docGone && families.length > 0 && (
         <View style={s.footer}>
           <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} onPress={() => setSheetOpen(true)} disabled={downloading}>
             <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
@@ -706,6 +879,17 @@ const s = StyleSheet.create({
   swatchRow:    { flexDirection: 'row', alignItems: 'center', gap: 10, paddingTop: 4 },
   swatch:       { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.9)', shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 4, elevation: 3 },
   swatchOn:     { transform: [{ scale: 1.18 }], borderColor: '#fff' },
+  // lineHeight is pinned so the two-line slot (minHeight, set inline from the font scale) is exact.
+  fitReason:    { fontSize: 11.5, lineHeight: REASON_LINE_H, fontWeight: '600', color: T.muted, textAlign: 'center', paddingHorizontal: 28 },
+
+  // Doc mode badges on the card
+  fitPill:      { position: 'absolute', top: 10, right: 10, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 6, elevation: 4 },
+  fitHi:        { backgroundColor: '#0E9F6E' },
+  fitMid:       { backgroundColor: T.blueDeep },
+  fitLo:        { backgroundColor: 'rgba(11,15,34,0.62)' },
+  fitPillText:  { fontSize: 11.5, fontWeight: '800', color: '#fff', letterSpacing: 0.1 },
+  bestBadge:    { position: 'absolute', top: 10, left: 10, maxWidth: CARD_W - 120, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.navy, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 6, elevation: 4 },
+  bestBadgeText:{ fontSize: 11.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
 
   footer:       { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.select({ ios: 26, default: 14 }), shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
   sheetBackdrop:{ flex: 1, backgroundColor: 'rgba(11,15,34,0.45)' },

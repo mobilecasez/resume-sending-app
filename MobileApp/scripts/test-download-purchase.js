@@ -128,5 +128,22 @@ for (const [what, src] of [['resume gallery', gal], ['cover letter', let_]]) {
     /res\.status === 403 && \(json\.reason === 'paid_required' \|\| json\.reason === 'quota_exhausted'\)/.test(src));
 }
 
+console.log('── ⚠️ A DOWNLOAD OF AN EMPLOYER\'S OWN VERSION BILLS THAT EMPLOYER ──');
+// The 2026-09-11 round: Home saves one resume and one letter per employer, and both galleries open THAT
+// document by docId. The server then renders the saved document and bills the document's employer
+// whatever the body says — so the docId must travel with the download, and a vanished document must
+// read as "gone", never as a paid failure or a prompt to generate again.
+ok('the resume gallery sends the docId with the download', /init\.body = JSON\.stringify\(\{ template: selectedId, mode, employer, docId \}\)/.test(gal));
+ok('…and treats a 410 as "this version is gone"', /if \(docId && res\.status === 410\)/.test(gal));
+ok('the letter gallery sends the docId in doc mode (and exactly the classic body otherwise)',
+  /body: JSON\.stringify\(docId\s*\? \{ template: selected\.id, mode, [^}]*employer: passEmployer, docId \}\s*: \{ template: selected\.id, mode, [^}]*employer: passEmployer \}\)/.test(let_));
+ok('…a 410 in doc mode is "no longer saved"', /if \(docId && res\.status === 410\)/.test(let_) && /no longer saved/.test(letSrc));
+ok('⚠️ a stashed picker context is trusted only when it is THIS document\'s', /if \(c && docIdOf\(c\.docId\) === did\) setCtx\(c\);/.test(let_));
+ok('…and once the document loads, the billed employer IS the document\'s', /employer: d\.employer \|\| undefined, docId: did/.test(let_));
+ok('the saved letter\'s pages come from its own cards endpoint', /fetchDocCards\('cover_letter', did, batch\)/.test(let_));
+ok('Home hands the letter picker the saved letter with its docId, and stops if the write fails',
+  /AsyncStorage\.setItem\('coverLetterPickerContext', JSON\.stringify\(\{[\s\S]{0,300}docId: full\.docId,/.test(home)
+  && /params: \{ \.\.\.\(templateId \? \{ template: templateId \} : \{\}\), docId: String\(full\.docId\) \}/.test(home));
+
 console.log(`\ndownload purchase: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

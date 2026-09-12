@@ -27,6 +27,14 @@
 // scaleX plus a translateX compensation, never width; the bar is scaleX the same way the onboarding
 // bar is. The creeping % is plain React state rendered as TEXT, not an Animated value, so it cannot
 // put a second driver in the tree. MeshStage (the backdrop) is native-only too.
+//
+// ONE OVERLAY, TWO DOCUMENTS. `kind` picks the words — a resume is "built" and "tailored", a cover
+// letter is "written" — and nothing else: the gate, the stages, the reasons and every rule above are
+// the same for both lanes, so they share one scene rather than drifting apart as two copies.
+//
+// ⚠️ stage 'checking' MEANS NOTHING HAS STARTED. Home raises the overlay while the dry-run gate is still
+// answering; no job exists yet, so "Keep it building in the background" would describe a build that is
+// not there. That state's footer is a plain Close, and says so.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Animated, Easing, Modal, Pressable, TouchableOpacity, ScrollView,
@@ -37,10 +45,47 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MeshStage from './MeshStage';
 import { E, SERIF, sweepWords } from './theme';
-import type { BuildStage } from '../../services/homeAddEmployer';
+import type { BuildStage, DocKind } from '../../services/homeAddEmployer';
+import { useCreepPct } from '../../services/homeBuilds';
+import type { BuildPhase } from '../../services/homeBuilds';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 type Mode = 'run' | 'done' | 'error';
+
+/** The words that differ between the two lanes. Everything else on this screen is shared. */
+type Words = {
+  kicker: string;
+  /** The document, lower-case, as it sits mid-sentence. */
+  noun: string;
+  /** Run title with an employer: before + the employer (serif) + after. */
+  runBefore: string;
+  runAfter?: string;
+  /** Run title with no employer name to show. */
+  runBare: string;
+  /** VoiceOver hint on "Keep it building in the background". */
+  keepHint: string;
+};
+
+const WORDS: Record<DocKind, Words> = {
+  resume: {
+    kicker: 'AI RESUME BUILDER',
+    noun: 'resume',
+    runBefore: 'Tailoring for',
+    runBare: 'Tailoring your resume',
+    keepHint: 'Closes this screen. Your resume keeps building.',
+  },
+  cover_letter: {
+    kicker: 'AI COVER LETTER WRITER',
+    noun: 'cover letter',
+    runBefore: 'Writing your',
+    runAfter: 'cover letter',
+    runBare: 'Writing your cover letter',
+    keepHint: 'Closes this screen. Your cover letter keeps being written.',
+  },
+};
+
+/** An unknown kind from a caller falls back to the resume copy rather than rendering blanks. */
+const wordsFor = (kind: DocKind | undefined): Words => WORDS[kind === 'cover_letter' ? 'cover_letter' : 'resume'];
 
 /** Page ratio, the same one the renderer and PaperCarousel use. */
 const A4 = 424 / 300;
@@ -500,29 +545,34 @@ function StageLabel({ text, tone }: { text: string; tone: 'run' | 'done' }) {
 /**
  * The percentage and the bar. ⚠️ ITS OWN COMPONENT BECAUSE IT RE-RENDERS EVERY 90ms while creeping;
  * kept up at the scene, every tick would re-render the page and rebuild its native nodes.
+ *
+ * The creep itself is services/homeBuilds' useCreepPct — the SAME curve the carousel's building cards
+ * and the chip use, so the number on Home and the number in here never disagree about one build. It is
+ * React state rendered as text, never an Animated value (the header's driver rule).
+ *
+ * ⚠️ `buildKey` IS WHAT MAKES "never disagree" TRUE. Keyless, the hook has no shared last-shown value to
+ * read or write: this screen seeded at the CURRENT stage's ceiling and wrote nothing back, so opening the
+ * overlay on a chip creeping at 24% read ~38% — two numbers for one build. A caller that passes no key
+ * keeps the old ceiling-seeded behaviour rather than writing into some other build's shared number.
  */
-function Progress({ pct, label, mode }: { pct: number; label: string; mode: 'run' | 'done' }) {
-  const target = mode === 'done' ? 100 : Math.max(0, Math.min(100, pct));
-  // ⚠️ SEEDED FROM THE pct IT MOUNTS WITH, NOT 0. It mounts on a fresh showing (Home's stage is null,
-  // so that is 0 anyway) and ALSO mid-build: an error state unmounts it, and Home's "load my pages"
-  // retry brings it back at 97. Starting from 0 there crept a nearly-finished build back up from nothing.
-  const [shown, setShown] = useState(target);
+function Progress({ pct, label, mode, checking, buildKey }: {
+  pct: number; label: string; mode: 'run' | 'done'; checking: boolean;
+  /** storeKeyOf(kind, rk) — the SAME string the chip's line and the carousel's card pass. */
+  buildKey?: string;
+}) {
+  const target = mode === 'done' ? 100 : Math.max(0, Math.min(100, Number(pct) || 0));
+  const phase: BuildPhase = mode === 'done' ? 'done' : checking ? 'checking' : 'building';
+  // ⚠️ MEMOISED ON PRIMITIVES. Home hands down a fresh stage object on every poll; a hook keyed on the
+  // object's identity would re-arm its ticker for a number that did not move.
+  const creepStage = useMemo<BuildStage>(
+    () => ({ stage: checking ? 'checking' : 'run', label, pct: target }),
+    [checking, label, target],
+  );
+  const shown = useCreepPct(creepStage, phase, buildKey);
   const bar = useRef(new Animated.Value(Math.max(0.02, target / 100))).current;
   const [barW, setBarW] = useState(0);
 
-  useEffect(() => {
-    if (mode === 'done') { setShown(100); return; }
-    const id = setInterval(() => {
-      setShown((v) => {
-        // BuildStep's creep: ease toward the ceiling, slowing as it approaches; never overtake it.
-        if (v >= target) return target;
-        return Math.min(target, v + Math.max(0.15, (target - v) * 0.06));
-      });
-    }, 90);
-    return () => clearInterval(id);
-  }, [target, mode]);
-
-  const whole = Math.round(shown);
+  const whole = Math.max(0, Math.min(100, Math.round(Number(shown) || 0)));
   useEffect(() => {
     // Follows the NUMBER, not the server, so the bar and the digits can never disagree. It only
     // re-targets when the whole-number percentage changes, not on every 90ms tick.
@@ -602,27 +652,45 @@ type Outcome = 'plans' | 'upload' | 'retry' | 'wait' | 'built' | 'unknown';
  * twice. The polling deadline is now 'pending' (still running, never a rebuild), and anything else we
  * cannot name gets a neutral title, no Try again, and no red.
  */
-function errorCopy(reason: string, message: string, company: string): {
+function errorCopy(reason: string, message: string, company: string, kind: DocKind): {
   title: string; body: string; icon: IconName; tint: string; outcome: Outcome;
 } {
   const forWho = company ? `for ${company}` : 'for this employer';
+  // Only the WORDS switch on kind. The outcome (and so the footer, and whether a rebuild is ever
+  // offered) is the reason's alone — a letter's 'pending' is exactly as unsafe to rebuild as a resume's.
+  const letter = kind === 'cover_letter';
+  const noun = wordsFor(kind).noun;
   switch (reason) {
     case 'quota_exhausted':
-      return {
-        title: "You've used this plan's resume builds",
-        body: `Pick a plan to build the resume ${forWho}, and to keep tailoring one to every employer you add.`,
-        icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
-      };
+      return letter
+        ? {
+          title: 'You’ve used this plan’s cover letters',
+          body: `Pick a plan to write the cover letter ${forWho}, and to keep writing one for every employer you add.`,
+          icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
+        }
+        : {
+          title: "You've used this plan's resume builds",
+          body: `Pick a plan to build the resume ${forWho}, and to keep tailoring one to every employer you add.`,
+          icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
+        };
     case 'regen_limit':
-      return {
-        title: 'Your free rebuild is used',
-        body: `The free plan includes one resume rebuild, and it has been used. A plan lets you build one ${forWho}.`,
-        icon: 'refresh-circle-outline', tint: E.purpleLite, outcome: 'plans',
-      };
+      return letter
+        ? {
+          title: 'Your free cover letter is used',
+          body: `The free plan’s cover letter has been used. A plan lets you write one ${forWho}.`,
+          icon: 'refresh-circle-outline', tint: E.purpleLite, outcome: 'plans',
+        }
+        : {
+          title: 'Your free rebuild is used',
+          body: `The free plan includes one resume rebuild, and it has been used. A plan lets you build one ${forWho}.`,
+          icon: 'refresh-circle-outline', tint: E.purpleLite, outcome: 'plans',
+        };
     case 'no_resume':
       return {
         title: 'Upload your resume first',
-        body: `We tailor from your own experience, so we need your resume before we can build one ${forWho}.`,
+        body: letter
+          ? `We write from your own experience, so we need your resume before we can write a cover letter ${forWho}.`
+          : `We tailor from your own experience, so we need your resume before we can build one ${forWho}.`,
         icon: 'document-attach-outline', tint: E.mint, outcome: 'upload',
       };
     case 'network':
@@ -633,27 +701,27 @@ function errorCopy(reason: string, message: string, company: string): {
       };
     case 'failed':
       return {
-        title: "That build didn't finish",
+        title: letter ? "That cover letter didn't finish" : "That build didn't finish",
         body: message || 'Something went wrong on our side. Try again in a moment.',
         icon: 'alert-circle-outline', tint: '#FCA5A5', outcome: 'retry',
       };
     case 'pending':
       // ⚠️ The job may still finish AND CHARGE. The only honest action is to let it; no rebuild.
       return {
-        title: 'Still building your resume',
+        title: letter ? 'Still writing your cover letter' : 'Still building your resume',
         body: "It may arrive in a minute — we'll show it on Home",
         icon: 'hourglass-outline', tint: E.mint, outcome: 'wait',
       };
     case 'refresh':
       // Built and charged; only the pages on Home did not refresh. Success, with one step left.
       return {
-        title: 'Your resume is built',
+        title: letter ? 'Your cover letter is written' : 'Your resume is built',
         body: message || 'Load your pages to see it.',
         icon: 'checkmark', tint: '#FFFFFF', outcome: 'built',
       };
     default:
       return {
-        title: "We couldn't confirm your resume yet",
+        title: "We couldn't confirm your " + noun + ' yet',
         body: 'If it finished, it will show on Home.',
         icon: 'help-circle-outline', tint: '#C7D2FE', outcome: 'unknown',
       };
@@ -667,15 +735,21 @@ const STILL_BACKDROP = ['#070A18', '#111A44', '#1A2C5E'] as const;
 /** Below this the page is a smudge; at that point the copy is the whole story and the stage steps aside. */
 const MIN_PAGE_W = 64;
 
-function Scene({ company, stage, mode, error, dismiss, onRetry, onSeePlans }: {
+function Scene({ kind, company, stage, mode, error, buildKey, dismiss, onRetry, onSeePlans }: {
+  kind: DocKind;
   company: string;
   stage: BuildStage | null;
   mode: Mode;
   error: { reason: string; message: string } | null;
+  /** The bound build's store key — see Progress. */
+  buildKey?: string;
   dismiss: () => void;
   onRetry?: () => void;
   onSeePlans?: () => void;
 }) {
+  const words = wordsFor(kind);
+  // Only meaningful while running: a 'checking' stage left behind on a done or error state says nothing.
+  const checking = mode === 'run' && stage?.stage === 'checking';
   const insets = useSafeAreaInsets();
   const { width: winW, height: winH } = useWindowDimensions();
   const reduce = useReduceMotion();
@@ -704,7 +778,7 @@ function Scene({ company, stage, mode, error, dismiss, onRetry, onSeePlans }: {
   const showStage = known && stageH > 0 && pw >= MIN_PAGE_W;
 
   const who = (company || '').trim();
-  const fail = mode === 'error' && error ? errorCopy(error.reason, error.message, who) : null;
+  const fail = mode === 'error' && error ? errorCopy(error.reason, error.message, who, kind) : null;
   const outcome = fail ? fail.outcome : null;
   const paperMode: PaperMode = mode === 'run' ? 'run' : mode === 'done' ? 'done' : outcome === 'built' ? 'built' : 'hold';
   const look: CoreLook = mode === 'run' ? 'run'
@@ -732,7 +806,7 @@ function Scene({ company, stage, mode, error, dismiss, onRetry, onSeePlans }: {
       >
         <View style={s.kickerRow}>
           <Ionicons name="sparkles" size={12} color={E.mint} />
-          <Text style={s.kicker} maxFontSizeMultiplier={FONT_CAP.small}>AI RESUME BUILDER</Text>
+          <Text style={s.kicker} maxFontSizeMultiplier={FONT_CAP.small}>{words.kicker}</Text>
         </View>
 
         <Animated.View
@@ -769,11 +843,11 @@ function Scene({ company, stage, mode, error, dismiss, onRetry, onSeePlans }: {
         <ScrollView style={s.lower} alwaysBounceVertical={false}>
           <View style={s.copy}>
             {mode === 'run' && (who
-              ? <Title before="Tailoring for" company={who} />
-              : <Title before="Tailoring your resume" company="" />)}
+              ? <Title before={words.runBefore} company={who} after={words.runAfter} />
+              : <Title before={words.runBare} company="" />)}
             {mode === 'done' && (who
-              ? <Title before="Your" company={who} after="resume is ready" />
-              : <Title before="Your resume is ready" company="" />)}
+              ? <Title before="Your" company={who} after={`${words.noun} is ready`} />
+              : <Title before={`Your ${words.noun} is ready`} company="" />)}
             {/* ⚠️ ONE Progress FOR BOTH run AND done, AT ONE POSITION IN THE TREE. Rendered separately per
                 state it remounted on completion: the digits reset to 0 and the bar re-grew from empty,
                 where it should simply finish from wherever the run left it. */}
@@ -782,6 +856,8 @@ function Scene({ company, stage, mode, error, dismiss, onRetry, onSeePlans }: {
                 pct={mode === 'done' ? 100 : Number(stage?.pct) || 0}
                 label={mode === 'done' ? 'Ready — opening it now' : stage?.label || 'Getting started'}
                 mode={mode}
+                checking={checking}
+                buildKey={buildKey}
               />
             )}
             {!!fail && (
@@ -793,16 +869,25 @@ function Scene({ company, stage, mode, error, dismiss, onRetry, onSeePlans }: {
           </View>
 
           <View style={s.footer}>
-            {mode === 'run' && (
+            {/* ⚠️ CHECKING IS NOT BUILDING. The gate is still answering and no job exists, so the only
+                honest exit is Close — "keep it building" would promise a build that was never started. */}
+            {checking && (
+              <>
+                <Secondary label="Close" onPress={dismiss} />
+                <Text style={s.note} maxFontSizeMultiplier={FONT_CAP.small}>Nothing has started yet.</Text>
+              </>
+            )}
+            {mode === 'run' && !checking && (
               <>
                 <TouchableOpacity
                   style={s.bgBtn} activeOpacity={0.8} onPress={dismiss} accessibilityRole="button"
-                  accessibilityHint="Closes this screen. Your resume keeps building."
+                  accessibilityHint={words.keepHint}
                 >
                   <Ionicons name="arrow-down-circle-outline" size={17} color="rgba(255,255,255,0.85)" />
                   <Text style={s.bgTx} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.button}>Keep it building in the background</Text>
                 </TouchableOpacity>
-                <Text style={s.note} maxFontSizeMultiplier={FONT_CAP.small}>It carries on without this screen.</Text>
+                {/* The building card on Home is the way back in: tapping it reopens this overlay. */}
+                <Text style={s.note} maxFontSizeMultiplier={FONT_CAP.small}>Watch it any time — tap its card on Home.</Text>
               </>
             )}
             {mode === 'done' && <Text style={s.note} maxFontSizeMultiplier={FONT_CAP.small}>Tap anywhere to see it</Text>}
@@ -837,13 +922,21 @@ function Scene({ company, stage, mode, error, dismiss, onRetry, onSeePlans }: {
 }
 
 export default function BuildingOverlay({
-  visible, company, stage, done, error, onDismiss, onRetry, onSeePlans,
+  visible, kind = 'resume', company, stage, done, error, buildKey, onDismiss, onRetry, onSeePlans,
 }: {
   visible: boolean;
+  /** Which document is being made. Changes the words only; defaults to the resume lane. */
+  kind?: DocKind;
   company: string;
   stage: BuildStage | null;
   done: boolean;
   error?: { reason: string; message: string } | null;
+  /**
+   * storeKeyOf(kind, rk) for the build being watched — the key the chip and the carousel already pass to
+   * useCreepPct. ⚠️ Without it the percentage in here seeds at the stage ceiling and disagrees with the
+   * chip the user just tapped; left out, the screen behaves exactly as it did before it existed.
+   */
+  buildKey?: string;
   onDismiss: () => void;
   onRetry?: () => void;
   onSeePlans?: () => void;
@@ -859,9 +952,11 @@ export default function BuildingOverlay({
   // ⚠️ ONE ACTION PER SHOWING — dismiss, Try again / Load my pages, and See plans all share it. The
   // auto-dismiss timer, a tap on the finished page and Android's back button can land within the same
   // second, and a double tap on See plans pushed TWO plans screens (Try again, two gate runs). The
-  // caller hears about exactly one. Re-armed whenever the overlay is shown again or changes state.
+  // caller hears about exactly one. Re-armed whenever the overlay is shown again or changes state —
+  // including checking → building, which keeps mode 'run' but swaps Close for Keep building.
   const fired = useRef(false);
-  useEffect(() => { fired.current = false; }, [visible, mode, error?.reason]);
+  const checkingNow = !error && !done && stage?.stage === 'checking';
+  useEffect(() => { fired.current = false; }, [visible, mode, error?.reason, checkingNow]);
   const once = useCallback((pick: 'onDismiss' | 'onRetry' | 'onSeePlans') => {
     const fn = latest.current[pick];
     if (fired.current || !fn) return;
@@ -884,7 +979,7 @@ export default function BuildingOverlay({
           is what runs those cleanups — so a hidden overlay has no loops, not merely invisible ones. */}
       {visible && (
         <Scene
-          company={company} stage={stage} mode={mode} error={error || null}
+          kind={kind} company={company} stage={stage} mode={mode} error={error || null} buildKey={buildKey}
           dismiss={dismiss} onRetry={onRetry ? retry : undefined} onSeePlans={onSeePlans ? seePlans : undefined}
         />
       )}

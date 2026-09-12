@@ -361,7 +361,23 @@ async function canConsumeMany(userId, kind, count, req) {
 // ── the deduction — call ONLY after the work succeeded ────────────────────────────────────────
 // Picks the pool in the same priority order as the gate, writes the ledger row (with details for
 // the Usage screen) and, for the legacy pool, performs the old credit deduction. Never throws.
+//
+// Returns { via, charge, ledgerId } — `via` is what every caller always read; the other two are
+// additive, and exist so a caller can decide on ITS OWN charge instead of inferring it afterwards:
+//   • charge — the chargeCredits result on the credits lane ({ charged, cost, insufficient?,
+//     remaining? }), null on the plan/trial lanes. ⚠️ via:'credits' IS WHAT WAS ATTEMPTED, NOT WHAT WAS
+//     PAID: chargeCredits answers { charged:false, insufficient:true } on a short balance without
+//     throwing, and the ledger row below is written either way. Reading the balance or the history
+//     table afterwards to find out cannot tell this request's deduction from an overlapping one's —
+//     that inference once withheld a letter the user had really paid for. charge.charged is the
+//     guarded UPDATE's own answer.
+//   • ledgerId — the usage_ledger row THIS call inserted, so a caller that cannot deliver what was
+//     paid for (a store that failed) can delete exactly that row and give the unit back.
+// ⚠️ ON via:'error' charge IS STILL REPORTED when the deduction landed before the failure (e.g. the
+// ledger INSERT threw after chargeCredits debited). 'error' used to mean "nothing recorded" while the
+// credits were gone; a caller that sees charge.charged here must refund it.
 async function consumeOnSuccess(userId, kind, detail = {}, req) {
+  let charge = null;
   try {
     const deviceId = req ? deviceIdOf(req) : null;
     // Same environment scope as the gate. If these two disagreed, a sandbox tester would be let
@@ -388,17 +404,19 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
     }
     if (via === 'credits') {
       // legacy path — same deduction the old code performed (no-op when the price is 0)
-      await chargeCredits(userId, KIND_LEGACY_EVENT[kind], detail);
+      charge = await chargeCredits(userId, KIND_LEGACY_EVENT[kind], detail);
     }
-    await dbConfig.query(
+    const rows = await dbConfig.query(
       `INSERT INTO usage_ledger (user_id, kind, source, plan_key, detail, created_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,NOW())`,
+       VALUES ($1,$2,$3,$4,$5::jsonb,NOW())
+       RETURNING id`,
       [userId, kind, via, sub ? sub.plan_key : null,
        JSON.stringify({ ...detail, }).slice(0, 4000)]);
-    return { via };
+    const id = rows && rows[0] ? Number(rows[0].id) : NaN;
+    return { via, charge, ledgerId: Number.isFinite(id) && id > 0 ? id : null };
   } catch (e) {
     console.warn('[entitlements] consumeOnSuccess:', e.message);
-    return { via: 'error' };
+    return { via: 'error', charge, ledgerId: null };
   }
 }
 

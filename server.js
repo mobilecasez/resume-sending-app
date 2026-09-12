@@ -1111,15 +1111,27 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
 app.get('/uploads/:userId/:filename', authenticateToken, async (req, res) => {
     try {
         const requestedUserId = req.params.userId.replace('user_', '');
-        const filename = req.params.filename;
-        
+
         // Verify user can only access their own files
         if (parseInt(requestedUserId) !== req.user.id) {
             return res.status(403).json({ error: 'Access denied' });
         }
-        
-        const filePath = path.join(__dirname, 'uploads', `user_${requestedUserId}`, filename);
-        
+
+        // ⚠️ PATH TRAVERSAL. Express DECODES route params, so /uploads/user_5/..%2F..%2Fserver.js arrives
+        // here as filename "../../server.js" (express.static above answers such a path 403 and, with
+        // fallthrough, hands it on to this route). path.join used to resolve that straight out of the
+        // user's folder — to any other user's uploads or to the app's own source. So: a bare file name
+        // only, the directory from the VERIFIED id (never the raw param), and the resolved path must sit
+        // inside that directory or it is a 404 (the same answer as a missing file — nothing to probe).
+        // ⚠️ This closes the route, it does not make uploads private: express.static('uploads') above
+        // still serves /uploads/user_N/<file> to anyone who has the name (dot directories excepted).
+        const userDir = path.resolve(__dirname, 'uploads', `user_${req.user.id}`);
+        const filename = path.basename(String(req.params.filename || ''));
+        const filePath = path.resolve(userDir, filename);
+        if (!filename || filename === '.' || filename === '..' || path.dirname(filePath) !== userDir) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+
         // Check if file exists
         try {
             await fs.access(filePath);
@@ -3846,6 +3858,51 @@ app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (re
             console.error('Error deleting user files:', err);
         }
 
+        // ⚠️ THE EMPLOYER-DOCUMENT THUMBNAILS LIVE OUTSIDE user_N. Each one is a rendered page of this
+        // user's tailored resume / cover letter — photo, name, email, phone — cached per user under
+        // uploads/.thumb_cache/<id> (resumeBuilderController DOC_THUMB_ROOT; the letter lane honours
+        // DOC_THUMB_CACHE_DIR instead when it is set). Removing user_N alone left all of them on the volume.
+        // The id is the integer from the verified token, so the path cannot leave the cache root.
+        const thumbRoots = [path.join(__dirname, 'uploads', '.thumb_cache')];
+        if (process.env.DOC_THUMB_CACHE_DIR) thumbRoots.push(path.resolve(process.env.DOC_THUMB_CACHE_DIR));
+        const thumbUserDir = String(parseInt(userId, 10));
+        if (/^\d+$/.test(thumbUserDir) && thumbUserDir !== '0') {
+            for (const root of thumbRoots) {
+                try {
+                    await fs.rm(path.join(root, thumbUserDir), { recursive: true, force: true });
+                    console.log(`🗑️ [ACCOUNT DELETE] Deleted document thumbnails at ${path.join(root, thumbUserDir)}`);
+                } catch (err) {
+                    console.error('Error deleting document thumbnails:', err.message);
+                }
+            }
+        }
+
+        // ⚠️ THE TAILORED DOCUMENTS THEMSELVES ARE THE LAST PERSONAL-CONTENT STORE, AND NOTHING ELSE
+        // CLEARS THEM. Every user_employer_documents row holds a whole tailored resume (JSON) or cover
+        // letter (HTML) — full name, email, phone, address. The `users` row SURVIVES this deletion (it
+        // is a soft delete, see below), so the ON DELETE CASCADE never fires, and the table carries no
+        // deleted_at to mark: a hard DELETE is the only thing that removes the content. The rendered
+        // pages of these same documents went with the thumb cache just above; this is their source.
+        // ⚠️ SWALLOWED LIKE THE FILE REMOVALS, NEVER RETHROWN. A table missing on an older database
+        // (42P01) or any failing statement must not turn a deletion that has already cleared the
+        // uploads into a 500 the user retries. Scoped to this user by the integer id from the verified
+        // token, exactly like the soft-deletes above.
+        try {
+            await dbConfig.run('DELETE FROM user_employer_documents WHERE user_id = ?', [userId]);
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted employer documents for user ${userId}`);
+        } catch (err) {
+            console.error('Error deleting employer documents:', err.message);
+        }
+        // The Home chips this user pressed X on. No personal content, but the same reasoning: the row
+        // outlives the soft delete, so signing back in (or a re-registration onto this row) would
+        // inherit hides made by the deleted account.
+        try {
+            await dbConfig.run('DELETE FROM user_home_hidden_targets WHERE user_id = ?', [userId]);
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted hidden Home targets for user ${userId}`);
+        } catch (err) {
+            console.error('Error deleting hidden Home targets:', err.message);
+        }
+
         // Log account deletion event
         await logSecurityEvent('account', 'ACCOUNT_DELETED', userId, true, {
             email: user.email,
@@ -4095,6 +4152,7 @@ app.use('/api', notificationsRoutes);
 app.use('/api', jobRoutes);
 app.use('/api/ai-hub', aiHubRoutes);
 app.use('/api/resume-builder', resumeBuilderRoutes);
+app.use('/api/employer-docs', require('./server/routes/employerDocsRoutes'));   // per-employer tailored documents (read/edit only)
 app.use('/api/downloads', require('./server/routes/downloads'));
 app.use('/api', require('./server/routes/resumeScoreRoutes'));   // résumé score popup (additive)
 app.use('/api', require('./server/routes/journeyRoutes'));       // activation journey coach (additive)

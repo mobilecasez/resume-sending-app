@@ -1317,25 +1317,82 @@ async function requirePaidForDownload(userId, res, employer, req) {
  * its job deleted afterwards; re-rendering from live data would then hand back a different document
  * than the one they paid for.
  */
-function recordLetter(userId, req, { employer, tplId, format, mode, fileName, coverLetterHtml, companyName, companyAddress, brandColor }) {
+function recordLetter(userId, req, { employer, tplId, format, mode, fileName, coverLetterHtml, companyName, companyAddress, brandColor, docId }) {
     const tpl = (clTemplates.TEMPLATES || []).find((t) => t.id === tplId);
     return history.record(userId, {
         kind: 'cover_letter', employer, templateId: tplId || '', templateName: (tpl && tpl.name) || String(tplId || ''),
         format, mode: mode || '', fileName,
-        payload: { template: tplId || '', mode: mode || '', coverLetterHtml, companyName, companyAddress, brandColor },
+        // docId (a Home employer letter) rides along so "get it again" re-renders that saved letter; the
+        // frozen text stays too, exactly as for every other letter.
+        payload: { template: tplId || '', mode: mode || '', coverLetterHtml, companyName, companyAddress, brandColor, ...(docId ? { docId } : {}) },
     }, req).catch(() => {});
 }
 
+/**
+ * The saved Home employer letter a download names by `docId`.
+ *   no docId in the body     → null   (the classic lane: the letter's html travels in the body)
+ *   docId, this user's letter → the doc (employerDocs shape: payload, employer_name, design, …)
+ *   docId, anything else      → LETTER_DOC_GONE (not theirs, pruned, another kind, or empty)
+ *
+ * ⚠️ OWNER + KIND + ENVIRONMENT ARE SCOPED IN THE SQL (employerDocs.getById). The id comes from the
+ * client; a letter fetched by id and checked afterwards is one forgotten `if` from another user's letter.
+ * ⚠️ THE BODY'S HTML IS IGNORED WHEN docId IS SENT. What is rendered, billed and recorded is the saved
+ * letter itself — a client cannot pay for one employer's letter and download different text under it.
+ */
+const LETTER_DOC_GONE = Symbol('letter_doc_gone');
+async function employerLetterDocFor(userId, req) {
+    const raw = req.body && req.body.docId;
+    if (raw == null || raw === '' || raw === false) return null;
+    try {
+        const doc = await require('../services/employerDocs').getById(userId, raw, req, { kind: 'cover_letter' });
+        const html = doc && doc.payload && doc.payload.coverLetterHtml;
+        return typeof html === 'string' && html.trim() ? doc : LETTER_DOC_GONE;
+    } catch (e) {
+        console.warn('[coverLetter] saved letter lookup failed:', e.message);
+        return LETTER_DOC_GONE;
+    }
+}
+
+/**
+ * What to render from a saved letter. `mode` is the caller's when it sent one, else the design's
+ * (the resume doc lane's rule), else the renderer's own default.
+ */
+function savedLetterInput(doc, body) {
+    const p = doc.payload || {};
+    const asked = body && typeof body.mode === 'string' ? body.mode.trim() : '';
+    const designMode = doc.design && (doc.design.mode === 'a4' || doc.design.mode === 'onepage') ? doc.design.mode : '';
+    const hex = typeof p.brandColor === 'string' && /^#[0-9a-f]{6}$/i.test(p.brandColor.trim()) ? p.brandColor.trim() : null;
+    return {
+        mode: asked || designMode || undefined,
+        coverLetterHtml: p.coverLetterHtml,
+        companyName: p.companyName || doc.employer_name || '',
+        companyAddress: p.companyAddress || '',
+        brandColor: hex,
+        websiteUrl: undefined,
+    };
+}
+
+const LETTER_GONE_BODY = {
+    error: 'We no longer have that cover letter. Open the employer on Home and write it again.',
+    reason: 'payload_gone',
+};
+
 async function generateCoverLetterTemplatePdf(req, res) {
     const userId = req.user.id;
-    const { template, mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
+    // A Home employer letter names itself by docId: render THAT saved letter, bill ITS employer.
+    const doc = await employerLetterDocFor(userId, req);
+    if (doc === LETTER_DOC_GONE) return res.status(410).json(LETTER_GONE_BODY);
+    const { template } = req.body || {};
+    const { mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = doc ? savedLetterInput(doc, req.body) : (req.body || {});
     // The employer a PASS attaches to is not necessarily the name printed on the letter. The
     // resume screen knows the company as the Home target's `target.company`; this screen knows it
     // as the AI's `employer_name` (or the recipient's website when the AI found no name at all).
     // Send both spellings and let downloads.resolveEmployer pick the one already paid for, so a
     // pass bought via the resume covers this letter instead of demanding a second payment for the
     // same company.
-    const passEmployer = await downloads.resolveEmployer(
+    // ⚠️ A saved letter's employer is its stored employer_name — the key its generation was billed and
+    // cached under — never a spelling the client sends (canDownload is alias-aware on its own).
+    const passEmployer = doc ? (doc.employer_name || null) : await downloads.resolveEmployer(
         userId, [(req.body || {}).employer, companyName], req,
     ).catch(() => companyName || null);
     try {
@@ -1369,7 +1426,7 @@ async function generateCoverLetterTemplatePdf(req, res) {
         await downloads.claimDownload(userId, { employer: passEmployer }, req);
         await recordLetter(userId, req, {
             employer: passEmployer, tplId, format: 'pdf', mode, fileName,
-            coverLetterHtml, companyName, companyAddress, brandColor,
+            coverLetterHtml, companyName, companyAddress, brandColor, docId: doc ? doc.id : undefined,
         });
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
@@ -1384,14 +1441,19 @@ async function generateCoverLetterTemplatePdf(req, res) {
 // html-to-docx. Additive — the PDF path is untouched. Same credit cost.
 async function generateCoverLetterTemplateDocx(req, res) {
     const userId = req.user.id;
-    const { template, mode, coverLetterHtml, companyName, companyAddress } = req.body || {};
+    // A Home employer letter names itself by docId: render THAT saved letter, bill ITS employer.
+    const doc = await employerLetterDocFor(userId, req);
+    if (doc === LETTER_DOC_GONE) return res.status(410).json(LETTER_GONE_BODY);
+    const { template } = req.body || {};
+    const { mode, coverLetterHtml, companyName, companyAddress } = doc ? savedLetterInput(doc, req.body) : (req.body || {});
     // The employer a PASS attaches to is not necessarily the name printed on the letter. The
     // resume screen knows the company as the Home target's `target.company`; this screen knows it
     // as the AI's `employer_name` (or the recipient's website when the AI found no name at all).
     // Send both spellings and let downloads.resolveEmployer pick the one already paid for, so a
     // pass bought via the resume covers this letter instead of demanding a second payment for the
     // same company.
-    const passEmployer = await downloads.resolveEmployer(
+    // ⚠️ A saved letter's employer is its stored employer_name (see generateCoverLetterTemplatePdf).
+    const passEmployer = doc ? (doc.employer_name || null) : await downloads.resolveEmployer(
         userId, [(req.body || {}).employer, companyName], req,
     ).catch(() => companyName || null);
     try {
@@ -1418,7 +1480,8 @@ async function generateCoverLetterTemplateDocx(req, res) {
         await downloads.claimDownload(userId, { employer: passEmployer }, req);
         await recordLetter(userId, req, {
             employer: passEmployer, tplId, format: 'docx', mode, fileName,
-            coverLetterHtml, companyName, companyAddress, brandColor: null,
+            coverLetterHtml, companyName, companyAddress,
+            brandColor: doc ? savedLetterInput(doc, req.body).brandColor : null, docId: doc ? doc.id : undefined,
         });
         return res.json({ success: true, downloadUrl: `/api/download-cover-letter-docx/${encodeURIComponent(fileName)}`, template: tplId });
     } catch (e) {
@@ -1483,5 +1546,12 @@ module.exports = {
     previewCoverLetterTemplates,
     generateCoverLetterTemplatePdf,
     generateCoverLetterTemplateDocx,
-    buildCoverLetterPdfForRegion
+    buildCoverLetterPdfForRegion,
+    // Exported for reuse ONLY (behaviour unchanged): employerLetterController writes Home's per-employer
+    // letters with the same body formatter and renders their thumbnails from the same sender block,
+    // photo and brand colour the downloads above use — so a card is the file they would download.
+    formatCoverLetterWithHTML,
+    buildCLSender,
+    loadCLPhotoDataUri,
+    lookupBrandColor,
 };

@@ -4,6 +4,56 @@ const geoContext = require('./geoContext');        // …and the per-user anchor
 // ⚠️ LAZY: discoverController requires aiHubController, which requires this module — a top-level
 // require here would hand one side a half-built exports object. Resolved on first dashboard read.
 const websiteOf = (raw, name) => require('../controllers/discoverController').websiteOf(raw, name);
+const ownsHost = (name, host) => require('../controllers/discoverController').ownsHost(name, host);
+// Same lazy rule: downloads -> entitlements is a long chain, and only a chip rename needs it.
+const downloads = () => require('./downloads');
+
+// Postgres "undefined column" / "undefined table". Migration 046 (user_tracked_employers.display_name,
+// user_home_hidden_targets) runs inside initializeDatabase, which races app.listen, and a failed ALTER is
+// swallowed there, so for a while (or for good, on a database it could not alter) they can be absent.
+// Every read and write of them below falls back to the pre-046 statement on exactly these codes.
+const isMissingSchema = (e) => !!e && (e.code === '42703' || e.code === '42P01');
+
+// Does this employer NAME legitimately belong to its domain? ownsHost (the name's alias key IS the host's
+// registrable label) plus the name's initials: measured with ownsHost alone, "Tata Consultancy
+// Services" does NOT own tcs.com while "TCS" does, so a correct row would look unowned. Initials are
+// tried over every word and over the words left after joiners/legal suffixes ("International Business
+// Machines Corp" -> ibm).
+// ⚠️ A URL-SHAPED NAME NEVER OWNS ANYTHING. aliasKeysOf reduces "amazon.jobs/anything" or
+// "https://amazon.jobs" to "amazon", so without this a link (or a scrape's companyInput fallback, which
+// can be the pasted URL) would count as the company's real name and be protected against the name that
+// is. Anything with / : < > @, a leading www., or the bare shape of a host is refused here.
+const NAME_JOINERS = new Set(['the', 'and', 'of', 'for', 'de', 'des', 'du', 'la', 'le', 'und', 'inc', 'llc', 'llp',
+    'ltd', 'limited', 'gmbh', 'ag', 'se', 'sa', 'plc', 'corp', 'corporation', 'co', 'company']);
+const URL_SHAPED_NAME = /[/:<>@]|^www\.|^[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+function nameOwnsHost(name, host) {
+    const s = String(name || '').trim();
+    if (!s || !host || URL_SHAPED_NAME.test(s)) return false;
+    if (ownsHost(s, host)) return true;
+    const words = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+        .split(/[^a-z0-9]+/).filter(Boolean);
+    if (words.length < 2) return false;
+    const all = words.map((w) => w[0]).join('');
+    const core = words.filter((w) => !NAME_JOINERS.has(w)).map((w) => w[0]).join('');
+    return ownsHost(all, host) || (core.length >= 2 && ownsHost(core, host));
+}
+
+/**
+ * Should a SCRAPE's name for this employer be refused in favour of the name already stored?
+ *
+ * ⚠️ THE SOUQ.COM BUG. A Job Hub search of amazon.jobs read a posting's legal entity ("Souq.com for
+ * E-Commerce LLC") and wrote it over the shared row's "Amazon": for every user, and again on every
+ * search, undoing any hand repair. `employers` is one identity table shared by all users, so a stored
+ * name that OWNS the host ("Amazon" <-> amazon.jobs) is kept against an incoming name that does not.
+ * Everything else behaves as before (the scrape's name wins): a stored name that does not own its host
+ * stays replaceable, which is how a Phase-1 nav label ("Back ButtonSearch Icon") still gets fixed.
+ * Used by upsertEmployer's ON CONFLICT and processJobSearch's AI name override. Home's Add never renames
+ * the shared row at all (trackEmployerForUser).
+ */
+function keepStoredEmployerName(storedName, incomingName, domain) {
+    if (!storedName || !incomingName || storedName === incomingName) return false;
+    return nameOwnsHost(storedName, domain) && !nameOwnsHost(incomingName, domain);
+}
 
 /**
  * The geo ORDER-BY prefix for the tracked-employer job lists. These rows live in `jobs`, not
@@ -135,25 +185,43 @@ async function requeueStuckJobs() {
 // NEW: AI Hub Centralized Database Operations
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function upsertEmployer(domain, name, subInfo, logoColor, logoInitial) {
+// ⚠️ THE NAME ON CONFLICT IS GUARDED (keepStoredEmployerName). The stored name is read first and, when it
+// owns the host and the scraped one does not, passed as $6: the CASE keeps employers.name only while it
+// is STILL that string, so a rename that landed in between is not undone by a stale read — at worst the
+// old behaviour (the scrape's name wins) happens. A read failure never blocks the upsert ($6 = NULL).
+// Resolves { id, name } — name is what the row is called AFTER the upsert, which differs from the
+// scraped `name` exactly when the guard kept the stored one (processJobSearch shows that name).
+async function upsertEmployerWithName(domain, name, subInfo, logoColor, logoInitial) {
+    let keep = null;
+    try {
+        const cur = await dbConfig.get(`SELECT name FROM employers WHERE domain = $1`, [domain]);
+        if (cur && keepStoredEmployerName(cur.name, name, domain)) {
+            keep = cur.name;
+            console.log(`[aiHub] employer ${domain}: kept "${cur.name}" (owns the host) over scraped "${name}"`);
+        }
+    } catch { /* keep = null: the pre-guard behaviour */ }
     const result = await dbConfig.query(
         `INSERT INTO employers (domain, name, sub_info, logo_color, logo_initial)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (domain) DO UPDATE SET 
-            name = EXCLUDED.name,
+         ON CONFLICT (domain) DO UPDATE SET
+            name = CASE WHEN employers.name = $6::text THEN employers.name ELSE EXCLUDED.name END,
             sub_info = EXCLUDED.sub_info,
             last_scraped_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
-         RETURNING id`,
-        [domain, name, subInfo, JSON.stringify(logoColor), logoInitial]
+         RETURNING id, name`,
+        [domain, name, subInfo, JSON.stringify(logoColor), logoInitial, keep]
     );
-    return result[0].id;
+    return { id: result[0].id, name: result[0].name || name };
+}
+
+async function upsertEmployer(domain, name, subInfo, logoColor, logoInitial) {
+    return (await upsertEmployerWithName(domain, name, subInfo, logoColor, logoInitial)).id;
 }
 
 /**
  * Home "Add employer" (POST /employers/track): make sure an employers row owns `domain`, then put it
  * on the user's Home as 'watching' — the cap checks, the insert and the track in ONE transaction.
- * Returns { row, inserted } on success, or { limit: 'watching' | 'daily' } when a cap refuses it.
+ * Returns { row, inserted, displayName } on success, or { limit: 'watching' | 'daily' } when a cap refuses it.
  *
  * ⚠️ INSERT-IF-ABSENT, NOT upsertEmployer. Its ON CONFLICT rewrites name + sub_info and stamps
  * last_scraped_at, and `employers` is SHARED: one signed-in user typing "Acme Ltd" would rename the
@@ -181,10 +249,35 @@ async function upsertEmployer(domain, name, subInfo, logoColor, logoInitial) {
  * both write created_at = CURRENT_TIMESTAMP inside this ONE transaction, and CURRENT_TIMESTAMP is the
  * transaction's start time — so "this user's endpoint created that row" is exactly
  * e.created_at = ute.created_at AND e.last_scraped_at IS NULL. A re-track never touches either
- * created_at (ON CONFLICT updates status/updated_at only), a row another user created has an older
+ * created_at (ON CONFLICT updates status/display_name/updated_at only), a row another user created has an older
  * e.created_at, and archiving keeps the ute row, so an archived insert still counts for the day.
+ *
+ * ⚠️ THE NAME THE USER PICKED WINS — FOR THAT USER, AND ONLY IN THEIR ROW. "The stored name wins" put
+ * "Souq.com for E-Commerce LLC" on the chip of a user who added Amazon (amazon.jobs): a job ingest had
+ * named the shared row after the posting's legal entity. So the picked name is stored PER USER in
+ * user_tracked_employers.display_name (insert AND re-track — the latest pick wins) and every read of
+ * this user's employer prefers it.
+ * ⚠️ THE SHARED employers ROW IS NEVER RENAMED HERE. An earlier "guarded repair" renamed it when the
+ * stored name did not own the host and the picked one did — but any signed-in user could then set a
+ * shared name for everyone (a URL-shaped "amazon.jobs/…" passes the alias test), and every other user
+ * whose chip still fell back to employers.name got a new chip name AND a new pass/cache key. The scrape
+ * side is guarded instead (keepStoredEmployerName), and other users' names are frozen in their own
+ * display_name (Migration 046 backfill + trackUserEmployer).
+ * ⚠️ A RENAME MOVES THIS USER'S PASS WITH IT. A pass binds to employerKeyOf(the chip's name); renaming
+ * "Souq.com for E-Commerce LLC" to "Amazon" made the pass bought under the old chip invisible to the new
+ * one, and the next build or download asked for money again. So when this user's previous shown name
+ * (display_name, else employers.name) is a different company spelling (!sameEmployer), their passes
+ * bound under the old key are rebound to the new name in this same transaction (rebindPassesForRename).
+ * ⚠️ Re-adding also un-hides the employer's Home chip (user_home_hidden_targets 'emp_<id>'), or the
+ * X the user pressed earlier would keep the employer they just added invisible.
+ * ⚠️ MIGRATION 046 MAY NOT HAVE RUN (isMissingSchema): each 046 statement sits in its own SAVEPOINT, so a
+ * missing column/table falls back to the pre-046 statement instead of failing the add. Without
+ * display_name nothing is renamed, so displayName comes back null and the chip shows the stored name —
+ * the same name the dashboard (and therefore every later build's billing key) will show.
+ * Returns { row, inserted, displayName }.
  */
-async function trackEmployerForUser(userId, { domain, name, logoColor, logoInitial }, { maxWatching, maxInsertsPerDay }) {
+async function trackEmployerForUser(userId, { domain, name, displayName, logoColor, logoInitial }, { maxWatching, maxInsertsPerDay }) {
+    const picked = typeof displayName === 'string' && displayName.trim() ? displayName.trim().slice(0, 255) : null;
     return dbConfig.withTransaction(async (tx) => {
         await tx.query(`SELECT pg_advisory_xact_lock(hashtext('ai_hub.track_employer'), $1::int)`, [userId]);
 
@@ -224,13 +317,95 @@ async function trackEmployerForUser(userId, { domain, name, logoColor, logoIniti
                 : await tx.get(`SELECT id, name, sub_info, logo_color FROM employers WHERE domain = $1`, [domain]);
             if (!row) throw new Error(`employer row for ${domain} vanished between insert and read`);
         }
-        await tx.run(
-            `INSERT INTO user_tracked_employers (user_id, employer_id, status, created_at)
-             VALUES ($1, $2, 'watching', CURRENT_TIMESTAMP)
-             ON CONFLICT (user_id, employer_id) DO UPDATE SET status = 'watching', updated_at = CURRENT_TIMESTAMP`,
-            [userId, row.id]);
-        return { row, inserted };
+
+        // The per-user name (Migration 046). The previous shown name is read first — only a row that
+        // already existed can have one (a just-inserted employers row has no tracking rows yet).
+        // ⚠️ COALESCE on conflict: a caller that passes no display name must not wipe the one the user
+        // picked before. created_at stays out of the conflict branch (the daily-insert attribution).
+        let prevShown = null;
+        const named = await withSavepoint(tx, 'track_display_name', async () => {
+            if (!inserted && picked) {
+                const prev = await tx.get(
+                    `SELECT display_name FROM user_tracked_employers WHERE user_id = $1 AND employer_id = $2`,
+                    [userId, row.id]);
+                if (prev) prevShown = (prev.display_name && String(prev.display_name).trim()) || row.name || null;
+            }
+            await tx.run(
+                `INSERT INTO user_tracked_employers (user_id, employer_id, status, display_name, created_at)
+                 VALUES ($1, $2, 'watching', $3, CURRENT_TIMESTAMP)
+                 ON CONFLICT (user_id, employer_id) DO UPDATE SET status = 'watching',
+                        display_name = COALESCE(EXCLUDED.display_name, user_tracked_employers.display_name),
+                        updated_at = CURRENT_TIMESTAMP`,
+                [userId, row.id, picked]);
+        });
+        if (!named.ok) {
+            console.warn(`[aiHub] trackEmployer: Migration 046 missing (${named.error.code}) — tracked without a display name`);
+            await tx.run(
+                `INSERT INTO user_tracked_employers (user_id, employer_id, status, created_at)
+                 VALUES ($1, $2, 'watching', CURRENT_TIMESTAMP)
+                 ON CONFLICT (user_id, employer_id) DO UPDATE SET status = 'watching', updated_at = CURRENT_TIMESTAMP`,
+                [userId, row.id]);
+        } else if (prevShown && picked && prevShown !== picked) {
+            const moved = await withSavepoint(tx, 'track_pass_rebind',
+                () => rebindPassesForRename(tx, userId, row.id, prevShown, picked));
+            if (!moved.ok) console.warn(`[aiHub] trackEmployer: pass rebind skipped (${moved.error.code})`);
+        }
+        const unhid = await withSavepoint(tx, 'track_unhide', () => tx.run(
+            `DELETE FROM user_home_hidden_targets WHERE user_id = $1 AND target_key = 'emp_' || $2::text`,
+            [userId, String(row.id)]));
+        if (!unhid.ok) console.warn(`[aiHub] trackEmployer: hidden targets unavailable (${unhid.error.code})`);
+        return { row, inserted, displayName: named.ok ? picked : null };
     });
+}
+
+// Run fn inside a SAVEPOINT of tx. A missing column/table (Migration 046 not applied) rolls back to the
+// savepoint — the transaction stays usable — and resolves { ok: false, error }; any other error is
+// rethrown, so withTransaction rolls the WHOLE add back (nothing half-renamed, nothing half-rebound).
+async function withSavepoint(tx, name, fn) {
+    await tx.query(`SAVEPOINT ${name}`);
+    try {
+        const value = await fn();
+        await tx.query(`RELEASE SAVEPOINT ${name}`);
+        return { ok: true, value };
+    } catch (e) {
+        if (!isMissingSchema(e)) throw e;
+        await tx.query(`ROLLBACK TO SAVEPOINT ${name}`);
+        return { ok: false, error: e };
+    }
+}
+
+/**
+ * This user's chip for employerId was renamed oldName → newName: move the passes they bound under the old
+ * name so the new chip still finds them (downloads.boundPassFor keys on employerKeyOf the chip's name).
+ * Inside the caller's transaction. All store environments (the rename is not per environment). Resolves
+ * the number of passes moved.
+ * ⚠️ Nothing moves when the two names are the SAME company (sameEmployer — boundPassFor already matches
+ * across those spellings), when either is nameless ('(none)' is never reached by a name), or when another
+ * employer this user WATCHES still shows a name that is the same company as the old one: that chip is
+ * the one still paying through the pass, and moving it would orphan that chip instead.
+ */
+async function rebindPassesForRename(tx, userId, employerId, oldName, newName) {
+    const dl = downloads();
+    const oldKey = dl.employerKeyOf(oldName);
+    const newKey = dl.employerKeyOf(newName);
+    if (oldKey === dl.NONE || newKey === dl.NONE || oldKey === newKey || dl.sameEmployer(oldName, newName)) return 0;
+    const others = await tx.query(
+        `SELECT COALESCE(NULLIF(BTRIM(ute.display_name), ''), e.name) AS shown
+           FROM user_tracked_employers ute
+           JOIN employers e ON e.id = ute.employer_id
+          WHERE ute.user_id = $1 AND ute.employer_id <> $2 AND ute.status = 'watching'`,
+        [userId, employerId]);
+    if ((Array.isArray(others) ? others : []).some((r) => r && r.shown && dl.sameEmployer(r.shown, oldName))) {
+        console.log(`[aiHub] rename "${oldName}" → "${newName}": another watched employer still shows the old name — passes left in place`);
+        return 0;
+    }
+    const r = await tx.run(
+        `UPDATE download_passes SET employer_key = $1, employer_name = $2
+          WHERE user_id = $3 AND employer_key = $4 AND bound_at IS NOT NULL`,
+        [newKey, newName, userId, oldKey]);
+    const n = (r && r.changes) || 0;
+    if (n) console.log(`[aiHub] rename "${oldName}" → "${newName}": moved ${n} pass(es) for user ${userId}`);
+    return n;
 }
 
 async function getEmployerByDomain(domain) {
@@ -346,13 +521,72 @@ async function addJobContact(jobId, name, role, email, phone, avatarUrl, linkedi
     }
 }
 
+// The Job Hub search / job capture / LinkedIn track. ⚠️ IT FREEZES THE NAME THE USER SEES. The chip name
+// is also the pass and cache key (downloads.employerKeyOf), and employers.name is shared — a later
+// scrape for ANOTHER user may still rename it (keepStoredEmployerName only guards a name that owns its
+// host). So the first track copies employers.name into this user's display_name, and a re-track keeps
+// whatever is already there (a Home pick included): COALESCE(existing, new), the reverse of Home's Add.
+// Migration 046 backfills the same thing for rows tracked before it. Pre-046 (isMissingSchema) the old
+// statement runs, so a search never fails on the migration race.
 async function trackUserEmployer(userId, employerId) {
-    await dbConfig.query(
-        `INSERT INTO user_tracked_employers (user_id, employer_id, status)
-         VALUES ($1, $2, 'watching')
-         ON CONFLICT (user_id, employer_id) DO UPDATE SET status = 'watching', updated_at = CURRENT_TIMESTAMP`,
-        [userId, employerId]
-    );
+    try {
+        await dbConfig.query(
+            `INSERT INTO user_tracked_employers (user_id, employer_id, status, display_name)
+             VALUES ($1, $2, 'watching', (SELECT e.name FROM employers e WHERE e.id = $2::uuid))
+             ON CONFLICT (user_id, employer_id) DO UPDATE SET status = 'watching',
+                    display_name = COALESCE(user_tracked_employers.display_name, EXCLUDED.display_name),
+                    updated_at = CURRENT_TIMESTAMP`,
+            [userId, employerId]
+        );
+    } catch (e) {
+        if (!isMissingSchema(e)) throw e;
+        await dbConfig.query(
+            `INSERT INTO user_tracked_employers (user_id, employer_id, status)
+             VALUES ($1, $2, 'watching')
+             ON CONFLICT (user_id, employer_id) DO UPDATE SET status = 'watching', updated_at = CURRENT_TIMESTAMP`,
+            [userId, employerId]
+        );
+    }
+}
+
+/**
+ * processJobSearch's AI name override, guarded (keepStoredEmployerName): the first detail batch's AI
+ * employer_name replaces a Phase-1 name ("Back ButtonSearch Icon") — but never a stored name that owns
+ * the host with one that does not (amazon.jobs: "Amazon", not "Souq.com for E-Commerce LLC").
+ * Resolves the name the search should show: the AI name when applied, the stored name when kept.
+ * ⚠️ THIS USER'S FROZEN NAME FOLLOWS THE FIX, NOBODY ELSE'S. trackUserEmployer froze employers.name into
+ * display_name seconds ago, so the Phase-1 junk would otherwise stick on this user's chip for good. Only
+ * this user's row, and only while it still equals the name being replaced (a Home pick is left alone);
+ * their passes bound under the replaced name move with it, as on Home (rebindPassesForRename). Other
+ * users keep their own frozen names and keys.
+ * Never throws — a failed rename must not fail the search.
+ */
+async function applyScrapedEmployerName(userId, employerId, domain, aiName) {
+    try {
+        const cur = await dbConfig.get(`SELECT name FROM employers WHERE id = $1`, [employerId]);
+        if (!cur) return aiName;
+        if (cur.name === aiName) return aiName;
+        if (keepStoredEmployerName(cur.name, aiName, domain)) {
+            console.log(`[aiHub] employer ${domain}: kept "${cur.name}" (owns the host) over AI name "${aiName}"`);
+            return cur.name;
+        }
+        await dbConfig.withTransaction(async (tx) => {
+            await tx.run(`UPDATE employers SET name = $1 WHERE id = $2 AND name = $3`, [aiName, employerId, cur.name]);
+            const own = await withSavepoint(tx, 'scrape_display_name', () => tx.run(
+                `UPDATE user_tracked_employers SET display_name = $1
+                  WHERE user_id = $2 AND employer_id = $3 AND display_name = $4`,
+                [aiName, userId, employerId, cur.name]));
+            if (own.ok && own.value && own.value.changes > 0) {
+                const moved = await withSavepoint(tx, 'scrape_pass_rebind',
+                    () => rebindPassesForRename(tx, userId, employerId, cur.name, aiName));
+                if (!moved.ok) console.warn(`[aiHub] AI name override: pass rebind skipped (${moved.error.code})`);
+            }
+        });
+        return aiName;
+    } catch (e) {
+        console.warn(`[aiHub] AI name override for ${domain} failed: ${e.message}`);
+        return aiName;
+    }
 }
 
 async function linkUserSkill(userId, skillId) {
@@ -468,16 +702,22 @@ function buildJobObject(jRow, skills, contactRows, { slimResponsibilities = fals
 
 async function getUserDashboard(userId) {
     // 1. Get tracked employers with async job status
-    const trackedEmployers = await dbConfig.query(
-        `SELECT e.*, ute.status as tracking_status, ute.async_job_id,
+    // ⚠️ ute.display_name is Migration 046, which can still be running (it races app.listen) or have
+    // failed: on 42703 the pre-046 SELECT runs instead and every chip shows the stored name, rather than
+    // the whole Job Hub and Home failing to load.
+    const trackedSql = (withDisplayName) =>
+        `SELECT e.*, ute.status as tracking_status, ute.async_job_id,${withDisplayName ? ' ute.display_name,' : ''}
                 aj.status as job_status, aj.progress as job_progress, aj.result as job_result
          FROM user_tracked_employers ute
          JOIN employers e ON ute.employer_id = e.id
          LEFT JOIN async_jobs aj ON ute.async_job_id = aj.id
          WHERE ute.user_id = $1 AND ute.status = 'watching'
-         ORDER BY ute.updated_at DESC`,
-        [userId]
-    );
+         ORDER BY ute.updated_at DESC`;
+    const trackedEmployers = await dbConfig.query(trackedSql(true), [userId]).catch((e) => {
+        if (!e || e.code !== '42703') throw e;
+        console.warn('[aiHub] dashboard: ute.display_name missing (Migration 046) — showing stored names');
+        return dbConfig.query(trackedSql(false), [userId]);
+    });
 
     // PERF: batch ALL completed employers' jobs+skills+contacts into 5 total queries (was 3 queries
     // PER employer → ~700 sequential round-trips → 14s for a heavy user). Cap to the top
@@ -547,6 +787,10 @@ async function getUserDashboard(userId) {
                 return ['#555555', '#1C1C1E'];
             } catch { return ['#555555', '#1C1C1E']; }
         })();
+        // The name THIS user picked on Home (trackEmployerForUser) beats the shared row's name, which a
+        // job ingest may have set to a posting's legal entity ("Souq.com for E-Commerce LLC" on
+        // amazon.jobs). ⚠️ Display only: websiteOf below still vets the domain with the STORED name.
+        const shownName = (emp.display_name && String(emp.display_name).trim()) || emp.name || '';
 
         let jobs = [], totalJobs = 0;
         if (isProcessing && emp.job_result) {
@@ -573,10 +817,10 @@ async function getUserDashboard(userId) {
                 // makes "remove company" actually persist instead of being local-only
                 // (the removed company was reappearing on reload).
                 jobId: emp.async_job_id || String(emp.id),
-                name: emp.name,
+                name: shownName,
                 subInfo: emp.sub_info || '',
                 logoColor,
-                logoInitial: (emp.name[0] || '?').toUpperCase(),
+                logoInitial: (shownName[0] || '?').toUpperCase(),
                 // The employer's bare host — Home's employer chips send it as job.website for a
                 // tailored build. ⚠️ employers.domain also holds synthetic identity keys ('search:…',
                 // 'web-acme', 'linkedin-acme'), name slugs ('nordex-se'), jobCapture's capture-page
@@ -643,18 +887,25 @@ async function getEmployerJobsPage(userId, employerId, offset = 0, limit = 40) {
  * Also serves web deep-links (?id=) directly instead of scanning the whole dashboard.
  */
 async function getJobFull(userId, jobId) {
-    const jRow = await dbConfig.get(
+    // ⚠️ Same Migration 046 fallback as the dashboard: on 42703 (no ute.display_name yet) the pre-046
+    // SELECT runs, without the tracking join, and the employer shows its stored name.
+    const fullSql = (withDisplayName) =>
         `SELECT j.id, j.employer_id, j.title, j.experience, j.salary, j.job_type, j.work_mode,
                 j.urgent, j.created_at, j.job_url, j.responsibilities,
                 ujm.match_score, ujm.scored_at, l.raw_text AS location_text,
-                e.name AS emp_name, e.sub_info AS emp_sub_info, e.logo_color AS emp_logo_color, e.domain AS emp_domain
+                e.name AS emp_name, e.sub_info AS emp_sub_info, e.logo_color AS emp_logo_color, e.domain AS emp_domain${withDisplayName ? `,
+                ute.display_name AS emp_display_name` : ''}
          FROM jobs j
          JOIN user_job_matches ujm ON j.id = ujm.job_id AND ujm.user_id = $2
          LEFT JOIN locations l ON j.location_id = l.id
-         LEFT JOIN employers e ON j.employer_id = e.id
-         WHERE j.id = $1 AND j.is_active = TRUE`,
-        [jobId, userId]
-    );
+         LEFT JOIN employers e ON j.employer_id = e.id${withDisplayName ? `
+         LEFT JOIN user_tracked_employers ute ON ute.employer_id = j.employer_id AND ute.user_id = $2` : ''}
+         WHERE j.id = $1 AND j.is_active = TRUE`;
+    const jRow = await dbConfig.get(fullSql(true), [jobId, userId]).catch((e) => {
+        if (!e || e.code !== '42703') throw e;
+        console.warn('[aiHub] job detail: ute.display_name missing (Migration 046) — showing the stored name');
+        return dbConfig.get(fullSql(false), [jobId, userId]);
+    });
     if (!jRow) return null;
     const skRows = await dbConfig.query(
         `SELECT s.name FROM skills s JOIN job_skills js ON s.id = js.skill_id WHERE js.job_id = $1`, [jobId]);
@@ -668,15 +919,18 @@ async function getJobFull(userId, jobId) {
         } catch { return ['#555555', '#1C1C1E']; }
     })();
     const job = buildJobObject(jRow, skRows.map((r) => r.name), cRows, { slimResponsibilities: false });
+    // Same per-user naming as the dashboard: the name this user picked, else the shared row's.
+    // (user_tracked_employers has one row per user+employer — the PK — so the join cannot fan out.)
+    const shownName = (jRow.emp_display_name && String(jRow.emp_display_name).trim()) || jRow.emp_name || '';
     return {
         job,
         employer: jRow.emp_name ? {
             id: String(jRow.employer_id),
-            name: jRow.emp_name,
+            name: shownName,
             subInfo: jRow.emp_sub_info || '',
             domain: jRow.emp_domain || null,
             logoColor,
-            logoInitial: (jRow.emp_name[0] || '?').toUpperCase(),
+            logoInitial: (shownName[0] || '?').toUpperCase(),
         } : null,
     };
 }
@@ -830,11 +1084,16 @@ async function buildCachedEmployerObject(employer, userId, asyncJobId) {
     };
 }
 
+// Archive (soft-delete) one employer for one user. The row, its display_name and the shared employers
+// row all stay, so re-adding restores it and the user's saved documents for it. updated_at is stamped
+// so "when did this user drop it" is readable. Resolves true when this user had a tracking row for it
+// (existing callers ignore the value).
 async function archiveUserEmployer(userId, employerId) {
-    await dbConfig.run(
-        `UPDATE user_tracked_employers SET status = 'archived' WHERE user_id = $1 AND employer_id = $2`,
+    const r = await dbConfig.run(
+        `UPDATE user_tracked_employers SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 AND employer_id = $2`,
         [userId, employerId]
     );
+    return !!(r && r.changes > 0);
 }
 
 module.exports = {
@@ -848,6 +1107,9 @@ module.exports = {
     cleanupOldJobs,
     requeueStuckJobs,
     upsertEmployer,
+    upsertEmployerWithName,
+    keepStoredEmployerName,
+    applyScrapedEmployerName,
     trackEmployerForUser,
     getEmployerByDomain,
     upsertLocation,

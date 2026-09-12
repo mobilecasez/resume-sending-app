@@ -39,8 +39,13 @@ export const AFFORDANCE_CLEAR = AFFORDANCE.inset + AFFORDANCE.size + AFFORDANCE.
 /**
  * What is actually happening to a slot with no pixels yet. Only the caller can know this — see the
  * note on the `state` prop.
+ *
+ * 'writing' is different in kind from the other three: it is not about THIS slot's pixels at all.
+ * It means the document behind the whole deck is being rewritten by AI right now (a background
+ * build for this employer), so every page in it is about to change and none of the old pixels are
+ * worth showing. The carousel sets it on every card at once and hides their images.
  */
-export type PaperState = 'loading' | 'queued' | 'idle';
+export type PaperState = 'loading' | 'queued' | 'idle' | 'writing';
 
 /** Section headings, in % of page height. */
 const HEADS = [26.5, 51, 74];
@@ -109,6 +114,92 @@ function Sweep({ w, band, fade }: {
   );
 }
 
+/** One pass of the page being written, top to bottom, including the hold and the fade. */
+const WRITE_MS = 4600;
+/** Fraction of a pass spent writing; the rest holds the finished page, then fades it. */
+const WRITE_END = 0.8;
+const WRITE_GAP = 0.012;
+/** 0.001, not 0: a zero scale is a singular matrix, and some native transforms refuse to draw it. */
+const INK_MIN = 0.001;
+
+type InkLine = { top: number; len: number; thick: number; head: boolean };
+
+/**
+ * THE 'writing' LOOP — ink drawn along the page's own lines, one after another, with an accent
+ * caret riding the tip, then held, faded and started again. It says "a page is being written" in a
+ * way a generic shimmer cannot, which is the whole point of this state.
+ *
+ * ⚠️ ONE Animated.Value FOR THE WHOLE PAGE, native driver, transform/opacity ONLY. Every line and
+ * caret is an interpolation of that single clock over its own slice of the pass, so 24 moving views
+ * cost one native loop — and nothing here ever animates a width: the ink is a full-length bar
+ * scaled on X from its left edge (translateX compensates for RN scaling about the centre).
+ *
+ * ⚠️ Same mount rule as Sweep: `shimmer={false}` means this component does not exist, so a far card
+ * in a building deck runs no loop at all.
+ */
+function Writing({ lines, inset, accent }: { lines: InkLine[]; inset: number; accent: string }) {
+  const t = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const l = Animated.loop(Animated.timing(t, { toValue: 1, duration: WRITE_MS, easing: Easing.linear, useNativeDriver: true }));
+    l.start();
+    return () => l.stop();
+  }, [t]);
+
+  // Slices are proportional to each line's length, so the pen moves at an even pace instead of
+  // crawling across short lines and racing across long ones.
+  const nodes = useMemo(() => {
+    const total = lines.reduce((a, r) => a + r.len, 0) || 1;
+    const usable = WRITE_END - WRITE_GAP * lines.length;
+    let at = 0;
+    return lines.map((r) => {
+      const from = at;
+      const to = from + Math.max(0.01, (usable * r.len) / total);
+      at = to + WRITE_GAP;
+      return {
+        r,
+        shift: t.interpolate({ inputRange: [from, to], outputRange: [-(r.len * (1 - INK_MIN)) / 2, 0], extrapolate: 'clamp' }),
+        grow: t.interpolate({ inputRange: [from, to], outputRange: [INK_MIN, 1], extrapolate: 'clamp' }),
+        tip: t.interpolate({ inputRange: [from, to], outputRange: [0, r.len], extrapolate: 'clamp' }),
+        seen: t.interpolate({ inputRange: [from - 0.004, from, to, to + 0.004], outputRange: [0, 1, 1, 0], extrapolate: 'clamp' }),
+      };
+    });
+  }, [t, lines]);
+  const fadeAll = useMemo(
+    () => t.interpolate({ inputRange: [0, 0.9, 0.97, 1], outputRange: [1, 1, 0, 0], extrapolate: 'clamp' }),
+    [t],
+  );
+
+  const inkHead = tint(accent, 0.85);
+  return (
+    <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: fadeAll }]}>
+      {nodes.map((n, k) => (
+        <Animated.View
+          key={`i${k}`}
+          // ⚠️ The head colour is a SEPARATE style entry, not `backgroundColor: head ? c : undefined`:
+          // flattening copies an undefined value over s.ink's colour and the body ink vanishes.
+          style={[s.ink, n.r.head && s.inkHead, n.r.head && { backgroundColor: inkHead }, {
+            left: inset, top: n.r.top, width: n.r.len, height: n.r.thick,
+            transform: [{ translateX: n.shift }, { scaleX: n.grow }],
+          }]}
+        />
+      ))}
+      {nodes.map((n, k) => {
+        const caretH = Math.max(7, n.r.thick * 3);
+        return (
+          <Animated.View
+            key={`c${k}`}
+            style={[s.caret, {
+              left: inset - 1, top: n.r.top - (caretH - n.r.thick) / 2, height: caretH,
+              backgroundColor: accent, opacity: n.seen,
+              transform: [{ translateX: n.tip }],
+            }]}
+          />
+        );
+      })}
+    </Animated.View>
+  );
+}
+
 export default function PaperSkeleton({ w, h, accent, name, detail, shimmer, fade, state = 'idle' }: {
   w: number;
   h: number;
@@ -149,6 +240,12 @@ export default function PaperSkeleton({ w, h, accent, name, detail, shimmer, fad
       subTop: pt(20.4), subW: wd(34),
       heads: HEADS.map((t) => ({ top: pt(t), width: wd(24) })),
       rules: RULES.map(([t, ww]) => ({ top: pt(t), width: wd(ww) })),
+      // The 'writing' pen's route: headings and body rules merged into reading order, so the page
+      // fills top to bottom the way a person writes one.
+      ink: [
+        ...HEADS.map((t) => ({ top: pt(t), len: wd(24), thick: Math.max(3, Math.round(h * 0.016)), head: true })),
+        ...RULES.map(([t, ww]) => ({ top: pt(t), len: wd(ww), thick: Math.max(2, Math.round(h * 0.009)), head: false })),
+      ].sort((a, b) => a.top - b.top) as InkLine[],
       tagBottom: pt(7),
       fs: Math.max(8.5, Math.min(11.5, w * 0.05)),
       sweep: Math.max(64, Math.round(w * 0.45)),
@@ -158,7 +255,7 @@ export default function PaperSkeleton({ w, h, accent, name, detail, shimmer, fad
   const label = (name || '').trim() || 'Your design';
   const headTint = tint(accent || '', 0.5);
   // 'idle' adds nothing: an unrendered slot that nobody is fetching is just this design, named.
-  const note = state === 'loading' ? ', loading' : state === 'queued' ? ', queued' : '';
+  const note = state === 'loading' ? ', loading' : state === 'queued' ? ', queued' : state === 'writing' ? ', writing' : '';
 
   return (
     <View style={[StyleSheet.absoluteFill, s.page]} pointerEvents="none">
@@ -184,7 +281,12 @@ export default function PaperSkeleton({ w, h, accent, name, detail, shimmer, fad
         </>
       )}
 
-      {shimmer && <Sweep w={w} band={g.sweep} fade={fade} />}
+      {/* 'writing' swaps the sweep for the pen rather than stacking both: two loops on one page
+          read as noise, and the pen is the one that says what is happening. It needs the body
+          rules to write along, so a card too far out to draw them gets neither. */}
+      {shimmer && (state === 'writing'
+        ? (detail ? <Writing lines={g.ink} inset={g.inset} accent={accent || '#4F8DFF'} /> : null)
+        : <Sweep w={w} band={g.sweep} fade={fade} />)}
 
       {/* ⚠️ AFTER the sweep, so the sweep passes UNDER it. The shimmer is decoration; this line is
           the only honest information on a page that has none yet, and washing it out to sell the
@@ -226,6 +328,11 @@ const s = StyleSheet.create({
   head: { position: 'absolute', borderRadius: 2 },
   rule: { position: 'absolute', borderRadius: 1.5, backgroundColor: 'rgba(11,15,34,0.10)' },
   sweep: { position: 'absolute', top: -30, bottom: -30 },
+  // The pen's ink sits exactly on the rule it writes, darker than the rule so the written part
+  // reads as filled in; headings take the design's accent instead (set per line).
+  ink: { position: 'absolute', borderRadius: 1.5, backgroundColor: 'rgba(11,15,34,0.30)' },
+  inkHead: { borderRadius: 2 },
+  caret: { position: 'absolute', width: 2.5, borderRadius: 2 },
   // `right` is the collision fix: the chip is centred in what is left of the card once the zoom
   // button's footprint is taken out. See the arithmetic above the tag.
   tagWrap: { position: 'absolute', left: 0, right: AFFORDANCE_CLEAR, alignItems: 'center' },

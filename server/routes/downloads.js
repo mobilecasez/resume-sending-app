@@ -76,6 +76,27 @@ router.post('/history/:id/again', authenticateToken, async (req, res) => {
   const isDocx = row.format === 'docx';
 
   if (row.kind === 'cover_letter') {
+    // A letter downloaded from an employer DOCUMENT re-renders from that document (the handler loads
+    // it by id, owner- and environment-scoped, and 410s payload_gone itself). ⚠️ Only when the row
+    // still exists: a document pruned since, with the downloaded text frozen here, falls through to
+    // the frozen-html path below — that text IS the letter they paid for, so it is the honest answer.
+    if (p.docId) {
+      const doc = await require('../services/employerDocs')
+        .getById(req.user.id, p.docId, req, { kind: 'cover_letter' })
+        .catch(() => null);
+      if (doc || !p.coverLetterHtml) {
+        req.body = {
+          template: p.template || row.template_id || 'standard',
+          mode: p.mode || row.mode || '',
+          employer: row.employer_name || null,
+          docId: p.docId,
+        };
+        const cl = require('../controllers/coverLetterController');
+        return isDocx
+          ? cl.generateCoverLetterTemplateDocx(req, res)
+          : cl.generateCoverLetterTemplatePdf(req, res);
+      }
+    }
     if (!p.coverLetterHtml) {
       // Frozen text is what makes a letter reproducible. Without it there is nothing honest to
       // hand back — the renderer would 400 anyway, and guessing a different letter would be worse.
@@ -99,10 +120,14 @@ router.post('/history/:id/again', authenticateToken, async (req, res) => {
       : cl.generateCoverLetterTemplatePdf(req, res);
   }
 
+  // docId: this download was rendered from an employer's tailored document, so the again-render must
+  // be THAT document, not whatever user_resumes holds today (the handler 410s payload_gone when the
+  // document is gone — ⚠️ never a silent fall back to the base resume under the tailored entry's name).
   req.body = {
     template: p.template || row.template_id || '',
     mode: p.mode || row.mode || 'a4',
     employer: row.employer_name || null,
+    docId: p.docId || undefined,
   };
   const rb = require('../controllers/resumeBuilderController');
   return isDocx ? rb.generateDocx(req, res) : rb.generatePDF(req, res);

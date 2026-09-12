@@ -50,6 +50,24 @@ const costsSrc = R('../../server/services/eventCosts.js');
 const asyncJobSrc = R('../../server/middleware/asyncJob.js');
 const addSvcC = strip(addSvcSrc), overlayC = strip(overlaySrc), jobSvcC = strip(jobSvcSrc), costsC = strip(costsSrc);
 const fnBody = (src, name) => (src.match(new RegExp('async function ' + name + '\\([\\s\\S]*?\\n\\}')) || [''])[0];
+/**
+ * One function's body, whatever shape it is declared in — `function f(`, `const f = (…) => {`,
+ * `const f = useCallback((…) => {`, `const f = async (…) => {`. Brace-matched from the body's own '{',
+ * so a helper that gains a wrapper (useCallback, useStableFn) does not quietly empty its assertions.
+ * Returns '' when the name is not there — an assertion against '' fails, which is the point.
+ */
+const fnBodyOf = (src, name) => {
+  const m = new RegExp('(?:^|\\n)\\s*(?:export\\s+)?(?:async\\s+function|function|const)\\s+' + name + '\\b').exec(src);
+  if (!m) return '';
+  let i = src.indexOf('{', m.index);
+  if (i < 0) return '';
+  let depth = 0;
+  for (let j = i; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) return src.slice(i, j + 1);
+  }
+  return '';
+};
 // Pull a JS array literal of strings out of a source file, so two copies of a list can be compared.
 // ⚠️ Comments are stripped FIRST: both lists carry explanatory comments with apostrophes in them
 // ("the employer's site"), and a naive '…' scan reads those as hosts.
@@ -64,12 +82,22 @@ const countrySheetSrc = R('../components/onboarding/CountrySheet.tsx');
 const countrySheetC = strip(countrySheetSrc);
 const countriesSrc = R('../constants/countries.ts');
 const studioC = strip(studioSrc);
+// The per-employer documents round (2026-09-11): the chip moved into its own file, the build
+// orchestration into a hook, and each chip's saved document is read from the server.
+const chipSrc = R('../components/employer-home/EmployerChip.tsx');
+const kHookSrc = R('../components/employer-home/useHomeBuilds.ts');
+const docHookSrc = R('../components/employer-home/useTargetDoc.ts');
+const docSvcSrc = R('../services/employerDocs.ts');
+const buildsSrc = R('../services/homeBuilds.ts');
+const chipC = strip(chipSrc), kHookC = strip(kHookSrc), docHookC = strip(docHookSrc), docSvcC = strip(docSvcSrc), buildsC = strip(buildsSrc);
 const FILES = {
   'EmployerHome.tsx': home, 'MeshStage.tsx': mesh, 'PaperCarousel.tsx': carousel,
   'theme.ts': theme, 'HomeBoundary.tsx': boundary, 'employerHomeService.ts': svc, 'HomeScreen.js': hs,
   'PaperZoom.tsx': zoomSrc, 'AddEmployerSheet.tsx': sheetSrc, 'DownloadHistory.tsx': histSrc,
   'SignatureStudio.tsx': studioSrc, 'CountrySheet.tsx': countrySheetSrc, 'countries.ts': countriesSrc,
   'onboarding/index.tsx': R('../app/(onboarding)/index.tsx'),
+  'EmployerChip.tsx': chipSrc, 'useHomeBuilds.ts': kHookSrc, 'useTargetDoc.ts': docHookSrc,
+  'employerDocs.ts': docSvcSrc, 'homeBuilds.ts': buildsSrc, 'BuildingOverlay.tsx': overlaySrc,
 };
 
 console.log('── every file parses (a JSX slip here white-screens the app) ──');
@@ -133,9 +161,11 @@ ok('the live pill + pulsing dot', /TAILORED PER EMPLOYER · LIVE/.test(home) && 
 ok('the headline splits into sans + serif-italic accent', /h1Accent/.test(home) && /fontStyle: 'italic'/.test(home));
 ok('there is NO download button on Home — the actions live in the opened page',
   !/function Shimmer/.test(home) && !/ctaTx:/.test(home) && !/Download for /.test(home));
+// ⚠️ RETARGETED: the chip moved into EmployerChip.tsx. The role line now sits in a ternary (a live
+// build reports in its place, because the row clips at 48pt), so the leading brace is gone.
 ok('a chip identifies a POSTING: company over role, plus the match',
-  /chipTileTx/.test(home) && /chipPctTx/.test(home) && /chipRole/.test(home)
-  && /\{!!t\.role && <Text style=\{\[s\.chipRole/.test(homeC));
+  /chipTileTx/.test(chipSrc) && /chipPctTx/.test(chipSrc) && /chipRole/.test(chipSrc)
+  && /!!t\.role && <Text style=\{\[s\.chipRole/.test(chipC));
 ok('the carousel shows a "For <employer>" ribbon', /ribbon/.test(carousel) && /For \{ribbon\.short\}/.test(carousel));
 ok('dots widen for the active card', /dotOn: \{ width: 20/.test(carousel));
 ok('cards keep the A4 ratio the renderer uses', /424 \/ 300/.test(carousel));
@@ -269,7 +299,7 @@ ok('the clipped CTA gradient carries no shadow of its own', !/  cta: \{[^}]*shad
 
 console.log('── the CTA label must give way, not push its icon out of the button ──');
 ok('every label that can meet a long company name can shrink',
-  /chipText: \{ flexShrink: 1 \}/.test(homeC) && /ghostTx: \{[^}]*flexShrink: 1/.test(strip(zoomSrc))
+  /chipText: \{ flexShrink: 1 \}/.test(chipC) && /ghostTx: \{[^}]*flexShrink: 1/.test(strip(zoomSrc))
   && /letterBtnTx: \{[^}]*flexShrink: 1/.test(homeC));
 
 console.log('── selection and screen state survive a refresh ──');
@@ -315,7 +345,7 @@ ok('⚠️ no melt, no light section, no second background anywhere on this scre
 console.log('── compact mode icons, glass employer chips ──');
 ok('the full-width tab pair is gone', !/toggleBtnOn/.test(home) && /function ModeSwitch/.test(homeC));
 ok('the switch rides the headline row', /<ModeSwitch mode=\{mode\} onChange=\{switchMode\} \/>/.test(homeC) && /headRow: \{/.test(homeC));
-ok('selection is glass, never a white pill', /chipOn: \{\s*backgroundColor: 'rgba\(79,141,255,0\.22\)'/.test(homeC) && !/chipOn: \{ backgroundColor: '#fff'/.test(homeC));
+ok('selection is glass, never a white pill', /chipOn: \{\s*backgroundColor: 'rgba\(79,141,255,0\.22\)'/.test(chipC) && !/chipOn: \{ backgroundColor: '#fff'/.test(chipC + homeC));
 
 console.log('── tapping a page opens it, and the two actions are the REAL screens ──');
 ok('the zoom grows from the tapped rectangle, measured', /measureInWindow/.test(strip(carousel)) && /onOpen\(i, w \? \{ x, y, w, h \}/.test(strip(carousel)));
@@ -356,14 +386,21 @@ ok('the sheet only SEARCHES — it never adds, because adding costs credits',
 // there and the card should be addedd to start". And the hub it handed to rendered NOTHING for the add —
 // its add-company list is dead code. The add now happens here: free safe tracking + a gated build.
 ok('⚠️ adding an employer never leaves Home for the Job Hub', !/addCompany: value/.test(homeC) && !/tab: 'search', addCompany/.test(homeC));
-ok('…it tracks the employer and builds from here', /trackEmployer\(/.test(homeC) && /buildForEmployer\(/.test(homeC));
+// ⚠️ RETARGETED: the build moved into useHomeBuilds. Home tracks, then asks the hook — the ONE door.
+ok('…it tracks the employer and builds from here',
+  /trackEmployer\(/.test(homeC) && /useHomeBuilds\(/.test(homeC) && /\.request\(/.test(homeC)
+  && /buildForEmployer\(/.test(kHookC) && !/buildForEmployer\(/.test(homeC));
 ok('the hub consumes it exactly once', /handedOver\.current = true;/.test(hubC) && /typeof explicit === 'string' \? explicit : inputValue/.test(hubC));
 ok('it can take a pasted website as well as a name', /Use this website/.test(sheetC) && /take\(fieldWebsite\)/.test(sheetC));
 ok('region filters the search and suggests a design',
   /country=\$\{encodeURIComponent\(ctry \|\| ''\)\}/.test(sheetC) && /bestDesignForCountry/.test(strip(svc)));
 
 console.log('── cover letters ──');
-ok('letter mode does NOT borrow the resume carousel', /mode === 'letter' \? \(\s*<LetterPanel/.test(homeC));
+// ⚠️ RETARGETED: a SAVED letter now has a carousel of its own — the letter designs, ranked for that
+// employer. What must never happen is still the same: letter mode drawing the resume pages.
+ok('letter mode does NOT borrow the resume carousel',
+  /mode === 'letter' && !shown \? \(\s*<LetterPanel/.test(homeC)
+  && /kind === 'cover_letter' \? LETTER_DESIGNS : slots/.test(homeC) && /LETTER_SLOTS/.test(homeC));
 ok('⚠️ and NEVER generates on entry — generation spends the letter quota',
   !/generate-cover-letter/.test(homeC) && /onWrite=\{\(\) => \{/.test(homeC));
 ok('the letter designs are listed from one place', /LETTER_DESIGNS/.test(homeC) && /LETTER_DESIGNS: Array/.test(strip(svc)));
@@ -898,8 +935,16 @@ ok('⚠️ the gate knows the per-employer cache, so a resume already paid for i
 // unit can go in between. coveredOnly makes the SERVER refuse the credits lane rather than fall into it.
 ok('⚠️ an auto-started build cannot fall through to credits', /const coveredOnly = !!\(req\.body && req\.body\.coveredOnly === true\)/.test(ctl));
 ok('…re-asked at the moment of payment, because the AI minute sits in between', /lost its cover during the run/.test(ctl));
-ok('⚠️ credits are spent only after an explicit confirm', /runBuild\(final, 'credits', false\)/.test(homeC));
-ok('⚠️ an unknown gate answer asks first, never auto-builds', /gate\.reason === 'unknown'/.test(homeC));
+// ⚠️ RETARGETED to useHomeBuilds, where the gate is read now. coveredOnly:false is sent from exactly two
+// places: the Build button of a dialog that named the charge, and a queued build whose consent covers the
+// price the re-read gate asks (consentCovers).
+ok('⚠️ credits are spent only after an explicit confirm',
+  /text: 'Build',[\s\S]{0,200}runBuild\(latest\(\), 'credits', false,/.test(kHookC)
+  && (kHookC.match(/runBuild\((?:[^()]|\([^()]*\))*?, false,/g) || []).length === 3
+  && /if \(consentCovers\(q\.consent, gate\)\) \{[\s\S]{0,200}runBuild\(job, [^)]*, false,/.test(kHookC));
+ok('⚠️ an unknown gate answer asks first, never auto-builds',
+  /gate\.reason === 'unknown'/.test(kHookC) && /runBuild\(latest\(\), 'unknown', false,/.test(kHookC)
+  && /if \(gate\.covered\) \{ runBuild\(final, gate\.via, true,/.test(kHookC));
 
 console.log('── ⚠️ ONE BUILD, ONE CHARGE — ACROSS A LOST RESPONSE AND A RETRY ──');
 // A dropped connection just after the server created the job left it running and charging while the app
@@ -912,6 +957,42 @@ ok('⚠️ a polling deadline is "pending", which never offers a rebuild', /'pen
 // write for a build nobody paid for is a permanent free resume.
 ok('⚠️ a build counts as charged only by what was actually deducted', /creditsDeductedSince\(/.test(ctl));
 ok('⚠️ the cache is written only for a build someone paid for', /if \(passEmployer && cacheFp && charged\)/.test(ctl));
+// ⚠️ AND THE DOC LANE ASKS ITS OWN CHARGE, NOT A HISTORY WINDOW. "Did credits move since I started?" sees
+// ANOTHER build's deduction (or misses this one), so a resume the user really paid for was thrown away
+// with no refund. consumeOnSuccess hands back the chargeCredits result and the ledger row it wrote.
+{
+  const docLane = ctl.slice(ctl.indexOf('async function generateEmployerDoc'), ctl.indexOf('async function generationGate'));
+  ok('⚠️ the employer-doc lane decides from THIS request\'s own charge, never from a credits window',
+    /used\.charge/.test(docLane) && !/await creditsDeductedSince\(/.test(docLane));
+  ok('⚠️ …and every charge it took goes back when it cannot deliver the document',
+    /giveBackDocCharges\(userId, paid, 'the paid document could not be stored'\)/.test(docLane)
+    && /docId = \(await employerDocs\.put\(doc\)\) \|\| \(await employerDocs\.put\(doc\)\);/.test(docLane));
+}
+// ⚠️ A BUILD THE USER WAS TOLD HAD FAILED MUST NOT BE RE-SENT BEHIND THEIR BACK. A record with no jobId is
+// a POST whose answer was lost; resending it can start and charge a build they walked away from.
+ok('⚠️ recovery resends a lost POST only for the build an explicit Try again named',
+  /if \(r\.key !== resendKey \|\| late\) \{/.test(addSvcC) && /resendKey\?: string \| null;/.test(addSvcC)
+  && /const resendKey = typeof opts\.resendKey === 'string' && opts\.resendKey \? opts\.resendKey : null;/.test(addSvcC));
+ok('⚠️ …and removing the chip drops it for good, without touching the running job on the server',
+  /export async function forgetInflight\(key: string\): Promise<void>/.test(addSvcC)
+  && /const next = list\.filter\(\(r\) => r\.key !== k\);/.test(addSvcC)
+  && !/forgetInflight[\s\S]{0,600}?call\(`\/job/.test(addSvcC));
+// ⚠️ EACH BUILD LANDS WHEN IT ENDS, not when the slowest one in the batch does.
+ok('⚠️ recovery announces each build as it settles (onLanded), not only at the end',
+  /onLanded\?: \(key: string, meta: InflightMeta, result: BuildResult\) => void;/.test(addSvcC)
+  && /opts\.onLanded\(x\.key, x\.meta, asResult\(x\.outcome\)\)/.test(addSvcC));
+// ⚠️ THE PREVIOUS ACCOUNT'S BUILDS MUST NOT HOLD THE NEW ACCOUNT'S THREE SLOTS.
+ok('⚠️ the parallel-build cap counts only the signed-in account\'s flights',
+  /flights\.forEach\(\(f\) => \{ if \(ownedNow\(f\)\) n\+\+; \}\)/.test(addSvcC)
+  && /flights\.forEach\(\(g\) => \{ if \(ownedBy\(g, ctx\.account\)\) mine\+\+; \}\)/.test(addSvcC));
+// ⚠️ TWO URLS, TWO JOBS. jobUrl is the document's IDENTITY ('' = the employer's own doc); the pasted
+// posting link is build INPUT. Sent as one, the build stored a posting document no chip ever asks for
+// and the chip went on offering a paid build for a resume the user had already bought.
+ok('⚠️ the build sends the identity (docJobUrl) and the posting (job.url) as two different fields',
+  /const docJobUrl = i\.jobUrl \|\| '';/.test(addSvcC)
+  && (addSvcC.match(/\bdocJobUrl,/g) || []).length >= 2
+  && /jobFields\(\{ title: i\.jobTitle, url: i\.postingUrl \|\| i\.jobUrl,/.test(addSvcC));
+ok('…and the GATE is read for the same job the build will send', /export const gateJobFor = [\s\S]{0,300}?i\.postingUrl \|\| i\.jobUrl/.test(addSvcC));
 ok('⚠️ the resume is saved only AFTER payment is settled',
   ctl.indexOf('lost its cover during the run') > 0 && ctl.indexOf('lost its cover during the run') < ctl.indexOf('await saveResumeRow(userId, resumeData'));
 // ⚠️ The same read-then-subtract bug fixed at four aiHubController sites lived on in chargeCredits.
@@ -930,6 +1011,16 @@ console.log('── ⚠️ NOTHING OF ONE ACCOUNT SURVIVES INTO THE NEXT ──'
 // sign-out: the next account saw the previous account's employers leading its row.
 ok('⚠️ one account identity, defined once', /export async function signedInAccount/.test(addSvcC) && !/async function signedInAccount/.test(homeC));
 ok('⚠️ the in-flight build record belongs to an account', /j\.account !== me/.test(addSvcC) && /\{ \.\.\.v, account \}/.test(addSvcC));
+// ⚠️ A BUILD IN FLIGHT ACROSS A SIGN-OUT SENT ACCOUNT A'S RÉSUMÉ UNDER ACCOUNT B'S SESSION, and stamped
+// the record as B's. The flight captures its account (and its token) once, at the start, and every send,
+// poll and write checks it is still the signed-in one — otherwise it fails, leaving the record with A.
+ok('⚠️ a flight captures its account once and is bound to it for every call',
+  /f\.account = f\.ctx\.then\(\(s\) => \{ f\.owner = s\.account; return s\.account; \}\);/.test(addSvcC)
+  && /const t = ctx \? ctx\.tok : await token\(\);/.test(addSvcC)
+  && /async function stillSignedIn\(ctx: Session\): Promise<boolean> \{\s*return \(await readSession\(\)\)\.account === ctx\.account;/.test(addSvcC));
+ok('…so a send or a write after a switch is refused, not re-stamped',
+  (addSvcC.match(/if \(!\(await stillSignedIn\(ctx\)\)\) return SWITCHED\(kind\);/g) || []).length >= 2
+  && /if \(!\(await writeInflight\(entry, ctx\.account\)\)\) return SWITCHED\(kind\);/.test(addSvcC));
 
 console.log('── the overlay never claims a paid build failed ──');
 ok('"refresh" is a built resume whose pages did not reload', /case 'refresh':/.test(overlaySrc));
@@ -941,12 +1032,20 @@ ok('"refresh" is a built resume whose pages did not reload', /case 'refresh':/.t
   ok('…and "didn\'t finish" is never said for a build that may still be running',
     !/case 'pending':[\s\S]{0,300}didn.t finish/.test(overlaySrc));
 }
-ok('⚠️ a recovered build has no honest "before", so a fresh load is the proof',
-  /sigBefore === null \|\| cardsSig\(got\.cards\.cards\) !== sigBefore/.test(homeC));
+// ⚠️ RETARGETED. There is no page signature to compare any more: a build lands by the docId the server
+// reports for the document it stored (or found), so a recovered build needs no "before" at all.
+ok('⚠️ a build lands by the document it reports, never by comparing page pixels',
+  /typeof r\.docId === 'number'/.test(kHookC) && /function landRecovered/.test(kHookC)
+  && !/cardsSig/.test(homeC) && !/sigBefore/.test(homeC));
+// ⚠️ RETARGETED. A refused website comes off the chip AND the job the build is sent (both spelled from
+// docLookupOf), and a copy already waiting in the queue is rewritten by retarget.
 ok('⚠️ a queued build does not keep a website the server refused',
-  /queuedBuild = \{ \.\.\.queuedBuild, job: \{ \.\.\.queuedBuild\.job, website: '' \} \}/.test(homeC));
+  /const refused: Target = \{ \.\.\.pending, website: '' \}/.test(homeC)
+  && /const next: HomeBuildJob = \{ \.\.\.q\.job, \.\.\.fields \}/.test(kHookC));
 ok('⚠️ every overlay animation is native-driver', !/useNativeDriver: false/.test(overlaySrc));
-ok('the chip row does not re-attach animations on every progress tick', /const EmployerChip = React\.memo\(/.test(homeC));
+ok('the chip row does not re-attach animations on every progress tick',
+  /export const EmployerChip = React\.memo\(/.test(chipC) && /import EmployerChip from '\.\/EmployerChip'/.test(homeC)
+  && !/function EmployerChip/.test(homeC));
 
 console.log('── the preview harness can still see the whole screen ──');
 const previewSrc = R('../app/(dev)/home-preview.tsx');
@@ -965,6 +1064,304 @@ ok('no cover-fitted resume image is left centred',
   !/contentFit="cover"(?!\s+contentPosition="top")/.test(carC + strip(zoomSrc) + homeC + histC));
 ok('the preview contains pages TALLER than the card, or this could never be seen',
   /function paper\(accent: string, shape: Shape, tall = false\)/.test(prevC) && /tall \? 760 : 424/.test(prevC));
+
+// ── Round 7 (2026-09-11): each employer gets its OWN resume and letter, saved and shown from the DB ─────
+// The user's asks: the Add pill on the label row; a chip named by the name they PICKED (not the shared
+// row's "Souq.com for E-Commerce LLC"); an X that removes a chip softly; switching chips shows THAT
+// employer's document at once; background builds visible on the cards; ranked designs with a fit %.
+// The behaviour of the build hook itself is exercised in test-home-builds.js; the server lanes in
+// server/scripts/test-employer-doc-lane.js, test-employer-letter.js and test-employer-docs.js.
+
+// The balanced `useEffect(` / `useFocusEffect(` calls of a source, so a rule can be checked per effect.
+const effectsOf = (src) => {
+  const out = [];
+  const re = /\buse(?:Focus)?Effect\(/g;
+  let m;
+  while ((m = re.exec(src))) {
+    let depth = 0, i = m.index + m[0].length - 1;
+    for (; i < src.length; i++) {
+      if (src[i] === '(') depth++;
+      else if (src[i] === ')' && --depth === 0) break;
+    }
+    out.push(src.slice(m.index, i + 1));
+  }
+  return out;
+};
+
+console.log('── the Add employer pill rides the label row, not the end of the chips ──');
+{
+  const rowStart = homeC.indexOf('<ScrollView ref={chipRowRef} horizontal');
+  const rowEnd = homeC.indexOf('</ScrollView>', rowStart);
+  const chipRow = rowStart > 0 ? homeC.slice(rowStart, rowEnd) : '';
+  // The label and the pill both carry accessibility props now (numberOfLines / maxFontSizeMultiplier),
+  // so pin WHERE they are, not the exact attribute list — the attributes get their own assertion below.
+  const pillAt = homeC.search(/<Text style=\{s\.addPillTx\}[^>]*>Add employer<\/Text>/);
+  ok('⚠️ the pill is OUTSIDE the chips ScrollView, after the "Designing for" label',
+    rowStart > 0 && pillAt > 0 && pillAt < rowStart && homeC.indexOf('>Designing for<') < pillAt
+    && !/Add employer/.test(chipRow) && !/chipAdd/.test(homeC), { rowStart, pillAt });
+  ok('…label and pill share one row, pushed to the two ends', /forRow: \{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'/.test(homeC)
+    && /<View style=\{s\.forRow\}>\s*<Text style=\{s\.eyebrowDark\}[^>]*>Designing for<\/Text>/.test(homeC));
+  // ⚠️ AT FULL ACCESSIBILITY SCALE THE PILL WENT OFF A 320pt SCREEN — the thing the user came to do.
+  // The quiet half (the label) gives way, the pill grows in HEIGHT not width, and its label is capped.
+  ok('⚠️ …and at the largest text size the label gives way so the pill stays on screen',
+    /eyebrowDark: \{ flexShrink: 1,/.test(homeC)
+    && /<Text style=\{s\.eyebrowDark\} numberOfLines=\{1\}>Designing for<\/Text>/.test(homeC)
+    && /addPill: \{\s*minHeight: 28,/.test(homeC) && !/addPill: \{[^}]*\bheight: 28\b/.test(homeC)
+    && /<Text style=\{s\.addPillTx\} numberOfLines=\{1\} maxFontSizeMultiplier=\{1\.3\}>/.test(homeC));
+  ok('…and the empty state keeps its own add prompt', /Add an employer to design your resume around/.test(homeC));
+  ok('the chips are EmployerChip, told their kind, render key, saved-doc dot and exit',
+    /<EmployerChip\s[\s\S]{0,500}kind=\{kind\}[\s\S]{0,200}rk=\{rk\}[\s\S]{0,200}hasDoc=\{[\s\S]{0,200}exiting=\{!!exiting\[rk\]\}/.test(chipRow)
+    && /onRemove=\{onRemoveChip\}/.test(chipRow) && /onPick=\{onPickChip\}/.test(chipRow));
+}
+
+console.log('── the chip X: inside the chip, never a pick, and soft ──');
+{
+  ok('the X is a button labelled "Remove <company>"', /accessibilityLabel=\{`Remove \$\{t\.company\}`\}/.test(chipC) && /accessibilityRole="button"[\s\S]{0,80}accessibilityLabel=\{`Remove/.test(chipC));
+  ok('…with a hit slop and the house icon', /hitSlop=\{REMOVE_SLOP\}/.test(chipC) && /<Ionicons name="close" size=\{12\} color="rgba\(255,255,255,0\.85\)" \/>/.test(chipC));
+  // ⚠️ A UNIFORM hitSlop={10} REACHED INTO THE CONTENT AND REMOVED THE EMPLOYER ON A PICK.
+  // The X's left edge is 5pt from the match pill / name (paddingRight 30 − right 5 − width 20), so the
+  // slop must not reach left: left ≤ 3 keeps it off the content while top/bottom/right stay generous.
+  {
+    const slop = chipC.match(/const REMOVE_SLOP = \{ top: (\d+), right: (\d+), bottom: (\d+), left: (\d+) \}/);
+    const gap = +((chipC.match(/paddingRight: (\d+)/) || [])[1] || 0) - +((chipC.match(/remove: \{\s*position: 'absolute', top: \d+, right: (\d+)/) || [])[1] || 0)
+      - +((chipC.match(/remove: \{\s*position: 'absolute', top: \d+, right: \d+, width: (\d+)/) || [])[1] || 0);
+    ok('⚠️ the slop is ASYMMETRIC: it never reaches left into the pill, so a pick is never a removal',
+      !!slop && +slop[4] <= gap && +slop[4] <= 3 && +slop[1] >= 10 && +slop[3] >= 10 && +slop[2] >= 10 && !/hitSlop=\{10\}/.test(chipC),
+      { slop: slop && slop.slice(1), gap });
+  }
+  // ⚠️ ANDROID Z-ORDER IS ELEVATION FIRST, SIBLING ORDER SECOND — for touch as well as for drawing.
+  // The selected chip's own elevation 4 lifted it above its later-sibling X, so the X drew under the
+  // chip and a tap on it went to onPick. The two overlays sit one step higher, shadowless.
+  ok('⚠️ Android: the X and the glow outrank the selected chip\'s own elevation',
+    /const ABOVE_CHIP_ANDROID = Platform\.select\(\{ android: \{ elevation: 5, shadowColor: 'transparent' \}/.test(chipC)
+    && /remove: \{[\s\S]{0,320}?\.\.\.ABOVE_CHIP_ANDROID/.test(chipC)
+    && /chipGlow: \{[\s\S]{0,320}?\.\.\.ABOVE_CHIP_ANDROID/.test(chipC)
+    && +((chipC.match(/default: \{ elevation: (\d+) \}/) || [])[1] || 99) < 5);
+  // ⚠️ A SIBLING of the chip's touchable, not a child: a press on the X must never reach onPick.
+  const pickEnd = chipC.indexOf('</TouchableOpacity>');
+  ok('⚠️ the X is a sibling of the chip\'s touchable, so pressing it can never pick the chip',
+    pickEnd > 0 && chipC.indexOf('onPress={onPressRemove}') > pickEnd && chipC.indexOf('onPress={onPress}') < pickEnd);
+  const rm = chipC.match(/remove: \{\s*position: 'absolute', top: (-?\d+), right: (-?\d+), width: (\d+), height: (\d+)/);
+  const chipH = +((chipC.match(/chip: \{[\s\S]{0,300}?height: (\d+)/) || [])[1] || 0);
+  ok('⚠️ no overhang: the 48pt row clips, so the X sits wholly inside the chip',
+    !!rm && +rm[1] >= 0 && +rm[2] >= 0 && +rm[1] + +rm[4] <= chipH && chipH === 48 && +rm[3] >= 20 && +rm[3] <= 22, { rm: rm && rm.slice(1), chipH });
+  ok('…in the glass the contract asks for', /backgroundColor: 'rgba\(255,255,255,0\.10\)', borderWidth: 1, borderColor: 'rgba\(255,255,255,0\.18\)'/.test(chipC));
+  ok('…the name keeps its width because the chip makes room on the right', /paddingRight: 30/.test(chipC) && /maxWidth: 238/.test(chipC));
+  ok('the glow is an inset, not a halo', /chipGlow: \{\s*position: 'absolute', top: 0, left: 0, right: 0, bottom: 0/.test(chipC));
+  ok('the chip reads ITS build only, and the ticking % is an isolated memo child',
+    /useTargetBuild\(kind, rk\)/.test(chipC) && /const ChipBuildLine = React\.memo\(/.test(chipC)
+    && (chipC.match(/useCreepPct\(/g) || []).length === 1 && chipC.indexOf('useCreepPct(') > chipC.indexOf('const ChipBuildLine'));
+  ok('queued, failed and a fresh landing each read differently', /'Queued'|>Queued</.test(chipC) && /Didn’t finish/.test(chipC) && /checkmark-circle/.test(chipC) && /DONE_FRESH_MS = 6000/.test(chipC));
+  ok('the exit is its own native value on an outer view', /toValue: exiting \? 0 : 1, duration: 180/.test(chipC) && /pointerEvents=\{exiting \? 'none' : 'auto'\}/.test(chipC));
+
+  ok('⚠️ removing is optimistic with an Undo, never a blocking dialog',
+    /showNotice\(`Removed \$\{t\.company\}`, \{ label: 'Undo', run: \(\) => undoRemoval\(r\) \}, UNDO_MS\)/.test(homeC)
+    && !/Alert\.alert\([^)]*Remove/.test(homeC));
+  const removeFn = (homeC.match(/const removeChip = \(i: number\) => \{[\s\S]*?\n  \};/) || [''])[0];
+  ok('⚠️ an employer chip is UNTRACKED (archived), a posting chip only HIDDEN — nothing is deleted',
+    /untrackEmployer\(String\(t\.employerId\)\)/.test(removeFn) && /hideTarget\(t\.key\)/.test(removeFn) && !/DELETE|deleteDoc|fetch\(/.test(removeFn));
+  ok('…a queued build for it is withdrawn for BOTH kinds, a running one is left to finish',
+    /cancelQueued\('resume', rk\)/.test(removeFn) && /cancelQueued\('cover_letter', rk\)/.test(removeFn) && !/forgetHomeBuilds|clearBuild/.test(removeFn));
+  ok('Undo tracks the employer again (or un-hides the posting), after the removal has settled',
+    /r\.server\.then\(async \(removedThere\) =>/.test(homeC) && /unhideTarget\(back\.key\)/.test(homeC) && /trackEmployer\(\{ name: back\.company/.test(homeC));
+  ok('removed chips stay gone across a stale load', /removedKeys/.test(homeC) && /REMOVED_HOLD_MS/.test(homeC));
+}
+
+console.log('── hidden chips and the name the user picked ──');
+ok('fetchTargets asks for the hidden list in parallel and a failed read filters nothing',
+  /getJson\('\/ai-hub\/home\/hidden-targets', 15000\)/.test(svcC)
+  && /const hidden: Set<string> \| null = hiddenJ && Array\.isArray\(hiddenJ\.keys\)/.test(svcC) && /hiddenNow\(t\.key, hidden\)/.test(svcC));
+ok('hide / unhide / untrack are the contract endpoints',
+  /export async function hideTarget\(key: string\): Promise<boolean>/.test(svcC) && /sendJson\('POST', '\/ai-hub\/home\/hidden-targets'/.test(svcC)
+  && /export async function unhideTarget\(key: string\): Promise<boolean>/.test(svcC) && /sendJson\('DELETE', '\/ai-hub\/home\/hidden-targets'/.test(svcC)
+  && /export async function untrackEmployer\(employerId: string\): Promise<boolean>/.test(svcC) && /\/untrack/.test(svcC));
+ok('a Target carries its country (it steers the design region)', /country\?: string \| null/.test(svcC));
+ok('⚠️ the server\'s display name is what the added chip shows', /company: e\.name \|\| name/.test(homeC));
+ok('⚠️ trackEmployer answers with the picked name; the dashboard shows it first',
+  /const shownName = out\.displayName \|\| row\.name \|\| name;/.test(aiHubC) && /displayName: name/.test(aiHubC)
+  && /ute\.display_name/.test(jobSvcC) && /\(emp\.display_name && String\(emp\.display_name\)\.trim\(\)\) \|\| emp\.name/.test(jobSvcC));
+ok('⚠️ untrack archives, it never deletes', /status = 'archived'/.test(jobSvcC) && !/DELETE FROM user_tracked_employers/.test(aiHubC + jobSvcC)
+  && /router\.post\('\/employers\/:employerId\/untrack', authenticateToken, untrackEmployer\)/.test(R('../../server/routes/aiHub.js')));
+
+console.log('── ⚠️ ONE LOOKUP SPELLING: the build finds the document the chip looks up ──');
+ok('docLookupOf is the one Target → lookup conversion', /export function docLookupOf\(t: Target\): DocLookup/.test(docSvcC));
+ok('…posting chips by their URL, employer chips by an empty job_url', /const posting = String\(t\.key \|\| ''\)\.startsWith\('job_'\);/.test(docSvcC)
+  && /const jobUrl = posting \? String\(t\.applyUrl \|\| t\.jobUrl \|\| ''\)\.trim\(\) : '';/.test(docSvcC));
+ok('⚠️ useTargetDoc looks a chip up through it', /const q: DocLookup \| null = target \? docLookupOf\(target\) : null;/.test(docHookC));
+ok('⚠️ …and the job Home sends to a build is spelled from it and nothing else',
+  /function jobFor\(t: Target, kind: DocKind\): HomeBuildJob \{\s*const q = docLookupOf\(t\);/.test(homeC)
+  && (homeC.match(/K(?:Ref\.current)?\.request\(/g) || []).length >= 1
+  && [...homeC.matchAll(/\.request\(([^,]+),/g)].every((m) => /jobFor\(|^job$/.test(m[1].trim())));
+ok('…the matcher for the saved-doc dots uses the same URL rule', /String\(docLookupOf\(t\)\.jobUrl \|\| ''\)/.test(docSvcC));
+ok('the saved-document cache is wiped with the account', /forgetDocs\(\);\s*forgetHomeBuilds\(\);/.test(homeC));
+ok('the doc list and the chip document come from the contract endpoints',
+  /'\/employer-docs\/current', \{ method: 'POST'/.test(docSvcC) && /`\/employer-docs\?kind=\$\{encodeURIComponent\(kind\)\}`/.test(docSvcC)
+  && /kind === 'cover_letter' \? `\/cover-letter\/employer-cards\?\$\{q\}` : `\/resume-builder\/home-cards\?\$\{q\}`/.test(docSvcC)
+  && /`\/employer-docs\/\$\{id\}`, \{ method: 'PUT', body: \{ payload \}/.test(docSvcC));
+ok('⚠️ a lookup that could not answer is an error, never "nothing saved" (no Tailor offered on a blip)',
+  /const wantsAction = !!target && !doc && docState === 'none'/.test(homeC));
+
+console.log('── ⚠️ NO BUILD STARTS FROM A FOCUS, A SWITCH OR A MOUNT ──');
+{
+  const homeEffects = effectsOf(homeC);
+  ok('Home has effects to check', homeEffects.length >= 8, homeEffects.length);
+  const starting = homeEffects.filter((e) => /\.request\(|buildForEmployer\(|generate-ai|employer-build|requestBuild\(|runBuild\(/.test(e));
+  ok('⚠️ no Home effect (focus, mount, chip switch) requests or runs a build', starting.length === 0, starting.map((e) => e.slice(0, 120)));
+  ok('⚠️ Home never generates a cover letter itself', !/generate-cover-letter/.test(homeC) && !/employer-build/.test(homeC));
+  ok('the gate hint is a debounced DRY RUN, never a build', /checkBuildGate\(job\.company, gateJobFor\(job\), job\.kind/.test(homeC)
+    && homeEffects.some((e) => /checkBuildGate\(/.test(e) && /, 400\)/.test(e) && !/\.request\(/.test(e)));
+  ok('every build request from Home is an explicit one', [...homeC.matchAll(/\.request\([^;]*?\{ explicit: true/g)].length === (homeC.match(/\.request\(/g) || []).length);
+  const kEffects = effectsOf(kHookC);
+  const mount = kEffects.find((e) => /recoverAll\(\)/.test(e)) || '';
+  ok('⚠️ the hook\'s mount only RECOVERS builds already paid for (and re-gates explicit queued ones)',
+    !!mount && /recoverAll\(\)/.test(mount) && !/requestBuild\(|beginRequest\(|runBuild\(/.test(mount)
+    && kEffects.every((e) => e === mount || !/requestBuild\(|beginRequest\(|runBuild\(|buildForEmployer\(/.test(e)));
+  ok('…recovery goes through resumeInflightBuilds', /await resumeInflightBuilds\(/.test(kHookC));
+  ok('⚠️ requestBuild refuses anything not explicit', /if \(!job \|\| !how \|\| how\.explicit !== true\) return;/.test(kHookC));
+  ok('the doc hooks never build or charge', !/buildForEmployer|checkBuildGate|request\(|generate/.test(docHookC));
+}
+
+console.log('── background builds on the cards, and a fit % on the ranked deck ──');
+ok('the carousel\'s building state is a memo BuildingPct over an isolated PctNumber',
+  /const BuildingPct = React\.memo\(/.test(carC) && /const PctNumber = React\.memo\(/.test(carC)
+  && (carC.match(/useCreepPct\(/g) || []).length === 1 && carC.indexOf('useCreepPct(') > carC.indexOf('const PctNumber')
+  && /useTargetBuild\(kind, rk\)/.test(carC));
+ok('…every card draws the writing loop while building, and says "Tap to watch"',
+  /state=\{bld \? 'writing' :/.test(carC) && /Tap to watch/.test(carC) && /export type PaperState = 'loading' \| 'queued' \| 'idle' \| 'writing'/.test(skelC));
+ok('⚠️ a building card opens the build, never the zoom', /if \(building\) \{ onOpenBuilding\?\.\(\); return; \}/.test(carC));
+ok('the card is memoised', /const Card = React\.memo\(function Card/.test(carC));
+ok('fit pills: mint ≥ 85, blue 70-84, muted below; "Best match" on the first',
+  /if \(fit >= 85\) return E\.mint;/.test(carC) && /if \(fit >= 70\) return/.test(carC) && /\{fit\}% fit/.test(carC) && /Best match/.test(carC)
+  && /const best = !!showFit && !building && i === 0 && card\.fit != null;/.test(carC));
+// ⚠️ "BEST MATCH" IS A CLAIM, AND NOTHING HAD MEASURED IT ON AN UNRANKED DECK. A saved doc with no
+// fit still has a first card; the pill said it was the best of a deck that was never ranked, and with
+// no fit pill beside it the lone best pill sat over the ribbon. It rides `card.fit != null` now, which
+// keeps the ribbon's FIT_CLEAR cap honest (the cap only applies when something really is up there).
+ok('⚠️ "Best match" never appears on a deck that was never ranked',
+  /const best = [^;]*card\.fit != null;/.test(carC)
+  && /const fit = showFit && !building && card\.fit != null \?/.test(carC)
+  && /\(fit != null \|\| best\) && \{ maxWidth: m\.w - 16 - FIT_CLEAR \}/.test(carC));
+ok('Home passes the building identity and the fit switch', /building=\{buildingProp\}/.test(homeC) && /onOpenBuilding=\{openBuilding\}/.test(homeC) && /showFit=\{shown\.fit\}/.test(homeC));
+ok('⚠️ no ticking percentage lives in EmployerHome', !/useCreepPct\(/.test(homeC) && !/useTargetBuild\(/.test(homeC));
+ok('the persistent build notice says how to watch', /Building your \{company\} \{nounOf\(kind\)\} · tap its card to watch/.test(homeC));
+ok('with a doc the caption says the design, its fit and the employer', /`\$\{card\.fit\}% fit for \$\{target\?\.company \|\| doc\.employer\}`/.test(homeC) && /doc\.design\.headline/.test(homeC));
+ok('a chip with nothing saved offers ONE explicit action per mode',
+  /label=\{`Tailor my resume for \$\{target\.company\}`\}/.test(homeC) && /`Write my cover letter for \$\{target\.company\}`/.test(homeC));
+ok('a stale document offers Refresh, and only as a tap', /changed since this version · <Text style=\{s\.docPillAct\}>Refresh<\/Text>/.test(homeC) && /onPress=\{\(\) => requestBuild\('refresh'\)\}/.test(homeC));
+ok('the overlay is driven by the hook, with its kind', /<BuildingOverlay[\s\S]{0,400}kind=\{K\.overlay\.kind\}/.test(homeC));
+ok('the overlay speaks letters too, and "checking" has not started anything',
+  /AI COVER LETTER WRITER/.test(overlaySrc) && /Nothing has started yet\./.test(overlaySrc) && /Watch it any time — tap its card on Home\./.test(overlaySrc) && /useCreepPct\(/.test(overlayC));
+ok('the zoom routes a saved resume to the editor and the gallery WITH its docId',
+  /pathname: '\/\(resume-builder\)\/preview', params: \{ docId:/.test(homeC) && /pathname: '\/\(cover-letter\)\/templates'/.test(homeC));
+
+console.log('── ⚠️ one driver per tree, in EVERY employer-home file ──');
+{
+  const dir = path.join(__dirname, '../components/employer-home');
+  const files = fs.readdirSync(dir).filter((f) => /\.tsx?$/.test(f));
+  ok('the directory has the new files', ['EmployerChip.tsx', 'useHomeBuilds.ts', 'useTargetDoc.ts'].every((f) => files.includes(f)), files);
+  for (const f of files) ok(`${f}: no useNativeDriver: false`, !/useNativeDriver:\s*false/.test(fs.readFileSync(path.join(dir, f), 'utf8')));
+  ok('the hooks own no Animated values at all', !/Animated/.test(kHookC) && !/Animated/.test(docHookC) && !/Animated/.test(buildsC));
+  ok('the build store re-renders a component only for ITS record', /useSyncExternalStore\(subscribeBuilds, snapshot, snapshot\)/.test(buildsC));
+}
+
+console.log('── ⚠️ RE-ADDING AN EMPLOYER YOU REMOVED IS A RESTORE, NOT A SECOND PURCHASE ──');
+{
+  // Removing a POSTING chip hid it and its saved document with it. Re-adding the employer looked only for
+  // the employer-level document (job_url ''), found nothing, and started a paid build — for a resume the
+  // user had already bought, which then reappeared as a duplicate chip.
+  const restore = fnBodyOf(homeC, 'restorePostings');
+  ok('a re-add reads the SAVED LIST and un-hides the postings that have documents',
+    !!restore && /docLoadersRef\.current\?\.list \|\| fetchDocList/.test(restore)
+    && /!!String\(d\.jobUrl \|\| ''\)\.trim\(\)/.test(restore)
+    && /unhideTarget\(key\)/.test(restore), restore && restore.slice(0, 80));
+  ok('⚠️ …only chips this user actually hid (a server that will not say is not "none")',
+    /const server = loaders \? null : await fetchHiddenKeys\(\)\.catch\(\(\) => null\);/.test(restore)
+    && /const hidden = new Set\(server \|\| \[\.\.\.removedKeys\.keys\(\)\]\.filter\(removedNow\)\);/.test(restore));
+  ok('⚠️ …named with jobKeyForUrl, the one spelling fetchTargets gives a posting chip',
+    /const key = jobKeyForUrl\(d\.jobUrl\);/.test(restore)
+    && /export const jobKeyForUrl = \(url: string\): string =>/.test(svcC)
+    && /return 'job_' \+ \(cleanJobUrl\(raw\) \|\| raw\);/.test(svcC));
+  ok('⚠️ …and NOTHING on that path spends anything: a list read, an un-hide, a reload',
+    !/request\(|checkBuildGate|buildForEmployer|generate/.test(restore));
+  // The add chain: employer-level lookup first (that one belongs to the chip already on screen), then the
+  // restore, and only a restore that found NOTHING falls through to a build.
+  const add = fnBodyOf(homeC, 'addEmployerHere') || homeC;
+  ok('⚠️ the restore runs BEFORE any build, and standing it down means no gate is even read',
+    /restored = await restorePostings\(real, k\);/.test(add)
+    && add.indexOf('restorePostings(real, k)') < add.indexOf('return jobFor(real, k);')
+    && /if \(restored \|\| !alive\.current/.test(add)
+    && /if \(!final \|\| !gate\) \{[\s\S]{0,120}standDown\(\)/.test(kHookC));
+}
+
+console.log('── ⚠️ THE UNDO IS THE ONLY WAY BACK, SO NOTHING MAY TAKE IT OFF THE SCREEN ──');
+{
+  // A background build notice ("Your Amazon resume is ready") replaced the "Removed X · Undo" line inside
+  // its 5s window, and the only way back was gone.
+  const show = fnBodyOf(homeC, 'showNotice');
+  ok('a non-Undo notice QUEUES behind a live Undo instead of replacing it',
+    !!show && /if \(cur && isUndo\(cur\) && !isUndo\(n\) && Date\.now\(\) - cur\.shownAt < cur\.ms\)/.test(show)
+    && /noticeQueue\.current = \[\.\.\.noticeQueue\.current\.filter\(\(q\) => q\.text !== text\), n\]\.slice\(-4\)/.test(show));
+  ok('⚠️ …a newer Undo still wins (the latest removal is the one you can take back)',
+    !!show && /!isUndo\(n\)/.test(show) && /putNotice\(n\);\s*return n\.id;/.test(show));
+  ok('…and a queued notice that waited too long is dropped, never shown stale',
+    /if \(now - q\.at <= q\.maxWait\) \{ next = q; break; \}/.test(homeC) && /const NOTICE_WAIT_MS = \d+;/.test(homeC));
+  ok('⚠️ answering a removal drains the queue rather than wiping the line',
+    /dismissNotice\(r\.noticeId\)/.test(homeC) && !/setNotice\(null\)/.test(homeC));
+  ok('⚠️ a refused session leaves no tappable Undo for the account that just went',
+    /clearNotices\(\)/.test(fnBodyOf(homeC, 'dropAccountOnAuth') || ''));
+}
+
+console.log('── ⚠️ A CHIP WHOSE BUILD JUST LANDED IS NOT AN EMPTY CHIP ──');
+{
+  // Between onLanded and the lookup answering, the chip offered "Tailor my resume" / "Write my cover
+  // letter" again — a second paid build for the document that had just been paid for and stored.
+  ok('the landing is held until the document arrives, or for a bounded wait',
+    /markLanded\(storeKeyOf\(job\.kind, job\.rk\), docId\)/.test(homeC)
+    && /landedTimers\.current\[key\] = setTimeout\(\(\) => forgetLanded\(key\), LANDED_WAIT_MS\)/.test(homeC)
+    && /if \(doc\.docId === landedDocId && !doc\.stale\) forgetLanded\(/.test(homeC));
+  ok('⚠️ …and while it is held the chip offers no build and no gate hint',
+    /const docPending = !doc && \(\(docState === 'loading' && !!listDoc\) \|\| landedWait\);/.test(homeC)
+    && /const wantsAction = [^;]*&& !docPending;/.test(homeC)
+    && /hint=\{target && wantsAction && hint \? hint\.text : null\}/.test(homeC));
+  // Tapping a page that stands in for a document still loading opened the BASE resume's editor/gallery,
+  // and a zoomed letter's Download did nothing at all.
+  ok('⚠️ a tap while the saved document is on its way says so, and opens nothing',
+    /const docOnItsWay = \(\) => !docRef\.current && docPendingRef\.current;/.test(homeC)
+    && /if \(docOnItsWay\(\)\) \{ sayLoadingDoc\(\); return; \}/.test(fnBodyOf(homeC, 'openPaper') || '')
+    && /if \(docOnItsWay\(\)\) sayLoadingDoc\(\);/.test(fnBodyOf(homeC, 'openLetterPicker') || '')
+    && /showNotice\('Loading your saved version…'/.test(homeC));
+}
+
+console.log('── ⚠️ ONE BUILD, ONE PERCENTAGE, WHEREVER IT IS SHOWN ──');
+{
+  // The chip and the carousel card showed different numbers for the same build: a display that mounted
+  // late seeded from the stage ceiling while the other was still creeping below it.
+  ok('the creep is keyed per build and shared between every display of it',
+    /export function useCreepPct\(stage: BuildStage \| null, phase: BuildPhase \| null, key\?: string\): number/.test(buildsC)
+    && /const c = k \? creepShown\.get\(k\) : undefined;/.test(buildsC) && /writeCreep\(k,/.test(buildsC));
+  ok('…and BOTH displays of one build pass it — the chip line and the carousel number',
+    /useCreepPct\(stage, phase, buildKey\)/.test(chipC) && /buildKey=\{storeKeyOf\(kind, rk\)\}/.test(chipC)
+    && /useCreepPct\(stage, phase, buildKey\)/.test(carC) && /buildKey=\{storeKeyOf\(kind, rk\)\}/.test(carC));
+  ok('⚠️ a component that switches to ANOTHER build takes that build\'s number, not its own',
+    /if \(seededFor\.current !== k\) \{/.test(buildsC) && /v\.current = seedOf\(\);/.test(buildsC));
+}
+
+console.log('── ⚠️ THE CHIP LOOKUP CARRIES THE POSTING, AND THE SERVER ANSWERS WITH IT ──');
+{
+  ok('DocLookup carries postingUrl beside the identity jobUrl',
+    /postingUrl\?: string \| null;/.test(docSvcC)
+    && /postingUrl: posting \? \(jobUrl \|\| null\) : \(pastedLink \|\| null\)/.test(docSvcC));
+  ok('⚠️ …but the chip\'s doc cache is keyed on the IDENTITY only (which document a chip has does not '
+    + 'change with the link it would be written against)',
+    /const urlPart = \(q: DocLookup\) => String\(q\.jobUrl \|\| ''\)\.trim\(\);/.test(docSvcC)
+    && !/(nameKeyOf|idKeyOf)[\s\S]{0,200}?postingUrl/.test(docSvcC)
+    && /if \(posting\) body\.postingUrl = posting;/.test(docSvcC));
+  ok('DocMeta hands back the job the document was built for', /jobInput\?: DocJobInput \| null;/.test(docSvcC) && /jobInput: shapeJobInput\(d\.jobInput\)/.test(docSvcC));
+  // ⚠️ sample ONLY MEANS "no builder row": an upload-only account has a résumé we can build from.
+  ok('⚠️ Home asks the server whether there is a résumé at all, not whether there is a builder row',
+    /hasResume\?: boolean;/.test(svcC) && /typeof j\.hasResume === 'boolean' \? \{ hasResume: j\.hasResume \}/.test(svcC)
+    && /const noResumeYet = [^;]*hasResume \?\? !sample/.test(homeC));
+}
 
 console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

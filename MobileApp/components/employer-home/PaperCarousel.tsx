@@ -15,13 +15,21 @@
 // ⚠️ CARD SIZE IS MEASURED, NEVER READ FROM Dimensions AT MODULE LOAD. The b202 build centred the
 // pager from a module-load window width and the first page sat flush against the left edge on a
 // real device. Everything here derives from the container's own onLayout width.
-import React, { useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Animated, TouchableOpacity } from 'react-native';
+//
+// ⚠️ A TICKING PERCENTAGE NEVER LIVES IN Card. The building state's live % is React state, and state
+// that changes every 90 ms re-renders whatever owns it. Owned by Card, that is the page, its
+// skeleton and every interpolation under it, eleven times a second, on five cards. So it lives in
+// BuildingPct → PctNumber, two tiny memo components that subscribe to the build store themselves;
+// Card only knows WHICH build to show (kind + rk), which does not change while it runs.
+import React, { useRef, useEffect, useMemo, useCallback } from 'react';
+import { View, Text, StyleSheet, Animated, TouchableOpacity, Easing } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { E } from './theme';
 import PaperSkeleton, { AFFORDANCE, PaperState } from './PaperSkeleton';
+import { useTargetBuild, useCreepPct, storeKeyOf, type BuildPhase } from '../../services/homeBuilds';
+import type { DocKind, BuildStage } from '../../services/homeAddEmployer';
 
 const GAP = 18;
 // ⚠️ WIDE ON PURPOSE, AND IT CANNOT BE LIVE. `dist` is measured from the SETTLED index, and the
@@ -51,9 +59,33 @@ export function cardWidthFor(containerW: number) {
 // reflow once, best case nobody ever sees a gap.
 const PROVISIONAL_W = 360;
 
-export type PaperCard = { id: string; name: string; accent?: string; image?: string | null };
+export type PaperCard = {
+  id: string; name: string; accent?: string; image?: string | null;
+  /** 0-100 chance this design gets picked for the employer (the doc's ranked design), null = unranked. */
+  fit?: number | null;
+  /** Why it fits, user-facing, <= 90 chars. Read out to screen readers; the caption owns the visible copy. */
+  reason?: string | null;
+};
+
+/** The build a deck is waiting on. Identity only — the live numbers are read by BuildingPct. */
+export type PaperBuilding = { kind: DocKind; rk: string; company: string };
 
 type Metrics = { w: number; h: number; step: number };
+type Ribbon = { letter: string; short: string; colors: [string, string] };
+type OpenFn = (i: number, rect: { x: number; y: number; w: number; h: number }) => void;
+
+/** Width the fit pill column reserves, so the "For …" ribbon truncates before it runs underneath. */
+const FIT_CLEAR = 70;
+
+/**
+ * Fit tiers. ⚠️ Colours are for TEXT ON THE DARK PILL, not for the page: E.blue itself is too dim at
+ * 8.5pt on rgba(11,15,34,0.86), so the blue tier uses a lifted tint of it.
+ */
+function fitTone(fit: number): string {
+  if (fit >= 85) return E.mint;
+  if (fit >= 70) return '#8CB4FF';
+  return 'rgba(255,255,255,0.62)';
+}
 
 /**
  * Which pixel-less slots are genuinely being worked on, walked out from the centre in the same
@@ -83,19 +115,110 @@ function hydrationStates(cards: PaperCard[], index: number): Record<string, Pape
   return out;
 }
 
-function Card({ card, i, dist, state, scrollX, ribbon, m, onOpen }: {
+/**
+ * The live number on a building card. ⚠️ ISOLATED ON PURPOSE (see the header): useCreepPct ticks
+ * every 90 ms, and this is the only component that re-renders when it does.
+ */
+const PctNumber = React.memo(function PctNumber({ stage, phase, size, buildKey }: {
+  stage: BuildStage | null; phase: BuildPhase | null; size: number;
+  /** storeKeyOf(kind, rk). ⚠️ Shared with the chip's line: a card that mounts late continues from the
+   *  number the chip is already showing instead of seeding at the stage ceiling (two % for one build). */
+  buildKey: string;
+}) {
+  const pct = useCreepPct(stage, phase, buildKey);
+  return (
+    <Text style={[s.bPct, { fontSize: size, lineHeight: Math.round(size * 1.08) }]} allowFontScaling={false}>
+      {pct}<Text style={[s.bPctSign, { fontSize: Math.round(size * 0.5) }]}>%</Text>
+    </Text>
+  );
+});
+
+/**
+ * The "being written" read-out centred on a building card: the live %, what the build is doing right
+ * now, and the way back into the overlay. It subscribes to the build store by key, so it re-renders
+ * when THIS build's record changes and at no other time (useTargetBuild's per-key snapshot).
+ *
+ * ⚠️ The bar is driven by the STAGE's own pct, not by the creeping number: the number changes eleven
+ * times a second and restarting a native timing on every change is exactly the bridge traffic this
+ * tree avoids. Stages move a handful of times per build, and a 700 ms ease-out lands the bar about
+ * where the creep would have taken the number anyway.
+ */
+const BuildingPct = React.memo(function BuildingPct({ kind, rk, company, w }: PaperBuilding & { w: number }) {
+  const b = useTargetBuild(kind, rk);
+  const phase = b ? b.phase : null;
+  const stage = b ? b.stage : null;
+  const noun = kind === 'cover_letter' ? 'cover letter' : 'resume';
+  const label = phase === 'queued' ? 'Queued · starts when a build finishes'
+    : phase === 'error' ? (b?.error?.message || 'Didn’t finish')
+    : (stage && stage.label) || (phase === 'checking' ? 'Checking your plan…' : `Writing your ${company} ${noun}`);
+
+  const panelW = Math.round(w * 0.66);
+  const trackW = panelW - 24;
+  const target = phase === 'done' ? 1 : Math.max(0, Math.min(1, ((stage && stage.pct) || 0) / 100));
+  const p = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const a = Animated.timing(p, { toValue: target, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true });
+    a.start();
+    return () => a.stop();
+  }, [p, target]);
+  // Full-width fill scaled on X from its LEFT edge: RN scales about the centre, so translate by the
+  // half the scale took away. Transform only — never an animated width.
+  const fill = useMemo(() => ({
+    transform: [
+      { translateX: p.interpolate({ inputRange: [0, 1], outputRange: [-trackW / 2, 0] }) },
+      { scaleX: p.interpolate({ inputRange: [0, 1], outputRange: [0.001, 1] }) },
+    ],
+  }), [p, trackW]);
+
+  const size = Math.round(Math.max(26, Math.min(40, w * 0.16)));
+  return (
+    <View style={s.bWrap} pointerEvents="none">
+      <View style={[s.bPanel, { width: panelW }]}>
+        {phase === 'queued'
+          ? <Text style={[s.bQueued, { fontSize: Math.round(size * 0.6) }]} allowFontScaling={false}>Queued</Text>
+          : <PctNumber stage={stage} phase={phase} size={size} buildKey={storeKeyOf(kind, rk)} />}
+        <View style={[s.bTrack, { width: trackW }]}>
+          <Animated.View style={[s.bFill, { width: trackW }, fill]} />
+        </View>
+        <Text style={s.bLabel} numberOfLines={1}>{label}</Text>
+        <View style={s.bWatch}>
+          <Ionicons name="eye-outline" size={11} color={E.mint} />
+          <Text style={s.bWatchTx}>Tap to watch</Text>
+        </View>
+      </View>
+    </View>
+  );
+});
+
+/**
+ * ⚠️ MEMOISED, AND EVERY PROP IS KEPT REFERENTIALLY STABLE UPSTREAM FOR IT TO WORK: `m`, `ribbon`,
+ * `building` and both callbacks are memoised in PaperCarousel, and the settled index arrives as two
+ * booleans (`near`, `detail`) instead of a distance — a distance changes for every card on every
+ * swipe, a boolean only for the couple of cards crossing a threshold. Without that, one settle
+ * re-rendered all 73 pages and rebuilt every one of their native interpolation nodes.
+ */
+const Card = React.memo(function Card({ card, i, near, detail, state, scrollX, ribbon, m, onOpen, building, onOpenBuilding, showFit }: {
   card: PaperCard; i: number; scrollX: Animated.Value; m: Metrics;
-  /** Cards away from the settled one, in whole steps. Gates what is allowed to animate. */
-  dist: number;
+  /** Within 2 steps of the settled card. Gates what is allowed to LOOP (sweep, pen, glare, the live %). */
+  near: boolean;
+  /** Within DETAIL_WINDOW steps: draw the skeleton's body copy. */
+  detail: boolean;
   /** Whether anything is actually fetching this slot's page — see hydrationStates. */
   state: PaperState;
-  ribbon?: { letter: string; short: string; colors: [string, string] } | null;
-  onOpen?: (i: number, rect: { x: number; y: number; w: number; h: number }) => void;
+  ribbon?: Ribbon | null;
+  onOpen?: OpenFn;
+  /** The deck's document is being rebuilt: draw the page being written, and a tap opens the build. */
+  building?: PaperBuilding | null;
+  onOpenBuilding?: () => void;
+  showFit?: boolean;
 }) {
   // The zoom grows out of the exact rectangle the finger is on, so the card measures itself at
   // the moment of the tap rather than the sheet guessing where it was.
   const box = useRef<any>(null);
   const open = () => {
+    // ⚠️ A building deck has no page worth zooming into — every card is a drawing of the one being
+    // written — so the tap goes to the thing the user can actually watch.
+    if (building) { onOpenBuilding?.(); return; }
     if (!onOpen) return;
     const fallback = { x: 0, y: 0, w: m.w, h: m.h };
     if (!box.current?.measureInWindow) { onOpen(i, fallback); return; }
@@ -103,36 +226,57 @@ function Card({ card, i, dist, state, scrollX, ribbon, m, onOpen }: {
       onOpen(i, w ? { x, y, w, h } : fallback));
   };
 
-  // Distance from centre, in card-steps.
-  const d = Animated.divide(Animated.subtract(scrollX, i * m.step), m.step);
-  const clamp = (out: [number, number, number]) =>
-    d.interpolate({ inputRange: [-1.4, 0, 1.4], outputRange: out, extrapolate: 'clamp' });
+  // Distance from centre, in card-steps. ⚠️ Memoised: rebuilt inline, every render detached and
+  // re-attached a fresh set of native nodes on each card for no change in what they compute.
+  const anim = useMemo(() => {
+    const d = Animated.divide(Animated.subtract(scrollX, i * m.step), m.step);
+    const clamp = (out: [number, number, number]) =>
+      d.interpolate({ inputRange: [-1.4, 0, 1.4], outputRange: out, extrapolate: 'clamp' });
+    return {
+      opacity: clamp([0.35, 1, 0.35]),
+      rotateY: d.interpolate({ inputRange: [-1.4, 0, 1.4], outputRange: ['38deg', '0deg', '-38deg'], extrapolate: 'clamp' }),
+      scale: clamp([0.82, 1, 0.82]),
+      translateY: clamp([18, 0, 18]),
+      reflect: clamp([0.22, 0.75, 0.22]),
+      // ⚠️ TWO GATES, AND THEY ARE NOT REDUNDANT. `d` is the same native-driven distance-from-centre
+      // that already turns and dims this card, so riding it costs nothing and the sweep dies as the
+      // page rotates away — but an opacity of 0 does not stop an Animated.loop, and `d` cannot be read
+      // in JS without a per-frame listener, which is exactly the bridge traffic this native-driver tree
+      // exists to avoid. So the loops are MOUNTED off the settled index instead (`near`). 73 slots each
+      // running a shimmer is a battery fire; this runs at most five and shows at most one. The sweep is
+      // also gated on the state, for the same reason the label is: a slot that nothing is fetching
+      // must not animate as though its page were on the way.
+      sweepFade: d.interpolate({ inputRange: [-0.85, 0, 0.85], outputRange: [0, 1, 0], extrapolate: 'clamp' }),
+    };
+  }, [scrollX, i, m.step]);
 
-  // ⚠️ TWO GATES, AND THEY ARE NOT REDUNDANT. `d` is the same native-driven distance-from-centre
-  // that already turns and dims this card, so riding it costs nothing and the sweep dies as the
-  // page rotates away — but an opacity of 0 does not stop an Animated.loop, and `d` cannot be read
-  // in JS without a per-frame listener, which is exactly the bridge traffic this native-driver tree
-  // exists to avoid. So the loops are MOUNTED off the settled index instead. 73 slots each running
-  // a shimmer is a battery fire; this runs at most five and shows at most one. The sweep is also
-  // gated on `state === 'loading'` now, for the same reason the label is: a slot that nothing is
-  // fetching must not animate as though its page were on the way.
-  const sweepFade = d.interpolate({ inputRange: [-0.85, 0, 0.85], outputRange: [0, 1, 0], extrapolate: 'clamp' });
-  const near = dist <= 2;
+  const fit = showFit && !building && card.fit != null ? Math.max(0, Math.min(100, Math.round(card.fit))) : null;
+  // ⚠️ 'Best match' ONLY ON A REAL RANKING (card.fit present). An unranked saved doc still has a
+  // first card, and "best" on it was a claim nothing had measured — and with no fit pill above it the
+  // lone best pill sat on the ribbon row. Keying it off fit keeps the FIT_CLEAR cap below honest too.
+  const best = !!showFit && !building && i === 0 && card.fit != null;
+  const a11y = building
+    ? `${card.name}. Your ${building.company} ${building.kind === 'cover_letter' ? 'cover letter' : 'resume'} is being written`
+    : `${card.name}${fit != null ? `, ${fit}% fit` : ''}${best ? ', best match' : ''}${card.reason ? `. ${card.reason}` : ''}`;
 
   return (
     <Animated.View
       style={{
         width: m.w, marginRight: GAP,
-        opacity: clamp([0.35, 1, 0.35]),
+        opacity: anim.opacity,
         transform: [
           { perspective: 700 },
-          { rotateY: d.interpolate({ inputRange: [-1.4, 0, 1.4], outputRange: ['38deg', '0deg', '-38deg'], extrapolate: 'clamp' }) },
-          { scale: clamp([0.82, 1, 0.82]) },
-          { translateY: clamp([18, 0, 18]) },
+          { rotateY: anim.rotateY },
+          { scale: anim.scale },
+          { translateY: anim.translateY },
         ],
       }}
     >
-      <TouchableOpacity ref={box} activeOpacity={0.92} onPress={open} style={s.paperShadow}>
+      <TouchableOpacity
+        ref={box} activeOpacity={0.92} onPress={open} style={s.paperShadow}
+        accessibilityRole="button" accessibilityLabel={a11y}
+        accessibilityHint={building ? 'Opens the build progress' : 'Opens this design full screen'}
+      >
         <View style={[s.paper, { width: m.w, height: m.h }]}>
           {/* ⚠️ THE PLACEHOLDER STAYS MOUNTED UNDERNEATH, ALWAYS. `transition` alone is NOT the
               cross-fade it looks like: expo-image fades from whatever that Image was already
@@ -145,29 +289,53 @@ function Card({ card, i, dist, state, scrollX, ribbon, m, onOpen }: {
               re-render that unmounting it would cost, mid-scroll, on the app's front door. */}
           <PaperSkeleton
             w={m.w} h={m.h} accent={card.accent} name={card.name}
-            detail={dist <= DETAIL_WINDOW} state={state}
-            shimmer={state === 'loading' && near} fade={sweepFade}
+            detail={detail} state={state}
+            shimmer={(state === 'loading' || state === 'writing') && near} fade={anim.sweepFade}
           />
           {/* ⚠️ TOP-ANCHORED. `cover` alone centres the page, so anything taller than the card loses
-              its head AND its foot — and the head is where the name is. Crop the tail instead. */}
-          {!!card.image && (
+              its head AND its foot — and the head is where the name is. Crop the tail instead.
+              ⚠️ Hidden while building: those pixels are the version being REPLACED, and a finished-
+              looking old page under "writing 40%" says the opposite of what is happening. */}
+          {!!card.image && !building && (
             <Image source={{ uri: card.image }} style={s.img} contentFit="cover" contentPosition="top" transition={220} />
           )}
           {/* Same reason the sweep is gated: this was 73 concurrent loops on a 73-design deck, all
-              but three of them sweeping a card nobody can see. */}
-          {near && <Glare w={m.w} />}
+              but three of them sweeping a card nobody can see. Off while building — the pen is
+              already moving on that page, and two moving things over one read-out is noise. */}
+          {near && !building && <Glare w={m.w} />}
           {!!ribbon && (
-            <View style={s.ribbon}>
+            <View style={[s.ribbon, (fit != null || best) && { maxWidth: m.w - 16 - FIT_CLEAR }]}>
               <View style={[s.ribbonTile, { backgroundColor: ribbon.colors[0] }]}>
                 <Text style={s.ribbonTileTx}>{ribbon.letter}</Text>
               </View>
               <Text style={s.ribbonTx} numberOfLines={1}>For {ribbon.short}</Text>
             </View>
           )}
+          {(fit != null || best) && (
+            <View style={s.fitCol} pointerEvents="none">
+              {fit != null && (
+                <View style={s.fitPill}>
+                  <View style={[s.fitDot, { backgroundColor: fitTone(fit) }]} />
+                  <Text style={[s.fitTx, { color: fitTone(fit) }]} allowFontScaling={false}>{fit}% fit</Text>
+                </View>
+              )}
+              {best && (
+                <View style={s.bestPill}>
+                  <Ionicons name="sparkles" size={9} color={E.ink} />
+                  <Text style={s.bestTx} allowFontScaling={false}>Best match</Text>
+                </View>
+              )}
+            </View>
+          )}
+          {/* Only the cards near the centre carry the live read-out: each one is a ticking
+              subscriber, and a card 30 steps away is a dimmed sliver nobody can read anyway. */}
+          {!!building && near && <BuildingPct kind={building.kind} rk={building.rk} company={building.company} w={m.w} />}
           {/* the affordance for the zoom — without it nothing says the page is tappable */}
-          <View style={s.expand}>
-            <Ionicons name="scan-outline" size={13} color="#fff" />
-          </View>
+          {!building && (
+            <View style={s.expand}>
+              <Ionicons name="scan-outline" size={13} color="#fff" />
+            </View>
+          )}
         </View>
       </TouchableOpacity>
       {/* ⚠️ THIS WAS A SOLID BAR AND IT READ AS A RULE ACROSS THE SCREEN. A 6pt block of flat blue
@@ -175,7 +343,7 @@ function Card({ card, i, dist, state, scrollX, ribbon, m, onOpen }: {
           which on a screen whose whole point is that it has no seams was the most visible edge left
           on it. A reflection has no ends: this one fades to nothing at both, and it is dimmer and
           narrower than the card so it can never trace its edge. */}
-      <Animated.View style={[s.reflect, { opacity: clamp([0.22, 0.75, 0.22]) }]} pointerEvents="none">
+      <Animated.View style={[s.reflect, { opacity: anim.reflect }]} pointerEvents="none">
         <LinearGradient
           colors={['rgba(79,141,255,0)', 'rgba(140,180,255,0.30)', 'rgba(79,141,255,0)']}
           start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
@@ -184,7 +352,7 @@ function Card({ card, i, dist, state, scrollX, ribbon, m, onOpen }: {
       </Animated.View>
     </Animated.View>
   );
-}
+});
 
 // A slow highlight travelling across the page — the mockup's "glare". Transform-only, native
 // driver, same as everything else in this tree.
@@ -229,13 +397,23 @@ function Dots({ n, index }: { n: number; index: number }) {
   );
 }
 
-export default function PaperCarousel({ cards, index, onIndex, ribbon, onOpen }: {
+export default function PaperCarousel({ cards, index, onIndex, ribbon, onOpen, building, onOpenBuilding, showFit }: {
   cards: PaperCard[];
   index: number;
   onIndex: (i: number) => void;
   ribbon?: { letter: string; short: string; colors: [string, string] } | null;
   /** Tap a page to open it full-screen; the rect is where it was on screen when tapped. */
   onOpen?: (i: number, rect: { x: number; y: number; w: number; h: number }) => void;
+  /**
+   * The document behind this deck is being built right now (checking / queued / building). Every
+   * card draws the page being written, the centre ones carry the live %, and a tap calls
+   * onOpenBuilding instead of zooming. ⚠️ Identity only: pass the same kind/rk while it runs — the
+   * numbers are read from the build store by BuildingPct, never pushed down through here.
+   */
+  building?: PaperBuilding | null;
+  onOpenBuilding?: () => void;
+  /** Draw the '<fit>% fit' pill (and 'Best match' on the first card, only when that card has a fit) — a ranked doc deck. */
+  showFit?: boolean;
 }) {
   const scrollX = useRef(new Animated.Value(0)).current;
   const ref = useRef<any>(null);
@@ -246,8 +424,30 @@ export default function PaperCarousel({ cards, index, onIndex, ribbon, onOpen }:
   const states = React.useMemo(() => hydrationStates(cards, index), [cards, index]);
 
   const w = cardWidthFor(width);
-  const m: Metrics = { w, h: Math.round(w * A4), step: w + GAP };
+  // ⚠️ Memoised for Card's React.memo: a fresh object per render defeats it on every card.
+  const m: Metrics = useMemo(() => ({ w, h: Math.round(w * A4), step: w + GAP }), [w]);
   const side = width > w ? (width - w) / 2 : 16;
+
+  // ⚠️ The screen passes these as inline literals and arrows, which are new on every one of ITS
+  // renders. Stabilised here (by value for the objects, through a ref for the callbacks) so a parent
+  // re-render that changed nothing about the deck re-renders no page.
+  const rib: Ribbon | null = useMemo(
+    () => (ribbon ? { letter: ribbon.letter, short: ribbon.short, colors: ribbon.colors } : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ribbon?.letter, ribbon?.short, ribbon?.colors?.[0], ribbon?.colors?.[1]],
+  );
+  const bld: PaperBuilding | null = useMemo(
+    () => (building ? { kind: building.kind, rk: building.rk, company: building.company } : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [building?.kind, building?.rk, building?.company],
+  );
+  const openRef = useRef(onOpen);
+  openRef.current = onOpen;
+  const openBuildingRef = useRef(onOpenBuilding);
+  openBuildingRef.current = onOpenBuilding;
+  const openStable = useCallback<OpenFn>((i, rect) => { openRef.current?.(i, rect); }, []);
+  const openBuildingStable = useCallback(() => { openBuildingRef.current?.(); }, []);
+  const hasOpen = !!onOpen;
 
   // Drive the pager from outside (an employer chip tap re-centres it).
   useEffect(() => {
@@ -273,12 +473,19 @@ export default function PaperCarousel({ cards, index, onIndex, ribbon, onOpen }:
           if (i !== settled.current) { settled.current = i; onIndex(i); }
         }}
       >
-        {cards.map((c, i) => (
-          <Card
-            key={c.id} card={c} i={i} dist={Math.abs(i - index)} state={states[c.id] || 'idle'}
-            scrollX={scrollX} ribbon={ribbon} m={m} onOpen={onOpen}
-          />
-        ))}
+        {cards.map((c, i) => {
+          const dist = Math.abs(i - index);
+          return (
+            <Card
+              key={c.id} card={c} i={i} near={dist <= 2} detail={dist <= DETAIL_WINDOW}
+              // A building deck overrides the hydration word on every card: none of these pages is
+              // "loading" any more, the document they would show is being rewritten.
+              state={bld ? 'writing' : (states[c.id] || 'idle')}
+              scrollX={scrollX} ribbon={rib} m={m} onOpen={hasOpen ? openStable : undefined}
+              building={bld} onOpenBuilding={openBuildingStable} showFit={!!showFit}
+            />
+          );
+        })}
       </Animated.ScrollView>
       <Dots n={cards.length} index={index} />
     </View>
@@ -315,7 +522,44 @@ const s = StyleSheet.create({
   },
   ribbonTile: { width: 14, height: 14, borderRadius: 4, alignItems: 'center', justifyContent: 'center' },
   ribbonTileTx: { fontSize: 8, fontWeight: '800', color: '#fff' },
-  ribbonTx: { fontSize: 8.5, fontWeight: '800', color: '#fff', letterSpacing: 0.5, textTransform: 'uppercase' },
+  // flexShrink so a long employer name truncates inside the ribbon's maxWidth (set when the fit
+  // column is showing) instead of pushing the pill out under it.
+  ribbonTx: { fontSize: 8.5, fontWeight: '800', color: '#fff', letterSpacing: 0.5, textTransform: 'uppercase', flexShrink: 1 },
+  // Top-RIGHT, opposite the ribbon, and clear of the zoom affordance at the bottom-right. Same dark
+  // glass as the ribbon so the two read as one family on a white page and on a skeleton alike.
+  fitCol: { position: 'absolute', right: 8, top: 8, alignItems: 'flex-end', gap: 4 },
+  fitPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingVertical: 4, paddingHorizontal: 7, borderRadius: 100,
+    backgroundColor: 'rgba(11,15,34,0.86)',
+  },
+  fitDot: { width: 5, height: 5, borderRadius: 3 },
+  fitTx: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.2, fontVariant: ['tabular-nums'] },
+  bestPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingVertical: 3, paddingHorizontal: 6, borderRadius: 100,
+    backgroundColor: E.mint,
+  },
+  bestTx: { fontSize: 8, fontWeight: '800', color: E.ink, letterSpacing: 0.3, textTransform: 'uppercase' },
+  // The building read-out: a centred dark glass panel over the page being written. The pen keeps
+  // moving around it, which is what makes the number read as live rather than as a stuck label.
+  bWrap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
+  bPanel: {
+    alignItems: 'center', paddingTop: 10, paddingBottom: 9, paddingHorizontal: 12, borderRadius: 16,
+    backgroundColor: 'rgba(11,15,34,0.86)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.35, shadowRadius: 18,
+  },
+  bPct: { fontWeight: '800', color: '#fff', letterSpacing: -1, fontVariant: ['tabular-nums'] },
+  bPctSign: { fontWeight: '700', color: 'rgba(255,255,255,0.62)', letterSpacing: 0 },
+  bQueued: { fontWeight: '800', color: '#fff', letterSpacing: -0.3, marginVertical: 4 },
+  bTrack: { height: 3, borderRadius: 2, marginTop: 6, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.14)' },
+  bFill: { height: 3, borderRadius: 2, backgroundColor: E.mint },
+  bLabel: { marginTop: 7, fontSize: 9.5, fontWeight: '700', color: 'rgba(255,255,255,0.78)', maxWidth: '100%' },
+  bWatch: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 7,
+    paddingVertical: 3, paddingHorizontal: 8, borderRadius: 100, backgroundColor: 'rgba(94,234,212,0.12)',
+  },
+  bWatchTx: { fontSize: 8.5, fontWeight: '800', color: E.mint, letterSpacing: 0.4, textTransform: 'uppercase' },
   // ⚠️ NOT a blur — React Native has none. A thin tinted sliver directly under the page, which
   // reads as the light it sits in. A taller/darker block read as a grey bar (b202 preview).
   // No fill and no shadow: both gave it hard ends. It is a gradient that starts and finishes at

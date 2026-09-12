@@ -13,12 +13,23 @@
 // catalogue below mirrors the server's 15 families and their recolour variants.
 //
 // Reachable only by deep link (cvapplyr://dev/home-preview) — nothing in the app links here.
+// Add ?sample=1 to see the brand-new-account state (sample pages, no saved documents).
+//
+// ⚠️ THE SAVED DOCUMENTS ARE FIXTURES TOO, AND THEY REPLACE THE NETWORK. Every employer now has its
+// own resume and letter with a ranked design list, so the loaders below answer the three document
+// reads (doc / docCards / docList) — one chip with a ranked deck and fit badges, one whose document is
+// stale (the Refresh pill), and chips with nothing saved (the Tailor / Write action). Nothing here can
+// start a build: this harness has no account, and a build needs one.
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useLocalSearchParams } from 'expo-router';
 import EmployerHome from '../../components/employer-home/EmployerHome';
 import { E } from '../../components/employer-home/theme';
+import { LETTER_DESIGNS } from '../../services/employerHomeService';
 import type { Target, HomeCard, DownloadHistoryItem } from '../../services/employerHomeService';
+import type { DocKind } from '../../services/homeAddEmployer';
+import type { DocMeta, DocLookup, DocCard, DocListItem } from '../../services/employerDocs';
 
 // ── Paper, drawn six ways, so the deck reads as genuinely different LAYOUTS and not one design
 // recoloured. Each returns a data URI the carousel can lay out without a server round-trip.
@@ -119,14 +130,173 @@ const CATALOGUE: HomeCard[] = FAMILIES.flatMap((f, fi) =>
 // ⚠️ Airbus appears TWICE on purpose: a chip identifies a posting, not a company, and two roles at
 // one employer are two different applications. If this ever collapses back to one Airbus chip, the
 // per-posting behaviour has regressed.
+// Each posting carries its URL: a saved document is found by (employer, posting URL), so without one
+// the two Airbus roles would share a document — the exact bug the URL identity exists to prevent.
 const TARGETS: Target[] = [
-  { key: 'job_a1', jobId: 'a1', company: 'Airbus', role: 'Senior Software Engineer', initial: 'A', colors: ['#4F8DFF', '#7C6BFF'], match: 100, skills: ['C++', 'Embedded', 'DO-178C'], location: 'Toulouse' },
-  { key: 'job_a2', jobId: 'a2', company: 'Airbus', role: 'Team Lead', initial: 'A', colors: ['#4F8DFF', '#7C6BFF'], match: 88, skills: ['Leadership', 'Agile'], location: 'Hamburg' },
-  { key: 'job_i1', jobId: 'i1', company: 'iwell B.V.', role: 'Senior .NET Developer', initial: 'I', colors: ['#7C6BFF', '#DB2777'], match: 94, skills: ['.NET Core', 'Azure', 'React'], location: 'Amsterdam' },
-  { key: 'job_e1', jobId: 'e1', company: 'Eneco', role: 'Platform Engineer', initial: 'E', colors: ['#10B981', '#06B6D4'], match: 78, skills: ['Azure', 'SAP'], location: 'Rotterdam' },
+  { key: 'job_a1', jobId: 'a1', applyUrl: 'https://careers.airbus.com/job/senior-software-engineer-a1', company: 'Airbus', role: 'Senior Software Engineer', initial: 'A', colors: ['#4F8DFF', '#7C6BFF'], match: 100, skills: ['C++', 'Embedded', 'DO-178C'], location: 'Toulouse' },
+  { key: 'job_a2', jobId: 'a2', applyUrl: 'https://careers.airbus.com/job/team-lead-a2', company: 'Airbus', role: 'Team Lead', initial: 'A', colors: ['#4F8DFF', '#7C6BFF'], match: 88, skills: ['Leadership', 'Agile'], location: 'Hamburg' },
+  { key: 'job_i1', jobId: 'i1', applyUrl: 'https://iwell.nl/vacatures/senior-net-developer-i1', company: 'iwell B.V.', role: 'Senior .NET Developer', initial: 'I', colors: ['#7C6BFF', '#DB2777'], match: 94, skills: ['.NET Core', 'Azure', 'React'], location: 'Amsterdam' },
+  { key: 'job_e1', jobId: 'e1', applyUrl: 'https://werkenbij.eneco.nl/vacature/platform-engineer-e1', company: 'Eneco', role: 'Platform Engineer', initial: 'E', colors: ['#10B981', '#06B6D4'], match: 78, skills: ['Azure', 'SAP'], location: 'Rotterdam' },
 ];
 
+// ── A cover letter, drawn: letterhead band, sender block, subject, three paragraphs, sign-off. ──
+function letterPaper(accent: string) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="424" viewBox="0 0 300 424">
+  <rect width="300" height="424" fill="#fff"/>
+  <rect width="300" height="9" fill="${accent}"/>
+  <rect x="22" y="32" width="124" height="11" rx="4" fill="#111827"/>
+  <rect x="22" y="50" width="88" height="6" rx="3" fill="#9AA6B8"/>
+  <rect x="196" y="32" width="82" height="6" rx="3" fill="#C9D2E0"/>
+  <rect x="210" y="44" width="68" height="6" rx="3" fill="#C9D2E0"/>
+  <rect x="22" y="84" width="96" height="7" rx="3" fill="${accent}"/>
+  ${lines(22, 108, 256, 5)}${lines(22, 188, 256, 5)}${lines(22, 268, 256, 4)}
+  <rect x="22" y="344" width="86" height="18" rx="4" fill="${accent}26"/>
+  <rect x="22" y="372" width="72" height="6" rx="3" fill="#9AA6B8"/></svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+
+// ── Saved per-employer documents, ranked the way the server ranks them ─────────────────────────────
+// ⚠️ EVERY DESIGN, NOT A TOP FEW. The server's invariant is that `ranked` lists every template id of
+// its kind exactly once, sorted best first; a fixture with five entries would let a deck that drops
+// unranked designs look correct here. Scores are per family, each recolour one point below the last.
+const FIXTURE_AT = '2026-09-09T09:30:00.000Z';
+const FAMILY_OF = new Map<string, string>(
+  FAMILIES.flatMap((f) => f.tints.map(([suffix]) => [suffix ? `${f.id}_${suffix.toLowerCase()}` : f.id, f.id] as [string, string])),
+);
+
+type FamilyFit = Record<string, [number, string]>;
+
+function rankedResume(fit: FamilyFit) {
+  return CATALOGUE
+    .map((c, order) => {
+      const fam = FAMILY_OF.get(c.id) || c.id;
+      const [base, reason] = fit[fam] || [40, ''];
+      const step = FAMILIES.find((f) => f.id === fam)?.tints.findIndex(([suffix]) => (suffix ? `${fam}_${suffix.toLowerCase()}` : fam) === c.id) ?? 0;
+      return { id: c.id, score: Math.max(0, base - Math.max(0, step)), reason, order };
+    })
+    .sort((a, b) => (b.score - a.score) || (a.order - b.order))
+    .map(({ order, ...r }) => r);
+}
+
+function rankedLetter(scores: Record<string, [number, string]>) {
+  return LETTER_DESIGNS
+    .map((d, order) => ({ id: d.id, score: (scores[d.id] || [30, ''])[0], reason: (scores[d.id] || [30, ''])[1], order }))
+    .sort((a, b) => (b.score - a.score) || (a.order - b.order))
+    .map(({ order, ...r }) => r);
+}
+
+const AIRBUS_FIT: FamilyFit = {
+  exec_pro: [94, 'Understated two-column layout that aerospace hiring panels read quickly'],
+  ats: [91, 'Parses cleanly in the large ATS a 130,000-person employer screens with'],
+  executive: [87, 'Senior engineering weight without looking like a sales deck'],
+  europass: [84, 'A familiar EU format for a Toulouse and Hamburg employer'],
+  minimal: [82, 'Quiet single column that keeps the certifications easy to find'],
+  elegant: [78, 'Conservative serif tone that suits an established industrial brand'],
+  germany: [74, 'Works for the German sites, though the photo slot is optional here'],
+  compact: [70, 'Fits a long embedded career on fewer pages'],
+  azure: [64, ''], rightrail: [61, ''], mono: [58, ''], timeline: [55, ''],
+  india: [47, ''], banner: [44, ''], startup: [38, 'Reads as a start-up, not a safety-critical engineering team'],
+};
+
+const ENECO_FIT: FamilyFit = {
+  mono: [89, 'Tooling-first layout for a platform team that lists its stack'],
+  compact: [86, 'Dense, scannable one-pager for a hands-on engineering role'],
+  minimal: [83, 'Clean single column, the Dutch default for technical roles'],
+  europass: [80, ''], ats: [78, ''], rightrail: [72, ''], azure: [70, ''], timeline: [66, ''],
+  startup: [62, ''], exec_pro: [58, ''], banner: [55, ''], elegant: [50, ''], executive: [46, ''],
+  germany: [44, ''], india: [40, ''],
+};
+
+const DOCS: DocMeta[] = [
+  {
+    docId: 101, kind: 'resume', employer: 'Airbus', employerId: null,
+    jobUrl: TARGETS[0].applyUrl || '', jobTitle: 'Senior Software Engineer',
+    createdAt: FIXTURE_AT, updatedAt: FIXTURE_AT, editedAt: null, stale: false,
+    design: {
+      v: 1, kind: 'resume', ranked: rankedResume(AIRBUS_FIT), mode: 'a4', brandColor: '#00205b',
+      tone: 'Conservative enterprise', region: 'eu',
+      headline: 'Airbus screens senior engineers through a large ATS: a restrained two-column page reads best.',
+    },
+    summary: { title: 'Senior Embedded Software Engineer', subject: '' },
+  },
+  {
+    // STALE on purpose: the Refresh pill is a state worth looking at.
+    docId: 103, kind: 'resume', employer: 'Eneco', employerId: null,
+    jobUrl: TARGETS[3].applyUrl || '', jobTitle: 'Platform Engineer',
+    createdAt: FIXTURE_AT, updatedAt: FIXTURE_AT, editedAt: null, stale: true,
+    design: {
+      v: 1, kind: 'resume', ranked: rankedResume(ENECO_FIT), mode: 'onepage', brandColor: '#e4003a',
+      tone: 'Hands-on engineering', region: 'eu',
+      headline: 'A platform team reads the stack first — a tooling-led one-pager puts it at the top.',
+    },
+    summary: { title: 'Platform Engineer', subject: '' },
+  },
+  {
+    docId: 201, kind: 'cover_letter', employer: 'Airbus', employerId: null,
+    jobUrl: TARGETS[0].applyUrl || '', jobTitle: 'Senior Software Engineer',
+    createdAt: FIXTURE_AT, updatedAt: FIXTURE_AT, editedAt: null, stale: false,
+    design: {
+      v: 1, kind: 'cover_letter', mode: 'a4', brandColor: '#00205b', tone: 'Evidence first', region: 'eu',
+      ranked: rankedLetter({
+        technical: [92, 'Leads with the certified embedded work the posting asks for'],
+        ats_pro: [88, 'Plain structure that survives an enterprise applicant system'],
+        euro_motivation: [83, 'The motivation-letter shape French and German reviewers expect'],
+        standard: [79, 'Carries the Airbus letterhead colour'],
+        german: [71, ''], exec_leader: [60, ''], graduate: [34, 'Written for a first job, not twelve years of experience'],
+      }),
+      headline: 'An engineering panel wants the proof first: the technical format opens with it.',
+    },
+    summary: { title: '', subject: 'Application: Senior Software Engineer' },
+  },
+];
+
+const sameText = (a?: string | null, b?: string | null) => String(a || '').trim() === String(b || '').trim();
+
+const DOC_LOADERS = {
+  doc: async (kind: DocKind, q: DocLookup): Promise<DocMeta | null> =>
+    DOCS.find((d) => d.kind === kind && sameText(d.employer, q.employer) && sameText(d.jobUrl, q.jobUrl)) || null,
+  docCards: async (kind: DocKind, docId: number, ids: string[]): Promise<{ cards: DocCard[] } | 'gone'> => {
+    const d = DOCS.find((x) => x.docId === docId && x.kind === kind);
+    if (!d) return 'gone';
+    const ranked = new Map((d.design?.ranked || []).map((r) => [r.id, r] as const));
+    const cards: DocCard[] = [];
+    for (const id of ids) {
+      const r = ranked.get(id);
+      const fit = r ? r.score : null;
+      const reason = r && r.reason ? r.reason : null;
+      if (kind === 'cover_letter') {
+        const l = LETTER_DESIGNS.find((x) => x.id === id);
+        if (l) cards.push({ id: l.id, name: l.name, accent: l.accent, image: letterPaper(l.accent), fit, reason });
+      } else {
+        const c = CATALOGUE.find((x) => x.id === id);
+        if (c) cards.push({ id: c.id, name: c.name, accent: c.accent, image: c.image, fit, reason });
+      }
+    }
+    return { cards };
+  },
+  docList: async (kind: DocKind): Promise<DocListItem[]> => DOCS
+    .filter((d) => d.kind === kind)
+    .map((d) => ({
+      docId: d.docId, employer: d.employer, employerId: d.employerId, jobUrl: d.jobUrl, jobTitle: d.jobTitle,
+      updatedAt: d.updatedAt, topId: d.design?.ranked[0]?.id ?? null, topScore: d.design?.ranked[0]?.score ?? null,
+    })),
+};
+
+/**
+ * ── THE X AND ITS UNDO, SIGNED OUT ────────────────────────────────────────────────────────────────
+ * Removing a chip talks to the server (untrack an employer, hide a posting) and so does Undo, so without
+ * these two the harness could not exercise the one destructive action on this screen — the one with no
+ * dialog in front of it. They answer locally and REMEMBER what is hidden, so the chip stays gone across a
+ * reload and Undo brings it back, exactly as it behaves with an account.
+ * ⚠️ Nothing here reaches the network: EmployerHome routes both sides through these whenever `loaders` is
+ * present, and treats a loader the harness did not supply as a local success.
+ */
+const HIDDEN = new Set<string>();
+
 export default function HomePreview() {
+// `?sample=1` is the brand-new account: stand-in pages and nothing saved yet.
+const { sample: sampleParam } = useLocalSearchParams<{ sample?: string }>();
+const showSample = sampleParam === '1' || sampleParam === 'true';
 const DAY = 86400000;
 // Fixed offsets from a fixed epoch: a fixture that used Date.now() would render differently on
 // every run and make a visual diff of this screen worthless.
@@ -158,23 +328,33 @@ const LETTER_HISTORY: DownloadHistoryItem[] = [
           onOpenMenu={() => {}}
           onOpenNotifications={() => {}}
           loaders={{
-            targets: async () => TARGETS,
+            targets: async () => TARGETS.filter((t) => !HIDDEN.has(t.key)),
             // `sample: true` mirrors an account that has not uploaded a resume yet — the state a
-            // brand-new user actually lands in, and the one worth checking on screen.
-            cards: async () => ({ preferred: CATALOGUE[0].id, cards: CATALOGUE.slice(0, 5), sample: true }),
+            // brand-new user actually lands in. It is behind ?sample=1 now: a sample account has no
+            // saved documents, so by default the harness shows the account that DOES have them.
+            cards: async () => ({ preferred: CATALOGUE[0].id, cards: CATALOGUE.slice(0, 5), sample: showSample }),
             catalogue: async () => CATALOGUE,
             paid: async () => false,
-            // ⚠️ The library, from fixtures. EmployerHome's image-hydration effect short-circuits
-            // entirely when `loaders` is present, so this has to be self-contained — every row
-            // borrows a thumbnail from CATALOGUE by template id, with no follow-up fetch.
+            // ⚠️ The library, from fixtures. EmployerHome's BASE image-hydration effect short-circuits
+            // entirely when `loaders` is present (a saved document's deck fills in from `docCards`
+            // below instead), so this has to be self-contained — every row borrows a thumbnail from
+            // CATALOGUE by template id, with no follow-up fetch.
             // One locked row on purpose: the padlock is the state most worth looking at.
             history: async (kind) => ({
               unlimited: false,
               items: (kind === 'cover_letter' ? LETTER_HISTORY : RESUME_HISTORY) as DownloadHistoryItem[],
             }),
             // The account this was built against: everything done. That is the state where the
-            // wizard entry used to disappear entirely, so it is the one worth looking at.
+            // wizard entry used to disappear entirely — and where the CTA now reads "Customize your
+            // resume" and opens the editor on the selected employer's own version.
             setup: async () => ({ profile: true, resume: true, photo: true, signature: true, complete: true }),
+            // The saved documents. ⚠️ Supplying these is what keeps the document reads off the network.
+            doc: async (kind, q) => (showSample ? null : DOC_LOADERS.doc(kind, q)),
+            docCards: DOC_LOADERS.docCards,
+            docList: async (kind) => (showSample ? [] : DOC_LOADERS.docList(kind)),
+            // The X (untrack an employer / hide a posting) and Undo (track again / un-hide), locally.
+            remove: async (t) => { HIDDEN.add(t.key); return true; },
+            unhide: async (t) => { HIDDEN.delete(t.key); return true; },
           }}
         />
       </View>

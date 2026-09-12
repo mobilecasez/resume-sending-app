@@ -28,13 +28,47 @@ const BANDS = {
   executive: { side: 'left',  widthMm: 74, top: '#2c3742', bottom: '#222b34' },
 };
 
+// ── The resume page is static and offline, by construction ────────────────────────────────────────
+// ⚠️ THE RESUME HTML IS NOT OURS TO TRUST, AND THIS BROWSER RUNS INSIDE OUR NETWORK. resumeTemplates
+// escapes what it interpolates, but the data it interpolates is user-owned (résumé JSON the client
+// PUTs, AI-rebuilt text) and one missed escape anywhere in ~1.5k lines of template is enough: with
+// scripts on and the network open, an <iframe src="http://127.0.0.1:…">, an <img> at a metadata
+// address or a <link rel="prefetch"> makes OUR server fetch internal pages — and the preview shows
+// the user what came back. Same three fences the letter renderer uses (coverLetterRenderer.js), all
+// measured here against a local server (2026-09-12, Playwright 1.60 / chromium 1223; before them all
+// five of <script fetch>/<img>/<iframe>/<object>/<link rel=prefetch> reached it):
+//   1. javaScriptEnabled:false (preparePage) — no page script runs, whatever survives escaping.
+//   2. page.route (routeRequests) refuses every request the page's own loader makes except inline
+//      data: URIs (the profile photo) and the Google Fonts the templates link — https, those hosts
+//      only. It is the SAME handler that serves fontCache, so there is exactly one route on the page
+//      and no dependence on Playwright's route-precedence order.
+//   3. BLACKHOLE_PROXY (launchBrowser). page.route does NOT see what the browser fetches on the
+//      page's behalf — <link rel="prefetch"> went straight past it and hit the server. So the whole
+//      browser is pointed at a proxy that does not exist, and only the font hosts may go around it.
+//      `<-loopback>` removes Chromium's implicit rule that sends localhost/127.0.0.1 DIRECT past any
+//      proxy (Playwright also adds it; spelled out so no upgrade can drop it). route.fetch() for the
+//      fonts rides the same bypass, so the cache still fills on a cold browser.
+// ⚠️ A new external asset in resumeTemplates needs its host in ALLOWED_HOSTS — which feeds BOTH the
+// route and the proxy bypass — or it silently will not load. Inline it as a data: URI instead.
+const ALLOWED_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
+const BLACKHOLE_PROXY = { server: 'http://127.0.0.1:9', bypass: [...ALLOWED_HOSTS, '<-loopback>'].join(',') };
+const FONT_SETTLE_MS = 2500;
+
+function isFontRequest(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    return parsed.protocol === 'https:' && ALLOWED_HOSTS.includes(parsed.hostname);
+  } catch { return false; }
+}
+const isAllowedRequest = (url) => String(url || '').startsWith('data:') || isFontRequest(url);
+
 async function launchBrowser(extraArgs = []) {
   const { chromium } = require('playwright');
   const { launchChromium } = require('./browserLimit');
   // Capped + retried: unbounded launches here were exhausting the container's process budget and
   // failing with `spawn chrome-headless-shell EAGAIN` — which killed previews (screenshots have no
   // PDFKit fallback the way downloads do).
-  return launchChromium(chromium, { headless: true, args: [...LAUNCH_ARGS, ...extraArgs] });
+  return launchChromium(chromium, { headless: true, args: [...LAUNCH_ARGS, ...extraArgs], proxy: BLACKHOLE_PROXY });
 }
 // Previews render STATIC template HTML to a screenshot, so single-process chromium is safe here and
 // uses ~1 process / a few threads instead of ~5 processes / ~40 threads. That's what lets a preview
@@ -85,11 +119,17 @@ async function getWarmBrowser() {
 // Intercept font requests and serve repeats from memory: the FIRST render pays once, everything
 // after — previews and PDFs alike — gets fonts instantly, network down or not.
 const fontCache = new Map();   // url → { body: Buffer, contentType }
-async function routeFonts(page) {
-  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, async (route) => {
+// The page's ONE route: it is both the font cache and fence #2 above. Everything that is not an
+// inline data: URI or one of ALLOWED_HOSTS is refused before it leaves the browser.
+async function routeRequests(page) {
+  await page.route('**/*', async (route) => {
     const url = route.request().url();
+    if (!isFontRequest(url)) {
+      // data: URIs (the profile photo) pass through untouched; everything else never loads.
+      return (isAllowedRequest(url) ? route.continue() : route.abort('blockedbyclient')).catch(() => {});
+    }
     const hit = fontCache.get(url);
-    if (hit) return route.fulfill({ body: hit.body, contentType: hit.contentType });
+    if (hit) return route.fulfill({ body: hit.body, contentType: hit.contentType }).catch(() => {});
     try {
       const resp = await route.fetch();
       const body = await resp.body();
@@ -104,8 +144,10 @@ async function routeFonts(page) {
 }
 
 async function preparePage(browser, html) {
-  const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H } });
-  await routeFonts(page).catch(() => {});
+  const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H }, javaScriptEnabled: false });
+  // Installed BEFORE the content exists, so not even the first subresource escapes it. A route call
+  // on a page that is already closing rejects — that is not a render failure.
+  await routeRequests(page).catch(() => {});
   // Render must NOT hang on slow/unreachable external web fonts (Google Fonts) —
   // a frequent failure on Railway, where 'networkidle' never settles within the
   // timeout and the whole preview throws "unable to load". Use 'load'; if even
@@ -113,12 +155,14 @@ async function preparePage(browser, html) {
   // swallow it and render with whatever loaded (system-font fallback).
   await page.setContent(html, { waitUntil: 'load', timeout: 12000 }).catch(() => {});
   // Give fonts a brief, bounded chance to settle — never block forever.
-  try {
-    await page.evaluate(() => Promise.race([
-      (document.fonts ? document.fonts.ready : Promise.resolve()),
-      new Promise((r) => setTimeout(r, 2500)),
-    ]));
-  } catch { /* fonts API missing — ignore */ }
+  // ⚠️ THE BOUND LIVES ON THE NODE SIDE. With javaScriptEnabled:false the page runs no timers, so a
+  // setTimeout inside page.evaluate never fires (measured) and the old in-page Promise.race would
+  // now wait on document.fonts.ready for as long as a stuck font takes — holding a chromium slot,
+  // or the warm browser, the whole time. page.evaluate itself still works (Playwright injects it).
+  let timer = null;
+  const settled = page.evaluate(() => (document.fonts ? document.fonts.ready.then(() => true) : true)).catch(() => false);
+  await Promise.race([settled, new Promise((r) => { timer = setTimeout(r, FONT_SETTLE_MS); })]);
+  clearTimeout(timer);
   return page;
 }
 
@@ -216,8 +260,11 @@ async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
       await page.setViewportSize({ width: A4_W, height: h });
       // ⚠️ Single-process chromium can screenshot BEFORE the resized region repaints, capturing
       // stale texture from the previous render (a blue band from another template appeared at the
-      // bottom of a preview). Two rAFs guarantee a frame was composited at the new size first.
-      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))).catch(() => {});
+      // bottom of a preview). This used to be two rAFs inside the page — ⚠️ with javaScriptEnabled
+      // :false rAF callbacks NEVER run (measured: the evaluate never settles, and it cannot reject,
+      // so it would hang every preview forever). A throwaway 8×8 capture forces the compositor to
+      // produce a frame at the NEW size — same guarantee, no page script, ~5ms instead of 2 frames.
+      await page.screenshot({ type: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 8, height: 8 } }).catch(() => {});
       const shot = await page.screenshot({
         type: 'jpeg',
         quality: 82,
@@ -262,21 +309,22 @@ async function warmPreviews() {
     const browser = await getWarmBrowser();
     if (!fontCache.size) {
       // Prime the font cache with the same <head> every template ships.
-      const page = await browser.newPage({ viewport: { width: 200, height: 100 } });
+      // Same fences as a real render (see preparePage): no page script, one route, bound on Node.
+      const page = await browser.newPage({ viewport: { width: 200, height: 100 }, javaScriptEnabled: false });
       try {
-        await routeFonts(page);
+        await routeRequests(page);
         await page.setContent(
           `<html><head><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet"></head>` +
           `<body style="font-family:'Poppins','Lato',sans-serif">warm</body></html>`,
           { waitUntil: 'load', timeout: 10000 }).catch(() => {});
-        await page.evaluate(() => Promise.race([
-          (document.fonts ? document.fonts.ready : Promise.resolve()),
-          new Promise((r) => setTimeout(r, 3000)),
-        ])).catch(() => {});
+        let timer = null;
+        const settled = page.evaluate(() => (document.fonts ? document.fonts.ready.then(() => true) : true)).catch(() => false);
+        await Promise.race([settled, new Promise((r) => { timer = setTimeout(r, 3000); })]);
+        clearTimeout(timer);
       } finally { await page.close().catch(() => {}); }
     }
   } catch { /* cold path still works; this is purely a head start */ }
   finally { warmingUp = false; }
 }
 
-module.exports = { renderPdf, renderPreviews, warmPreviews };
+module.exports = { renderPdf, renderPreviews, warmPreviews, isAllowedRequest };

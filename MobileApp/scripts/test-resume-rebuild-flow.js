@@ -27,7 +27,9 @@ ok('generatePDF gates through the download service',
   /downloads\.canDownload\(userId, \{ employer \}, req\)[\s\S]{0,300}paid_required/.test(ctl));
 ok('⚠️ …and charges only AFTER the file exists, never at the gate',
   ctl.indexOf('downloads.claimDownload') > ctl.indexOf('downloads.canDownload'));
-ok('generateDocx gates the same way', /generateDocx[\s\S]{0,600}paid_required/.test(ctl));
+// Window widened (600 → 1200): generateDocx now loads a document (body.docId) before the gate, and the
+// rule is that the gate exists in the handler, not how many characters of doc loading precede it.
+ok('generateDocx gates the same way', /async function generateDocx[\s\S]{0,1200}paid_required/.test(ctl));
 ok('the PDF path no longer deducts credits', !/deductCredits\(userId, DOWNLOAD_CREDIT_COST/.test(ctl));
 ok('previewTemplates has NO plan/credit gate', !/previewTemplates[\s\S]{0,900}(activeSubscription|checkUserCredits)/.test(ctl.slice(ctl.indexOf('async function previewTemplates'))));
 
@@ -120,10 +122,29 @@ ok('it self-heals with a per-template retry on a dead handle', /one clean retry,
 // with a 6-template loop) — the warm browser must recycle itself before that threshold.
 ok('the warm browser recycles every few pages, below the crash threshold',
   /WARM_PAGE_LIMIT = 3/.test(rend) && /warmPages < WARM_PAGE_LIMIT/.test(rend));
-ok('a composited frame is forced between resize and screenshot', /requestAnimationFrame\(\(\) => requestAnimationFrame/.test(rend));
+// ⚠️ NOT an in-page rAF any more. Pages render with javaScriptEnabled:false (the SSRF fence below),
+// and a requestAnimationFrame callback NEVER fires without page script — the old guard would have
+// hung every preview forever. A throwaway 8×8 capture forces the same compositor frame from Node.
+ok('a composited frame is forced between resize and screenshot',
+  /clip: \{ x: 0, y: 0, width: 8, height: 8 \}/.test(rend) && !/requestAnimationFrame/.test(rend));
 ok('the idle timer never keeps the process alive', /warmTimer\.unref/.test(rend));
 ok('Google Fonts are served from an in-memory cache', /fontCache/.test(rend) && /route\(/.test(rend));
-ok('font interception applies to EVERY prepared page (previews and PDFs)', /await routeFonts\(page\)/.test(rend));
+ok('request interception applies to EVERY prepared page (previews, PDFs and the warm primer)',
+  (rend.match(/routeRequests\(page\)/g) || []).length >= 2);
+// ⚠️ THE RESUME RENDERER RUNS WHATEVER SURVIVED ESCAPING, and a tailored document can be edited by
+// hand (PUT /api/employer-docs/:id). Three fences, mirroring coverLetterRenderer: no page script, a
+// route that passes only data: URIs and the two Google Fonts hosts, and a blackhole proxy for the
+// loads the route never sees (<link rel=prefetch>), with <-loopback> so 127.0.0.1 cannot be reached.
+ok('no page script runs in a render', (rend.match(/javaScriptEnabled: false/g) || []).length >= 2);
+ok('a blackhole proxy catches what the route cannot see, loopback included',
+  /BLACKHOLE_PROXY/.test(rend) && /'<-loopback>'/.test(rend));
+ok('only data: URIs and https Google Fonts are allowed out', (() => {
+  const allow = require('../../server/utils/resumeRenderer').isAllowedRequest;
+  return allow('data:image/jpeg;base64,AAA') && allow('https://fonts.gstatic.com/s/a.woff2')
+    && allow('https://fonts.googleapis.com/css2?x')
+    && !allow('http://fonts.gstatic.com/s/a.woff2') && !allow('http://127.0.0.1:1/')
+    && !allow('https://evil.com/fonts.gstatic.com/a') && !allow('https://fonts.gstatic.com.evil.com/a');
+})());
 ok('a font-network failure degrades to system fonts, never hangs', /route\.abort/.test(rend));
 ok('warmPreviews exists and never throws at the caller', /warmPreviews[\s\S]{0,1400}purely a head start/.test(rend));
 ok('the catalogue request pre-warms the pipeline', /listTemplates[\s\S]{0,400}warmPreviews\(\)/.test(ctl));
@@ -216,6 +237,31 @@ ok('the compose modal explains and routes free users to plans',
 ok('portal applying stays free (no gate on the apply WebView open)', !/openApplyWebView[\s\S]{0,400}paid_required/.test(jd2));
 // The story box: a paragraph change reads as one.
 ok('plainStory turns every newline into a blank line', /replace\(\/\\n\/g, '\\n\\n'\)/.test(idx));
+
+console.log('── the 2026-09-11 round: an employer\'s OWN version, opened by docId ──');
+// Home keeps one tailored résumé PER EMPLOYER (user_employer_documents). The gallery and the editor open
+// THAT version by docId; without a docId both screens behave exactly as before.
+const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+const tplC = strip(tpl), prevC = strip(prev);
+ok('the gallery reads docId from its params', /useLocalSearchParams<\{ docId\?: string \}>\(\)/.test(tplC));
+ok('previews render THAT document', /body: JSON\.stringify\(docId \? \{ ids: batch, docId \} : \{ ids: batch \}\)/.test(tplC));
+ok('⚠️ a doc 404 is "this version is gone", never "generate your resume first" (a paid build)',
+  /if \(res\.status === 404 && docId && json\?\.reason === 'doc_gone'\) \{ setDocGone\(true\); return; \}/.test(tplC)
+  && tplC.indexOf("json?.reason === 'doc_gone'") < tplC.indexOf('if (res.status === 404) { setNoResume(true); return; }'));
+ok('the download carries the docId (the server bills the document\'s employer)', /init\.body = JSON\.stringify\(\{ template: selectedId, mode, employer, docId \}\)/.test(tplC));
+ok('…and a 410 on download says the version is gone', /if \(docId && res\.status === 410\)/.test(tplC));
+ok('⚠️ doc mode never records a preferred template (it is the base résumé\'s setting)',
+  /if \(!selForSave \|\| docId\) return;/.test(tplC) && /if \(!prefTimer\.current \|\| docId\) return;/.test(tplC));
+ok('Edit opens the editor on the same version', /params: \{ docId: String\(docId\) \}/.test(tplC));
+ok('the ranking reaches the screen: a fit pill and the best design named for the employer', /fitStyleOf/.test(tplC) && /Best for/.test(tpl));
+ok('the editor loads the version by id, and never the base résumé or its caches in doc mode',
+  /fetchDoc\(docId\)/.test(prevC) && /if \(docId\) return;/.test(prevC));
+ok('⚠️ edits save to THAT version only — per section and from the top Save — never finalize',
+  (prevC.match(/saveDocPayload\(docId, /g) || []).length === 2
+  && prevC.indexOf('saveDocPayload(docId, data)') < prevC.indexOf('finalize: true'));
+ok('⚠️ Regenerate (a base rewrite) is hidden for an employer\'s version', /\{!docId && \(\s*<TouchableOpacity/.test(prevC));
+ok('the header says whose version it is', /`\$\{docEmployer\} version`/.test(prevC));
+ok('a vanished version goes back instead of editing nothing', /if \(doc === 'gone'\) \{ setLoading\(false\); docGoneOut\(\); return; \}/.test(prevC));
 
 console.log(`\nresume rebuild flow: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

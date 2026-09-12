@@ -1,4 +1,12 @@
 // Resume Builder — new feature. Safe to delete without affecting existing app.
+//
+// DOC MODE (route param `docId`): the editor opens ONE EMPLOYER'S OWN résumé — the version rewritten
+// for that company (user_employer_documents) — loaded via GET /employer-docs/:id, and every save
+// (per-section Done and the top Save) goes back to THAT doc via PUT /employer-docs/:id.
+// ⚠️ Doc mode never touches the base résumé: no POST /resume-builder/save, no 'resumeBuilderData'
+// AsyncStorage cache (that is the base copy other screens fall back to), no seed-sample flag, and no
+// Regenerate (a regeneration rewrites the base résumé and has its own free-limit accounting).
+// Without `docId` every line below behaves exactly as it did before doc mode existed.
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
@@ -8,12 +16,21 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { readBuilderEmployer } from '../../services/builderEmployer';
+import { fetchDoc, saveDocPayload } from '../../services/employerDocs';
+
+/** A route param → a real doc id, or null. Anything that is not a positive integer is "no doc". */
+function docIdOf(raw: unknown): number | null {
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
 
 const T = {
   bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
@@ -217,9 +234,18 @@ function ProseRow({ md, placeholder, color, dot, onEdit, onRemove }:
 
 export default function ResumePreview() {
   const router = useRouter();
+  const { docId: wantDocId } = useLocalSearchParams<{ docId?: string }>();
+  // Doc mode — see the header. Constant for the life of the screen.
+  const docId = docIdOf(wantDocId);
   const rating = useRatingPrompt();
-  const goBack = async () => { if (!(await rating.ask('resume'))) router.replace('/(resume-builder)'); };
-  const closeRating = () => { rating.close(); router.replace('/(resume-builder)'); };
+  // ⚠️ Doc mode was opened from Home or the gallery, never from the builder index — replacing with
+  // the builder would drop the user into "Tell us your story" for a résumé they did not come from.
+  const leave = () => {
+    if (docId && router.canGoBack()) router.back();
+    else router.replace('/(resume-builder)');
+  };
+  const goBack = async () => { if (!(await rating.ask('resume'))) leave(); };
+  const closeRating = () => { rating.close(); leave(); };
 
   const [data, setData] = useState<ResumeData | null>(null);
   const [draft, setDraft] = useState<any | null>(null);
@@ -237,7 +263,49 @@ export default function ResumePreview() {
   // params of its own to inherit, which is what services/builderEmployer bridges.
   const [builderEmployer, setBuilderEmployer] = useState<string | null>(null);
   useEffect(() => { readBuilderEmployer().then(setBuilderEmployer).catch(() => {}); }, []);
+  // Doc mode: the employer the doc was built for (the server's own name for it — it is also who a
+  // download from this doc is billed to), and whether the doc could not be read at all.
+  const [docEmployer, setDocEmployer] = useState<string | null>(null);
+  const [docLoadFailed, setDocLoadFailed] = useState(false);
+  const [docNonce, setDocNonce] = useState(0);
+  // Doc mode: the gallery previews and downloads THIS doc (the server bills the doc's own employer).
+  const docGalleryParams = () => ({ docId: String(docId), ...(docEmployer ? { employer: docEmployer } : {}) });
+  const docGoneOut = () => {
+    Alert.alert('This version is gone', 'It is no longer saved. Your other resumes are unchanged.');
+    if (router.canGoBack()) router.back();
+  };
   useEffect(() => {
+    if (!docId) return;
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      setDocLoadFailed(false);
+      const photo = (async () => {
+        try {
+          const raw = await SecureStore.getItemAsync('userSession');
+          const token = JSON.parse(raw || '{}')?.token;
+          if (!token) return null;
+          const pr = await fetch(`${API_BASE}/users/profile`, { headers: { Authorization: `Bearer ${token}` } });
+          if (!pr.ok) return null;
+          const pj = await pr.json();
+          return (pj.profileImage || pj.profile_image || null) as string | null;
+        } catch { return null; }
+      })();
+      const [doc, img] = await Promise.all([fetchDoc(docId).catch(() => null), photo]);
+      if (!alive) return;
+      if (img) setProfileImage(img);
+      if (doc === 'gone') { setLoading(false); docGoneOut(); return; }
+      if (!doc || !doc.payload || typeof doc.payload !== 'object') { setDocLoadFailed(true); setLoading(false); return; }
+      setDocEmployer(doc.employer || null);
+      setData(doc.payload as ResumeData);
+      setLoading(false);
+    })();
+    return () => { alive = false; };
+    // router / docGoneOut are stable for this screen; docNonce is the retry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId, docNonce]);
+  useEffect(() => {
+    if (docId) return;   // doc mode loads above — never the base résumé or its caches
     (async () => {
       // Manual-build seed: start from the sample template the index screen saved (ignore any
       // saved/backend resume so it isn't overwritten). One-shot flag; still pull the profile photo.
@@ -310,6 +378,19 @@ export default function ResumePreview() {
     if (saving) return;
     setSaving(true);
     try {
+      if (docId) {
+        // Doc mode: the edit belongs to THIS employer's version only.
+        const r = await saveDocPayload(docId, draft);
+        if (r.ok) { setData(draft); setEditSection(null); setDraft(null); return; }
+        if (r.reason === 'gone') { docGoneOut(); return; }
+        if (r.reason === 'too_big') {
+          Alert.alert('Too long to save', 'This version has grown past what we can store. Shorten a section and try again.');
+          return;
+        }
+        // Not saved — the server's reason (a payload it refused) beats the generic connection line.
+        Alert.alert('Could not save', r.message || 'Please check your connection and try again.');
+        return;
+      }
       const raw = await SecureStore.getItemAsync('userSession');
       const token = JSON.parse(raw || '{}')?.token;
       const res = await fetch(`${API_BASE}/resume-builder/save`, {
@@ -346,7 +427,12 @@ export default function ResumePreview() {
     return (
       <SafeAreaView style={[s.safe, { justifyContent: 'center', alignItems: 'center', gap: 12 }]} edges={['top']}>
         <Ionicons name="document-outline" size={48} color={T.faint} />
-        <Text style={{ fontSize: 16, fontWeight: '700', color: T.ink }}>No resume data found</Text>
+        <Text style={{ fontSize: 16, fontWeight: '700', color: T.ink }}>{docId ? 'Could not open this version' : 'No resume data found'}</Text>
+        {!!docId && docLoadFailed && (
+          <TouchableOpacity onPress={() => setDocNonce((n) => n + 1)} style={s.docRetryBtn} activeOpacity={0.85}>
+            <Ionicons name="refresh-outline" size={14} color={T.blueDeep} /><Text style={s.docRetryText}>Try again</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity onPress={() => router.back()} style={{ backgroundColor: T.blue, borderRadius: 12, paddingHorizontal: 24, paddingVertical: 10 }}><Text style={{ color: '#fff', fontWeight: '700' }}>Go Back</Text></TouchableOpacity>
       </SafeAreaView>
     );
@@ -367,16 +453,33 @@ export default function ResumePreview() {
           <Ionicons name={busy ? 'close' : 'arrow-back'} size={14} color={T.ink} />
           <Text style={s.backPillText}>{busy ? 'Cancel' : 'Back'}</Text>
         </TouchableOpacity>
-        <View style={s.wordmark} pointerEvents="none">
-          <Image source={require('../../assets/images/logo_img.png')} style={s.logoImg} resizeMode="contain" />
-          <Text style={s.wordmarkText}>CV<Text style={s.wordmarkBlue}>Applyr</Text></Text>
-        </View>
+        {docId ? (
+          // Doc mode: say WHOSE version this is — editing it changes nothing for any other employer.
+          <View style={s.docHead} pointerEvents="none">
+            <Text style={s.docEyebrow}>TAILORED RESUME</Text>
+            <Text style={s.docTitle} numberOfLines={1}>{docEmployer ? `${docEmployer} version` : 'Employer version'}</Text>
+          </View>
+        ) : (
+          <View style={s.wordmark} pointerEvents="none">
+            <Image source={require('../../assets/images/logo_img.png')} style={s.logoImg} resizeMode="contain" />
+            <Text style={s.wordmarkText}>CV<Text style={s.wordmarkBlue}>Applyr</Text></Text>
+          </View>
+        )}
         <TouchableOpacity
           onPress={async () => {
             // Save = "this is my resume now": persists the data and marks it the user's CURRENT
             // résumé verdict — a perfect 100 (it is our own AI's best work). The Home card and
             // score popup pick the 100 up on their next load.
             if (!data) return;
+            if (docId) {
+              // ⚠️ Doc mode saves THIS employer's version only — no finalize, no base-résumé score.
+              const r = await saveDocPayload(docId, data);
+              if (r.ok) Alert.alert('Saved ✓', `Your ${docEmployer || 'employer'} version is saved. It is what you download for ${docEmployer || 'this employer'}.`);
+              else if (r.reason === 'gone') docGoneOut();
+              else if (r.reason === 'too_big') Alert.alert('Too long to save', 'This version has grown past what we can store. Shorten a section and try again.');
+              else Alert.alert('Could not save', r.message || 'Please check your connection and try again.');
+              return;
+            }
             try {
               const raw = await SecureStore.getItemAsync('userSession');
               const token = JSON.parse(raw || '{}')?.token;
@@ -607,13 +710,15 @@ export default function ResumePreview() {
               activeOpacity={0.88}
               onPress={() => router.push({
                 pathname: '/(resume-builder)/templates',
-                params: builderEmployer ? { employer: builderEmployer } : {},
+                params: docId ? docGalleryParams() : builderEmployer ? { employer: builderEmployer } : {},
               })}
             >
               <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.regenBtn}>
                 <Ionicons name="download-outline" size={16} color="#fff" /><Text style={s.regenText}>Download / Preview</Text>
               </LinearGradient>
             </TouchableOpacity>
+            {/* Regenerate rewrites the BASE résumé — hidden for an employer's version (see header). */}
+            {!docId && (
             <TouchableOpacity
               style={s.actionHalf}
               activeOpacity={0.88}
@@ -644,6 +749,7 @@ export default function ResumePreview() {
                 )}
               </LinearGradient>
             </TouchableOpacity>
+            )}
           </View>
         </View>
       )}
@@ -740,6 +846,11 @@ const s = StyleSheet.create({
   logoImg:      { width: 22, height: 22 },
   wordmarkText: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
   wordmarkBlue: { color: T.blue },
+  docHead:      { position: 'absolute', left: 96, right: 96, alignItems: 'center', justifyContent: 'center', zIndex: 0 },
+  docEyebrow:   { fontSize: 9, fontWeight: '800', color: T.faint, letterSpacing: 1.2 },
+  docTitle:     { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.3, marginTop: 1 },
+  docRetryBtn:  { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(79,141,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 8, borderWidth: 1, borderColor: 'rgba(79,141,255,0.2)' },
+  docRetryText: { fontSize: 13, fontWeight: '700', color: T.blueDeep },
   exportBtn:    { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(79,141,255,0.1)', borderRadius: 16, paddingVertical: 7, paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(79,141,255,0.2)' },
   exportText:   { fontSize: 12, fontWeight: '700', color: T.blue },
   scroll:       { padding: 16 },

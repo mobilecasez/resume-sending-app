@@ -2975,7 +2975,13 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         listingData.sub_info = `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`;
 
         // Persist employer + link to user
-        const employerDbId = await jobService.upsertEmployer(domain, name, listingData.sub_info, logoColor, (name[0] || '?').toUpperCase());
+        // ⚠️ The upsert may KEEP the stored name (jobService.keepStoredEmployerName: "Amazon" owns
+        // amazon.jobs, a posting's "Souq.com for E-Commerce LLC" does not). The card this search streams
+        // then shows the row's name too, so it agrees with the dashboard reload and with the name
+        // trackUserEmployer freezes for this user.
+        const upserted = await jobService.upsertEmployerWithName(domain, name, listingData.sub_info, logoColor, (name[0] || '?').toUpperCase());
+        const employerDbId = upserted.id;
+        if (upserted.name && upserted.name !== name) listingData.company_name = upserted.name;
         await jobService.trackUserEmployer(userId, employerDbId);
 
         // Link this async_job to the user's tracking row
@@ -3192,16 +3198,20 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 // ── Use employer name from first AI result to fix Phase-1 bad name ──
                 // Phase-1 HTML extraction often picks up nav labels like "Back ButtonSearch Icon".
                 // The AI reads the actual page content and returns the correct company name.
+                // ⚠️ BUT THE AI READS A POSTING, AND A POSTING NAMES ITS LEGAL ENTITY: on amazon.jobs it
+                // answered "Souq.com for E-Commerce LLC" and this line renamed the SHARED row away from
+                // "Amazon" for every user, on every search. jobService.applyScrapedEmployerName keeps a
+                // stored name that owns the host against one that does not, moves only THIS user's frozen
+                // display name (and the passes bound under it) along with a real fix, and returns the name
+                // this search should show — so the streamed card agrees with the row.
                 if (streamedJobs.length === 0 && detailedJobs && detailedJobs.length > 0) {
                     const aiEmployerName = detailedJobs.find(j => j?.employer_name)?.employer_name;
                     if (aiEmployerName && aiEmployerName.length > 1 && aiEmployerName.length < 80) {
-                        console.log(`[aiHub] Overriding company name: "${listingData.company_name}" → "${aiEmployerName}"`);
-                        listingData.company_name = aiEmployerName;
-                        // Update the DB row so cached loads also show the correct name
-                        await dbConfig.run(
-                            `UPDATE employers SET name = $1 WHERE id = $2`,
-                            [aiEmployerName, employerDbId]
-                        ).catch(() => {});
+                        const shown = await jobService.applyScrapedEmployerName(userId, employerDbId, domain, aiEmployerName);
+                        if (shown && shown !== listingData.company_name) {
+                            console.log(`[aiHub] Overriding company name: "${listingData.company_name}" → "${shown}"`);
+                            listingData.company_name = shown;
+                        }
                     }
                 }
 
@@ -3727,7 +3737,7 @@ async function trackEmployer(req, res) {
             .then((r) => !!r && r.role === 'admin', () => false);
         const out = await jobService.trackEmployerForUser(
             userId,
-            { domain, name, logoColor: logoColorFor(name), logoInitial: (name[0] || '?').toUpperCase() },
+            { domain, name, displayName: name, logoColor: logoColorFor(name), logoInitial: (name[0] || '?').toUpperCase() },
             { maxWatching: admin ? Infinity : TRACK_MAX_WATCHING, maxInsertsPerDay: TRACK_MAX_INSERTS_PER_DAY });
         if (out.limit) {
             slot.release();
@@ -3741,18 +3751,23 @@ async function trackEmployer(req, res) {
         const row = out.row;
         emit(req, 'employer_track', { domain });
 
-        // When the domain already existed the STORED name wins over what this user typed: `employers`
-        // is one identity table shared by every user, so a different spelling must not rename it.
-        const storedName = row.name || name;
+        // ⚠️ THE NAME THIS USER PICKED WINS, FOR THIS USER. "The stored name wins" showed "Souq.com for
+        // E-Commerce LLC" to someone who added Amazon (amazon.jobs) — a job ingest had named the shared
+        // row. `employers` is still one identity table shared by every user, so the picked name is kept
+        // per user only (user_tracked_employers.display_name) and this path NEVER renames the shared row —
+        // one user's spelling must not change another user's chip name or the pass/cache key behind it.
+        // out.displayName is null when Migration 046 has not run (nothing stored per user): the chip then
+        // shows the stored name, the same one the dashboard reload will show.
+        const shownName = out.displayName || row.name || name;
         const logoColor = safeParseJSON(row.logo_color, null);
         return res.json({
             success: true,
             employer: {
                 id: String(row.id),
-                name: storedName,
+                name: shownName,
                 domain,
-                logoColor: Array.isArray(logoColor) && logoColor.length === 2 ? logoColor : logoColorFor(storedName),
-                logoInitial: (storedName[0] || '?').toUpperCase(),
+                logoColor: Array.isArray(logoColor) && logoColor.length === 2 ? logoColor : logoColorFor(shownName),
+                logoInitial: (shownName[0] || '?').toUpperCase(),
                 subInfo: row.sub_info || '',
                 status: 'watching',
                 // Always empty here, even when this re-tracks an employer the user already searched:
@@ -3766,6 +3781,130 @@ async function trackEmployer(req, res) {
         slot.release();
         console.error('[aiHub] trackEmployer error:', err);
         return res.status(500).json({ error: 'Could not add that employer. Please try again.' });
+    }
+}
+
+const EMPLOYER_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * POST /api/ai-hub/employers/:employerId/untrack
+ * Home's chip X. A SOFT delete for this user only: the tracking row is archived (display_name kept), the
+ * shared employers row and the user's saved employer documents stay, so re-adding the employer brings
+ * its resume and letter back with no AI call. { success, archived } — archived is false when this user
+ * never tracked it (nothing to do, still a success: the chip is gone either way).
+ * ⚠️ The UUID check runs BEFORE the query: a non-UUID in a uuid comparison is a Postgres error (500),
+ * and the Home client builds this path from a chip key.
+ */
+async function untrackEmployer(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const employerId = String(req.params.employerId || '');
+    if (!EMPLOYER_UUID_RE.test(employerId)) {
+        return res.status(400).json({ success: false, reason: 'invalid_id', error: 'Unknown employer.' });
+    }
+    try {
+        const archived = await jobService.archiveUserEmployer(userId, employerId);
+        return res.json({ success: true, archived: !!archived });
+    } catch (err) {
+        console.error('[aiHub] untrackEmployer error:', err);
+        return res.status(500).json({ success: false, error: 'Could not remove that employer. Please try again.' });
+    }
+}
+
+// ─── Hidden Home targets (the chip X on a posting / saved-job chip) ───────────
+//
+// A job_ chip is not a tracked employer — it comes from the user's own jobs and saved jobs, so there is
+// no row to archive. Home hides it by its render key instead. Keys are opaque client strings (a job_
+// key can carry a URL), compared exactly, never parsed.
+// ⚠️ BOUNDED: 1..300 chars a key and 500 keys a user (the oldest drop), so a looping client cannot grow
+// the table without limit. A NUL is refused up front — Postgres TEXT cannot store it (a 500 otherwise).
+const HIDDEN_KEY_MAX_LEN = 300;
+const HIDDEN_KEYS_PER_USER = 500;
+// Migration 046 races app.listen, and on a database where the CREATE TABLE was refused it never lands
+// at all. All three handlers then degrade the same way — the GET answers "nothing hidden", the write
+// and the Undo answer success so the chip still disappears (or comes back) locally — and the process
+// says so ONCE instead of logging a stack per press.
+let hiddenTargetsMissingLogged = false;
+function hiddenTargetsMissing(err, where) {
+    if (!err || err.code !== '42P01') return false;
+    if (!hiddenTargetsMissingLogged) {
+        hiddenTargetsMissingLogged = true;
+        console.warn(`[aiHub] ${where}: user_home_hidden_targets is missing (Migration 046 not applied) — hides are not persisted.`);
+    }
+    return true;
+}
+function hiddenKeyOf(req) {
+    const raw = (req.body && req.body.key !== undefined) ? req.body.key : (req.query ? req.query.key : undefined);
+    if (typeof raw !== 'string') return null;
+    if (!raw.length || raw.length > HIDDEN_KEY_MAX_LEN || raw.includes(String.fromCharCode(0))) return null;
+    return raw;
+}
+
+/** GET /api/ai-hub/home/hidden-targets → { success, keys } (newest first). */
+async function getHiddenTargets(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+        const rows = await dbConfig.query(
+            `SELECT target_key FROM user_home_hidden_targets WHERE user_id = $1
+              ORDER BY hidden_at DESC, target_key LIMIT ${HIDDEN_KEYS_PER_USER}`,
+            [userId]);
+        return res.json({ success: true, keys: rows.map((r) => r.target_key) });
+    } catch (err) {
+        // Migration 046 not applied yet (it races app.listen): nothing can have been hidden, so Home
+        // loads with every chip rather than failing on the missing table.
+        if (hiddenTargetsMissing(err, 'getHiddenTargets')) return res.json({ success: true, keys: [] });
+        console.error('[aiHub] getHiddenTargets error:', err);
+        return res.status(500).json({ success: false, error: 'Could not load hidden employers.' });
+    }
+}
+
+/** POST /api/ai-hub/home/hidden-targets { key } → { success } */
+async function hideHomeTarget(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const key = hiddenKeyOf(req);
+    if (!key) return res.status(400).json({ success: false, reason: 'invalid_key', error: 'Invalid key.' });
+    try {
+        await dbConfig.run(
+            `INSERT INTO user_home_hidden_targets (user_id, target_key, hidden_at) VALUES ($1, $2, NOW())
+             ON CONFLICT (user_id, target_key) DO UPDATE SET hidden_at = NOW()`,
+            [userId, key]);
+        // Keep the newest HIDDEN_KEYS_PER_USER. Two parallel hides can briefly leave 501 — the next
+        // hide trims it; the bound is about growth, not an exact count.
+        await dbConfig.run(
+            `DELETE FROM user_home_hidden_targets
+              WHERE user_id = $1 AND target_key IN (
+                    SELECT target_key FROM user_home_hidden_targets WHERE user_id = $1
+                     ORDER BY hidden_at DESC, target_key OFFSET ${HIDDEN_KEYS_PER_USER})`,
+            [userId]);
+        return res.json({ success: true });
+    } catch (err) {
+        // Same degrade as the GET: with no table there is nothing to persist, but the X the user just
+        // pressed should still take the chip away for this session instead of raising an error.
+        if (hiddenTargetsMissing(err, 'hideHomeTarget')) return res.json({ success: true });
+        console.error('[aiHub] hideHomeTarget error:', err);
+        return res.status(500).json({ success: false, error: 'Could not hide that employer.' });
+    }
+}
+
+/** DELETE /api/ai-hub/home/hidden-targets { key } (or ?key=) → { success } — the Undo. */
+async function unhideHomeTarget(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const key = hiddenKeyOf(req);
+    if (!key) return res.status(400).json({ success: false, reason: 'invalid_key', error: 'Invalid key.' });
+    try {
+        await dbConfig.run(
+            `DELETE FROM user_home_hidden_targets WHERE user_id = $1 AND target_key = $2`,
+            [userId, key]);
+        return res.json({ success: true });
+    } catch (err) {
+        // Same degrade as the GET: nothing can be hidden without the table, so the Undo has already
+        // got what it wanted — the chip comes back — and must not answer 500.
+        if (hiddenTargetsMissing(err, 'unhideHomeTarget')) return res.json({ success: true });
+        console.error('[aiHub] unhideHomeTarget error:', err);
+        return res.status(500).json({ success: false, error: 'Could not restore that employer.' });
     }
 }
 
@@ -7084,6 +7223,10 @@ module.exports = {
     getAllJobStatuses,
     removeDashboardItem,
     trackEmployer,
+    untrackEmployer,
+    getHiddenTargets,
+    hideHomeTarget,
+    unhideHomeTarget,
     verifyEmail,
     addContactToJob,
     getJobContacts,

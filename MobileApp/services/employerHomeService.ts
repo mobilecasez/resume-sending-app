@@ -29,6 +29,8 @@ export type Target = {
   /** The employer's site, for an employer-level chip (no posting yet). ⚠️ NEVER a posting URL —
    *  the generator scrapes job.url as posting text, and a homepage read as a posting is nonsense. */
   website?: string | null;
+  /** Where the posting is, when a store said so — steers the rule-ranked design region. Never guessed. */
+  country?: string | null;
 };
 
 export type HomeCard = { id: string; name: string; accent?: string; ats?: number | null; image?: string | null };
@@ -65,6 +67,17 @@ export const cleanJobUrl = (u?: string | null) => {
   catch { return String(u || '').split('?')[0].split('#')[0].replace(/\/+$/, ''); }
 };
 
+/**
+ * The chip key a posting gets — fetchTargets' own spelling ('job_' + the cleaned URL, the raw URL when
+ * cleaning leaves nothing). ⚠️ For callers that must NAME a posting chip before the chip exists (a build
+ * recovered on mount, a removal keyed on the posting): spelling it any other way names a chip that never
+ * appears, and whatever was keyed on it (a hide, a build record) silently misses.
+ */
+export const jobKeyForUrl = (url: string): string => {
+  const raw = String(url || '').trim();
+  return 'job_' + (cleanJobUrl(raw) || raw);
+};
+
 const initialOf = (s?: string | null) => (s || '?').trim().charAt(0).toUpperCase();
 
 async function token(): Promise<string | undefined> {
@@ -99,6 +112,26 @@ async function postJson(path: string, body: any, ms = 60000): Promise<any | null
   try {
     const r = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
+      headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+      signal: ctl.signal,
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ...j, __status: r.status, __ok: r.ok };
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
+/** postJson for the verbs that are not POST (the hidden-targets DELETE carries its key in the body). */
+async function sendJson(method: 'POST' | 'DELETE', path: string, body: any, ms = 20000): Promise<any | null> {
+  if (method === 'POST') return postJson(path, body, ms);
+  const t = await token();
+  if (!t) return null;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(`${API_BASE}${path}`, {
+      method,
       headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
       signal: ctl.signal,
@@ -193,12 +226,97 @@ export async function redownload(id: number): Promise<RedownloadResult> {
   return { ok: false, message: j.error || 'We could not produce that file. Please try again.' };
 }
 
+/* ── CHIPS THE USER REMOVED ─────────────────────────────────────────────────────────────────────────
+ *
+ * The X on a chip. Two different removals, because the two stores own different things:
+ *   • emp_<id>  → untrackEmployer: the user stops tracking that employer (archived, never deleted —
+ *                 their documents for it stay, so tracking it again restores them with no AI call).
+ *   • job_<url> → hideTarget: a posting belongs to a shared jobs row / a saved card we must not delete,
+ *                 so Home only stops SHOWING it (user_home_hidden_targets, per user).
+ *
+ * ⚠️ THE SERVER LIST CAN BE OLDER THAN THE TAP. A fetchTargets that started while the hide was still in
+ * flight reads a hidden list without it, and the chip the user just removed pops back. What this device
+ * asked for is laid over the server's answer: for as long as the request runs, and for a short grace
+ * after it lands. The opposite action (Undo) replaces the entry, so an undone hide is never kept hidden.
+ * ⚠️ An untrack's entry lasts only while its request runs: its Undo is trackEmployer (another service),
+ * which cannot clear an entry here, and a grace would keep a re-tracked employer invisible.
+ */
+const HIDE_GRACE_MS = 30 * 1000;
+const localHide = new Map<string, { hidden: boolean; until: number }>();
+
+function hiddenNow(key: string, server: Set<string> | null): boolean {
+  const l = localHide.get(key);
+  if (l && l.until > Date.now()) return l.hidden;
+  if (l) localHide.delete(key);
+  return !!server && server.has(key);
+}
+
+/** The keys this user hid from Home. null = we could not find out (callers must not treat it as "none"). */
+export async function fetchHiddenKeys(): Promise<string[] | null> {
+  const j = await getJson('/ai-hub/home/hidden-targets', 15000);
+  if (!j || !Array.isArray(j.keys)) return null;
+  return j.keys.filter((k: any) => typeof k === 'string' && k);
+}
+
+/** Stop showing a posting chip. True when the server stored it; false leaves the server list unchanged. */
+export async function hideTarget(key: string): Promise<boolean> {
+  const k = String(key || '').trim();
+  if (!k || k.length > 300) return false;
+  localHide.set(k, { hidden: true, until: Number.POSITIVE_INFINITY });
+  const j = await sendJson('POST', '/ai-hub/home/hidden-targets', { key: k });
+  const ok = !!(j && j.__ok && j.success !== false);
+  // Only settle OUR entry: an Undo that landed meanwhile has already replaced it with hidden:false.
+  const cur = localHide.get(k);
+  if (cur && cur.hidden) {
+    if (ok) localHide.set(k, { hidden: true, until: Date.now() + HIDE_GRACE_MS });
+    else localHide.delete(k);
+  }
+  return ok;
+}
+
+/** Undo a hide. True when the server removed it. */
+export async function unhideTarget(key: string): Promise<boolean> {
+  const k = String(key || '').trim();
+  if (!k || k.length > 300) return false;
+  localHide.set(k, { hidden: false, until: Number.POSITIVE_INFINITY });
+  const j = await sendJson('DELETE', '/ai-hub/home/hidden-targets', { key: k });
+  const ok = !!(j && j.__ok && j.success !== false);
+  const cur = localHide.get(k);
+  if (cur && !cur.hidden) {
+    if (ok) localHide.set(k, { hidden: false, until: Date.now() + HIDE_GRACE_MS });
+    else localHide.delete(k);   // the server still hides it, so the device must agree
+  }
+  return ok;
+}
+
+/**
+ * Stop tracking an employer (archive for this user). True when the server answered success — including
+ * an employer that was already archived. ⚠️ Archive, not delete: the documents built for it are kept.
+ */
+export async function untrackEmployer(employerId: string): Promise<boolean> {
+  const id = String(employerId || '').trim();
+  if (!id) return false;
+  const k = 'emp_' + id;
+  const mark = { hidden: true, until: Number.POSITIVE_INFINITY };
+  localHide.set(k, mark);
+  const j = await sendJson('POST', `/ai-hub/employers/${encodeURIComponent(id)}/untrack`, {});
+  if (localHide.get(k) === mark) localHide.delete(k);
+  return !!(j && j.__ok && j.success === true);
+}
+
 /** The employer chips: best-matching open role per company, strongest match first. */
 export async function fetchTargets(): Promise<Target[]> {
-  const [dash, saved] = await Promise.all([
+  const [dash, saved, hiddenJ] = await Promise.all([
     getJson('/ai-hub/dashboard'),
     getJson('/discover/saved-jobs'),
+    // ⚠️ A failed read of the hidden list is NO filter, never an empty row: hiding is cosmetic.
+    getJson('/ai-hub/home/hidden-targets', 15000),
+    // The posting text docLookupOf reads synchronously must be in memory before any chip exists.
+    warmJobListings(),
   ]);
+  const hidden: Set<string> | null = hiddenJ && Array.isArray(hiddenJ.keys)
+    ? new Set<string>(hiddenJ.keys.filter((k: any) => typeof k === 'string'))
+    : null;
   const out: Target[] = [];
   const employerChips: Target[] = [];
 
@@ -231,13 +349,17 @@ export async function fetchTargets(): Promise<Target[]> {
         skills: [],
         location: '',
         website: e.domain ? 'https://' + e.domain : null,
+        country: typeof e.country === 'string' && e.country.trim() ? e.country.trim() : null,
       });
       continue;
     }
     const ranked = [...e.jobs].sort((a: any, b: any) => (b?.matchScore ?? -1) - (a?.matchScore ?? -1));
-    for (const j of ranked.slice(0, PER_EMPLOYER)) {
+    // A posting the user removed does not use up one of its employer's PER_EMPLOYER places.
+    let taken = 0;
+    for (const j of ranked) {
+      if (taken >= PER_EMPLOYER) break;
       if (!j) continue;
-      out.push({
+      const posting: Target = {
         key: 'job_' + (cleanJobUrl(j.applyUrl || j.url) || j.id || `${e.id}_${(j.title || '').toLowerCase()}`),
         jobId: j.id || null,
         employerId: String(e.id),
@@ -249,7 +371,11 @@ export async function fetchTargets(): Promise<Target[]> {
         match: typeof j.matchScore === 'number' && j.matchScore >= 0 ? j.matchScore : null,
         skills: Array.isArray(j.skills) ? j.skills.slice(0, 3) : [],
         location: j.location || '',
-      });
+        country: typeof j.country === 'string' && j.country.trim() ? j.country.trim() : null,
+      };
+      if (hiddenNow(posting.key, hidden)) continue;
+      taken++;
+      out.push(posting);
     }
   }
 
@@ -277,6 +403,7 @@ export async function fetchTargets(): Promise<Target[]> {
       match: typeof c.match === 'number' ? c.match : null,
       skills: Array.isArray(c.skills) ? c.skills.slice(0, 3) : [],
       location: c.location || '',
+      country: typeof c.country === 'string' && c.country.trim() ? c.country.trim() : null,
     });
   }
 
@@ -289,10 +416,14 @@ export async function fetchTargets(): Promise<Target[]> {
   // ⚠️ But only a FEW lead: completed searches that found nothing are employer-level chips too (about
   // a third of searches return zero), and letting all of them lead pushed every real posting out of
   // the 12. The rest follow the postings, filling the row only where there is room.
+  // ⚠️ Removed chips are dropped BEFORE the lead split and the cap, or a hidden chip would still take
+  // one of the 12 slots (and one of the 4 lead places) while showing nothing.
+  const shown = (t: Target) => !hiddenNow(t.key, hidden);
+  const leads = employerChips.filter(shown);
   return [
-    ...employerChips.slice(0, LEAD_EMPLOYER_CHIPS),
-    ...out,
-    ...employerChips.slice(LEAD_EMPLOYER_CHIPS),
+    ...leads.slice(0, LEAD_EMPLOYER_CHIPS),
+    ...out.filter(shown),
+    ...leads.slice(LEAD_EMPLOYER_CHIPS),
   ].slice(0, MAX_CHIPS);
 }
 
@@ -302,6 +433,12 @@ export type HomeCards = {
   /** True when these pages are a STAND-IN built from the account's name and email,
    *  because no resume has been uploaded yet. The UI must say so. */
   sample?: boolean;
+  /** True when the account has a resume the AI can write from — a builder row with content OR an uploaded
+   *  resume. ⚠️ NOT the inverse of `sample`: an upload-only user gets sample pages (nothing in the builder
+   *  to render) yet has everything a letter or a tailored resume needs, and reading `sample` as "no resume"
+   *  hid Write my cover letter from exactly those users. undefined = an older server that does not say
+   *  (callers fall back to !sample). */
+  hasResume?: boolean;
 };
 
 /**
@@ -321,7 +458,11 @@ export async function fetchHomeCards(ids?: string[]): Promise<HomeCards | 'none'
   const j = await getJson(`/resume-builder/home-cards${q}`, 60000, meta);
   if (meta.status === 404) return 'none';
   if (!j || !Array.isArray(j.cards) || !j.cards.length) return null;
-  return { preferred: j.preferred || null, cards: j.cards, sample: !!j.sample };
+  return {
+    preferred: j.preferred || null, cards: j.cards, sample: !!j.sample,
+    // Only a real boolean: an absent field must stay undefined so Home falls back to !sample, never "false".
+    ...(typeof j.hasResume === 'boolean' ? { hasResume: j.hasResume } : {}),
+  };
 }
 
 /** Which jobs already have a cover letter — keyed by UUID and by the gj_ URL alias. */
@@ -370,9 +511,13 @@ export async function fetchTemplateCatalogue(): Promise<HomeCard[]> {
   const out: HomeCard[] = [];
   for (const f of fams) {
     const variants = Array.isArray(f?.variants) && f.variants.length ? f.variants : [f];
+    // ⚠️ ats lives on the FAMILY (server FAMILIES), not on its recolored variants — a variant is the same
+    // layout in another colour, so it inherits the family's score rather than reading as unknown.
+    const famAts = typeof f?.ats === 'number' && isFinite(f.ats) ? f.ats : null;
     for (const v of variants) {
       if (!v?.id) continue;
-      out.push({ id: v.id, name: v.name || f.name || v.id, accent: v.accent || f.accent || '#4F8DFF', image: null } as HomeCard);
+      const ats = typeof v.ats === 'number' && isFinite(v.ats) ? v.ats : famAts;
+      out.push({ id: v.id, name: v.name || f.name || v.id, accent: v.accent || f.accent || '#4F8DFF', ats, image: null } as HomeCard);
     }
   }
   return out;
@@ -409,11 +554,32 @@ export const LETTER_DESIGNS: Array<{ id: string; name: string; accent: string }>
  *
  * Keyed by whatever identifies the target we have at the time: the typed company, or the cleaned
  * posting URL. Capped, newest first, so it cannot grow without bound.
+ *
+ * ⚠️ A LISTING A SAVED DOCUMENT WAS FOUND WITH IS NOT EVICTED LIKE THE REST. docLookupOf spells a chip's
+ * posting text and posting link FROM this store, so evicting one silently changed the chip: the saved
+ * document's staleness question changed with it (it read stale forever) and Refresh rebuilt it with no
+ * posting at all. Each add writes two entries (company + website), so the old flat cap of 24 did that
+ * after a dozen adds. Now an entry a saved document was looked up with is marked `kept` (keepJobListings,
+ * called by employerDocs.rememberDoc) and only a much larger cap reaches it. The server also keeps the job
+ * a document was built from (job_input) for its own staleness check, so this protects Refresh, not billing.
+ * ⚠️ Plus a SIZE budget: all of it is ONE AsyncStorage value, and Android cannot read back a row of a few
+ * MB (CursorWindow) — an oversized value would read as {} and lose every listing at once.
  */
 const LISTINGS_KEY = 'job_listings_v1';
-const LISTINGS_MAX = 24;
+/** Entries no saved document was found with. Newest first. */
+const LISTINGS_MAX = 40;
+/** Entries a saved document was found with — only this (or the size budget) evicts them. */
+const LISTINGS_KEPT_MAX = 120;
+/** The whole stored JSON, in characters (a pasted description is usually 3-15 KB). */
+const LISTINGS_BUDGET = 600000;
 
-export type JobListing = { jobUrl?: string; jobText?: string; at: number };
+export type JobListing = {
+  jobUrl?: string;
+  jobText?: string;
+  at: number;
+  /** When a saved document was first found with this listing (see keepJobListings). */
+  kept?: number;
+};
 
 const listingKey = (v?: string | null) => {
   const raw = String(v || '').trim();
@@ -421,32 +587,173 @@ const listingKey = (v?: string | null) => {
   return (cleanJobUrl(raw) || raw).toLowerCase();
 };
 
-async function readListings(): Promise<Record<string, JobListing>> {
+const sameListingUrl = (a?: string | null, b?: string | null) => {
+  const x = listingKey(a);
+  return !!x && x === listingKey(b);
+};
+
+/**
+ * A synchronous mirror of the stored listings. ⚠️ WHY IT EXISTS: services/employerDocs' docLookupOf is
+ * SYNC (a chip switch must find its cached document in the same frame), yet the posting text it carries
+ * feeds the build fingerprint and the staleness check. A lookup that read '' before storage answered and
+ * the text after would ask two different questions about one chip. So the mirror is loaded when this
+ * module loads, re-read by fetchTargets before any chip exists, and updated by every save.
+ * ⚠️ STORAGE IS ADOPTED ONLY IN TURN WITH THE WRITES (warmJobListings runs through `serially`). A plain
+ * read that landed between a save's mirror update and its setItem used to put the OLD storage back into
+ * the mirror, and the listing just pasted vanished from the next lookup. Reads that only answer a caller
+ * (loadJobListing) never touch the mirror at all.
+ */
+let listingsMirror: Record<string, JobListing> | null = null;
+let listingsLoad: Promise<void> | null = null;
+
+/** The stored listings, or null when storage could not be read (callers must not mistake that for "none"). */
+async function readListings(): Promise<Record<string, JobListing> | null> {
   try {
     const raw = await AsyncStorage.getItem(LISTINGS_KEY);
     const j = raw ? JSON.parse(raw) : null;
-    return j && typeof j === 'object' ? j : {};
-  } catch { return {}; }
+    return j && typeof j === 'object' ? { ...j } : {};
+  } catch { return null; }
+}
+
+/**
+ * Every write is a read-modify-write of ONE storage value, so two at once (a save and a keep) would drop
+ * whichever finished first. They run one after another; a failed one never blocks the next.
+ */
+let listingsWrites: Promise<void> = Promise.resolve();
+function serially(fn: () => Promise<void>): Promise<void> {
+  const run = listingsWrites.then(fn, fn);
+  listingsWrites = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * (Re)load the mirror from storage; concurrent calls share one read. Never throws.
+ * ⚠️ RE-READ ON EVERY CALL, not once: fetchTargets calls it on each Home load, and storage can change under
+ * a running app without this module writing — account deletion runs AsyncStorage.clear() and the next
+ * account signs in to the same JS bundle, which must not keep reading the old account's pasted postings.
+ * A read that fails keeps what the mirror already has.
+ */
+export function warmJobListings(): Promise<void> {
+  if (!listingsLoad) {
+    listingsLoad = serially(async () => {
+      const all = await readListings();
+      if (all) listingsMirror = all;
+    }).finally(() => { listingsLoad = null; });
+  }
+  return listingsLoad;
+}
+warmJobListings();
+
+/**
+ * The stored listing for these lookup values, SYNCHRONOUSLY, first match wins. undefined values are
+ * skipped. null when nothing matches or the mirror has not loaded yet.
+ */
+export function cachedJobListing(candidates: Array<string | null | undefined>): JobListing | null {
+  const all = listingsMirror;
+  if (!all) return null;
+  for (const c of candidates) {
+    const k = listingKey(c);
+    if (k && all[k]) return all[k];
+  }
+  return null;
+}
+
+/** Newest first by what matters for eviction: when it was saved, or when a document was found with it. */
+const recency = (l: JobListing | undefined) => Math.max(Number(l?.at) || 0, Number(l?.kept) || 0);
+
+/**
+ * What survives a write: the entry just written first (always — it is what the user is building with),
+ * then kept entries, then the rest, each newest first, each under its own cap, all under the size budget.
+ */
+function trimListings(all: Record<string, JobListing>, justWrote: string | null): Record<string, JobListing> {
+  const rows = Object.entries(all).filter(([k, l]) => !!k && !!l && typeof l === 'object');
+  const byRecency = (a: [string, JobListing], b: [string, JobListing]) => recency(b[1]) - recency(a[1]);
+  const kept = rows.filter(([k, l]) => k !== justWrote && !!l.kept).sort(byRecency).slice(0, LISTINGS_KEPT_MAX);
+  const loose = rows.filter(([k, l]) => k !== justWrote && !l.kept).sort(byRecency).slice(0, LISTINGS_MAX);
+  const first = justWrote && all[justWrote] ? [[justWrote, all[justWrote]] as [string, JobListing]] : [];
+  const out: Record<string, JobListing> = {};
+  let size = 2;
+  let n = 0;
+  for (const [k, l] of [...first, ...kept, ...loose]) {
+    const cost = k.length + JSON.stringify(l).length + 6;
+    if (n && size + cost > LISTINGS_BUDGET) continue;
+    out[k] = l;
+    size += cost;
+    n++;
+  }
+  return out;
 }
 
 /** Remember the posting the user gave us for this employer or job. */
 export async function savePendingListing(forValue: string, l: { jobUrl?: string; jobText?: string }): Promise<void> {
   const k = listingKey(forValue);
   if (!k || (!l.jobUrl && !l.jobText)) return;
-  try {
-    const all = await readListings();
-    all[k] = { jobUrl: l.jobUrl || '', jobText: l.jobText || '', at: Date.now() };
-    const trimmed = Object.entries(all)
-      .sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0))
-      .slice(0, LISTINGS_MAX);
-    await AsyncStorage.setItem(LISTINGS_KEY, JSON.stringify(Object.fromEntries(trimmed)));
-  } catch { /* a lost listing costs tailoring, never correctness — never fail the add for it */ }
+  await serially(async () => {
+    try {
+      // A read that failed is not an empty store: writing from {} would erase every other listing.
+      const all = (await readListings()) || { ...(listingsMirror || {}) };
+      const jobUrl = l.jobUrl || '';
+      const jobText = l.jobText || '';
+      const prev = all[k];
+      // The same listing written again keeps its protection; different text under this key is a new
+      // listing, and nothing was built from it yet.
+      const same = !!prev && (prev.jobUrl || '') === jobUrl && (prev.jobText || '') === jobText;
+      all[k] = { jobUrl, jobText, at: Date.now(), ...(same && prev.kept ? { kept: prev.kept } : {}) };
+      const next = trimListings(all, k);
+      // The mirror moves first: a docLookupOf in the next frame must already see this listing.
+      listingsMirror = { ...next };
+      await AsyncStorage.setItem(LISTINGS_KEY, JSON.stringify(next));
+    } catch { /* a lost listing costs tailoring, never correctness — never fail the add for it */ }
+  });
+}
+
+/**
+ * A saved document was found for a lookup that read one of these listings: exempt it from the ordinary
+ * cap (see the section header). `read` is what the lookup carried — only an entry whose text is that text
+ * (or, for a text-less listing, whose link is that posting link) is the one the document depends on.
+ * ⚠️ SYNC AND CHEAP WHEN THERE IS NOTHING TO DO. It is called on every document answer; an entry already
+ * kept costs one map read, and only a real change touches storage (in the background, never awaited).
+ */
+export function keepJobListings(
+  candidates: Array<string | null | undefined>,
+  read: { jobText?: string | null; postingUrl?: string | null },
+): void {
+  const all = listingsMirror;
+  if (!all) return;
+  const text = String(read?.jobText || '');
+  const link = String(read?.postingUrl || '').trim();
+  if (!text && !link) return;
+  const reads = (l: JobListing | undefined) => !!l
+    && (l.jobText || '') === text
+    && (text ? true : sameListingUrl(l.jobUrl, link));
+  const keys = Array.from(new Set(candidates.map((c) => listingKey(c)).filter(Boolean)))
+    .filter((k) => reads(all[k]) && !all[k].kept);
+  if (!keys.length) return;
+  const now = Date.now();
+  // The mirror first, so the next call in this frame is a no-op.
+  listingsMirror = { ...all };
+  for (const k of keys) listingsMirror[k] = { ...all[k], kept: now };
+  serially(async () => {
+    try {
+      const stored = await readListings();
+      if (!stored) return;
+      let changed = false;
+      for (const k of keys) {
+        if (reads(stored[k]) && !stored[k].kept) { stored[k] = { ...stored[k], kept: now }; changed = true; }
+      }
+      if (!changed) return;
+      const next = trimListings(stored, null);
+      listingsMirror = { ...next };
+      await AsyncStorage.setItem(LISTINGS_KEY, JSON.stringify(next));
+    } catch { /* protection is best effort; the listing itself is untouched */ }
+  }).catch(() => undefined);
 }
 
 /** The posting for a target, looked up by its URL first and then by its company. */
 export async function loadJobListing(target?: { applyUrl?: string | null; jobUrl?: string | null; company?: string } | null): Promise<JobListing | null> {
   if (!target) return null;
   const all = await readListings();
+  if (!all) return null;
   for (const candidate of [target.applyUrl, target.jobUrl, target.company]) {
     const k = listingKey(candidate);
     if (k && all[k]) return all[k];

@@ -14,6 +14,10 @@ const {
     getAllJobStatuses,
     removeDashboardItem,
     trackEmployer,
+    untrackEmployer,
+    getHiddenTargets,
+    hideHomeTarget,
+    unhideHomeTarget,
     verifyEmail,
     addContactToJob,
     getJobContacts,
@@ -67,6 +71,12 @@ router.post('/deduct-credits', authenticateToken, deductCredits);
 // ── Recruiter finder ──────────────────────────────────────────────────────────
 // FREE: add an employer to Home as 'watching' without starting a job search (no scrape, no charge).
 router.post('/employers/track', authenticateToken, trackEmployer);
+// Home chip X: soft-delete for this user (archived, documents kept — re-adding restores them).
+router.post('/employers/:employerId/untrack', authenticateToken, untrackEmployer);
+// Home chip X on a posting / saved-job chip (no tracking row to archive): hide it by its render key.
+router.get('/home/hidden-targets', authenticateToken, getHiddenTargets);
+router.post('/home/hidden-targets', authenticateToken, hideHomeTarget);
+router.delete('/home/hidden-targets', authenticateToken, unhideHomeTarget);
 router.get('/employers/:employerId/recruiters', authenticateToken, getRecruiters);
 router.post('/employers/:employerId/find-recruiters', authenticateToken, asJob('find_recruiters')(findRecruiters));
 router.post('/employers/:employerId/find-emails', authenticateToken, asJob('find_emails')(findRecruiterEmails));

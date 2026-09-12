@@ -1,7 +1,7 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// Tap a page in the Home carousel and it grows into this — full-bleed, with the two things you can
-// actually do with a design underneath it.
+// Tap a page in the Home carousel and it grows into this — full-bleed, with what you can actually do
+// with that design underneath it, and how well it fits the employer when the design was ranked.
 //
 // ⚠️ THE TRANSITION IS MEASURED, NOT GUESSED. The card reports its real on-screen rectangle
 // (measureInWindow) when it is tapped; this sheet renders the page at its FINAL size and position
@@ -10,12 +10,18 @@
 // have to run on the JS driver and would judder on a real device — the whole move here is
 // translate + scale + opacity, native driver, which is also what the b126 one-driver rule requires.
 //
-// ⚠️ WHERE THE TWO BUTTONS GO (verified against the real screens, not assumed):
-//   Customize → /(resume-builder)/preview   — the section list with per-card Edit controls.
+// ⚠️ WHERE THE BUTTONS GO (verified against the real screens, not assumed). Home decides the
+// routes; this sheet only says which actions a page HAS:
+//   Customize → /(resume-builder)/preview   — the section list with per-card Edit controls. With a
+//               saved employer document it carries that doc's id, so the edits land on THAT
+//               employer's version and never on the base resume.
 //               It writes NOTHING to AsyncStorage. `resume_builder_entry {autoBuild}` and
 //               `resumeBuilderAction` both arm a PAID regeneration, so neither is touched here.
 //   View PDF  → /(resume-builder)/templates — the design view with pinch-zoom + PDF/DOCX download.
 //               It takes a `template` param (added for this) so it opens on the design tapped.
+//   Download  → a COVER LETTER's only action (kind 'cover_letter'): the letter picker, opened on the
+//               tapped design with the saved letter. There is no section editor for a letter, so
+//               Customize is not offered — a button that lands on a resume editor would be a lie.
 import React, { useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, Animated, Modal, TouchableOpacity, ScrollView, Platform, Easing,
@@ -26,13 +32,21 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { E } from './theme';
 import { PaperCard } from './PaperCarousel';
+import type { DocKind } from '../../services/homeAddEmployer';
 
 export type OriginRect = { x: number; y: number; w: number; h: number };
 
 const A4 = 424 / 300;
 
+/** The fit tiers the carousel pill uses, so a design reads the same size of "good" in both places. */
+function fitTone(fit: number): string {
+  if (fit >= 85) return E.mint;
+  if (fit >= 70) return '#8CB4FF';
+  return 'rgba(255,255,255,0.62)';
+}
+
 export default function PaperZoom({
-  card, origin, subtitle, isPaid, sample, onClose, onCustomize, onViewPdf,
+  card, origin, subtitle, isPaid, sample: sampleProp, kind = 'resume', fit, onClose, onCustomize, onViewPdf,
 }: {
   /** null closes the sheet. */
   card: PaperCard | null;
@@ -42,14 +56,25 @@ export default function PaperZoom({
   isPaid?: boolean;
   /** These pages are a stand-in, so there is nothing to customise or download yet. */
   sample?: boolean;
+  /** Which document this page is. A cover letter has no Customize and downloads instead of "View PDF". */
+  kind?: DocKind;
+  /** How well this design fits the employer (0-100). Defaults to the card's own fit; null hides it. */
+  fit?: number | null;
   onClose: () => void;
   onCustomize: () => void;
+  /** The primary action: View PDF for a resume, Download for a cover letter. */
   onViewPdf: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const t = useRef(new Animated.Value(0)).current;
   const [frame, setFrame] = React.useState({ w: 0, h: 0 });
   const open = !!card;
+  const letter = kind === 'cover_letter';
+  const fitRaw = fit !== undefined ? fit : card?.fit;
+  const fitPct = typeof fitRaw === 'number' && isFinite(fitRaw) ? Math.max(0, Math.min(100, Math.round(fitRaw))) : null;
+  // A sample is a resume-only stand-in; a letter is never one.
+  const sample = !!sampleProp && !letter;
+  const reason = !sample && card?.reason ? String(card.reason) : '';
 
   useEffect(() => {
     if (!open) return;
@@ -63,7 +88,9 @@ export default function PaperZoom({
   };
 
   // Final page box: as big as the frame allows once the chrome above and below is taken out.
-  const chrome = insets.top + 54 + 116 + insets.bottom;   // buttons + the gating line under them
+  // ⚠️ The "why it fits" line sits ABOVE the buttons, so its height comes out of the page, not out of
+  // the buttons' room — otherwise the page is drawn underneath it.
+  const chrome = insets.top + 54 + 116 + (reason ? 28 : 0) + insets.bottom;   // buttons + the gating line under them
   const maxH = Math.max(220, frame.h - chrome);
   const byW = frame.w - 40;
   const pageW = Math.min(byW, Math.round(maxH / A4));
@@ -92,7 +119,14 @@ export default function PaperZoom({
 
         <Animated.View style={[s.topBar, { paddingTop: insets.top + 6, opacity: t }]} pointerEvents="box-none">
           <View style={{ flex: 1 }}>
-            <Text style={s.title} numberOfLines={1}>{card?.name || 'Your resume'}</Text>
+            <View style={s.titleRow}>
+              <Text style={s.title} numberOfLines={1}>{card?.name || (letter ? 'Your cover letter' : 'Your resume')}</Text>
+              {fitPct != null && !sample && (
+                <View style={s.fitPill}>
+                  <Text style={[s.fitTx, { color: fitTone(fitPct) }]} numberOfLines={1}>{fitPct}% fit</Text>
+                </View>
+              )}
+            </View>
             {!!subtitle && <Text style={s.sub} numberOfLines={1}>{subtitle}</Text>}
           </View>
           <TouchableOpacity onPress={close} style={s.close} activeOpacity={0.85} accessibilityLabel="Close">
@@ -141,6 +175,8 @@ export default function PaperZoom({
             },
           ]}
         >
+          {/* Why THIS design, for this employer — the ranking's own sentence, when it gave one. */}
+          {!!reason && <Text style={s.reason} numberOfLines={1}>{reason}</Text>}
           {/* ⚠️ A sample has nothing behind it: Customize would land on the editor's "No resume data
               found" dead end and a download would produce the placeholder. One honest action. */}
           {sample ? (
@@ -148,6 +184,14 @@ export default function PaperZoom({
               <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primary}>
                 <Ionicons name="color-wand" size={17} color="#fff" />
                 <Text style={s.primaryTx} numberOfLines={1}>Build my resume</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          ) : letter ? (
+            // A letter has one thing to do with a design: take it. No section editor exists for it.
+            <TouchableOpacity style={s.primaryWrap} activeOpacity={0.9} onPress={() => { close(); setTimeout(onViewPdf, 200); }}>
+              <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primary}>
+                <Ionicons name="download-outline" size={17} color="#fff" />
+                <Text style={s.primaryTx} numberOfLines={1}>Download</Text>
               </LinearGradient>
             </TouchableOpacity>
           ) : (
@@ -182,8 +226,16 @@ const s = StyleSheet.create({
     position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 8,
     flexDirection: 'row', alignItems: 'center', gap: 12,
   },
-  title: { fontSize: 16, fontWeight: '800', color: '#fff', letterSpacing: -0.3 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  // flexShrink: a long design name gives way to the fit pill instead of pushing it off the bar
+  title: { fontSize: 16, fontWeight: '800', color: '#fff', letterSpacing: -0.3, flexShrink: 1 },
+  fitPill: {
+    paddingHorizontal: 7, paddingVertical: 2.5, borderRadius: 100,
+    backgroundColor: 'rgba(11,15,34,0.86)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)',
+  },
+  fitTx: { fontSize: 10.5, fontWeight: '800', letterSpacing: 0.2 },
   sub: { fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.55)', marginTop: 2 },
+  reason: { width: '100%', textAlign: 'center', marginBottom: 2, fontSize: 12, fontWeight: '600', color: 'rgba(197,255,245,0.82)' },
   close: {
     width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
     backgroundColor: E.glass, borderWidth: 1, borderColor: E.glassBorder,

@@ -1745,4 +1745,7 @@ module.exports = { discoverJobs, discoverFacets, discoverEmployers, aiSearch, hy
   // ⚠️ ONE ANSWER TO "IS THIS HOST THE EMPLOYER'S WEBSITE?" — POST /employers/track vets a typed site
   // with it, and the dashboard vets employers.domain with it, so a board this search refuses can never
   // come back in through either door. (Require it lazily there: this module requires aiHubController.)
-  websiteOf };
+  websiteOf,
+  // Exported for reuse ONLY (behaviour unchanged): jobService.keepStoredEmployerName asks it whether a
+  // shared employers row's stored name owns its domain before a scrape's name may replace it.
+  ownsHost };
