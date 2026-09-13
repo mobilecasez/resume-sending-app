@@ -89,7 +89,12 @@ export default function ReviewScreen({
   // navigation
   setScreen,
   // data
-  user, creditBalance, unreadCount,
+  // NB creditBalance is still passed by App.js but deliberately NOT read here (2026-09-14): since
+  // 2026-09-13 legacy credits pay for no cover letter, so a client gate on the balance refused
+  // subscribers and free-allowance users and sent them to buy packs that no longer buy anything.
+  // Every action below goes straight to its App.js handler; the SERVER decides (402 quota /
+  // 403 paid_required) and those handlers explain it.
+  user, unreadCount,
   recipients, currentReviewTab, setCurrentReviewTab,
   reviewCoverLetters,
   // card flip
@@ -242,13 +247,15 @@ export default function ReviewScreen({
           {/* Eyebrow row */}
           <View style={rStyles.heroEyeRow}>
             <Text style={rStyles.heroEyebrow}>STEP 3 · REVIEW &amp; SEND</Text>
+            {/* Was a diamond + legacy credit balance → Usage. Credits no longer pay for letters, so
+                the number meant nothing; a neutral pill to the plans screen (where allowance lives). */}
             <TouchableOpacity
-              style={rStyles.creditChip}
-              onPress={() => setScreen('usage')}
+              style={rStyles.planChip}
+              onPress={() => { try { require('expo-router').router?.push?.('/(subscription)/plans'); } catch (_) {} }}
               activeOpacity={0.8}
             >
-              <Ionicons name="diamond" size={10} color="#fff" />
-              <Text style={rStyles.creditChipText}>{creditBalance}</Text>
+              <Ionicons name="sparkles" size={10} color="#fff" />
+              <Text style={rStyles.planChipText}>Plan</Text>
             </TouchableOpacity>
           </View>
 
@@ -718,9 +725,8 @@ export default function ReviewScreen({
                     <Ionicons name="refresh-outline" size={16} color={T.amber} />
                   </View>
                   <Text style={rStyles.ghostBtnLabel} numberOfLines={1}>Regenerate</Text>
-                  <View style={[rStyles.ghostBtnBadge, rStyles.ghostBtnBadgeCorner]}>
-                    <Text style={rStyles.ghostBtnBadgeText}>1 CR</Text>
-                  </View>
+                  {/* No "1 CR" price badge: a regenerate uses one cover letter from the plan/free
+                      allowance, never credits — the server says so on a 402 if none is left. */}
                 </TouchableOpacity>
 
                 <View style={rStyles.actionDivider} />
@@ -729,14 +735,8 @@ export default function ReviewScreen({
                 <TouchableOpacity
                   style={rStyles.ghostBtn}
                   onPress={() => {
-                    if (creditBalance <= 0) {
-                      Alert.alert(
-                        'Insufficient Credits',
-                        'Remaining credits are 0. Please recharge to continue.',
-                        [{ text: 'Cancel', style: 'cancel' }, { text: 'Recharge Now', onPress: () => setScreen('packages') }]
-                      );
-                      return;
-                    }
+                    // No client credit gate: the file is a paid-plan / employer-pass download, decided
+                    // server-side (requirePaidForDownload) — a 0-credit subscriber must not be refused here.
                     downloadCoverLetterPDFFromReview(currentReviewTab);
                   }}
                   disabled={reviewDownloading}
@@ -755,14 +755,8 @@ export default function ReviewScreen({
               {/* Send button */}
               <TouchableOpacity
                 onPress={() => {
-                  if (creditBalance <= 0) {
-                    Alert.alert(
-                      'Insufficient Credits',
-                      'Remaining credits are 0. Please recharge to continue.',
-                      [{ text: 'Cancel', style: 'cancel' }, { text: 'Recharge Now', onPress: () => setScreen('packages') }]
-                    );
-                    return;
-                  }
+                  // No client credit gate: emailing is paid-plan only and the server answers 403
+                  // paid_required; credits play no part in it.
                   sendApplicationFromReview(currentReviewTab);
                 }}
                 disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || activeCL.sent}
@@ -794,10 +788,6 @@ export default function ReviewScreen({
                       <Text style={rStyles.sendTitle}>Send application</Text>
                       <Text style={rStyles.sendEmail} numberOfLines={1}>{activeRecipient.email}</Text>
                     </View>
-                    <View style={rStyles.sendCreditChip}>
-                      <Ionicons name="diamond" size={9} color="#fff" />
-                      <Text style={rStyles.sendCreditText}> 1</Text>
-                    </View>
                     <View style={rStyles.sendArrowCircle}>
                       <Ionicons name="arrow-forward" size={18} color="#fff" />
                     </View>
@@ -819,13 +809,8 @@ export default function ReviewScreen({
             <TouchableOpacity
               style={rStyles.emptyGenBtn}
               onPress={() => {
-                if (creditBalance <= 0) {
-                  Alert.alert('Insufficient Credits', 'Please recharge to continue.', [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Recharge Now', onPress: () => setScreen('packages') },
-                  ]);
-                  return;
-                }
+                // No client credit gate — generation is plan/free-allowance only; the server's
+                // entitlement decides and generateCoverLetterForReview handles its 402.
                 generateCoverLetterForReview(currentReviewTab);
               }}
               disabled={reviewGeneratingIndex === currentReviewTab || reviewGeneratingAll || reviewGeneratingAndSendingAll}
@@ -884,9 +869,6 @@ export default function ReviewScreen({
               <Text style={rStyles.queueNames} numberOfLines={1}>
                 {recipients.slice(0, 3).map(r => companyFrom(r)).join(' · ')}
               </Text>
-            </View>
-            <View style={rStyles.queueCreditChip}>
-              <Text style={rStyles.queueCreditText}>{creditBalance} cr</Text>
             </View>
           </View>
 
@@ -1339,8 +1321,8 @@ const rStyles = StyleSheet.create({
   meshBlob:       { position: 'absolute', borderRadius: 1000 },
   heroEyeRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
   heroEyebrow:    { fontSize: 10, fontWeight: '700', letterSpacing: 1.4, color: 'rgba(255,255,255,0.55)' },
-  creditChip:     { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 100, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  creditChipText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  planChip:     { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 100, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  planChipText: { fontSize: 12, fontWeight: '700', color: '#fff' },
   heroTitle:      { fontSize: 28, fontWeight: '800', color: '#fff', letterSpacing: -0.8, marginBottom: 6 },
   heroSub:        { fontSize: 13, color: 'rgba(255,255,255,0.55)', fontWeight: '500', marginBottom: 18, lineHeight: 18 },
 
@@ -1470,8 +1452,6 @@ const rStyles = StyleSheet.create({
   sendTextBlock:  { flex: 1 },
   sendTitle:      { fontSize: 15, fontWeight: '800', color: '#fff' },
   sendEmail:      { fontSize: 10, color: 'rgba(255,255,255,0.65)', fontFamily: 'Courier', marginTop: 2 },
-  sendCreditChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 100, paddingHorizontal: 8, paddingVertical: 4, marginRight: 10 },
-  sendCreditText: { fontSize: 11, fontWeight: '700', color: '#fff' },
   sendArrowCircle: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
 
   // Empty state
@@ -1499,8 +1479,6 @@ const rStyles = StyleSheet.create({
   queueEnvelope:  { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.25)' },
   queueCount:     { fontSize: 12, fontWeight: '700', color: '#fff' },
   queueNames:     { fontSize: 10, color: 'rgba(255,255,255,0.5)', marginTop: 1 },
-  queueCreditChip: { backgroundColor: 'rgba(245,158,11,0.2)', borderRadius: 100, paddingHorizontal: 9, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(245,158,11,0.3)' },
-  queueCreditText: { fontSize: 11, fontWeight: '700', color: T.amber },
 
   // Pipeline
   pipeline:       { flexDirection: 'row', alignItems: 'center', gap: 0, marginBottom: 16 },

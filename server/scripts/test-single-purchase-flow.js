@@ -43,6 +43,8 @@ const db = {
   claimUpdates: 0,       // how many times the binding UPDATE actually ran
   boundWrites: [],       // every successful bind: { user_id, employer_key }
   log: [],
+  runs: [],              // every run(): { sql, params } — the writes a refusal must not make
+  hubJob: null,          // the one jobs row the Job Hub letter lane (T16) reads
   resumeRow: { resume_data: { personal_info: { full_name: 'Test User', email: 't@e.st' }, experience: [], _buildMethod: 'ai' }, regen_count: 0 },
 };
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
@@ -136,6 +138,7 @@ async function dbGet(sql, params = []) {
   if (/FROM user_credits/.test(q)) return { credits_remaining: 0, expiry_date: null };
   if (/FROM users/.test(q)) return { id: params[0], full_name: 'Test User', email: 't@e.st', phone_number: '1', city: 'Pune', country: 'IN', photo_path: null, resume_path: '/uploads/r.pdf', total_generated: 0 };
   if (/FROM employer_brand_profiles/.test(q)) return null;
+  if (/FROM jobs WHERE id = \$1/.test(q) && db.hubJob && String(params[0]) === String(db.hubJob.id)) return db.hubJob;
   if (/FROM jobs/.test(q)) return null;
   return null;
 }
@@ -144,18 +147,30 @@ require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
   get: dbGet,
   // The alias scan is the one query() the money path makes; everything else reads nothing.
   query: async (sql, params) => { const r = await dbGet(sql, params); return Array.isArray(r) ? r : []; },
-  run: async (sql) => { db.log.push('RUN ' + norm(sql).slice(0, 70)); return {}; },
+  run: async (sql, params) => { db.log.push('RUN ' + norm(sql).slice(0, 70)); db.runs.push({ sql: norm(sql), params }); return {}; },
   withTransaction: async (fn) => fn({ get: dbGet, run: async () => ({}) }), isUniqueViolation: () => false, getDbType: () => 'postgres',
 } };
 
 // ── entitlements: the PLAN side of the money. `sub` null = no plan; the free allowance is a gate. ─
-const ent = { sub: null, gate: { allowed: true, remaining: 5 }, consumed: [] };
+// ⚠️ consumeFor (2026-09-14): what consumeOnSuccess answers, per call. Unset = { via: 'plan' }, as before. The real
+// shapes: 'none' (nothing left that may pay — NO usage row) and 'error' are { via, charge: null, ledgerId: null }.
+// Only a payment lands in `consumed`; every call, paid or not, lands in `attempts` with the options it was given.
+const ent = { sub: null, gate: { allowed: true, remaining: 5 }, consumed: [], attempts: [], consumeFor: null, ledgerMax: 0 };
 const entPath = require.resolve(path.join(ROOT, 'server', 'services', 'entitlements.js'));
 require.cache[entPath] = { id: entPath, filename: entPath, loaded: true, exports: {
   activeSubscription: async () => ent.sub,
   canConsumeMany: async () => ent.gate,
-  consumeOnSuccess: async (u, kind, detail) => { ent.consumed.push({ u, kind, detail }); return { via: 'plan' }; },
+  consumeOnSuccess: async (u, kind, detail, opts) => {
+    const via = ent.consumeFor ? ent.consumeFor(u, kind, detail || {}) : 'plan';
+    ent.attempts.push({ u, kind, detail, opts, via, at: db.log.length });
+    if (via === 'none' || via === 'error') return { via, charge: null, ledgerId: null };
+    // 'error' that still wrote its usage row first — the give-back must delete exactly that row.
+    if (via === 'error+row') return { via: 'error', charge: null, ledgerId: ++ent.ledgerMax };
+    ent.consumed.push({ u, kind, detail, opts });
+    return ent.consumeFor ? { via, charge: null, ledgerId: ++ent.ledgerMax } : { via: 'plan' };
+  },
   usageSnapshot: async () => ({}),
+  requestEnvironment: () => ent.env || 'Production',
 } };
 
 // ── the AI. Never a network call; just a counter and a canned answer. ──────────────────────────
@@ -165,6 +180,7 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
     getGenerativeModel() {
       return { generateContent: async () => {
         ai.resumeCalls++;
+        if (ai.onModelCall) ai.onModelCall();   // T12: the phone gives up while the model is still writing
         const text = JSON.stringify({ personal_info: { full_name: '', email: '', phone: '', location: '' }, summary: 'x', experience: [], education: [], skills: [], projects: [], certifications: [], languages: [], achievements: [] });
         return { response: { text: () => text, candidates: [{ finishReason: 'STOP' }] } };
       } };
@@ -184,9 +200,23 @@ stub('ai-cover-letter-v2.js', { generateCoverLetter: async (meta, subject) => {
 } });
 stub('ai-employer-researcher.js', { researchEmployer: async () => { ai.researchCalls++; return { employer_name: 'Acme Corp', brand_color: '#123456', font_name: 'Lato' }; } });
 stub('server/controllers/notificationsController.js', { notifyCoverLetterGenerated: async () => {}, notifyError: async () => {}, notifySuccess: async () => {} });
-stub('server/services/jobService.js', { createJob: async () => 'job1', failJob: async () => {}, completeJob: async () => {} });
-stub('server/controllers/emailController.js', { generateCoverLetterPDF: async () => { rendered.clPdf++; return { fileName: 'generic.pdf', filePath: '/tmp/generic.pdf' }; } });
-stub('server/services/eventCosts.js', { getEventCost: async () => 1 });
+const jobs = { created: 0, failed: [], completed: [] };
+stub('server/services/jobService.js', {
+  createJob: async () => 'job' + (++jobs.created), startJob: async () => {}, updateJobProgress: async () => {}, updateJobPartialResult: async () => {},
+  failJob: async (id, msg) => { jobs.failed.push({ id, msg }); }, completeJob: async (id, result) => { jobs.completed.push({ id, result }); },
+});
+const sends = [];
+stub('server/controllers/emailController.js', {
+  generateCoverLetterPDF: async () => { rendered.clPdf++; return { fileName: 'generic.pdf', filePath: '/tmp/generic.pdf' }; },
+  executeSendWork: async (u, o) => { sends.push({ u, email: o.recipientEmail }); return { sent: true }; },
+});
+// The credit functions are SPIES: since 2026-09-13 no generation lane may price or move a credit (T16 pins it).
+const credits = { priced: [], charged: [], refunded: [] };
+stub('server/services/eventCosts.js', {
+  getEventCost: async (key) => { credits.priced.push(key); return 1; },
+  chargeCredits: async (...a) => { credits.charged.push(a); return { charged: true, cost: 1 }; },
+  refundCredits: async (...a) => { credits.refunded.push(a); },
+});
 stub('server/services/track.js', { emit: () => {} });
 stub('server/utils/resumeRenderer.js', {
   renderPdf: async () => { rendered.pdf++; return Buffer.from('%PDF-1.4 fake'); },
@@ -210,8 +240,11 @@ const CL = require(path.join(ROOT, 'server', 'controllers', 'coverLetterControll
 const written = [];
 const STARTED = Date.now();
 function mkRes() {
-  const r = { statusCode: 200, body: null, sent: false };
+  const r = { statusCode: 200, body: null, sent: false, writableEnded: false, listeners: {} };
   r.status = (c) => { r.statusCode = c; return r; };
+  // A socket that can close: generateAI listens on res 'close' for its support log (T12 closes it mid-AI).
+  r.on = (ev, fn) => { (r.listeners[ev] = r.listeners[ev] || []).push(fn); return r; };
+  r.emit = (ev) => { (r.listeners[ev] || []).forEach((fn) => fn()); };
   r.json = (b) => { r.body = b; r.sent = true; if (b && b.downloadUrl) written.push(decodeURIComponent(String(b.downloadUrl).split('/').pop())); return r; };
   return r;
 }
@@ -458,6 +491,225 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
   ok('…which it then actually SPENDS on that employer',
      boundKeys(11).includes('gamma test'), { bound: boundKeys(11) });
   ent.gate = { allowed: true, remaining: 5 };
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════
+  // 2026-09-14 — A GENERATION NOTHING WILL PAY FOR IS REFUSED, ON EVERY LANE, AND NOTHING IS SAVED
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════
+  // canConsumeMany CHECKS AND NEVER RESERVES. The gate says yes, the model writes for a minute, and by the time
+  // consumeOnSuccess runs an overlapping request may have spent the last unit: it answers via 'none' and writes
+  // no usage row. Each lane used to hand that result over anyway — a free resume or letter per parallel tap, on
+  // an allowance that is one-time. These drive the REAL handlers with consumeOnSuccess answering 'none'.
+  const lockTakenSince = (mark) => db.log.slice(mark).filter((q) => /pg_advisory_xact_lock\(hashtext\('usage:' \|\| \$1::text\), \$2::int\)/.test(q)).length;
+  const runsSince = (mark) => db.runs.slice(mark);
+  const savedResumeSince = (mark) => runsSince(mark).some((r) => /^INSERT INTO user_resumes/.test(r.sql));
+  const waitFor = async (cond, ms = 3000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 10)); return cond(); };
+  const RESUME_BODY = {
+    name: 'Test User', email: 't@e.st', phone: '1', location: 'Pune',
+    rawText: 'I have eight years of backend engineering experience building payment systems in Node and Postgres for fintech companies.',
+  };
+
+  // ── T12 ──────────────────────────────────────────────────────────────────────────────────────
+  console.log('\n── T12 · the builder lane: \'none\' is a 402 with nothing saved; a phone that gave up is still charged ──');
+  {
+    ent.sub = null; ent.gate = { allowed: true, remaining: 1 };
+    ent.consumeFor = () => 'none';
+    let logMark = db.log.length, runMark = db.runs.length, att0 = ent.attempts.length;
+    const none = await call(RB.generateAI, 12, RESUME_BODY);
+    ok('⚠️ via \'none\' → 402 quota_exhausted', none.statusCode === 402 && none.body && none.body.reason === 'quota_exhausted', { status: none.statusCode, body: none.body });
+    ok('⚠️ …no resume in the answer, and NOTHING saved to user_resumes',
+      !none.body.resumeData && !savedResumeSince(runMark), runsSince(runMark).map((r) => r.sql.slice(0, 60)));
+    ok('…the decision was made under the usage lock, after asking consumeOnSuccess once',
+      lockTakenSince(logMark) >= 1 && ent.attempts.length === att0 + 1 && ent.attempts[att0].via === 'none');
+
+    ent.consumeFor = () => 'error';
+    runMark = db.runs.length;
+    const unconfirmed = await call(RB.generateAI, 12, RESUME_BODY);
+    ok('an unconfirmed charge (\'error\') → 500 failed, nothing saved, no resume handed over',
+      unconfirmed.statusCode === 500 && unconfirmed.body.reason === 'failed' && !unconfirmed.body.resumeData && !savedResumeSince(runMark), unconfirmed.body);
+
+    // ⚠️ THE WAIVER IS GONE. A client that disconnected mid-AI used to get its resume SAVED and NOT charged:
+    // kill the app, reopen the builder, find it saved — an endless one-time allowance. Now it is charged.
+    ent.consumeFor = null;
+    const warned = []; const realWarn = console.warn;
+    console.warn = (...a) => { warned.push(a.join(' ')); };
+    const res = mkRes();
+    ai.onModelCall = () => { res.emit('close'); };
+    const c0 = ent.consumed.filter((c) => c.kind === 'resume').length;
+    runMark = db.runs.length;
+    try { await RB.generateAI(mkReq(12, RESUME_BODY), res); } finally { ai.onModelCall = null; console.warn = realWarn; }
+    ok('the handler really listened for the disconnect, and saw it', (res.listeners.close || []).length >= 1
+      && warned.some((w) => /client disconnected before delivery/.test(w)), warned);
+    ok('⚠️ a client that gave up mid-AI is STILL charged for the resume that was saved',
+      res.statusCode === 200 && ent.consumed.filter((c) => c.kind === 'resume').length === c0 + 1 && savedResumeSince(runMark),
+      { status: res.statusCode, consumed: ent.consumed.filter((c) => c.kind === 'resume').length - c0, saved: savedResumeSince(runMark) });
+  }
+
+  // ── T13 ──────────────────────────────────────────────────────────────────────────────────────
+  console.log('\n── T13 · generate-cover-letter-details: \'none\' is refused, sync AND async ──');
+  {
+    ent.sub = null; ent.gate = { allowed: true, remaining: 1 };
+    ent.consumeFor = () => 'none';
+    let logMark = db.log.length, runMark = db.runs.length;
+    const att0 = ent.attempts.length;
+    const LETTER = { recipientEmail: 'jobs@delta.test', websiteUrl: 'https://delta.test', position: 'Engineer' };
+    const sync = await call(CL.generateCoverLetterDetails, 13, LETTER);
+    ok('⚠️ sync: 402 quota_exhausted', sync.statusCode === 402 && sync.body && sync.body.reason === 'quota_exhausted', { status: sync.statusCode, body: sync.body });
+    ok('⚠️ …and the letter is NOT delivered', !sync.body.coverLetterHtml && !sync.body.success, sync.body);
+    ok('…decided under the shared usage lock, BEFORE consumeOnSuccess answered',
+      lockTakenSince(logMark) >= 1 && ent.attempts.length === att0 + 1
+      && db.log.slice(logMark).findIndex((q) => /pg_advisory_xact_lock/.test(q)) + logMark < ent.attempts[att0].at);
+    ok('…no counter bumped for a letter that was not handed over', !runsSince(runMark).some((r) => /total_generated/.test(r.sql)), runsSince(runMark).map((r) => r.sql.slice(0, 60)));
+
+    // ASYNC: the 202 has gone, so the refusal must survive as the JOB's reason — job-status returns it, and the
+    // app opens Plans instead of offering a Try again that meets the same wall.
+    process.env.USE_ASYNC_JOBS = 'true';
+    runMark = db.runs.length;
+    const completed0 = jobs.completed.length;
+    let accepted;
+    try { accepted = await call(CL.generateCoverLetterDetails, 13, LETTER); } finally { process.env.USE_ASYNC_JOBS = 'false'; }
+    ok('async: 202 with a job id', accepted.statusCode === 202 && !!accepted.body.jobId, accepted.body);
+    const failedRow = () => runsSince(runMark).find((r) => /^UPDATE async_jobs SET status = 'failed'/.test(r.sql) && r.params && r.params[2] === accepted.body.jobId);
+    await waitFor(() => !!failedRow() || jobs.failed.some((f) => f.id === accepted.body.jobId) || jobs.completed.length > completed0);
+    const fr = failedRow();
+    let frResult = null; try { frResult = fr && JSON.parse(fr.params[1]); } catch {}
+    ok('⚠️ async: the job FAILED with reason quota_exhausted (one UPDATE, reason in result)',
+      !!fr && frResult && frResult.reason === 'quota_exhausted' && /allowance was used up/.test(fr.params[0]), { fr, failJob: jobs.failed.slice(-1) });
+    ok('⚠️ …and it was never completed with a letter', jobs.completed.length === completed0, jobs.completed.slice(completed0));
+
+    ent.consumeFor = () => 'error+row';
+    runMark = db.runs.length;
+    const err = await call(CL.generateCoverLetterDetails, 13, LETTER);
+    const lastLedger = ent.ledgerMax;
+    ok('an unconfirmed charge → 500, no letter', err.statusCode === 500 && !err.body.coverLetterHtml, err.body);
+    ok('⚠️ …and the usage row it wrote first goes back, by its own id',
+      runsSince(runMark).some((r) => /^DELETE FROM usage_ledger WHERE id = \$1 AND user_id = \$2/.test(r.sql) && r.params[0] === lastLedger && r.params[1] === 13), runsSince(runMark));
+    ent.consumeFor = null;
+  }
+
+  // ── T14 ──────────────────────────────────────────────────────────────────────────────────────
+  console.log('\n── T14 · bulk /generate-cover-letters: a letter nothing pays for is refused; paid ones are kept ──');
+  {
+    ent.sub = null; ent.gate = { allowed: true, remaining: 2 };
+    ent.consumeFor = () => 'none';
+    let logMark = db.log.length, runMark = db.runs.length;
+    const TWO = [{ email: 'a@eps.test', website: 'eps.test', position: 'Engineer' }, { email: 'b@zeta.test', website: 'zeta.test', position: 'Engineer' }];
+    const allNone = await call(CL.generateCoverLetters, 14, { recipients: TWO });
+    ok('⚠️ every letter refused → 402 quota_exhausted', allNone.statusCode === 402 && allNone.body.reason === 'quota_exhausted', { status: allNone.statusCode, body: allNone.body && allNone.body.error });
+    ok('⚠️ …each one named, none with a file', (allNone.body.results || []).length === 2
+      && allNone.body.results.every((r) => r.status === 'failed' && r.reason === 'quota_exhausted' && !r.downloadUrl && !r.fileName), allNone.body.results);
+    ok('…one lock per letter, and no counter bumped', lockTakenSince(logMark) === 2 && !runsSince(runMark).some((r) => /total_generated/.test(r.sql)));
+
+    ent.consumeFor = (u, k, d) => (d.recipientEmail === 'a@eps.test' ? 'plan' : 'none');
+    const c0 = ent.consumed.length;
+    const partial = await call(CL.generateCoverLetters, 14, { recipients: TWO });
+    const got = (partial.body.results || []);
+    ok('a partial run stays a 200 with quotaRefused counted', partial.statusCode === 200 && partial.body.quotaRefused === 1, { status: partial.statusCode, q: partial.body.quotaRefused });
+    ok('⚠️ the paid letter is delivered; the refused one has no file',
+      got.some((r) => r.email === 'a@eps.test' && r.status === 'generated' && r.downloadUrl)
+      && got.some((r) => r.email === 'b@zeta.test' && r.status === 'failed' && r.reason === 'quota_exhausted' && !r.downloadUrl), got);
+    ok('…exactly one unit spent', ent.consumed.length === c0 + 1, ent.consumed.slice(c0));
+    ent.consumeFor = null;
+  }
+
+  // ── T15 ──────────────────────────────────────────────────────────────────────────────────────
+  console.log('\n── T15 · /batch-process: the refusal is PER LETTER, carries the gate\'s environment, and is never sent ──');
+  {
+    const batchRouter = require(path.join(ROOT, 'server', 'routes', 'batchRoutes.js'));
+    const layer = batchRouter.stack.find((l) => l.route && l.route.path === '/batch-process');
+    const batchHandler = layer && layer.route.stack[layer.route.stack.length - 1].handle;
+    ok('the batch handler is reachable', typeof batchHandler === 'function');
+    if (batchHandler) {
+      ent.sub = null; ent.gate = { allowed: true, remaining: 2 }; ent.env = 'Sandbox';
+      ent.consumeFor = (u, k, d) => (d.recipientEmail === 'paid@eta.test' ? 'plan' : 'none');
+      const att0 = ent.attempts.length, sends0 = sends.length, done0 = jobs.completed.length;
+      const res = mkRes();
+      await batchHandler({ user: { id: 15 }, body: { mode: 'generate-and-send', recipients: [
+        { email: 'paid@eta.test', website: 'eta.test', position: 'Engineer' },
+        { email: 'late@theta.test', website: 'theta.test', position: 'Engineer' },
+      ] }, headers: {}, ip: '1.1.1.1' }, res);
+      ok('202 accepted', res.statusCode === 202 && !!res.body.jobId, res.body);
+      await waitFor(() => jobs.completed.length > done0);
+      const summary = (jobs.completed.slice(done0).find((j) => j.id === res.body.jobId) || {}).result || {};
+      const r0 = (summary.results || {})[0] || {}, r1 = (summary.results || {})[1] || {};
+      ok('⚠️ the late letter is refused on its own: generated:false, reason quota_exhausted',
+        r1.generated === false && r1.reason === 'quota_exhausted' && !r1.generationData, r1);
+      ok('…while the paid letter is kept', r0.generated === true && !!(r0.generationData && r0.generationData.coverLetterHtml), { generated: r0.generated });
+      ok('the summary counts it for the app', summary.generatedCount === 1 && summary.quotaExhaustedCount === 1, { g: summary.generatedCount, q: summary.quotaExhaustedCount });
+      ok('⚠️ a refused letter is NEVER sent; the paid one is',
+        r1.sent === false && sends.slice(sends0).every((x) => x.email !== 'late@theta.test') && sends.slice(sends0).some((x) => x.email === 'paid@eta.test'), sends.slice(sends0));
+      const mine = ent.attempts.slice(att0).filter((a) => a.u === 15);
+      ok('⚠️ every per-letter charge carried the environment the GATE read (not a Production default)',
+        mine.length === 2 && mine.every((a) => a.opts && a.opts.storeEnv === 'Sandbox'), mine.map((a) => a.opts));
+      ent.env = null; ent.consumeFor = null;
+    }
+  }
+
+  // ── T16 ──────────────────────────────────────────────────────────────────────────────────────
+  console.log('\n── T16 · the Job Hub letter: the allowance pays, never a credit, and \'none\' is refused ──');
+  {
+    const AH = require(path.join(ROOT, 'server', 'controllers', 'aiHubController.js'));
+    db.hubJob = { id: 'hub-1', title: 'Backend Engineer', employer_id: null, location: 'Pune', responsibilities: 'Build APIs' };
+    const hub = async (userId, over = {}) => {
+      const res = mkRes();
+      await AH.generateJobCoverLetter({ user: { id: userId }, params: { jobId: 'hub-1' }, body: {}, headers: {}, ip: '1.1.1.1', ...over }, res);
+      return res;
+    };
+    const credit0 = { priced: credits.priced.length, charged: credits.charged.length, refunded: credits.refunded.length };
+    const logMark0 = db.log.length;
+    ent.sub = null;
+
+    ent.gate = { allowed: false, message: "You've used your 3 free cover letters." };
+    let aiB = ai.resumeCalls, att0 = ent.attempts.length;
+    const refused = await hub(16);
+    ok('no allowance → 402 quota_exhausted BEFORE the model runs', refused.statusCode === 402 && refused.body.reason === 'quota_exhausted'
+      && ai.resumeCalls === aiB && ent.attempts.length === att0, { status: refused.statusCode, body: refused.body });
+
+    ent.gate = { allowed: true, remaining: 1 };
+    ent.consumeFor = () => 'none';
+    let logMark = db.log.length; aiB = ai.resumeCalls; att0 = ent.attempts.length;
+    const none = await hub(16);
+    ok('⚠️ via \'none\' → 402 quota_exhausted, and the letter is NOT handed over',
+      none.statusCode === 402 && none.body.reason === 'quota_exhausted' && !none.body.coverLetter && ai.resumeCalls === aiB + 1, { status: none.statusCode, body: none.body });
+    ok('…decided under the shared usage lock', lockTakenSince(logMark) >= 1 && ent.attempts.length === att0 + 1);
+
+    ent.consumeFor = () => 'plan';
+    const c0 = ent.consumed.length;
+    const paid = await hub(16);
+    ok('the allowance pays → 200 with the letter, creditsUsed 0', paid.statusCode === 200 && !!paid.body.coverLetter && paid.body.creditsUsed === 0, { status: paid.statusCode, body: paid.body && { ...paid.body, coverLetter: undefined } });
+    ok('…one cover_letter unit, from this screen', ent.consumed.length === c0 + 1 && ent.consumed[c0].kind === 'cover_letter' && ent.consumed[c0].detail.screen === 'job_hub_cover_letter', ent.consumed.slice(c0));
+
+    ent.consumeFor = () => 'error+row';
+    const runMark = db.runs.length;
+    const err = await hub(16);
+    ok('an unconfirmed charge → 500, and its usage row goes back by id',
+      err.statusCode === 500 && !err.body.coverLetter
+      && runsSince(runMark).some((r) => /^DELETE FROM usage_ledger WHERE id = \$1 AND user_id = \$2/.test(r.sql) && r.params[0] === ent.ledgerMax && r.params[1] === 16), runsSince(runMark));
+    ent.consumeFor = null;
+
+    ent.gate = { allowed: false, message: 'no' }; att0 = ent.attempts.length;
+    const admin = await hub(16, { adminTest: true });
+    ok('the admin test stays free: no gate, no charge', admin.statusCode === 200 && admin.body.adminTest === true && ent.attempts.length === att0, { status: admin.statusCode });
+    ent.gate = { allowed: true, remaining: 5 };
+
+    ok('⚠️ NO CREDIT was priced, charged or refunded anywhere in the Job Hub lane',
+      credits.priced.length === credit0.priced && credits.charged.length === credit0.charged && credits.refunded.length === credit0.refunded
+      && !db.log.slice(logMark0).some((q) => /user_credits/.test(q)), { priced: credits.priced.slice(credit0.priced), charged: credits.charged.slice(credit0.charged) });
+    const fs2 = require('fs');
+    const stripC = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const ahSrc = stripC(fs2.readFileSync(path.join(ROOT, 'server', 'controllers', 'aiHubController.js'), 'utf8'));
+    const body = (ahSrc.match(/async function generateJobCoverLetter\([\s\S]*?\n\}/) || [''])[0];
+    ok('⚠️ …and its source names no credit machinery at all (comment-stripped)',
+      body.length > 500 && !/user_credits|job_cover_letter'|chargeCredits|refundCredits|getEventCost|deductCredits/.test(body)
+      && /entitlements\.canConsumeMany\(userId, 'cover_letter', 1, req\)/.test(body) && /withUsageLock\(userId, 'cover_letter'/.test(body), body.length);
+    const clSrc = fs2.readFileSync(path.join(ROOT, 'server', 'controllers', 'coverLetterController.js'), 'utf8');
+    ok('⚠️ coverLetterController exports withUsageLock, keyed exactly as the resume and Home letter lanes key theirs',
+      typeof CL.withUsageLock === 'function'
+      && [clSrc, fs2.readFileSync(path.join(ROOT, 'server', 'controllers', 'resumeBuilderController.js'), 'utf8'), fs2.readFileSync(path.join(ROOT, 'server', 'controllers', 'employerLetterController.js'), 'utf8')]
+        .every((src) => /SELECT pg_advisory_xact_lock\(hashtext\('usage:' \|\| \$1::text\), \$2::int\)/.test(src)));
+    const brSrc = stripC(fs2.readFileSync(path.join(ROOT, 'server', 'routes', 'batchRoutes.js'), 'utf8'));
+    ok('batch-process hands the gate\'s environment to every letter', /const passEnv = entitlements\.requestEnvironment\(req\)/.test(brSrc)
+      && /executeGenerationWork\(userId, user, \{[\s\S]{0,200}passEnv,/.test(brSrc));
+  }
 
   // ── tidy: the handlers are real, so they wrote real files. Remove everything THIS RUN created
   // (name pattern + created after we started); nothing older is touched.

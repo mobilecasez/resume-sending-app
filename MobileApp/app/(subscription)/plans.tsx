@@ -254,8 +254,10 @@ export default function PlansScreen() {
         `${p.label} — $${p.priceUsd.toFixed(2)}/month (US list)`,
         `${p.letters} cover letters + ${p.resumes} resume generations every month.\n\n` +
         (storeUsable
-          ? `${storeName} is not offering this plan yet, so it cannot be bought. Your Free plan and any credits keep working.`
-          : 'Purchasing opens in the next update. Your Free plan and any credits keep working until then.'),
+          // ⚠️ No "and any credits keep working": credits stopped paying for generation on
+          // 2026-09-13, so that sentence would promise a fallback that no longer exists.
+          ? `${storeName} is not offering this plan yet, so it cannot be bought. Whatever is left of your Free plan is unaffected.`
+          : 'Purchasing opens in the next update. Whatever is left of your Free plan is unaffected until then.'),
         [{ text: 'OK' }]
       );
       return;
@@ -400,15 +402,28 @@ export default function PlansScreen() {
   const pendingKey = status?.subscription?.pendingPlanKey || null;
   const source = status?.subscription?.source || null;
   const trial = status?.trialState;
-  // The Free plan refills instead of ending, so the date is a REFILL date, not an expiry.
-  const renewsOn = (() => {
-    const iso = (trial as any)?.renewsAt || trial?.endsAt;
-    if (!iso) return '';
-    try { return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); } catch { return ''; }
-  })();
+  // ⚠️ THE FREE PLAN IS ONE-TIME (2026-09-13). There is no refill date and no expiry — the server
+  // sends renewsAt/endsAt as null — so this card renders NO date at all. It used to say "refilling
+  // on <date>", and any fallback to endsAt would resurrect exactly that promise.
+  const freeOffer = status?.trial || null;
+  const oneTime = !!(freeOffer?.oneTime || trial?.oneTime);
   // `current` is a plan KEY, not the plan object — resolve it for display.
   const currentLabel = (status?.plans || []).find((p: any) => p.key === current)?.label || current || 'a paid plan';
   const trialActive = !current && trial?.active;
+  // What is LEFT: the server's `remaining` when it is answering for the Free plan (it includes any
+  // quota_grants bonus); otherwise the offer minus what trialState says was used.
+  const freeLeft = (() => {
+    if (!freeOffer || !trialActive) return null;
+    if (status?.via === 'free' || status?.via === 'trial') return status.remaining;
+    return {
+      letters: Math.max(0, freeOffer.letters - (trial?.used?.letters || 0)),
+      resumes: Math.max(0, freeOffer.resumes - (trial?.used?.resumes || 0)),
+    };
+  })();
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const offerText = freeOffer
+    ? `${plural(freeOffer.resumes, 'resume generation', 'resume generations')} + ${plural(freeOffer.letters, 'cover letter', 'cover letters')}`
+    : '';
   const busy = !!busyKey || restoring;
 
   // A subscription bought on the other store cannot be changed from here — Apple and Google each
@@ -426,18 +441,24 @@ export default function PlansScreen() {
           ⚠️ EVERY NUMBER AND THE NAME COME FROM THE SERVER (`status.trial`, which now carries the
           Free plan). This card used to hard-code "7-day free trial / 5 + 2", so when the server
           moved to the Free plan the app kept advertising a trial that no longer existed. Nothing
-          about the offer may be written in here again. */}
+          about the offer may be written in here again (the numbers are read, never defaulted). */}
       <View style={[s.trialCard, trialActive ? s.trialOn : null]}>
         <View style={s.trialHead}>
           <Ionicons name={trialActive ? 'checkmark-circle' : trial?.blocked ? 'close-circle-outline' : 'time-outline'} size={20} color={trialActive ? T.emerald : T.faint} />
           <Text style={s.trialTitle}>{status?.trial?.label || 'Free plan'}</Text>
         </View>
         <Text style={s.trialBody}>
-          {trialActive
-            ? `Active — ${Math.max(0, (status?.trial?.letters ?? 5) - (trial?.used?.letters || 0))} cover letters and ${Math.max(0, (status?.trial?.resumes ?? 1) - (trial?.used?.resumes || 0))} resume generations left${renewsOn ? `, refilling on ${renewsOn}` : ''}.`
-            : trial?.blocked === 'device_trial_used'
-              ? 'This device has already used its free allowance.'
-              : `${status?.trial?.letters ?? 5} cover letters and ${status?.trial?.resumes ?? 1} AI resume every ${status?.trial?.days ?? 30} days, free. Searching, Auto Fill, translating and applying are always unlimited.`}
+          {trial?.blocked === 'device_trial_used'
+            ? 'Free allowance already used on this device. Start a plan below to keep generating.'
+            : !freeOffer
+              ? 'Searching, Auto Fill, translating and applying are always unlimited.'
+              : trialActive && freeLeft
+                ? (freeLeft.resumes + freeLeft.letters === 0
+                  ? `You have used your ${offerText}${oneTime ? ' — a one-time allowance, it does not refill' : ''}. Start a plan below to keep generating.`
+                  : `Active — ${plural(freeLeft.resumes, 'resume generation', 'resume generations')} and ${plural(freeLeft.letters, 'cover letter', 'cover letters')} left of your ${oneTime ? 'one-time ' : ''}${offerText}.`)
+                : oneTime
+                  ? `${offerText}, free — one time per device, it does not refill. Searching, Auto Fill, translating and applying are always unlimited.`
+                  : `${offerText} free every ${freeOffer.days ?? 30} days. Searching, Auto Fill, translating and applying are always unlimited.`}
         </Text>
         {/* ⚠️ A PAID PLAN HIDES NOTHING. The Free plan stays on this screen whatever you are on,
             because a subscriber has to be able to SEE the thing they can fall back to. What a paid
@@ -447,13 +468,19 @@ export default function PlansScreen() {
         {current && !trialActive ? (
           <Text style={s.trialFallback}>
             You are on {currentLabel}. Cancel in your {storeName} account settings and you return to
-            the Free plan when the period you have paid for ends — nothing is lost in between.
+            the Free plan (whatever is left of its {oneTime ? 'one-time ' : ''}allowance) when the period you
+            have paid for ends — nothing is lost in between.
           </Text>
         ) : null}
       </View>
 
+      {/* ⚠️ DOWNLOADS ARE NOT FREE, and never were: each plan includes a number of them, and without one
+          a single file is a one-time download pass (server/services/entitlements.js — FREE.downloads is 0).
+          This note used to list downloads among the free things, promising a file the paywall then asked
+          money for. It also says one time PER DEVICE: a second account on the same phone gets no new
+          Free plan. */}
       <Text style={s.freeNote}>
-        <Ionicons name="gift-outline" size={13} color={T.emerald} />  Searching, fetching jobs, Auto Fill, translate, applying and downloads stay free on every plan.
+        <Ionicons name="gift-outline" size={13} color={T.emerald} />  Searching, fetching jobs, Auto Fill, translate and applying stay free on every plan. Downloads come with a paid plan, or one at a time with a single-download pass.
       </Text>
 
       {otherStore ? (
@@ -471,7 +498,7 @@ export default function PlansScreen() {
               ? `Monthly plans are not on sale on ${storeName} yet, so nothing below can be purchased. `
               : 'Purchasing is not available in this build, so nothing below can be purchased. '}
             The amounts shown are the US list prices for reference only — you would be charged your
-            own store’s local price. Your Free plan and any credits keep working.
+            own store’s local price. Whatever is left of your Free plan is unaffected.
           </Text>
         </View>
       ) : null}

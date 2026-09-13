@@ -27,8 +27,10 @@
 //                Nothing is granted yet. settleIncentives() grants it once they actually do it and
 //                sends one short confirmation. This is the default: it rewards the behaviour we want
 //                rather than paying everyone who owns a phone.
-//   'immediate'— granted at send time, because the grant IS the message (extending a trial that is
-//                about to close). The copy may then state it as done, because it is.
+//   'immediate'— granted at send time, because the grant IS the message. The copy may then state it
+//                as done, because it is. Units only (letters / resume generations): the one nudge that
+//                granted DAYS (extending a trial about to close) is dormant — the Free plan is one-time
+//                since 2026-09-13 and has no end date for days to extend. See nudge_trial_ending.
 'use strict';
 
 const dbConfig = require('../../db-config');
@@ -127,11 +129,12 @@ const NUDGES = [
     templateKey: 'trial_ending',
     label: 'Trial ending soon',
     minDaysSinceSignup: 0,
-    // The one place an immediate grant is honest: the offer IS the extension. ⚠️ Days alone buy
-    // nothing (the letter count is independent of ends_at), so letters come with them — see the
-    // warning at the top of quotaGrants.js.
-    incentive: { mode: 'immediate', kind: 'trial_days', amount: 5, alsoLetters: 2,
-      offer: 'We have added 5 more days and 2 more free cover letters to your trial.' },
+    // ⚠️ DORMANT BY CONSTRUCTION since 2026-09-13. The Free plan is one-time and never ends, so the
+    // state builder (adminUserOps.quotaStateOf) reports trialDaysLeft: null and the template answers
+    // "not on a trial" — this entry can no longer be picked. Its incentive is gone as well: it granted
+    // +5 days and +2 letters and said "we have added 5 more days … to your trial", and days buy nothing
+    // on an allowance with no end date (quotaGrants.js). Kept, not deleted, so its admin switch and the
+    // user_nudge_log rows written under this key still resolve.
     done: () => true,
   },
   {
@@ -234,43 +237,33 @@ function pickNudge(userState, gateState, enabled) {
  *
  * Returns { log, sentence } describing WHAT WAS ACTUALLY GRANTED, or null if nothing was.
  *
- * ⚠️ The sentence is built from the grants that SUCCEEDED, never from the registry's wording. The
- * trial nudge grants two separate things (days, then letters) and the second can fail on its own —
- * a fixed "we added 5 days and 2 free cover letters" would then be a plain lie printed on someone's
- * lock screen. If only the days landed, the copy mentions only the days.
+ * ⚠️ The sentence is built from the grant that SUCCEEDED, never from the registry's wording — a fixed
+ * "we added 2 free cover letters" printed on someone's lock screen after the grant failed is a plain lie.
+ * ⚠️ UNITS ONLY. Days are refused outright: the Free plan has no end date (one-time since 2026-09-13), so
+ * "+5 days" would buy nothing while the push announced a gift. And the grant goes through
+ * ensureCountableWindow first, like a settled promise does — a unit granted where entitlements cannot
+ * count it is quota in the copy only.
  */
 async function applyImmediate(userId, nudge, attempt) {
   const inc = nudge.incentive;
   if (!inc || inc.mode !== 'immediate') return null;
-  // ONE payout per nudge, not one per attempt. MAX_ATTEMPTS is 3, so an attempt-keyed idem let the
-  // trial nudge hand out 15 free days and 6 free letters to the same person. On attempts 2 and 3
-  // nothing is granted, applyImmediate returns null, and the offer line is simply dropped — the
-  // push still goes out, as a plain reminder that says nothing untrue.
+  // ONE payout per nudge, not one per attempt. MAX_ATTEMPTS is 3, so an attempt-keyed idem let a
+  // nudge pay out three times to the same person (the old trial nudge: 15 free days and 6 letters).
+  // On attempts 2 and 3 nothing is granted, applyImmediate returns null, and the offer line is simply
+  // dropped — the push still goes out, as a plain reminder that says nothing untrue.
   const idem = nudge.key;
-  const log = [];
-  const said = [];
   const many = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
-  if (inc.kind === 'trial_days') {
-    const r = await quotaGrants.extendTrial(userId, inc.amount, idem, { note: nudge.label });
-    if (!r.extended) return null;                       // no trial, or already granted — say nothing
-    log.push(`+${inc.amount}d trial`);
-    said.push(many(inc.amount, 'more day'));
-    if (inc.alsoLetters) {
-      const g = await quotaGrants.grantQuota(userId, 'cover_letter', inc.alsoLetters, idem + ':letters', { note: nudge.label });
-      if (g.granted) { log.push(`+${inc.alsoLetters} letters`); said.push(many(inc.alsoLetters, 'more free cover letter')); }
-    }
-  } else {
-    const g = await quotaGrants.grantQuota(userId, inc.kind, inc.amount, idem, { note: nudge.label });
-    if (!g.granted) return null;
-    const noun = inc.kind === 'resume' ? 'free resume generation' : 'free cover letter';
-    log.push(`+${inc.amount} ${inc.kind}`);
-    said.push(many(inc.amount, noun));
-  }
+  if (inc.kind !== 'cover_letter' && inc.kind !== 'resume') return null;   // days (or anything else) — see above
+  const win = await quotaGrants.ensureCountableWindow(userId, idem);
+  if (!win.via) return null;                            // nowhere it could be counted — say nothing
+  const g = await quotaGrants.grantQuota(userId, inc.kind, inc.amount, idem, { note: nudge.label });
+  if (!g.granted) return null;
+  const noun = inc.kind === 'resume' ? 'free resume generation' : 'free cover letter';
   return {
-    log: log.join(', '),
-    sentence: `We have added ${said.join(' and ')} to your trial.`,
-    title: inc.kind === 'trial_days' ? 'Your free trial just got longer 🎁' : null,
+    log: `+${inc.amount} ${inc.kind}`,
+    sentence: `We have added ${many(inc.amount, noun)} to your account.`,
+    title: null,
   };
 }
 
@@ -323,8 +316,9 @@ async function settleIncentives({ dryRun = false } = {}) {
       out.wouldGrant += 1;
       continue;
     }
-    // Open a window the grant can actually be counted in BEFORE writing it — an expired trial, or
-    // no trial row at all, would otherwise swallow the bonus and make the confirmation a lie.
+    // Open a window the grant can actually be counted in BEFORE writing it — a user with no free-plan
+    // row at all would otherwise swallow the bonus and make the confirmation a lie (and a device whose
+    // free allowance belongs to another account gets no window, so no bonus either).
     const win = await quotaGrants.ensureCountableWindow(row.user_id, idem);
     if (!win.via) { console.warn('[lifecycle] no countable quota window for user', row.user_id, '— bonus withheld'); continue; }
 
@@ -458,9 +452,9 @@ async function runLifecycleNudges({ force = false, dryRun = false, scanLimit, se
     let incentiveNote = null;
     let finalOverrides = overrides;
     // ⚠️ sendToUser owns the opt-out and token checks, and it runs AFTER this point. Granting first
-    // meant paying trial days to people who had switched these notifications off, or whose token
-    // was dead — they never learn about the extension, and it is spent. Ask the same two questions
-    // here, before any money-shaped thing moves.
+    // meant paying bonuses to people who had switched these notifications off, or whose token was
+    // dead — they never learn about the gift, and it is spent. Ask the same two questions here,
+    // before any money-shaped thing moves.
     if (inc && inc.mode === 'immediate') {
       const reachable = await canReceive(userId, pick.template.category);
       if (!reachable) { bump('send_' + (reachable === false ? 'unreachable' : 'unknown')); continue; }
@@ -471,9 +465,9 @@ async function runLifecycleNudges({ force = false, dryRun = false, scanLimit, se
         finalOverrides = {};                            // nothing granted → do not claim we did
       } else {
         incentiveNote = applied.log;
-        // Say what actually landed, not what the registry hoped would land — INCLUDING the title.
-        // "Your free trial ends in 2 days ⏳" over a body that says we just added 5 days reads as a
-        // mail-merge failure; the two halves of one notification must agree.
+        // Say what actually landed, not what the registry hoped would land — INCLUDING the title, when
+        // the grant brings one: a title that contradicts the body it sits over reads as a mail-merge
+        // failure, and the two halves of one notification must agree.
         finalOverrides = { body: withOffer(base.body, applied.sentence) };
         if (applied.title) finalOverrides.title = applied.title;
       }

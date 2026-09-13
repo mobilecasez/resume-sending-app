@@ -14,8 +14,13 @@
 // ⚠️ NEVER A SILENT CHARGE (the letters auto-regen drain). request() is the only way in, it demands
 // `explicit: true` (in its type AND again at run time), and a build starts on its own ONLY when the server's
 // dry-run gate says the plan, the free allowance, a download pass or the cache covers it — and then it is
-// sent coveredOnly, so the server refuses rather than fall through to credits. Credits, or a gate we could
-// not read, is an Alert first; exhausted quota is the plans state. Mounting, focusing, switching chips or
+// sent coveredOnly, so the server refuses rather than fall through to anything else. A gate we could not
+// read is an Alert first; exhausted quota is the plans state.
+// ⚠️ NO USER EVER SEES THE WORD "CREDITS" HERE. Since 2026-09-13 a resume or a letter is paid for by the plan
+// or the free allowance only — the server has no credits lane for them, so a dialog asking consent to a
+// credit charge was consent to something that cannot happen. The gate type still carries via 'credits' (an
+// older or misconfigured server could say it); that answer is asked about in plan words and built
+// coveredOnly:true, so it can never become a credit charge either. Mounting, focusing, switching chips or
 // modes starts nothing new: the mount only re-joins builds the server already HAS (a job id to poll),
 // and a build that waited in line for a free slot goes back through the gate before it starts.
 // ⚠️ A LOST POST IS NEVER RESENT BY A MOUNT, A SWEEP OR ANOTHER CHIP'S TRY AGAIN. A record with no job id is
@@ -167,7 +172,10 @@ const UNREAD: BuildGate = { covered: false, via: null, reason: 'unknown' };
 
 /* ── module state ─────────────────────────────────────────────────────────────────────────────── */
 
-/** What the user already agreed to on a dialog, carried with a build that then had to wait for a slot. */
+/**
+ * What the user already agreed to on a dialog, carried with a build that then had to wait for a slot.
+ * ⚠️ Only { via: 'unknown' } is ever created now; the credits shape is kept for the type, not produced.
+ */
 type Consent = { via: 'credits'; credits: number } | { via: 'unknown' };
 
 /** One build on its way, keyed by buildKeyOf — the identity the service's flights and records share. */
@@ -309,9 +317,11 @@ async function stableGate(key: string, job: HomeBuildJob): Promise<{ job: HomeBu
 /** Whether a dialog the user already said Build on covers what the gate says NOW. */
 function consentCovers(c: Consent | null, gate: BuildGate): boolean {
   if (!c || gate.covered) return false;
-  // "It may use credits" accepted with no number is what an immediate start would have spent anyway; a
-  // named number covers that number or less. A gate that went unreadable since is asked again.
-  if (gate.via === 'credits') return c.via === 'unknown' || gate.credits <= c.credits;
+  // "The plan could not be checked" accepted covers a gate that is STILL unread — what an immediate start
+  // would have sent anyway. ⚠️ It never covers a 'credits' answer: that Build went out coveredOnly:false,
+  // and generation has no credits lane to consent to since 2026-09-13 — so a credits gate is asked again
+  // (in plan words, built covered-only), never run on an older "go ahead".
+  if (gate.via === 'credits') return false;
   return gate.reason === 'unknown' && c.via === 'unknown';
 }
 
@@ -435,7 +445,7 @@ async function drain(): Promise<void> {
       }
       if (consentCovers(q.consent, gate)) {
         queue = queue.filter((x) => x.id !== q.id);
-        runBuild(job, gate.via === 'credits' ? 'credits' : 'unknown', false, { consent: q.consent, at: q.at });
+        runBuild(job, 'unknown', false, { consent: q.consent, at: q.at });   // only an unread gate gets here
         continue;
       }
       if (gate.via === 'credits' || gate.reason === 'unknown') {
@@ -460,9 +470,10 @@ async function drain(): Promise<void> {
  * MAX_PARALLEL_BUILDS are running.
  *
  * `coveredOnly` is the consent: true = the server may spend only plan, free allowance, pass or cache and
- * must refuse (402 → the plans state) rather than fall through to credits. ⚠️ false ONLY after the user
- * tapped Build on a dialog that named a credit charge, or said the plan could not be read — `consent`
- * says which, so a build that then has to wait for a slot is not asked the same question twice.
+ * must refuse (402 → the plans state) rather than fall through to anything else. ⚠️ false ONLY after the
+ * user tapped Build on the dialog that said the plan could not be checked — "the user agreed to proceed
+ * without a gate answer". `consent` carries that, so a build that then has to wait for a slot is not asked
+ * the same question twice.
  */
 function runBuild(
   final: HomeBuildJob, via: string, coveredOnly: boolean,
@@ -635,8 +646,13 @@ function settle(run: Run, r: BuildResult) {
 type Asked = Extract<BuildGate, { via: 'credits' }> | Extract<BuildGate, { reason: 'unknown' }>;
 
 /**
- * ⚠️ THE STANDING RULE: credits are a question with the number in it; a gate we could not read is a
- * question too, never a guess. The tap on Build is the ONLY consent coveredOnly:false ever gets.
+ * ⚠️ THE STANDING RULE: a gate we could not read is a question, never a guess. The tap on Build in that
+ * dialog is the ONLY consent coveredOnly:false ever gets. Try again reads the gate again (a fresh request —
+ * the same door an Add goes through, so it may start, ask again or refuse).
+ * ⚠️ NO CREDIT WORDING, AND NO CREDIT CHARGE. Generation has no credits lane since 2026-09-13. A gate that
+ * says 'credits' anyway (an older or misconfigured server) gets the same plan-words dialog, and its Build is
+ * sent coveredOnly:TRUE — the server may use plan, free allowance, pass or cache, and otherwise refuses into
+ * the plans state. Nothing on this screen can agree to a credit charge.
  */
 function askToBuild(final: HomeBuildJob, gate: Asked, o: { show: boolean; startedAt: number; at?: number }) {
   const key = keyOfJob(final);
@@ -665,39 +681,39 @@ function askToBuild(final: HomeBuildJob, gate: Asked, o: { show: boolean; starte
   };
   // A retarget while the dialog was up (a refused website, say) is honoured: the consent is for the build.
   const latest = () => jobs.get(key) || final;
-  if (gate.via === 'credits') {
-    const n = gate.credits;
-    Alert.alert(`Build your ${final.company} ${noun}?`, `This uses ${n} credit${n === 1 ? '' : 's'}.`, [
-      { text: 'Cancel', style: 'cancel', onPress: () => decline('credits') },
-      {
-        text: 'Build',
-        onPress: () => {
-          if (!answer()) return;
-          if (wanted()) runBuild(latest(), 'credits', false, { show: o.show, consent: { via: 'credits', credits: n }, at: o.at });
-          void drain();
-        },
-      },
-    ], { cancelable: true, onDismiss: () => decline('credits') });
-    return;
-  }
+  const credits = gate.via === 'credits';
+  const g = credits ? 'credits' : 'unknown';
+  // Another read of the gate, as a new request for the same chip. It replaces this ask's record, so the
+  // chip never shows two things at once; the overlay is whatever this ask would have shown.
+  const tryAgain = () => {
+    if (!answer()) return;
+    track('home_build_gate_retry', { kind: final.kind, gate: g });
+    if (wanted()) beginRequest(latest(), { explicit: true, showOverlay: o.show });
+    void drain();
+  };
   Alert.alert(
     `Build your ${final.company} ${noun}?`,
     final.kind === 'cover_letter'
-      ? 'We could not check your plan just now, so writing this letter may use your plan allowance or credits.'
-      : 'We could not check your plan just now, so this build may use your plan allowance or credits.',
+      ? 'We could not check your plan just now. Try again, or write this letter now from your plan’s allowance.'
+      : 'We could not check your plan just now. Try again, or build it now from your plan’s allowance.',
     [
-      { text: 'Not now', style: 'cancel', onPress: () => decline('unknown') },
-      // The dialog names credits, so this tap is the explicit consent coveredOnly:false needs.
+      { text: 'Not now', style: 'cancel', onPress: () => decline(g) },
+      { text: 'Try again', onPress: tryAgain },
       {
         text: 'Build',
         onPress: () => {
           if (!answer()) return;
-          if (wanted()) runBuild(latest(), 'unknown', false, { show: o.show, consent: { via: 'unknown' }, at: o.at });
+          if (wanted()) {
+            // ⚠️ A 'credits' answer is built covered-only: this dialog never names a charge, so it can never
+            // consent to one. Only the unread gate's Build is the consent coveredOnly:false needs.
+            if (credits) runBuild(latest(), 'credits', true, { show: o.show, at: o.at });
+            else runBuild(latest(), 'unknown', false, { show: o.show, consent: { via: 'unknown' }, at: o.at });
+          }
           void drain();
         },
       },
     ],
-    { cancelable: true, onDismiss: () => decline('unknown') },
+    { cancelable: true, onDismiss: () => decline(g) },
   );
 }
 
@@ -1248,7 +1264,7 @@ export function useHomeBuilds(opts: {
       .then(() => { if (!off && host === me && pendingLeft()) scheduleSweep(); })
       .catch(() => {});
     // ⚠️ Not a new build: whatever waited in line was an explicit request inside its expiry, and it is
-    // re-gated before it starts — covered goes, credits asks, nothing goes after QUEUE_TTL_MS, and drain
+    // re-gated before it starts — covered goes, an unread gate asks, nothing goes after QUEUE_TTL_MS, and drain
     // checks whose line it is before anything goes out.
     void drain();
     return () => {

@@ -59,6 +59,10 @@ router.post('/batch-process', authenticateToken, async (req, res) => {
         // Checked (never reserved) for the whole batch, matching the per-letter deduction inside
         // executeGenerationWork, so an oversized batch is refused up front instead of delivering the
         // overflow unpaid. 'send' stays ungated: sending a letter that is already paid for is free.
+        // ⚠️ AND IT IS ONLY A CHECK. Two batches started together each passed it for the same last units, and
+        // every letter was then delivered. The real decision is per letter, inside executeGenerationWork, under
+        // the shared usage lock: a letter nothing will pay for comes back generated:false with reason
+        // quota_exhausted, and the letters that were paid for are kept (see processBatchJob).
         if (mode === 'generate' || mode === 'generate-and-send') {
             let gate;
             try {
@@ -71,6 +75,11 @@ router.post('/batch-process', authenticateToken, async (req, res) => {
             }
         }
 
+        // ⚠️ THE ENVIRONMENT THE GATE READ, carried to the per-letter charge. The worker runs after the 202 with no
+        // req, and without it consumeOnSuccess reads Production while a TestFlight gate read Sandbox — a letter the
+        // sandbox plan covers would then be charged to the wrong allowance, or refused.
+        const passEnv = entitlements.requestEnvironment(req);
+
         // Create batch job
         const jobId = await jobService.createJob(userId, `batch_${mode}`, {
             recipients: validRecipients,
@@ -82,7 +91,7 @@ router.post('/batch-process', authenticateToken, async (req, res) => {
         res.status(202).json({ jobId, status: 'pending' });
 
         // Fire and forget — process in background
-        processBatchJob(jobId, userId, user, validRecipients, mode, coverLetters || {}).catch(err => {
+        processBatchJob(jobId, userId, user, validRecipients, mode, coverLetters || {}, passEnv).catch(err => {
             console.error(`Batch job ${jobId} fatal error:`, err);
             jobService.failJob(jobId, err.message).catch(console.error);
         });
@@ -97,7 +106,7 @@ router.post('/batch-process', authenticateToken, async (req, res) => {
  * Process an entire batch job server-side.
  * Updates job progress and result as each recipient is processed.
  */
-async function processBatchJob(jobId, userId, user, validRecipients, mode, coverLetters) {
+async function processBatchJob(jobId, userId, user, validRecipients, mode, coverLetters, passEnv = null) {
     await jobService.startJob(jobId);
 
     let completedSteps = 0;
@@ -151,17 +160,22 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
                 const genResult = await executeGenerationWork(userId, user, {
                     recipientEmail: recipient.email,
                     websiteUrl: recipient.website,
-                    position: recipient.position || ''
+                    position: recipient.position || '',
+                    passEnv,
                 });
 
                 generatedCoverLetters[idx] = genResult;
                 results[idx] = { ...(results[idx] || {}), generated: true, generationData: genResult };
             } catch (err) {
                 console.error(`[Batch ${jobId}] Error generating recipient ${idx}:`, err.message);
+                // ⚠️ A LETTER NOTHING WOULD PAY FOR IS REFUSED ON ITS OWN (reason quota_exhausted): never delivered,
+                // never charged, and never sent by the send phase below (it finds no letter) — while the rest of the
+                // batch keeps what it paid for.
                 results[idx] = {
                     ...(results[idx] || {}),
                     generated: false,
-                    error: err.message
+                    error: err.message,
+                    ...(err.reason ? { reason: err.reason } : {})
                 };
             } finally {
                 completedSteps++;
@@ -267,6 +281,8 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
 
     if (mode === 'generate' || mode === 'generate-and-send') {
         summary.generatedCount = Object.values(results).filter(r => r.generated).length;
+        // How many letters were refused because nothing was left to pay for them — the client's cue for Plans.
+        summary.quotaExhaustedCount = Object.values(results).filter(r => r.reason === 'quota_exhausted').length;
     }
     if (mode === 'send' || mode === 'generate-and-send') {
         summary.sentCount = Object.values(results).filter(r => r.sent).length;

@@ -27,12 +27,21 @@
 // ⚠️ NEVER A SILENT CHARGE (the letters auto-regen drain): a build starts only from an explicit tap —
 // Add, Tailor, Write or Refresh — through useHomeBuilds, which auto-starts ONLY when the server's
 // dry-run gate says the plan, the free allowance, a download pass or the cache covers it, and then
-// sends it coveredOnly so the server refuses rather than fall through to credits. Legacy credits, or
-// a gate we could not read, is a question first; exhausted quota is the plans screen. Switching chips
-// or modes, focusing or mounting this screen READS documents; it never builds one.
+// sends it coveredOnly so the server refuses rather than spend anything else. A gate we could not read
+// is a question first. Switching chips or modes, focusing or mounting this screen READS documents; it
+// never builds one.
+// ⚠️ NO CREDITS PAY FOR A GENERATION (the product owner's call, 2026-09-13). A resume or a letter comes
+// out of a plan's monthly allowance or the free one (ONE TIME for the life of the account, never
+// refilled); when that is used up the answer is the plans screen. So nothing on this screen names a
+// credit price — not the gate hint, not the overlay.
 //
 // BUILDS RUN IN THE BACKGROUND, PER EMPLOYER (services/homeBuilds holds their live state): the chip
 // shows its progress, the carousel writes the pages with a live % and a tap reopens the overlay.
+//
+// THE LIBRARY OPENS, IT NEVER DOWNLOADS. A card under "Downloaded" grows into the same zoomed page a
+// hero page does (PaperZoom), with the same two doors for a resume AND a cover letter — Customize and
+// View PDF — through the same functions the hero uses; the download happens from View PDF, exactly as
+// from the hero (openHistoryItem).
 //
 // ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): one driver per view tree, no mixing.
 // This file and its children (MeshStage, PaperCarousel, EmployerChip) use useNativeDriver:true ONLY,
@@ -78,7 +87,7 @@ import {
   type BuildGate, type DocKind, type InflightMeta,
 } from '../../services/homeAddEmployer';
 import {
-  docLookupOf, fetchCurrentDoc, cachedCurrentDoc, rememberDoc, forgetDocs, fetchDoc, fetchDocList,
+  docLookupOf, fetchCurrentDoc, cachedCurrentDoc, rememberDoc, forgetDocs, fetchDoc, fetchDocList, fetchDocCards,
   matchDocToTarget, sameEmployerName,
   type DocMeta, type DocLookup, type DocCard, type DocListItem,
 } from '../../services/employerDocs';
@@ -121,6 +130,65 @@ const PREWARM_MAX = 6;
 
 /** The letter designs as pages with no pixels — what a letter deck shows while it is being written. */
 const LETTER_SLOTS: PaperCard[] = LETTER_DESIGNS.map((d) => ({ id: d.id, name: d.name, accent: d.accent, image: null }));
+
+/** Whose resume the builder is armed for: a chip, or a library row's employer (which has no posting). */
+type BuilderFor = Pick<Target, 'company'> & Partial<Pick<Target, 'role' | 'applyUrl' | 'jobUrl'>>;
+
+/* ── the zoomed page ────────────────────────────────────────────────────── */
+
+/** The saved document a zoomed page is a design of — enough to route Customize and View PDF to it. */
+type ZoomDoc = { docId: number; kind: DocKind; employer: string };
+
+/**
+ * What PaperZoom shows.
+ * A HERO page is read from the deck on screen by index, so it fills in as that deck does. A LIBRARY card
+ * carries its own page: the library is not the deck — its row can belong to any employer's saved document,
+ * or to none (the base resume) — so openHistoryItem builds the page and fills it in. `n` is the open it came
+ * from, so a page image that lands after the sheet was closed (or another card opened) is dropped rather
+ * than painted onto a different page.
+ */
+type Zoom =
+  | { src: 'hero'; i: number; rect: OriginRect }
+  | {
+    src: 'library'; n: number; rect: OriginRect | null; kind: DocKind; doc: ZoomDoc | null;
+    employer: string; card: PaperCard; sample: boolean;
+  };
+
+/**
+ * Library pages already fetched, per document VERSION (kind | docId | updatedAt | design), so opening the
+ * same card again paints at once. ⚠️ BOUNDED — each is a base64 data URI — and wiped with the account
+ * cache (forgetAccountCache): otherwise it holds the previous account's pages.
+ */
+const LIB_PAGES_MAX = 12;
+const libPages = new Map<string, { image: string; fit: number | null; reason: string | null }>();
+const libPageKey = (kind: DocKind, d: { docId: number; updatedAt: string }, design: string) =>
+  `${kind}|${d.docId}|${d.updatedAt}|${design}`;
+function keepLibPage(key: string, page: { image: string; fit: number | null; reason: string | null }) {
+  libPages.delete(key);                 // re-insert = most recent (Map keeps insertion order)
+  libPages.set(key, page);
+  while (libPages.size > LIB_PAGES_MAX) {
+    const oldest = libPages.keys().next().value;
+    if (oldest === undefined) break;
+    libPages.delete(oldest);
+  }
+}
+
+/**
+ * The saved document a library row is a download of, or null when none is saved.
+ * ⚠️ BY EMPLOYER NAME, AND THE EMPLOYER'S OWN DOCUMENT FIRST. A download row carries the employer it was
+ * billed under and no posting, so which of that employer's posting documents it came from cannot be known;
+ * the employer-level one (job_url '') is the one that employer's chip shows, so it is the honest pick, and
+ * the newest otherwise. sameEmployerName is the client's hint — the server's identity is
+ * downloads.employerKeyOf, which every screen this opens re-checks before anything is billed.
+ */
+function savedDocFor(list: DocListItem[], employer: string): DocListItem | null {
+  const mine = (Array.isArray(list) ? list : []).filter((d) => !!d && sameEmployerName(employer, d.employer));
+  if (!mine.length) return null;
+  const at = (d: DocListItem) => { const t = Date.parse(d.updatedAt); return Number.isFinite(t) ? t : 0; };
+  // Newest first. A stable sort, so rows with no usable time keep the order the server listed them in.
+  const newest = [...mine].sort((a, b) => at(b) - at(a));
+  return newest.find((d) => !String(d.jobUrl || '').trim()) || newest[0];
+}
 
 /* ── employers added on THIS screen ─────────────────────────────────────── */
 
@@ -238,6 +306,7 @@ function forgetAccountCache() {
   removedAdds.clear();
   removals = [];
   accountGen++;
+  libPages.clear();
   forgetDocs();
   forgetHomeBuilds();
 }
@@ -465,7 +534,16 @@ export default function EmployerHome({
   // to know where the colour should resolve. See `focus` in MeshStage.
   const [heroH, setHeroH] = useState(0);
   const [pageH, setPageH] = useState(0);
-  const [zoom, setZoom] = useState<{ i: number; rect: OriginRect } | null>(null);
+  const [zoom, setZoom] = useState<Zoom | null>(null);
+  // Every open, hero or library, bumps this: a library open still looking its document up is dropped when
+  // another page was opened meanwhile.
+  const zoomSeq = useRef(0);
+  // The library zoom on screen (its `n`), 0 when there is none. ⚠️ Moved in the same breath as setZoom, not
+  // at render: the page request queued straight after an open runs before React has rendered that open.
+  const libOpen = useRef(0);
+  // ⚠️ ONE LIBRARY PAGE REQUEST AT A TIME. Pages render one after another on the server (single-process
+  // chromium), so tapping along the library queues its pages here instead of firing them side by side.
+  const libFill = useRef<Promise<unknown>>(Promise.resolve());
   const [addOpen, setAddOpen] = useState(false);
   const regionHint = useCallback((c: string) => bestDesignForCountry(c)?.name || null, []);
   /**
@@ -473,7 +551,7 @@ export default function EmployerHome({
    * wording only, never invented facts.
    * ⚠️ `autoBuild` is NOT set here: that lane generates immediately and spends a plan generation.
    */
-  const armBuilderFor = useCallback(async (t?: Target) => {
+  const armBuilderFor = useCallback(async (t?: BuilderFor) => {
     await AsyncStorage.setItem('resume_builder_entry', JSON.stringify({
       from: 'home_employer',
       target: t ? { company: t.company, role: t.role, applyUrl: t.applyUrl || t.jobUrl || '' } : null,
@@ -497,6 +575,11 @@ export default function EmployerHome({
   const dead = useRef<Record<string, true>>({});
   const hydrating = useRef(false);
   const [hydrateNudge, setHydrateNudge] = useState(0);
+  // A library card's base page that found the hydrator's mutex held (fillBasePage): the open it belongs to
+  // (`n`) and its design. ⚠️ Whoever releases the mutex knocks (baseKnock) and the effect below runs it —
+  // otherwise the sheet opened on a blank page that nothing ever came back to fill.
+  const basePending = useRef<{ n: number; templateId: string } | null>(null);
+  const [baseKnock, setBaseKnock] = useState(0);
   const [cardIdx, setCardIdx] = useState(0);
   const [mode, setMode] = useState<Mode>('resume');
   const [loading, setLoading] = useState(true);
@@ -511,6 +594,9 @@ export default function EmployerHome({
   // on `sample` told exactly those people to "Build your resume first".
   const [hasResume, setHasResume] = useState<boolean | null>(null);
   const [isPaid, setIsPaid] = useState(false);
+  // Whether isPaid has been read at all yet: until it has, a used-up allowance is not named as the free one
+  // or the plan's — a paying user's first second on Home must not read "your free generations are used".
+  const [paidRead, setPaidRead] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reshaping, setReshaping] = useState(false);
   // The library below the hero: what they have already paid to download, per kind.
@@ -654,7 +740,7 @@ export default function EmployerHome({
     else { setLoadFailed(true); }
     setLoading(false);
     const paid = await loadPaid();
-    if (seq === loadSeq.current) setIsPaid(paid);
+    if (seq === loadSeq.current) { setIsPaid(paid); setPaidRead(true); }
     loadSetup().then((st) => setSetup(st)).catch(() => {});
     return { cards: c, targets: t };
   }, []);
@@ -685,6 +771,10 @@ export default function EmployerHome({
   /**
    * Get a document again.
    *
+   * ⚠️ A LIBRARY TAP NO LONGER COMES HERE — a card opens its page (openHistoryItem). This runs only where
+   * there is nothing to open: a letter card with no saved letter behind it, and a file the paywall has just
+   * unlocked.
+   *
    * ⚠️ THE SERVER DECIDES, NOT THIS FUNCTION. It re-renders through the very same controller the
    * first download used, so canDownload runs again exactly as it did then: a pass bought for that
    * employer keeps it free forever, and a plan that has since lapsed answers 403 — at which point
@@ -695,6 +785,8 @@ export default function EmployerHome({
 
   const doAgain = useCallback(async (it: DownloadHistoryItem) => {
     if (againId != null) return;
+    // ⚠️ The harness has no account: the file would be asked of the production API, signed out.
+    if (loaders) { Alert.alert('Preview only', 'Downloading needs a signed-in account.'); return; }
     setAgainId(it.id);
     track('home_history_again', { kind: it.kind, unlocked: it.unlocked, format: it.format });
     try {
@@ -726,7 +818,7 @@ export default function EmployerHome({
     } finally {
       setAgainId(null);
     }
-  }, [againId, mode, refreshHistory]);
+  }, [againId, mode, refreshHistory, loaders]);
 
   /**
    * A page image we ALREADY have for this design, or nothing.
@@ -782,12 +874,17 @@ export default function EmployerHome({
   const selRkRef = useRef(selRk);
   selRkRef.current = selRk;
   const { list: docList } = useDocList(kind, listToken, docLoaders);
+  const docListRef = useRef(docList);
+  docListRef.current = docList;
   const { doc, state: docState, reload: reloadDoc } = useTargetDoc(kind, target || null, { refreshToken: docToken, loaders: docLoaders });
   const docRef = useRef(doc);
   docRef.current = doc;
   const { deck: docDeck, gone: docGone } = useDocDeck(
     kind, doc, kind === 'cover_letter' ? LETTER_DESIGNS : slots, cardIdx, { loaders: docLoaders, enabled: !!doc },
   );
+  // A library card of the document on screen borrows its page from here rather than asking for it again.
+  const docDeckRef = useRef(docDeck);
+  docDeckRef.current = docDeck;
   const selPhase = useBuildPhase(kind, selRk);
   const selBuilding = selPhase === 'checking' || selPhase === 'queued' || selPhase === 'building';
 
@@ -913,6 +1010,8 @@ export default function EmployerHome({
         }
       } finally {
         hydrating.current = false;
+        // A library page waited for this wave: let it go first — the user is looking at it.
+        if (basePending.current) setBaseKnock((x) => x + 1);
         // ⚠️ A wave cancelled by a deck change (fresh pages, say) used to leave nothing
         // scheduled: the run the change queued found the mutex still held and returned, so the new
         // resume's designs stayed blank until the user swiped. Knock once so it runs again.
@@ -1194,7 +1293,9 @@ export default function EmployerHome({
     // The document is seconds away: say so instead of acting on the stand-in.
     if (docOnItsWay()) { sayLoadingDoc(); return; }
     setCardIdx(i);
-    setZoom({ i, rect });
+    zoomSeq.current++;
+    libOpen.current = 0;
+    setZoom({ src: 'hero', i, rect });
     track('home_paper_open', { i, doc: !!docRef.current });
   });
 
@@ -1210,7 +1311,7 @@ export default function EmployerHome({
   // running for a chip the list says HAS a document, both sit at docState 'none' for a moment — and this is
   // what draws "Tailor my resume" / "Write my cover letter" and reads the gate behind it.
   const wantsAction = !!target && !doc && docState === 'none' && !selBuilding && !noResumeYet && !docPending;
-  const [gateHint, setGateHint] = useState<{ sig: string; text: string; warn: boolean } | null>(null);
+  const [gateHint, setGateHint] = useState<{ sig: string; via: 'plan' | 'free' | 'pass' | 'cache' | 'used' } | null>(null);
   // ⚠️ A DRY RUN: the gate reserves, binds and charges nothing. Debounced so flicking along the chips
   // asks once, and an answer for a chip the user has already left is dropped.
   useEffect(() => {
@@ -1225,14 +1326,23 @@ export default function EmployerHome({
         g = await checkBuildGate(job.company, gateJobFor(job), job.kind, { employerId: job.employerId, country: job.country });
       } catch { return; }
       if (stale || !alive.current) return;
-      const text = g.covered ? 'Included in your plan'
-        : g.via === 'credits' ? `Uses ${g.credits} credit${g.credits === 1 ? '' : 's'}`
-          : g.reason === 'quota_exhausted' || g.reason === 'regen_limit' ? 'Plan limit reached' : null;
-      setGateHint(text ? { sig: lookupSig, text, warn: !g.covered } : null);
+      // ⚠️ NEVER A CREDIT PRICE (2026-09-13): credits pay for no resume or letter, so the gate has no "uses N
+      // credits" answer for one — and an answer that somehow still said so gets no line here rather than name
+      // a charge the product no longer makes. A used-up allowance says WHICH one at render (isPaid).
+      const used = !g.covered && 'reason' in g && (g.reason === 'quota_exhausted' || g.reason === 'regen_limit');
+      setGateHint(g.covered ? { sig: lookupSig, via: g.via } : used ? { sig: lookupSig, via: 'used' } : null);
     }, 400);
     return () => { stale = true; clearTimeout(id); };
   }, [lookupSig, wantsAction, loaders]);
-  const hint = gateHint && gateHint.sig === lookupSig ? gateHint : null;
+  const hint = gateHint && gateHint.sig === lookupSig ? {
+    text: gateHint.via !== 'used'
+      ? (gateHint.via === 'free' ? 'Included in your free allowance' : 'Included in your plan')
+      // The free allowance is ONE TIME and never comes back; a plan's is this month's.
+      : !paidRead ? 'Your allowance is used'
+        : isPaid ? 'This month’s plan allowance is used'
+          : kind === 'cover_letter' ? 'Your free cover letters are used' : 'Your free resume generations are used',
+    warn: gateHint.via === 'used',
+  } : null;
 
   /* ── remove a chip, softly ── */
 
@@ -1465,7 +1575,7 @@ export default function EmployerHome({
    * ⚠️ RESTORE BEFORE BUILD. Once tracking answers, the employer's saved document (in the current mode's
    * kind) is looked up first: an employer added again after its chip was removed gets its resume back
    * as it was — no AI call, no gate, no charge. Only when nothing is saved does the build go to
-   * useHomeBuilds, which reads the gate and asks before any credit is spent.
+   * useHomeBuilds, which reads the gate before anything is spent (and no credit ever is, on a generation).
    * ⚠️ THE NAME THE USER PICKED WINS. The server answers with this user's display name for the
    * employer (a shared employers row can carry whatever a job ingest named that domain), so the chip,
    * the lookup and the build all use it.
@@ -1647,25 +1757,28 @@ export default function EmployerHome({
   };
 
   /**
-   * A saved cover letter, to the letter picker. ⚠️ THE PICKER READS ITS LETTER FROM STORAGE, so the saved
-   * letter is fetched and written there first — and a write that failed stops here, or the picker would
-   * open on whichever letter was stored before this one.
+   * A saved cover letter, to the letter picker — a letter page's View PDF. ⚠️ THE PICKER READS ITS LETTER
+   * FROM STORAGE, so the saved letter is fetched and written there first — and a write that failed stops
+   * here, or the picker would open on whichever letter was stored before this one.
+   * `forDoc` is the letter a LIBRARY card belongs to; left out, it is the letter on screen.
    */
-  const openLetterPicker = async (templateId?: string) => {
-    const d = docRef.current;
+  const openLetterPicker = async (templateId?: string, forDoc?: ZoomDoc | null) => {
+    const d: ZoomDoc | null = forDoc !== undefined ? forDoc : docRef.current;
     if (!d || d.kind !== 'cover_letter') {
-      // ⚠️ NEVER A SILENT NO-OP. Download is the one button a zoomed letter page has, and while the saved
-      // letter was still being fetched this returned without a word — a button that does nothing reads as
-      // a broken button, not as "not yet".
+      // ⚠️ NEVER A SILENT NO-OP. While the saved letter was still being fetched this returned without a
+      // word — a button that does nothing reads as a broken button, not as "not yet".
       if (docOnItsWay()) sayLoadingDoc();
       return;
     }
-    track('home_letter_download', { id: templateId });
+    track('home_letter_download', { id: templateId, from: forDoc !== undefined ? 'library' : 'hero' });
     if (loaders) { Alert.alert('Preview only', 'Downloading needs a signed-in account.'); return; }
     const full = await fetchDoc(d.docId);
     if (full === 'gone') {
       Alert.alert('That letter is gone', `Write your ${d.employer} cover letter again to download it.`);
-      reloadDoc();
+      // Whichever list named it is out of date: the chip's lookup when it is the letter on screen, and the
+      // saved list the library matches against either way.
+      if (docRef.current && docRef.current.docId === d.docId) reloadDoc();
+      setListToken((n) => n + 1);
       return;
     }
     const p = full && full.payload;
@@ -1691,6 +1804,220 @@ export default function EmployerHome({
     });
   };
 
+  /**
+   * A saved cover letter, to its editor — a letter page's Customize. app/(cover-letter)/edit loads the letter
+   * by id, edits its subject and paragraphs and saves them back to THAT letter. ⚠️ Nothing is stored first and
+   * nothing is written by the AI: this is the letter's counterpart of the resume's section editor, and it
+   * never spends a generation. `forDoc` as in openLetterPicker.
+   */
+  const openLetterEditor = (forDoc?: ZoomDoc | null) => {
+    const d: ZoomDoc | null = forDoc !== undefined ? forDoc : docRef.current;
+    if (!d || d.kind !== 'cover_letter') {
+      if (docOnItsWay()) sayLoadingDoc();
+      return;
+    }
+    track('home_letter_customize', { from: forDoc !== undefined ? 'library' : 'hero' });
+    if (loaders) { Alert.alert('Preview only', 'Editing a letter needs a signed-in account.'); return; }
+    nav()?.push?.({ pathname: '/(cover-letter)/edit', params: { docId: String(d.docId) } });
+  };
+
+  /**
+   * A resume page's Customize — ONE door for a hero page and a library card, so the two cannot drift apart.
+   * `d` is the saved employer document the page is a design of (null = the base resume); `target` is whose
+   * page it is — the chip on screen, or the library row's employer; `sample` = the pages are a stand-in.
+   * ⚠️ Straight to the section editor. Writing 'resume_builder_entry' with autoBuild, or
+   * 'resumeBuilderAction', would arm a PAID regeneration — neither is touched.
+   */
+  const customizeResume = (d: ZoomDoc | null, target: BuilderFor | undefined, sample: boolean) => {
+    // A saved employer document is edited AS that document: the editor loads it by id and saves
+    // back to it, so the base resume — and every other employer's version — is left alone.
+    if (d && d.kind === 'resume') {
+      rememberBuilderEmployer(d.employer || target?.company)
+        .finally(() => nav()?.push?.({ pathname: '/(resume-builder)/preview', params: { docId: String(d.docId) } }));
+      return;
+    }
+    if (sample) armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
+    // Not armBuilderFor: writing 'resume_builder_entry' here would arm a PAID regeneration.
+    // Only the employer hint travels, so the editor's download can name the company.
+    else rememberBuilderEmployer(target?.company).finally(() => nav()?.push?.('/(resume-builder)/preview'));
+  };
+
+  /**
+   * A resume page's View PDF — the gallery ON the design tapped, one door for the hero and the library.
+   * The employer travels too: a download pass is bought PER EMPLOYER, so without this the payment would
+   * have nothing to attach to. A saved document also carries its id, and names the employer it was saved
+   * (and is billed) under.
+   */
+  const openResumeGallery = (id: string | undefined, d: ZoomDoc | null, target: BuilderFor | undefined) => {
+    nav()?.push?.({
+      pathname: '/(resume-builder)/templates',
+      params: {
+        ...(id ? { template: id } : {}),
+        ...(target?.company ? { employer: target.company } : {}),
+        ...(d ? { docId: String(d.docId), ...(d.employer ? { employer: d.employer } : {}) } : {}),
+      },
+    });
+  };
+
+  /* ── the library: a card opens the page, never the file ── */
+
+  /**
+   * A library card, tapped.
+   *
+   * ⚠️ IT NEVER DOWNLOADS (the product owner's call, 2026-09-13). It opens the SAME zoom a hero page opens,
+   * whose Customize and View PDF go through the same doors the hero's do (customizeResume, openResumeGallery,
+   * openLetterEditor, openLetterPicker) — so a download happens from View PDF, gate and paywall included,
+   * exactly as it does from the hero.
+   *
+   * WHICH PAGE: the design the row was downloaded in, of that employer's SAVED document when one exists
+   * (savedDocFor) — painted at once from a page already in hand, then filled from that document's own cards
+   * endpoint. With nothing saved, a resume is the base resume in that design (thumbFor, or one page for this
+   * one tap); a cover letter has no page anywhere but a saved letter, so it falls back to getting the file
+   * again — what a tap always did — and says so.
+   * ⚠️ A SAVED LIST THAT COULD NOT BE READ IS NOT "NOTHING SAVED": opening the base resume under an employer
+   * whose own version exists would put the wrong document behind Customize. It says so and opens nothing.
+   */
+  const openHistoryItem = useStableFn(async (item: DownloadHistoryItem, origin: OriginRect | null) => {
+    const k: DocKind = item.kind === 'cover_letter' ? 'cover_letter' : 'resume';
+    const n = ++zoomSeq.current;
+    const who = String(item.employer || '').trim();
+    track('home_history_open', { kind: k, unlocked: item.unlocked });
+    // That kind's saved documents: the list already in hand when it is the kind on screen, else one read.
+    let list: DocListItem[] | null = k === kindRef.current ? docListRef.current : null;
+    if (!list) {
+      const read = docLoadersRef.current?.list || fetchDocList;
+      try { list = await read(k); } catch { list = null; }
+      // Another card, or a hero page, was opened while this one was being looked up.
+      if (n !== zoomSeq.current || !alive.current) return;
+    }
+    if (!list) {
+      showNotice(`We couldn’t open ${who ? `your ${who} ${nounOf(k)}` : `that ${nounOf(k)}`} just now. Please try again.`);
+      return;
+    }
+    const saved = who ? savedDocFor(list, who) : null;
+    const accent = accentFor(item.templateId);
+
+    if (!saved) {
+      if (k === 'cover_letter') {
+        // Nothing to preview. The file is still theirs: the same fetch (or, locked, the same sheet) as ever.
+        // A file already on its way (its row spins) is not asked for twice, and not announced twice either.
+        if (againId != null) return;
+        track('home_history_letter_file', { unlocked: item.unlocked });
+        showNotice(`No saved ${who ? `${who} ` : ''}letter to preview${item.unlocked ? ' — getting your file' : ''}`, undefined, 3500);
+        if (item.unlocked) doAgain(item);
+        else { againItem.current = null; setPayFor(item.employer || null); }
+        return;
+      }
+      libOpen.current = n;
+      setZoom({
+        src: 'library', n, rect: origin, kind: k, doc: null, employer: who, sample,
+        card: { id: item.templateId, name: item.templateName, accent, image: thumbFor(item.templateId) || null, fit: null },
+      });
+      fillBasePage(n, item.templateId);
+      return;
+    }
+
+    const zd: ZoomDoc = { docId: saved.docId, kind: k, employer: saved.employer || who };
+    // A page already in hand: the deck on screen when it IS this document, else one the library kept.
+    const onDeck = docRef.current && docRef.current.docId === saved.docId
+      ? docDeckRef.current.find((c) => c.id === item.templateId) || null
+      : null;
+    const kept = libPages.get(libPageKey(k, saved, item.templateId)) || null;
+    const image = (onDeck && onDeck.image) || (kept && kept.image) || null;
+    const fit = onDeck && onDeck.fit != null ? onDeck.fit
+      : kept && kept.fit != null ? kept.fit
+        : saved.topId === item.templateId ? saved.topScore : null;
+    libOpen.current = n;
+    setZoom({
+      src: 'library', n, rect: origin, kind: k, doc: zd, employer: zd.employer, sample: false,
+      card: {
+        id: item.templateId, name: item.templateName, accent, image, fit,
+        reason: (onDeck && onDeck.reason) || (kept && kept.reason) || null,
+      },
+    });
+    // ⚠️ Never with no design id: the cards endpoint answers an empty id list with its own pick of pages —
+    // several renders on the serial renderer for one tap.
+    if (!image && item.templateId) fillDocPage(n, k, saved, item.templateId);
+  });
+
+  /**
+   * A library page of a saved document, from that document's own cards endpoint — queued behind any other
+   * library page (libFill), and skipped when nobody is looking at it any more.
+   */
+  const fillDocPage = (n: number, k: DocKind, saved: DocListItem, templateId: string) => {
+    const readCards = docLoadersRef.current?.cards || fetchDocCards;
+    libFill.current = libFill.current.then(async () => {
+      if (libOpen.current !== n || !alive.current) return;
+      let got: { cards: DocCard[] } | 'gone' | null = null;
+      try { got = await readCards(k, saved.docId, [templateId]); } catch { got = null; }
+      if (!alive.current) return;
+      // No longer saved: the list the card was matched against is out of date. The page is left as it is —
+      // Customize and View PDF each say "gone" on their own screen, from the server, rather than guess here.
+      if (got === 'gone') { setListToken((x) => x + 1); return; }
+      const c = got && Array.isArray(got.cards) ? got.cards.find((x) => !!x && x.id === templateId) : undefined;
+      if (!c) return;
+      if (c.image) keepLibPage(libPageKey(k, saved, templateId), { image: c.image, fit: c.fit ?? null, reason: c.reason ?? null });
+      setZoom((z) => (z && z.src === 'library' && z.n === n
+        ? {
+          ...z,
+          card: {
+            ...z.card, image: c.image || z.card.image || null,
+            fit: c.fit != null ? c.fit : z.card.fit ?? null, reason: c.reason || z.card.reason || null,
+          },
+        }
+        : z));
+    }).catch(() => {});
+  };
+
+  /**
+   * The BASE resume's page in one design, for a library card with no saved document behind it.
+   * ⚠️ ONE PAGE, FOR ONE TAP, AND NEVER BESIDE A HYDRATION WAVE: it takes the base hydrator's own
+   * single-flight mutex (and waits for nothing — a wave in flight means no page for now), so the two can never
+   * put two renders on the serial renderer at once. A design that will not render is dead, as it is to the
+   * hydrator. The harness never reaches the network from here.
+   * ⚠️ A HELD MUTEX IS "LATER", NOT "NEVER". It used to return and nothing retried, so a card tapped while a
+   * wave was out opened on a blank page for good. Now the page is parked in basePending (the latest open
+   * replaces an older one), and whoever releases the mutex knocks; it runs only if open `n` is still the
+   * library page on screen — a closed or replaced sheet costs no render.
+   */
+  const fillBasePage = (n: number, templateId: string) => {
+    if (loaders || noResume || !templateId || thumbFor(templateId) || dead.current[templateId]) return;
+    if (hydrating.current) { basePending.current = { n, templateId }; return; }
+    hydrating.current = true;
+    fetchHomeCards([templateId])
+      .then((got) => {
+        const c = got && got !== 'none' ? got.cards.find((x) => x.id === templateId) : undefined;
+        if (c && c.image) {
+          const image = c.image;
+          if (alive.current) setShots((prev) => ({ ...prev, [templateId]: image }));
+        } else {
+          dead.current[templateId] = true;
+        }
+      })
+      .catch(() => { dead.current[templateId] = true; })
+      .finally(() => {
+        hydrating.current = false;
+        // A hydrator run that found the mutex held returned without scheduling another: knock once. And a
+        // library card tapped while this page was out is parked — knock for it too.
+        if (alive.current) {
+          if (basePending.current) setBaseKnock((x) => x + 1);
+          setHydrateNudge((x) => x + 1);
+        }
+      });
+  };
+
+  // The parked library page, run after the render that followed the mutex's release — so thumbFor reads the
+  // shots that wave just added (a page it brought is not rendered twice). ⚠️ The hydrator's own re-run waits
+  // 260ms before it looks at the mutex, so the page the user is looking at takes it first.
+  useEffect(() => {
+    const p = basePending.current;
+    if (!p || hydrating.current) return;   // still held: its release knocks again
+    basePending.current = null;
+    if (libOpen.current !== p.n || !alive.current) return;   // that sheet was closed or replaced
+    fillBasePage(p.n, p.templateId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseKnock]);
+
   // What the letter panel's one button does for the chip on screen. ⚠️ Every branch is a tap the user
   // makes; none of them starts anything on its own.
   const letterAction: { label: string; busy?: boolean; run: () => void } = !target
@@ -1705,6 +2032,13 @@ export default function EmployerHome({
         : (selRk && adding[selRk]) || docState === 'loading' || docPending
           ? { label: 'Looking for your saved letter…', busy: true, run: () => {} }
           : { label: `Write my cover letter for ${target.company}`, run: () => requestBuild('write') };
+
+  // What the zoom shows (see Zoom): a hero page read from the deck on screen, or a library card's own page —
+  // whose BASE resume image is read here at render, so it appears the moment Home has it.
+  const libZoom = zoom && zoom.src === 'library' ? zoom : null;
+  const zoomCard: PaperCard | null = !zoom ? null
+    : zoom.src === 'hero' ? (shown ? shown.cards[zoom.i] || null : null)
+      : { ...zoom.card, image: zoom.card.image || (!zoom.doc && zoom.kind === 'resume' ? thumbFor(zoom.card.id) || null : null) };
 
   const headline = mode === 'resume' ? 'Design your resume' : 'Write your cover letter';
   const accent = mode === 'resume' ? 'exclusively for the employer.' : 'for this exact posting.';
@@ -1944,7 +2278,8 @@ export default function EmployerHome({
 
           {/* ⚠️ THE ONLY WAYS A BUILD STARTS FROM HERE ARE TAPS. A chip with nothing saved offers one
               action; a saved document the resume has since moved past offers a Refresh. Both go
-              through useHomeBuilds, which reads the gate and asks before any credit is spent. */}
+              through useHomeBuilds, which reads the gate before anything is spent — and no credit
+              pays for a generation; a used-up allowance is the plans screen. */}
           {mode === 'resume' && !!target && !doc && !selBuilding && !noResumeYet && (
             wantsAction && !(selRk && adding[selRk]) ? (
               <TailorAction
@@ -2070,7 +2405,9 @@ export default function EmployerHome({
           What used to be here re-showed the SAME resume pages the carousel above was already
           showing — `image={cards[i % cards.length]?.image}` under a company badge — so scrolling
           revealed the same designs twice and said nothing new. This says what only they know:
-          what they have already paid for, and can have again. */}
+          what they have already paid for, and can have again.
+          ⚠️ A card OPENS its page (openHistoryItem) — the hero's zoom, Customize and View PDF — and
+          never downloads on the tap. */}
       <View style={s.library}>
       <DownloadHistory
         mode={mode}
@@ -2080,8 +2417,7 @@ export default function EmployerHome({
         busyId={againId}
         thumbFor={thumbFor}
         accentFor={accentFor}
-        onAgain={doAgain}
-        onPay={(employer) => { againItem.current = null; setPayFor(employer); }}
+        onOpen={openHistoryItem}
         onExpand={() => { try { Haptics.selectionAsync(); } catch {} setHistOpen(true); }}
         onScrollToTop={() => scrollRef.current?.scrollTo?.({ y: 0, animated: true })}
         onMoreJobs={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } })}
@@ -2169,10 +2505,14 @@ export default function EmployerHome({
         onSeePlans={K.overlay.error && (K.overlay.error.reason === 'quota_exhausted' || K.overlay.error.reason === 'regen_limit')
           ? () => { K.dismissOverlay(); nav()?.push?.('/(subscription)/plans'); }
           : undefined}
+        // Which allowance a refusal names when the server's sentence does not: a plan's month, or the free one.
+        isPaid={isPaid}
       />
 
       {/* ⚠️ The SAME sheet a first download offers. A row goes locked when the plan that paid for it
-          has ended, and the honest answer to that is the two ways to pay — not an error dialog.
+          has ended, and the honest answer to that is the two ways to pay — not an error dialog. It opens
+          from here only where a library card has nothing to preview (a letter with no saved letter) or a
+          re-download the server refused; every other card's download goes through View PDF.
           A react-native Modal is a separate native window above the whole navigator, which is why
           the sheet hides itself while the plans screen it pushes is up. */}
       <DownloadPaywallSheet
@@ -2188,45 +2528,42 @@ export default function EmployerHome({
         onSeePlans={() => nav()?.push?.('/(subscription)/plans')}
       />
 
+      {/* One sheet for both doors to a page: a hero page (by index into the deck on screen) and a library
+          card (its own page — see Zoom). Customize and View PDF go through the SAME functions from either,
+          for a resume and a cover letter alike. ⚠️ The handlers read the zoom captured at render: the sheet
+          calls them 200ms after it has started closing, when `zoom` is already null again. */}
       <PaperZoom
-        card={zoom && shown ? shown.cards[zoom.i] || null : null}
+        card={zoomCard}
         origin={zoom?.rect || null}
-        kind={kind}
-        subtitle={target ? `Designed for ${target.company}` : undefined}
+        kind={libZoom ? libZoom.kind : kind}
+        subtitle={libZoom
+          ? (libZoom.employer ? `${libZoom.doc ? 'Designed' : 'Downloaded'} for ${libZoom.employer}` : undefined)
+          : target ? `Designed for ${target.company}` : undefined}
         isPaid={isPaid}
-        sample={sample && !doc}
-        onClose={() => setZoom(null)}
+        sample={libZoom ? libZoom.sample : sample && !doc}
+        onClose={() => { libOpen.current = 0; setZoom(null); }}
         onCustomize={() => {
-          // ⚠️ Straight to the section editor. Writing 'resume_builder_entry' with autoBuild, or
-          // 'resumeBuilderAction', would arm a PAID regeneration — neither is touched.
-          track('home_customize', { mode, sample, doc: !!doc });
-          // A saved employer document is edited AS that document: the editor loads it by id and saves
-          // back to it, so the base resume — and every other employer's version — is left alone.
-          if (doc && doc.kind === 'resume') {
-            rememberBuilderEmployer(doc.employer || target?.company)
-              .finally(() => nav()?.push?.({ pathname: '/(resume-builder)/preview', params: { docId: String(doc.docId) } }));
+          if (libZoom) {
+            track('home_customize', { mode: modeOfKind(libZoom.kind), sample: libZoom.sample, doc: !!libZoom.doc, from: 'library' });
+            if (libZoom.kind === 'cover_letter') openLetterEditor(libZoom.doc);
+            else customizeResume(libZoom.doc, { company: libZoom.employer, role: '' }, libZoom.sample);
             return;
           }
-          if (sample) armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
-          // Not armBuilderFor: writing 'resume_builder_entry' here would arm a PAID regeneration.
-          // Only the employer hint travels, so the editor's download can name the company.
-          else rememberBuilderEmployer(target?.company).finally(() => nav()?.push?.('/(resume-builder)/preview'));
+          track('home_customize', { mode, sample, doc: !!doc });
+          if (kind === 'cover_letter') { openLetterEditor(); return; }
+          customizeResume(doc, target, sample);
         }}
         onViewPdf={() => {
-          const id = zoom && shown ? shown.cards[zoom.i]?.id : undefined;
+          const id = zoomCard ? zoomCard.id : undefined;
+          if (libZoom) {
+            if (libZoom.kind === 'cover_letter') { openLetterPicker(id, libZoom.doc); return; }
+            track('home_view_pdf', { id, doc: !!libZoom.doc, from: 'library' });
+            openResumeGallery(id, libZoom.doc, { company: libZoom.employer, role: '' });
+            return;
+          }
           if (kind === 'cover_letter') { openLetterPicker(id); return; }
           track('home_view_pdf', { id, doc: !!doc });
-          // The employer travels too: a download pass is bought PER EMPLOYER, so without this the
-          // payment would have nothing to attach to. A saved document also carries its id, and names
-          // the employer it was saved (and is billed) under.
-          nav()?.push?.({
-            pathname: '/(resume-builder)/templates',
-            params: {
-              ...(id ? { template: id } : {}),
-              ...(target?.company ? { employer: target.company } : {}),
-              ...(doc ? { docId: String(doc.docId), ...(doc.employer ? { employer: doc.employer } : {}) } : {}),
-            },
-          });
+          openResumeGallery(id, doc, target);
         }}
       />
     </View>

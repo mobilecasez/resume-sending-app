@@ -11,17 +11,22 @@
 // translate + scale + opacity, native driver, which is also what the b126 one-driver rule requires.
 //
 // ⚠️ WHERE THE BUTTONS GO (verified against the real screens, not assumed). Home decides the
-// routes; this sheet only says which actions a page HAS:
-//   Customize → /(resume-builder)/preview   — the section list with per-card Edit controls. With a
-//               saved employer document it carries that doc's id, so the edits land on THAT
+// routes; this sheet only says which actions a page HAS — and a resume page and a cover letter page
+// have the SAME two (the product owner's call, 2026-09-13):
+//   Customize → the document's own editor, never a generator.
+//               A resume: /(resume-builder)/preview — the section list with per-card Edit controls.
+//               With a saved employer document it carries that doc's id, so the edits land on THAT
 //               employer's version and never on the base resume.
+//               A cover letter: /(cover-letter)/edit — its subject and paragraphs, saved back to that
+//               letter by id. (Until it existed a letter had no Customize at all: a button that landed
+//               on a resume editor would have been a lie.)
 //               It writes NOTHING to AsyncStorage. `resume_builder_entry {autoBuild}` and
 //               `resumeBuilderAction` both arm a PAID regeneration, so neither is touched here.
-//   View PDF  → /(resume-builder)/templates — the design view with pinch-zoom + PDF/DOCX download.
-//               It takes a `template` param (added for this) so it opens on the design tapped.
-//   Download  → a COVER LETTER's only action (kind 'cover_letter'): the letter picker, opened on the
-//               tapped design with the saved letter. There is no section editor for a letter, so
-//               Customize is not offered — a button that lands on a resume editor would be a lie.
+//   View PDF  → the design gallery, opened on the design tapped — and the ONLY place a download happens.
+//               A resume: /(resume-builder)/templates, pinch-zoom + PDF/DOCX download (it takes a
+//               `template` param, added for this). A cover letter: the letter picker, on the saved letter.
+// The same sheet opens from a card in Home's download library, with the same two buttons: a library card
+// previews, it never downloads on the tap (EmployerHome.openHistoryItem).
 import React, { useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, Animated, Modal, TouchableOpacity, ScrollView, Platform, Easing,
@@ -56,13 +61,14 @@ export default function PaperZoom({
   isPaid?: boolean;
   /** These pages are a stand-in, so there is nothing to customise or download yet. */
   sample?: boolean;
-  /** Which document this page is. A cover letter has no Customize and downloads instead of "View PDF". */
+  /** Which document this page is. The words only — a resume and a cover letter get the same two actions. */
   kind?: DocKind;
   /** How well this design fits the employer (0-100). Defaults to the card's own fit; null hides it. */
   fit?: number | null;
   onClose: () => void;
+  /** The document's editor: the resume's sections, or the letter's subject and paragraphs. */
   onCustomize: () => void;
-  /** The primary action: View PDF for a resume, Download for a cover letter. */
+  /** The primary action: the design gallery, where the download is. */
   onViewPdf: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -186,15 +192,8 @@ export default function PaperZoom({
                 <Text style={s.primaryTx} numberOfLines={1}>Build my resume</Text>
               </LinearGradient>
             </TouchableOpacity>
-          ) : letter ? (
-            // A letter has one thing to do with a design: take it. No section editor exists for it.
-            <TouchableOpacity style={s.primaryWrap} activeOpacity={0.9} onPress={() => { close(); setTimeout(onViewPdf, 200); }}>
-              <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primary}>
-                <Ionicons name="download-outline" size={17} color="#fff" />
-                <Text style={s.primaryTx} numberOfLines={1}>Download</Text>
-              </LinearGradient>
-            </TouchableOpacity>
           ) : (
+            // A resume and a cover letter alike: edit the words, or look at the design (and download it there).
             <>
               <TouchableOpacity style={s.ghost} activeOpacity={0.85} onPress={() => { close(); setTimeout(onCustomize, 200); }}>
                 <Ionicons name="create-outline" size={17} color="#fff" />

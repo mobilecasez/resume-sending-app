@@ -191,7 +191,8 @@ stub('server/services/entitlements.js', {
       if (ent.deductOnCredits) db.creditHistory.push({ id: ++db.historyMax, user_id: u, action_type: 'resume_ai_generate', credits_used: 2 });
     }
     let ledgerId = null;
-    if (ent.consumeVia !== 'error') {
+    // 'none' (2026-09-13): nothing left that may pay — the real consumeOnSuccess writes no row for it.
+    if (ent.consumeVia !== 'error' && ent.consumeVia !== 'none') {
       ledgerId = ++db.ledgerMax;
       db.ledger.push({ id: ledgerId, user_id: u, kind, source: ent.consumeVia === 'plan' ? 'plan' : ent.consumeVia });
     }
@@ -453,6 +454,24 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const b11b = await call(RB.generateAI, buildBody({ job: { company: 'Amazon', website: 'https://amazon.jobs', title: 'SDE II' } }));
   ok('a PRODUCT name ("Amazon Web Services") is not a leak — one AI call', b11b.statusCode === 200 && ai.calls - s0.ai === 1, { calls: ai.calls - s0.ai });
 
+  console.log('── S8b · consumeOnSuccess answers \'none\' (the last unit went to an overlapping build) → nothing stored ──');
+  {
+    // ⚠️ SINCE 2026-09-13 THERE IS NO CREDITS POOL TO FALL INTO. When the gate said yes but the allowance
+    // was spent by the time the work finished, consumeOnSuccess answers via:'none' with no ledger row. That
+    // is NOT a payment: a document stored now would be a free hit for ever after.
+    s0 = snapshot();
+    const hist0 = db.creditHistory.length;
+    ent.consumeVia = 'none';
+    const b8b = await call(RB.generateAI, buildBody({ coveredOnly: false, job: { company: 'Continental', website: 'https://continental.com' } }));
+    // ⚠️ TIGHTENED 2026-09-14: the plans state (402 quota_exhausted), not a 500 "could not finish" — a Try again
+    // there only meets the same empty allowance.
+    ok('\'none\' is refused with 402 quota_exhausted (never a 200 with a document, never a 500)',
+      b8b.statusCode === 402 && b8b.body && b8b.body.reason === 'quota_exhausted' && !b8b.body.resumeData && !b8b.body.docId, b8b.body);
+    ok('⚠️ …and nothing stored, no credits moved', db.docs.length === s0.docs && refunds.length === s0.refunds
+      && db.creditHistory.length === hist0, { docs: db.docs.length - s0.docs });
+    ent.consumeVia = 'plan';
+  }
+
   console.log('── S12 · a paid document that cannot be stored → 500 failed, credits refunded ──');
   s0 = snapshot();
   ent.consumeVia = 'credits'; ent.deductOnCredits = true; ent.gate = { allowed: true, via: 'credits', remaining: 3 };
@@ -653,10 +672,15 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     // And the contract that answer comes from (contract 1) is what entitlements really returns.
     const entSrc = fsSync.readFileSync(path.join(ROOT, 'server/services/entitlements.js'), 'utf8');
     const cos = entSrc.slice(entSrc.indexOf('async function consumeOnSuccess'), entSrc.indexOf('// ── usage screen data'));
-    ok('⚠️ consumeOnSuccess answers { via, charge, ledgerId } — and reports a deduction even on via:\'error\'',
-      /let charge = null;/.test(cos) && /charge = await chargeCredits\(/.test(cos)
-      && /RETURNING id/.test(cos) && /return \{ via, charge, ledgerId:/.test(cos)
-      && /return \{ via: 'error', charge, ledgerId: null \}/.test(cos));
+    // ⚠️ SINCE 2026-09-13 NOTHING IN IT DEDUCTS: credits no longer pay for generation, so `charge` is always
+    // null and there is no credits pool to fall into. The KEY stays — the lanes read hasOwnProperty('charge')
+    // as "this answer is authoritative" — and no allowance left is via:'none' with no ledger row.
+    const cosCode = cos.split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    ok('⚠️ consumeOnSuccess answers { via, charge, ledgerId } — charge always null, never a credits pool',
+      /const charge = null;/.test(cosCode) && !/chargeCredits|getEventCost|'credits'/.test(cosCode)
+      && /RETURNING id/.test(cosCode) && /return \{ via, charge, ledgerId:/.test(cosCode)
+      && /return \{ via: 'none', charge, ledgerId: null \}/.test(cosCode)
+      && /return \{ via: 'error', charge, ledgerId: null \}/.test(cosCode));
   }
 
   console.log('── S24 · home-cards tells Home whether there is a résumé to build FROM ──');

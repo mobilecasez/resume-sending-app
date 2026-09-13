@@ -237,6 +237,11 @@ const ADMIN_VERDICT_TTL_MS = 14 * 24 * 60 * 60 * 1000;   // 14 days
 // before navigating, so the tap's destination isn't stomped by the post-restore screen change.
 const COLD_START_DELAY_MS = 1200;
 
+// Device report (see the effect in RootLayout): how often to re-check for a sign-in that happened after
+// launch, and for how long after launch / each return to the foreground. A check is one SecureStore read.
+const DEVICE_REPORT_POLL_MS = 30 * 1000;
+const DEVICE_REPORT_WINDOW_MS = 30 * 60 * 1000;
+
 export default function RootLayout() {
   const router = useRouter();
   const routerRef = useRef(router);
@@ -302,14 +307,33 @@ export default function RootLayout() {
   // First-party analytics — report app opens + foreground returns so the admin dashboard shows
   // LIVE activity (active users now) instead of the 1–3 day store reports. Fire-and-forget.
   // This is the earliest request the app makes, so it waits for the address to settle too.
-  // Report the keychain-persisted device id once per launch (trial dedupe — one 7-day trial per
-  // device). Delayed a beat so the session restore has landed; silently a no-op when signed out.
+  // Report the keychain-persisted device id for every account that signs in on this device (one free
+  // allowance per device). ⚠️ NOT JUST AT LAUNCH: the old single report 4 s after launch was a no-op while
+  // signed out, so an account created later in the same launch never got a device row, and the server's
+  // per-device check could not see it (a fresh 3 + 3 per sign-up). So: a first check after a beat (the
+  // session restore has landed), then a cheap re-check every 30 s for 30 min, with that window re-opened
+  // and an immediate check on every return to the foreground. Each check is one SecureStore read —
+  // reportDeviceOnce POSTs only when the signed-in account changed since its last successful report.
+  // Home's own requests also carry x-device-id now, so this is the backstop, not the only line.
   useEffect(() => {
     if (!envReady) return;
-    const t = setTimeout(() => {
-      try { require('../services/subscriptionService').reportDeviceOnce(); } catch { /* optional */ }
-    }, 4000);
-    return () => clearTimeout(t);
+    let cancelled = false;
+    const check = () => {
+      if (cancelled) return;
+      try { require('../services/subscriptionService').reportDeviceOnce()?.catch?.(() => {}); } catch { /* optional */ }
+    };
+    let windowEndsAt = Date.now() + DEVICE_REPORT_WINDOW_MS;
+    const first = setTimeout(check, 4000);
+    const poll = setInterval(() => {
+      // Past the window the interval stays, but costs nothing: no read until a foreground re-opens it.
+      if (Date.now() <= windowEndsAt) check();
+    }, DEVICE_REPORT_POLL_MS);
+    let prev = AppState.currentState;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (prev !== 'active' && next === 'active') { windowEndsAt = Date.now() + DEVICE_REPORT_WINDOW_MS; check(); }
+      prev = next;
+    });
+    return () => { cancelled = true; clearTimeout(first); clearInterval(poll); sub.remove(); };
   }, [envReady]);
 
   useEffect(() => {

@@ -299,8 +299,21 @@ const sql = () => db.calls.map((c) => c.sql).join(' | ');
   const rb = strip(R('server', 'controllers', 'resumeBuilderController.js'));
   ok('⚠️ the resume gate asks the plan FIRST and the pass second',
     /const quota = freeRegen \? \{ allowed: true \} : await entitlements\.canConsumeMany\(userId, 'resume', 1, req\);[\s\S]{0,260}boundOnly: quota\.allowed/.test(rb));
-  ok('⚠️ a client that gave up is never charged for the answer it cannot receive',
-    /req\.on\('close'[\s\S]{0,80}clientGone = true/.test(rb) && /if \(clientGone\) \{[\s\S]{0,200}\} else \{/.test(rb));
+  // ⚠️ RETARGETED 2026-09-14 — THIS PIN USED TO REQUIRE THE WAIVER, AND THE WAIVER WAS THE HOLE. "A client that
+  // gave up is never charged" still saved the resume into user_resumes, so on a one-time allowance it was an
+  // endless one: kill the app mid-AI, reopen the builder, find it saved — repeat. Now a saved resume is a paid
+  // one: the disconnect flag is a support log line only, and it can never reach the payment decision.
+  // (It listens on RES: IncomingMessage 'close' has already fired once the body is read, so a req listener
+  // never saw a real mid-AI abort.) Behaviourally proven in test-single-purchase-flow.js T12.
+  {
+    const settle = (rb.match(/const settlePayment = async \(\) => \{[\s\S]*?\n {8}\};/) || [''])[0];
+    ok('⚠️ a client that gave up is STILL charged for a resume that is saved — the disconnect never waives payment',
+      /res\.on\('close'[\s\S]{0,80}clientGone = true/.test(rb) && !/req\.on\('close'[\s\S]{0,80}clientGone/.test(rb)
+      && settle.length > 200 && !/clientGone/.test(settle)
+      && (rb.match(/clientGone/g) || []).length === 3
+      && /if \(clientGone\) console\.warn\(/.test(rb) && !/if \(clientGone\) \{/.test(rb) && !/!clientGone/.test(rb),
+      { settleLen: settle.length, uses: (rb.match(/clientGone/g) || []).length });
+  }
 
   console.log('── ⚠️ THE HISTORY WRITE MUST MATCH THE TABLE, OR IT FAILS SILENTLY FOREVER ──');
   // A download records its history best-effort: the file already exists and the user has already

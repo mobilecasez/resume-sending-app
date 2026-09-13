@@ -532,6 +532,88 @@ Research thoroughly and extract real information.`;
     }
 }
 
+// ── ONE PAYMENT DECISION AT A TIME PER USER — the lock every generation lane takes ─────────────────────
+/**
+ * Run `fn` holding this user's usage lock for `kind`: ONE payment decision at a time per (user, kind).
+ *
+ * ⚠️ canConsumeMany CHECKS AND NEVER RESERVES, and consumeOnSuccess only asks "is a unit left right now". The
+ * letter lanes in this file took no lock, so two letters finishing together (batch-process writes three at
+ * once, two bulk requests, this screen next to Home's letter lane) both read "1 left" and both wrote a
+ * usage row — a one-time allowance overspent, and every one of those letters delivered. Under this lock the
+ * next letter asks only after the previous one's row exists, gets via 'none', and is refused.
+ * ⚠️ THE KEY IS SHARED: hashtext('usage:' || kind) + the user id, spelled exactly as resumeBuilderController's
+ * and employerLetterController's withUsageLock spell it. Both of those are local to their controllers, so
+ * this is the same advisory lock in a third place, not a new one — a lane serialises against the others only
+ * by taking that same key. Exported: aiHubController's Job Hub letter takes it through here.
+ * ⚠️ THE LOCK IS ALL THE TRANSACTION HOLDS. The work inside runs on the pool (entitlements and downloads have
+ * no transaction surface), so each write commits the moment it lands — which is exactly what the NEXT holder
+ * has to see — and nothing is rolled back when this transaction fails. Callers decide by what their own
+ * calls returned, never by whether the lock returned. Never hold it across an AI call: it is a pooled client.
+ * The wait is bounded (lock_timeout): a holder stuck that long means the database is in trouble, and the
+ * waiter fails closed — nothing charged. A db layer without withTransaction (a stub) runs `fn` unserialised,
+ * and says so once.
+ */
+let warnedUnserialised = false;
+async function withUsageLock(userId, kind, fn) {
+    if (typeof dbConfig.withTransaction !== 'function') {
+        if (!warnedUnserialised) {
+            warnedUnserialised = true;
+            console.warn('[coverLetter] dbConfig.withTransaction unavailable — letter payments are NOT serialised');
+        }
+        return fn();
+    }
+    return dbConfig.withTransaction(async (tx) => {
+        await tx.get(`SET LOCAL lock_timeout = '15s'`);
+        await tx.get(`SELECT pg_advisory_xact_lock(hashtext('usage:' || $1::text), $2::int)`, [kind, userId]);
+        return fn();
+    });
+}
+
+/** "Nothing is left that may pay for this letter" — the same words as Home's letter lane (LOST_COVER). */
+const LETTER_ALLOWANCE_USED_UP = 'Your plan allowance was used up while this cover letter was being written. Open Plans & Usage to continue.';
+
+/**
+ * The refusal the letter worker throws when nothing will pay for a finished letter. Its callers turn it into
+ * exactly what every other lane answers: a 402 { reason: 'quota_exhausted' } (sync), a job failed WITH that
+ * reason (async), and one refused letter with that reason (batch-process). `userFacing` lets the message out.
+ */
+function letterQuotaRefusal() {
+    const e = new Error(LETTER_ALLOWANCE_USED_UP);
+    e.userFacing = true;
+    e.reason = 'quota_exhausted';
+    e.status = 402;
+    return e;
+}
+
+/**
+ * Fail an async job AND keep its machine-readable reason. The same single UPDATE as middleware/asyncJob.js
+ * failJobWithReason, which is not exported: this worker creates its own job rows rather than running under
+ * asJob. ⚠️ ONE statement, not updateJobPartialResult then failJob — between two writes a poller would read a
+ * 'processing' row carrying { reason, error } as if it were progress. async_jobs has no reason column, so it
+ * rides in `result`, which the job-status handlers return as `data`.
+ */
+async function failJobWithReason(jobId, message, reason) {
+    await dbConfig.run(
+        `UPDATE async_jobs SET status = 'failed', error = $1, result = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
+        [message, JSON.stringify({ reason, error: message }), jobId]
+    );
+}
+
+/**
+ * Give back the usage_ledger row THIS letter's own consumeOnSuccess inserted (by that id — deleting another
+ * letter's row would hand out a free letter). usedSince counts rows, so this is what returns the unit.
+ * Never throws; a failure is logged loudly for support, never retried blindly.
+ */
+async function giveBackLedgerRow(userId, ledgerId, why) {
+    if (!ledgerId) return;
+    try {
+        await dbConfig.run('DELETE FROM usage_ledger WHERE id = $1 AND user_id = $2', [ledgerId, userId]);
+        console.warn(`[coverLetter] usage_ledger ${ledgerId} given back to user ${userId} (${why})`);
+    } catch (e) {
+        console.error(`[coverLetter] ⚠️ USAGE ROW NOT GIVEN BACK — user ${userId}, usage_ledger ${ledgerId} (${why}) — support must make this good:`, e.message);
+    }
+}
+
 // Generate cover letter (bulk)
 const generateCoverLetters = async (req, res) => {
     try {
@@ -546,8 +628,10 @@ const generateCoverLetters = async (req, res) => {
             return res.status(400).json({ error: 'No recipients provided' });
         }
 
-        // GATE — subscription/trial quota first, legacy credits as fallback (entitlements decides).
-        // Check only; the deduction happens per letter AFTER each successful generation below.
+        // GATE — the plan, then the Free plan (entitlements decides; credits no longer pay for generation).
+        // Check only: it refuses an oversized request up front, but it reserves nothing, so a parallel request
+        // can pass it for the same last units. The real decision is per letter, AFTER each generation below,
+        // under the usage lock — and a letter nothing will pay for is refused there, not delivered.
         const clCost = await getEventCost('cover_letter_generate');
         try {
             const gate = await entitlements.canConsumeMany(userId, 'cover_letter', recipients.length, req);
@@ -612,6 +696,7 @@ const generateCoverLetters = async (req, res) => {
             resumeMetadata = await mergeBuilderResume(userId, resumeMetadata);
 
             for (const recipient of recipients) {
+                let ledgerId = null;   // THIS letter's usage row — given back if the letter is not handed over
                 try {
                     console.log(`\n📤 Processing: ${recipient.email}`);
 
@@ -623,22 +708,46 @@ const generateCoverLetters = async (req, res) => {
 
                     const companyName = aiResult.employer_name || recipient.website;
                     const coverLetterText = aiResult.cover_letter;
-                    
+
                     console.log(`✅ Generated personalized cover letter for ${companyName}`);
 
-                    // DEDUCT — only after THIS letter succeeded. entitlements picks the pool
-                    // (plan → trial → legacy credits) and writes the usage-ledger row.
+                    // DEDUCT — only after THIS letter succeeded, one payment decision at a time per user
+                    // (withUsageLock). entitlements picks the pool (plan → the Free plan) and writes the usage row.
+                    // ⚠️ A LETTER NOTHING WILL PAY FOR IS REFUSED, NOT DELIVERED (2026-09-14). This used to swallow the
+                    // answer — a 'none' (the last unit went to a parallel request) was a free letter, rendered and
+                    // returned. Now: 'plan' / 'trial' deliver; 'none' is this letter failed with reason
+                    // quota_exhausted and never rendered; 'error' (or anything unrecognised) is not a payment either.
+                    // The letters that WERE paid for are kept.
+                    let used = null;
                     try {
-                        await entitlements.consumeOnSuccess(userId, 'cover_letter', {
-                            companyName: companyName,
-                            position: recipient.position,
-                            recipientEmail: recipient.email,
-                            screen: 'letters'
-                        }, req);
-                        creditsDeducted++;
-                    } catch (creditError) {
-                        console.error('Failed to record usage:', creditError);
+                        await withUsageLock(userId, 'cover_letter', async () => {
+                            used = await entitlements.consumeOnSuccess(userId, 'cover_letter', {
+                                companyName: companyName,
+                                position: recipient.position,
+                                recipientEmail: recipient.email,
+                                screen: 'letters'
+                            }, req);
+                        });
+                    } catch (lockError) {
+                        // The lock's transaction failed; what ran under it was on the pool, so `used` still decides.
+                        console.error('Failed to record usage (usage lock):', lockError.message);
                     }
+                    const via = used && used.via ? used.via : 'error';
+                    if (used && used.ledgerId) ledgerId = used.ledgerId;
+                    if (via !== 'plan' && via !== 'trial') {
+                        await giveBackLedgerRow(userId, ledgerId, `bulk letter for ${recipient.email} not paid (${via})`);
+                        ledgerId = null;
+                        const refused = via === 'none';
+                        console.warn(`⛔ ${recipient.email}: ${refused ? 'nothing left to pay for this letter' : `the charge could not be confirmed (${via})`} — not delivered`);
+                        results.push({
+                            email: recipient.email,
+                            status: 'failed',
+                            ...(refused ? { reason: 'quota_exhausted' } : {}),
+                            error: refused ? LETTER_ALLOWANCE_USED_UP : 'We could not record this cover letter against your plan. Please try again.',
+                        });
+                        continue;
+                    }
+                    creditsDeducted++;
 
                     // Format and generate PDF
                     const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, {});
@@ -661,9 +770,16 @@ const generateCoverLetters = async (req, res) => {
                         status: 'generated',
                         metadata: {}
                     });
+                    ledgerId = null;   // delivered: the unit stays spent
 
                 } catch (error) {
                     console.error(`❌ Failed to generate for ${recipient.email}:`, error.message);
+                    // ⚠️ Paid for, then not produced (the PDF threw): the unit goes back — never a charge for a
+                    // letter that does not exist.
+                    if (ledgerId) {
+                        await giveBackLedgerRow(userId, ledgerId, `bulk letter for ${recipient.email} was not produced`);
+                        creditsDeducted--;
+                    }
                     results.push({
                         email: recipient.email,
                         status: 'failed',
@@ -685,10 +801,25 @@ const generateCoverLetters = async (req, res) => {
             // Get updated credit balance
             const creditCheck = await checkUserCredits(userId, 0);
             
+            // ⚠️ EVERY LETTER REFUSED FOR THE ALLOWANCE AND NONE DELIVERED → THE 402 EVERY OTHER LANE ANSWERS, so
+            // the client opens Plans instead of reading a 200 with nothing in it. A partial run stays a 200 and
+            // names its refusals per letter (reason quota_exhausted).
+            const quotaRefused = results.filter(r => r.reason === 'quota_exhausted').length;
+            if (successCount === 0 && quotaRefused > 0) {
+                return res.status(402).json({
+                    error: LETTER_ALLOWANCE_USED_UP,
+                    reason: 'quota_exhausted',
+                    results,
+                    creditsUsed: 0,
+                    creditsRemaining: creditCheck.remaining
+                });
+            }
+
             res.json({
                 success: true,
                 message: `Generated ${successCount}/${recipients.length} cover letters`,
                 results,
+                quotaRefused,
                 creditsUsed: creditsDeducted,
                 creditsRemaining: creditCheck.remaining
             });
@@ -839,7 +970,14 @@ const generateCoverLetterDetails = async (req, res) => {
                 const safeMsg = (err.userFacing || /^Resume not processed yet/.test(err.message || ''))
                     ? err.message
                     : 'Failed to generate the cover letter. Please try again.';
-                jobService.failJob(jobId, safeMsg).catch(console.error);
+                // ⚠️ A REFUSAL KEEPS ITS REASON. A letter nothing would pay for (quota_exhausted) must not read as
+                // "something broke, try again" — trying again is the loop that ends at the same refusal.
+                if (err.reason) {
+                    failJobWithReason(jobId, safeMsg, err.reason)
+                        .catch(() => jobService.failJob(jobId, safeMsg).catch(console.error));
+                } else {
+                    jobService.failJob(jobId, safeMsg).catch(console.error);
+                }
             });
 
         } else {
@@ -865,7 +1003,9 @@ const generateCoverLetterDetails = async (req, res) => {
         const safeMessage = (error.userFacing || /^Resume not processed yet/.test(error.message || ''))
             ? error.message
             : 'Failed to generate the cover letter. Please try again.';
-        res.status(500).json({ error: safeMessage });
+        // The worker's refusal (nothing left to pay for the finished letter) keeps its 402 and its reason.
+        res.status(error.reason === 'quota_exhausted' ? 402 : 500)
+            .json({ error: safeMessage, ...(error.reason ? { reason: error.reason } : {}) });
     }
 };
 
@@ -1000,38 +1140,64 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     // letter is used for every region — the picker only changes PDF formatting.
     const coverLetterHtml = formatCoverLetterWithHTML(aiResult.cover_letter || '', {});
 
-    // DEDUCT — only now, after the letter was actually produced. entitlements picks the pool
-    // (plan → trial → legacy credits) and writes the usage-ledger row for the Usage screen.
+    // DEDUCT — only now, after the letter was actually produced. entitlements picks the pool (plan → the
+    // Free plan) and writes the usage-ledger row for the Usage screen.
+    // ⚠️ ONE PAYMENT DECISION AT A TIME PER USER (withUsageLock). This worker took no lock, and its gate ran a
+    // minute ago and reserves nothing: two letters finishing together (batch-process runs three at once, a
+    // second device, Home's letter lane) both read "1 left" and both wrote a row — past a one-time allowance.
+    // ⚠️ AND A LETTER NOTHING WILL PAY FOR IS NOT DELIVERED (2026-09-14). consumeOnSuccess answering 'none' (the
+    // last unit went to an overlapping request) was logged as "Usage recorded via none" and the letter handed
+    // over anyway — a free letter per parallel tap. It now throws the quota_exhausted refusal: sync → 402, the
+    // async job → failed WITH its reason, batch-process → that one letter refused. 'error' (or anything
+    // unrecognised) is not a payment either, and whatever it wrote goes back.
+    let used = null;
     try {
-        // ⚠️ Spend the PASS first when one covered this. Falls back to the plan if the claim did
-        // not land (another tap won the same pass) — losing that race must not mean a free letter.
-        let spentPass = false;
-        if (passViaPass) {
-            // The AI has now read the real employer name off the posting, which is a better spelling
-            // than anything the gate had — bind on it, so the download screens (which send that same
-            // name) match this pass exactly instead of asking for a second payment.
-            const claimed = await downloads.claimGeneration(userId, 'cover_letter', passEmployer || companyName, passEnv);
-            spentPass = !!claimed.charged;
-            if (spentPass) console.log(`✅ Cover letter covered by a download pass for ${passEmployer || companyName}`);
-        }
-        // ⚠️ THE FALLBACK CHARGE NEEDS THE GATE'S ENVIRONMENT. This runs in the worker, with no req,
-        // so requestEnvironment({}) would answer Production while the gate resolved Sandbox — and a
-        // TestFlight subscriber would be billed legacy credits for a letter their plan had paid for.
-        const used = spentPass ? { via: 'pass' } : await entitlements.consumeOnSuccess(userId, 'cover_letter', {
-            companyName,
-            position,
-            recipientEmail,
-            screen: 'job_cover_letter'
-        }, { storeEnv: passEnv || undefined });
-        console.log(`✅ Usage recorded via ${used.via}`);
-
-        await dbConfig.run(
-            'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
-            [userId]
-        );
-    } catch (creditError) {
-        console.error('❌ Failed to deduct credit:', creditError);
+        await withUsageLock(userId, 'cover_letter', async () => {
+            // ⚠️ Spend the PASS first when one covered this. Falls back to the plan if the claim did
+            // not land (another tap won the same pass) — losing that race must not mean a free letter.
+            let spentPass = false;
+            if (passViaPass) {
+                // The AI has now read the real employer name off the posting, which is a better spelling
+                // than anything the gate had — bind on it, so the download screens (which send that same
+                // name) match this pass exactly instead of asking for a second payment.
+                const claimed = await downloads.claimGeneration(userId, 'cover_letter', passEmployer || companyName, passEnv);
+                spentPass = !!claimed.charged;
+                if (spentPass) console.log(`✅ Cover letter covered by a download pass for ${passEmployer || companyName}`);
+            }
+            // ⚠️ THE FALLBACK CHARGE NEEDS THE GATE'S ENVIRONMENT. This runs in the worker, with no req,
+            // so requestEnvironment({}) would answer Production while the gate resolved Sandbox — and a
+            // TestFlight subscriber's letter would be charged to the wrong allowance, or refused outright.
+            used = spentPass ? { via: 'pass' } : await entitlements.consumeOnSuccess(userId, 'cover_letter', {
+                companyName,
+                position,
+                recipientEmail,
+                screen: 'job_cover_letter'
+            }, { storeEnv: passEnv || undefined });
+        });
+    } catch (lockError) {
+        // The lock's transaction failed (lock_timeout, a dead connection, its COMMIT). What ran under it was on
+        // the pool and is not rolled back, so `used` — this letter's own answer — decides, never the lock.
+        console.error(`❌ [executeGenerationWork] usage lock failed for user ${userId}:`, lockError.message);
     }
+    const via = used && used.via ? used.via : 'error';
+    if (via === 'none') {
+        console.warn(`⛔ Nothing left to pay for user ${userId}'s letter to ${companyName} (the last unit went to an overlapping request) — refused, not delivered`);
+        throw letterQuotaRefusal();
+    }
+    if (via !== 'pass' && via !== 'plan' && via !== 'trial') {
+        await giveBackLedgerRow(userId, used && used.ledgerId, `the charge could not be confirmed (${via})`);
+        console.error(`❌ The charge for user ${userId}'s letter to ${companyName} could not be confirmed (${via}) — not delivered`);
+        const unconfirmed = new Error('We could not record this cover letter against your plan. Please try again.');
+        unconfirmed.userFacing = true;
+        throw unconfirmed;
+    }
+    console.log(`✅ Usage recorded via ${via}`);
+
+    // Best-effort: a counter that did not move is no reason to withhold a letter that was paid for.
+    await dbConfig.run(
+        'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
+        [userId]
+    ).catch((counterError) => console.error('❌ total_generated not updated:', counterError.message));
 
     // Get updated credits
     const creditCheck = await checkUserCredits(userId, 0);
@@ -1554,4 +1720,7 @@ module.exports = {
     buildCLSender,
     loadCLPhotoDataUri,
     lookupBrandColor,
+    // The shared per-(user, kind) usage lock, for a lane that has none of its own (aiHubController's Job Hub
+    // letter) — so it serialises against every other lane's key instead of inventing a second spelling.
+    withUsageLock,
 };

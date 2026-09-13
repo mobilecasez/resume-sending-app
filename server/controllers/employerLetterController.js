@@ -1156,9 +1156,13 @@ async function buildEmployerLetter(req, res) {
         // next one looks, so the second is served that letter free instead of paying for it again.
         // ⚠️ Spend the PASS first when one covered this; fall back to the plan only if the claim did not
         // land (a racing tap won it) — losing that race must not mean a free letter.
-        // ⚠️ NO clientGone WAIVER (unlike the resume sync lane): this letter is stored and shown on Home by
+        // ⚠️ NO clientGone WAIVER (the resume sync lane dropped its own on 2026-09-14 — a waived run that still
+        // saved its resume made a one-time allowance endless): this letter is stored and shown on Home by
         // docId, so a client that dropped the connection still receives what it paid for, and its retry
-        // is a free cache hit — waiving here would only throw away a finished AI call.
+        // is a free cache hit.
+        // ⚠️ NOTHING LEFT THAT MAY PAY IS A 402, NOT A 500: consumeOnSuccess answers via 'none' when the last unit
+        // went to an overlapping build during the AI minute — the same "lost its cover" as the re-check, so the
+        // same LOST_COVER, and Home opens Plans instead of offering a Try again that meets the same wall.
         const took = { passId: null, credits: null, ledgerId: null };
         let served = null;       // an identical build's letter that landed during ours — served free
         let refusal = null;      // { status, body }, decided under the lock and answered after it
@@ -1227,6 +1231,12 @@ async function buildEmployerLetter(req, res) {
                         charged = true;
                     } else if (via === 'plan' || via === 'trial') {
                         charged = true;                   // plan / trial: the ledger row IS the charge
+                    } else if (via === 'none') {
+                        // Nothing left that may pay (see above): refused, nothing stored, nothing charged.
+                        console.warn(`[employerLetter] nothing left to pay for user ${userId}'s "${company}" letter (the last unit went to an overlapping build) — refused, not stored`);
+                        await giveBackLetterCharge(userId, took, 'nothing left that may pay');
+                        refusal = LOST_COVER;
+                        return;
                     }
                     // 'error', or anything unrecognised: nothing confirmed, so `charged` stays false.
                     if (charged) paidWith = via;

@@ -334,6 +334,15 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   reset(); ent.used = { via: 'error' };
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'SRE' } }));
   ok('usage not recorded → 500, not stored', r.statusCode === 500 && store.puts.length === 0, r.body);
+  // ⚠️ 2026-09-13: no credits pool to fall into. The gate said yes, the last unit went to an overlapping build,
+  // and consumeOnSuccess answers via:'none' with NO ledger row — that is not a payment, so nothing is stored.
+  reset(); ent.used = { via: 'none', charge: null, ledgerId: null };
+  r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Data Platform Engineer' } }));
+  // ⚠️ TIGHTENED 2026-09-14: exactly the refusal every lane answers — 402 quota_exhausted, which Home turns into
+  // the plans state — never a 500 "try again" that would meet the same wall (and never a 200 with a letter).
+  ok("⚠️ consumeOnSuccess 'none' → 402 quota_exhausted, not stored, no letter handed over",
+    r.statusCode === 402 && r.body && r.body.reason === 'quota_exhausted' && store.puts.length === 0
+    && !(r.body.coverLetterHtml || r.body.payload || r.body.docId), { status: r.statusCode, body: r.body });
   reset(); passSpy.cover = true; passSpy.claim = { charged: true };
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Platform Engineer' } }));
   ok('pass covered + claimed → stored, plan NOT consumed', r.statusCode === 200 && ent.consumed.length === 0 && store.puts.length === 1 && passSpy.claimCalls.length === 1 && passSpy.claimCalls[0][1] === 'cover_letter', { consumed: ent.consumed.length, claims: passSpy.claimCalls });

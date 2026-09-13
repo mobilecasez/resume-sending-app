@@ -9,6 +9,8 @@ export default function CoverLetterLayout() {
     <View style={{ flex: 1 }}>
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#E5EAF3' } }}>
         <Stack.Screen name="templates" />
+        {/* The employer letter editor (Home → a letter page → Customize). */}
+        <Stack.Screen name="edit" />
       </Stack>
       {/* The guide follows the user through the app. */}
       <HelpAssistant context="cover" />

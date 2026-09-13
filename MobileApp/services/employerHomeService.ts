@@ -11,6 +11,7 @@
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE } from '../config';
+import { getDeviceId } from './deviceId';
 
 export type Target = {
   key: string;              // stable list key
@@ -86,6 +87,26 @@ async function token(): Promise<string | undefined> {
     return JSON.parse(raw || '{}')?.token;
   } catch { return undefined; }
 }
+
+/**
+ * ⚠️ THE DEVICE GOES OUT ON EVERY HOME REQUEST — `x-device-id`, the same header and value
+ * subscriptionService sends (services/deviceId.ts). The free 3 resumes + 3 letters are ONE PER DEVICE,
+ * and the server can only hold that line for a device it can see. These helpers used to send only
+ * Authorization, so an account created in THIS launch (reportDeviceOnce had not recorded its device yet)
+ * reached generation-gate / generate-ai / employer-build with no device at all — and got a second full
+ * allowance on a phone that had already used one, repeatable by signing out and up again.
+ * Shared by homeAddEmployer.ts and employerDocs.ts so the whole Home talks through one copy. Resolved once
+ * per module; a null (SecureStore unavailable) sends NO header — never a made-up id — and is retried on
+ * the next request rather than remembered, so one transient keychain miss does not blind a whole session.
+ */
+let deviceIdMemo: string | null = null;
+export async function deviceHeaders(): Promise<Record<string, string>> {
+  if (!deviceIdMemo) {
+    try { deviceIdMemo = (await getDeviceId()) || null; } catch { deviceIdMemo = null; }
+  }
+  return deviceIdMemo ? { 'x-device-id': deviceIdMemo } : {};
+}
+
 // `meta` reports the HTTP status back to the caller. It matters because a null here is ambiguous:
 // it can mean "the server says there is nothing" OR "we never got an answer". Callers that act on
 // the difference (see fetchHomeCards) must be able to tell them apart.
@@ -95,7 +116,7 @@ async function getJson(path: string, ms = 15000, meta?: { status?: number }): Pr
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), ms);
   try {
-    const r = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${t}` }, signal: ctl.signal });
+    const r = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${t}`, ...(await deviceHeaders()) }, signal: ctl.signal });
     if (meta) meta.status = r.status;
     if (!r.ok) return null;
     return await r.json();
@@ -103,7 +124,7 @@ async function getJson(path: string, ms = 15000, meta?: { status?: number }): Pr
   finally { clearTimeout(timer); }
 }
 
-/** Same auth and the same swallow-everything discipline as getJson, for the one call that writes. */
+/** Same auth (device included) and the same swallow-everything discipline as getJson, for the one call that writes. */
 async function postJson(path: string, body: any, ms = 60000): Promise<any | null> {
   const t = await token();
   if (!t) return null;
@@ -112,7 +133,7 @@ async function postJson(path: string, body: any, ms = 60000): Promise<any | null
   try {
     const r = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json', ...(await deviceHeaders()) },
       body: JSON.stringify(body || {}),
       signal: ctl.signal,
     });
@@ -132,7 +153,7 @@ async function sendJson(method: 'POST' | 'DELETE', path: string, body: any, ms =
   try {
     const r = await fetch(`${API_BASE}${path}`, {
       method,
-      headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json', ...(await deviceHeaders()) },
       body: JSON.stringify(body || {}),
       signal: ctl.signal,
     });

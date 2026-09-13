@@ -2180,10 +2180,13 @@ function planTileSub(p?: AdminUserPlan | null): string {
   if (!p) return '';
   if (p.status === 'never_started') return 'nothing used yet';
   if (p.status === 'unknown_plan') return 'plan key not in catalog';
-  if (p.window_days_left != null) {
-    return p.status === 'paid'
-      ? `renews in ${p.window_days_left}d`
-      : `refills in ${p.window_days_left}d`;
+  // ⚠️ Only a PAID plan has a next period. The Free allowance is one-time since 2026-09-13, so a
+  // "refills in Nd" here would be a promise the server no longer keeps — even if an older server
+  // still sends window_days_left for a free user.
+  if (p.status === 'paid' && p.window_days_left != null) return `renews in ${p.window_days_left}d`;
+  if (p.status === 'free') {
+    const left = p.quotas.reduce((n, q) => n + Math.max(0, Number(q.remaining) || 0), 0);
+    return left > 0 ? 'one-time allowance' : 'free allowance used up';
   }
   return p.status === 'paid' ? 'active' : 'free plan';
 }
@@ -2191,7 +2194,7 @@ function planTileSub(p?: AdminUserPlan | null): string {
 /** The sentence that explains the plan in words, so the numbers below have context. */
 function planSubline(p: AdminUserPlan): string {
   if (p.status === 'never_started') {
-    return 'On the Free plan. They have not generated anything yet, so their 30-day window has not started.';
+    return `On the Free plan. They have not generated anything yet, so the one-time ${freeAllowanceText(p)} is untouched.`;
   }
   if (p.status === 'unknown_plan') {
     return `Subscription row has plan key “${p.key}”, which is not in the catalog — the app falls back to Free for this user.`;
@@ -2203,9 +2206,25 @@ function planSubline(p: AdminUserPlan): string {
     if (p.pending_label) bits.push(`changing to ${p.pending_label} at renewal`);
     return bits.join(' · ');
   }
-  const bits = ['Free plan — 5 cover letters and 1 résumé every 30 days'];
-  if (p.window_end) bits.push(`allowance refills ${dateLabel(p.window_end)}`);
+  // No refill date: the Free allowance is one time for the life of the account (counted from
+  // max(signup, 2026-09-13)), so window_end is deliberately not shown for a free user.
+  const bits = [`Free plan — ${freeAllowanceText(p)}, one time (never refills)`];
+  if (p.window_start) bits.push(`counted from ${dateLabel(p.window_start)}`);
   return bits.join(' · ');
+}
+
+/** "3 résumés and 3 cover letters" — from the server's own quota rows when it sent them, so this
+ *  screen cannot drift from entitlements.FREE again (it said "5 letters + 1 résumé every 30 days"
+ *  for a month after that stopped being true). The literal is only the no-data fallback. */
+const FREE_FALLBACK = { resume: 3, cover_letter: 3 };
+function freeAllowanceText(p: AdminUserPlan): string {
+  const base = (kind: AdminPlanQuota['kind']) => {
+    const q = p.quotas.find((x) => x.kind === kind);
+    return q && Number.isFinite(Number(q.base)) ? Number(q.base) : FREE_FALLBACK[kind];
+  };
+  const r = base('resume');
+  const l = base('cover_letter');
+  return `${r} résumé${r === 1 ? '' : 's'} and ${l} cover letter${l === 1 ? '' : 's'}`;
 }
 
 function QuotaBar({ q }: { q: AdminPlanQuota }) {
@@ -2233,8 +2252,8 @@ function QuotaBar({ q }: { q: AdminPlanQuota }) {
       </View>
       {q.over ? (
         <Text style={s.footnote}>
-          Used {fmt(q.used)} against an allowance of {fmt(q.allowance)} — the free résumé allowance dropped
-          from 2 to 1, so earlier usage can exceed it. Nothing is owed.
+          Used {fmt(q.used)} against an allowance of {fmt(q.allowance)} — allowances were cut on 2026-09-13
+          (e.g. Starter letters 30 → 10), so usage from before the change can exceed it. Nothing is owed.
         </Text>
       ) : null}
     </View>
@@ -2266,8 +2285,9 @@ function PlanSection({ plan }: { plan?: AdminUserPlan | null }) {
         {p.price_usd != null ? <Chip label="Price" value={`$${p.price_usd.toFixed(2)}/mo`} /> : null}
         {has(p.source) ? <Chip label="Granted by" value={String(p.source)} tone={p.source === 'admin' ? C.purple : undefined} /> : null}
         {has(p.store) ? <Chip label="Store" value={String(p.store)} /> : null}
-        {p.window_start ? <Chip label="Period started" value={dateLabel(p.window_start)} /> : null}
-        {p.window_end ? <Chip label={paid ? 'Renews' : 'Refills'} value={dateLabel(p.window_end)} /> : null}
+        {p.window_start ? <Chip label={paid ? 'Period started' : 'Counting from'} value={dateLabel(p.window_start)} /> : null}
+        {/* Free has no refill any more — only a paid plan's window has an end worth showing. */}
+        {paid && p.window_end ? <Chip label="Renews" value={dateLabel(p.window_end)} /> : null}
         {p.free_since ? <Chip label="Free since" value={dateLabel(p.free_since)} /> : null}
       </View>
 
@@ -2275,8 +2295,8 @@ function PlanSection({ plan }: { plan?: AdminUserPlan | null }) {
 
       {p.status === 'never_started' ? (
         <Text style={s.footnote}>
-          No usage recorded. Their 30-day window starts the first time they generate something, so the
-          full allowance is available.
+          No usage recorded. The Free allowance is one time and has not been touched, so all of it is
+          available.
         </Text>
       ) : null}
 
@@ -2294,7 +2314,7 @@ function PlanSection({ plan }: { plan?: AdminUserPlan | null }) {
       {(p.legacy?.remaining || 0) > 0 ? (
         <Note
           tone={C.blueDeep}
-          text={`Legacy credits: ${fmt(p.legacy?.remaining)} left of ${fmt(p.legacy?.total)}. Still spendable once the plan allowance runs out${p.legacy?.expiry_date ? `, expires ${dateLabel(p.legacy.expiry_date)}` : ''}.`}
+          text={`Legacy credits: ${fmt(p.legacy?.remaining)} left of ${fmt(p.legacy?.total)}${p.legacy?.expiry_date ? `, expires ${dateLabel(p.legacy.expiry_date)}` : ''}. Since 2026-09-13 they no longer pay for résumé or cover letter generation.`}
         />
       ) : null}
 

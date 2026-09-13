@@ -444,10 +444,20 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   {
     const rnd = require(path.join(ROOT, 'server/utils/coverLetterRenderer.js'));
     const rndC = strip(R('server/utils/coverLetterRenderer.js'));
+    // ⚠️ Since the preview loop reuses ONE page (see the renderPreviews block below) the fences live in
+    // newRoutedPage, and EVERY page in the file must come from it — a second newPage( anywhere would be a
+    // page with scripts on and the network open.
+    const routed = fnBody(rndC, 'newRoutedPage');
     ok('⚠️ fence 1: pages are created with javaScriptEnabled FALSE',
-      /newPage\(\{ viewport: \{ width: A4_W, height: A4_H \}, javaScriptEnabled: false \}\)/.test(fnBody(rndC, 'preparePage')));
+      /newPage\(\{ viewport: \{ width: A4_W, height: A4_H \}, javaScriptEnabled: false \}\)/.test(routed));
     ok('⚠️ fence 2: a route installed BEFORE any content aborts everything the allowlist does not name',
-      /await page\.route\('\*\*\/\*', \(route\) => \(isAllowedRequest\(route\.request\(\)\.url\(\)\)\s*\? route\.continue\(\)\s*: route\.abort\('blockedbyclient'\)\)/.test(fnBody(rndC, 'preparePage')));
+      /await page\.route\('\*\*\/\*', \(route\) => \(isAllowedRequest\(route\.request\(\)\.url\(\)\)\s*\? route\.continue\(\)\s*: route\.abort\('blockedbyclient'\)\)/.test(routed)
+      && routed.indexOf('page.route(') < routed.indexOf('return page'));
+    ok('⚠️ …and newRoutedPage is the ONLY place a page is made: the PDF path and the preview loop both go through it',
+      (rndC.match(/\.newPage\(/g) || []).length === 1
+      && /await newRoutedPage\(browser\)/.test(fnBody(rndC, 'preparePage'))
+      && /await preparePage\(browser, html\)/.test(fnBody(rndC, 'renderPdf'))
+      && /page = await newRoutedPage\(browser\)/.test(fnBody(rndC, 'renderPreviews')));
     const allowed = ['data:image/png;base64,AAAA', 'https://fonts.googleapis.com/css2?family=Lato', 'https://fonts.gstatic.com/s/lato/x.woff2'];
     const blocked = ['http://127.0.0.1:9/admin', 'http://169.254.169.254/latest/meta-data/', 'http://fonts.googleapis.com/css2', 'https://evil.example.com/fonts.googleapis.com/x',
       'https://localhost/x', 'file:///etc/passwd', 'https://fonts.googleapis.com.evil.example.com/x', '', 'not a url'];
@@ -459,6 +469,83 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     ok('⚠️ fence 3: the whole browser is pointed at a dead proxy, with only the font hosts bypassing it',
       /const BLACKHOLE_PROXY = \{ server: 'http:\/\/127\.0\.0\.1:9', bypass: \[\.\.\.ALLOWED_HOSTS, '<-loopback>'\]\.join\(','\) \}/.test(rndC)
       && /proxy: BLACKHOLE_PROXY/.test(fnBody(rndC, 'launchBrowser')));
+  }
+
+  // ⚠️ SINGLE-PROCESS CHROMIUM EXITS WHEN A PAGE CLOSES, AND CANNOT HOLD A SECOND PAGE. The preview loop
+  // used to open + close a page per template, so the SECOND template always met "Target page, context or
+  // browser has been closed" and the whole call threw away the pages already rendered (prod 2026-09-13:
+  // any 2+ uncached letter designs → 500). A fake browser that behaves exactly that way drives the REAL
+  // renderPreviews: one page for the batch, never closed, and a failed template retried on a fresh browser.
+  {
+    const blPath = require.resolve(path.join(ROOT, 'server/utils/browserLimit.js'));
+    const realBl = require.cache[blPath];
+    const fx = { launches: [], failMain: new Map() };   // failMain: main-screenshot ordinal → how many times to throw
+    let mainShots = 0;
+    const fakeBrowser = (opts) => {
+      const b = { opts, pages: 0, closed: 0, connected: true, openPages: 0 };
+      b.isConnected = () => b.connected;
+      b.close = async () => { b.connected = false; };
+      b.newPage = async (pageOpts) => {
+        if (!b.connected) throw new Error('Target page, context or browser has been closed');
+        if (b.openPages > 0) throw new Error('single-process chromium cannot hold a second page');
+        b.pages++; b.openPages++;
+        const pg = { pageOpts, routed: false, contentBeforeRoute: false, html: '' };
+        pg.route = async () => { pg.routed = true; };
+        pg.setContent = async (html) => { if (!pg.routed) pg.contentBeforeRoute = true; if (!b.connected) throw new Error('closed'); pg.html = html; };
+        pg.setViewportSize = async () => { if (!b.connected) throw new Error('closed'); };
+        pg.evaluate = async (fn, arg) => (arg === undefined ? true : 1300);
+        pg.screenshot = async (o) => {
+          if (!b.connected) throw new Error('Target page, context or browser has been closed');
+          if (o && o.quality === 82) {
+            const n = ++mainShots;
+            const left = fx.failMain.get(n) || 0;
+            if (left > 0) { fx.failMain.set(n, left - 1); mainShots--; b.connected = false; throw new Error('Target crashed'); }
+          }
+          return Buffer.from('jpeg');
+        };
+        // single-process: closing the only page takes the browser down with it
+        pg.close = async () => { b.closed++; b.openPages--; b.connected = false; };
+        b.lastPage = pg;
+        return pg;
+      };
+      fx.launches.push(b);
+      return b;
+    };
+    require.cache[blPath] = { id: blPath, filename: blPath, loaded: true, exports: { launchChromium: async (_c, opts) => fakeBrowser(opts) } };
+    const rnd = require(path.join(ROOT, 'server/utils/coverLetterRenderer.js'));
+    const tpls = require(path.join(ROOT, 'server/utils/coverLetterTemplates.js')).TEMPLATES.slice(0, 3);
+    const data = { personal_info: { full_name: 'Test Person' }, coverLetterHtml: '<p>Hello</p>' };
+    const quiet = console.warn; console.warn = () => {};
+    try {
+      let out = await rnd.renderPreviews(data, {}, tpls);
+      const b0 = fx.launches[0];
+      ok('⚠️ renderPreviews: 3 uncached designs on single-process chromium → all 3 pages come back, in order',
+        out.length === 3 && out.map((x) => x.id).join() === tpls.map((t) => t.id).join() && out.every((x) => /^data:image\/jpeg;base64,/.test(x.image)),
+        out.map((x) => x.id));
+      ok('⚠️ …from ONE browser and ONE page, never closed mid-batch (no per-template newPage/close)',
+        fx.launches.length === 1 && b0.pages === 1 && b0.closed === 0, { launches: fx.launches.length, pages: b0.pages, closed: b0.closed });
+      ok('…that page is the fenced one (JS off, routed before any content) and the browser the proxied one',
+        b0.lastPage.pageOpts.javaScriptEnabled === false && b0.lastPage.routed && !b0.lastPage.contentBeforeRoute
+        && b0.opts && b0.opts.proxy && b0.opts.proxy.server === 'http://127.0.0.1:9');
+      ok('…and the browser is closed once, at the end', b0.connected === false);
+
+      fx.launches.length = 0; mainShots = 0; fx.failMain = new Map([[2, 1]]);
+      out = await rnd.renderPreviews(data, {}, tpls);
+      ok('⚠️ a template that fails once is retried on a FRESH browser, and every page still comes back',
+        out.length === 3 && out.map((x) => x.id).join() === tpls.map((t) => t.id).join() && fx.launches.length === 2
+        && fx.launches.every((b) => b.pages === 1 && b.closed === 0), { ids: out.map((x) => x.id), launches: fx.launches.length });
+
+      fx.launches.length = 0; mainShots = 0; fx.failMain = new Map([[2, 2]]);
+      out = await rnd.renderPreviews(data, {}, tpls);
+      ok('⚠️ a template that fails twice is skipped — the call does NOT throw away the pages that did render',
+        out.map((x) => x.id).join() === [tpls[0].id, tpls[2].id].join() && fx.launches.length <= 3, { ids: out.map((x) => x.id), launches: fx.launches.length });
+      ok('…and no browser is left running', fx.launches.every((b) => b.connected === false));
+    } catch (e) {
+      ok('renderPreviews ran against the fake single-process browser', false, String(e && e.stack || e));
+    } finally {
+      console.warn = quiet;
+      if (realBl) require.cache[blPath] = realBl; else delete require.cache[blPath];
+    }
   }
 
   console.log('── /api/employer-docs: every route authenticated; reads never generate ──');

@@ -714,11 +714,12 @@ async function repeatSearchCount(userId) {
   } catch { return 0; }
 }
 
-// Trial/plan quota WITHOUT side effects. entitlements.getStatus() calls ensureTrial(), which CREATES
-// a trial row (and a trial_devices row) for anyone who does not have one — fine when the app asks
-// "what do I have left?", catastrophic here: building a notification state for 180 users would start
-// a trial for every account that never had one, silently burning the one-trial-per-device rule.
-// So this reads the tables directly and returns nulls when there is nothing to read.
+// Free/plan quota WITHOUT side effects. entitlements.getStatus() calls ensureTrial(), which CREATES
+// a free-plan row (and a trial_devices row) for anyone who does not have one — fine when the app asks
+// "what do I have left?", catastrophic here: building a notification state for 180 users would open
+// the Free plan for every account that never had one, silently claiming each one's device under the
+// one-free-allowance-per-device rule. So this reads the tables directly and returns nulls when there
+// is nothing to read.
 async function quotaStateOf(userId) {
   const out = { trialDaysLeft: null, lettersLeft: 0, resumesLeft: 0, via: null };
   try {
@@ -737,13 +738,13 @@ async function quotaStateOf(userId) {
       }
     }
     if (!(await tableExists('user_trials'))) return out;
-    const t = await g('SELECT started_at, ends_at FROM user_trials WHERE user_id = $1', [userId]);
-    if (!t) return out;                                   // no trial row — do NOT create one
-    // ⚠️ Count from the CURRENT 30-day window, not from signup. The free allowance refills every
-    // 30 days; measuring from started_at accumulates every generation the account has ever made
-    // against a 5-letter allowance, so anyone older than a month reports "0 left" forever — and
-    // this feeds the lifecycle nudges, which would then offer bonus letters to people who have
-    // plenty. freeWindowStart is the same helper the app's own quota check uses.
+    const t = await g('SELECT started_at FROM user_trials WHERE user_id = $1', [userId]);
+    if (!t) return out;                                   // no free-plan row — do NOT create one
+    // ⚠️ Count from the ONE-TIME window's start, max(started_at, the 2026-09-13 cutover) — the same
+    // helper the app's own quota check uses. From started_at alone, every generation an older account
+    // made under the old refilling plan would count against its fresh 3 + 3, so it would report "0 left"
+    // — and this feeds the lifecycle nudges, which would then offer bonus letters to people who have
+    // plenty.
     const winStart = ent.freeWindowStart(t.started_at);
     const [uL, uR, aL, aR] = await Promise.all([
       ent.usedSince(userId, 'cover_letter', 'trial', '$4', [winStart]),
@@ -751,10 +752,12 @@ async function quotaStateOf(userId) {
       ent.allowanceIn(userId, 'cover_letter', ent.TRIAL.letters, winStart),
       ent.allowanceIn(userId, 'resume', ent.TRIAL.resumes, winStart),
     ]);
-    // Floor at -1 rather than 0 so "already expired" stays distinguishable from "ends today".
-    const msLeft = new Date(t.ends_at).getTime() - Date.now();
     return {
-      trialDaysLeft: msLeft < 0 ? -1 : Math.ceil(msLeft / 86400000),
+      // ⚠️ NULL, ALWAYS: the Free plan has no end date — one-time, never expiring. This used to be
+      // counted down from user_trials.ends_at, which is only a NOT NULL filler now; a number here makes
+      // the trial_ending template push "your free trial ends in 2 days" about an allowance that does not
+      // end. null reads as "not on a trial", so that template can no longer fire.
+      trialDaysLeft: null,
       lettersLeft: Math.max(0, aL - uL),
       resumesLeft: Math.max(0, aR - uR),
       via: 'trial',
@@ -765,10 +768,11 @@ async function quotaStateOf(userId) {
 // ── The user's CURRENT entitlement, for the admin profile screen. READ-ONLY BY CONSTRUCTION. ──
 //
 // ⚠️ NEVER call entitlements.getStatus() from here. getStatus calls ensureTrial(), which INSERTs a
-// user_trials row with started_at = NOW() for anyone who has none. started_at is the origin of the
-// rolling 30-day window, so simply OPENING a user's profile would move that user's refill date to
-// the moment of the page view and orphan any quota_grant written before it. A screen that describes
-// an account must never modify it. Everything below reads tables directly.
+// user_trials row with started_at = NOW() for anyone who has none — and claims their device under the
+// one-free-allowance-per-device rule. started_at anchors the Free plan's counting start, so simply
+// OPENING a user's profile would start their one-time allowance at the moment of the page view, orphan
+// any quota_grant written before it, and could lock another account out of that device. A screen that
+// describes an account must never modify it. Everything below reads tables directly.
 //
 // Returns the plan plus, per metered kind, allowance / used / remaining for the CURRENT period.
 async function planStateOf(userId) {
@@ -827,11 +831,22 @@ async function planStateOf(userId) {
       const t = await g('SELECT started_at FROM user_trials WHERE user_id = $1', [userId]);
       if (t && t.started_at) {
         out.status = 'free'; out.free_since = t.started_at;
+        // ONE-TIME: a start, max(started_at, cutover), and NO end. freeWindowEnd answers null, so
+        // window_end and window_days_left stay null — a free user has no refill date to show, and
+        // rendering one would promise something the server no longer does.
         winStart = ent.freeWindowStart(t.started_at);
         winEnd = ent.freeWindowEnd(t.started_at);
         ledgerSource = 'trial';          // the ledger source string is still 'trial' for Free
         out.window_start = winStart.toISOString();
-        out.window_end = winEnd.toISOString();
+        out.window_end = null;
+      } else {
+        // No row: nothing used yet — OR an account that can never get one. Read-only look at the device
+        // rule, so "the one-time allowance is untouched" is not shown for a user the app will refuse.
+        const owner = await freeDeviceOwnerOf(userId);
+        if (owner) {
+          out.caveats.push(`A device this account uses already gave its one-time Free allowance to user #${owner}. `
+            + 'Free generations requested from that device are refused (device_trial_used) — a plan or a download pass still works.');
+        }
       }
     }
     if (winEnd) {
@@ -877,14 +892,16 @@ async function planStateOf(userId) {
         used_any_pool: winStart ? int(row.used_any_pool) : 0,
         used_lifetime: int(row.used_lifetime),
         last_used: row.last_used || null,
-        // The free résumé allowance dropped 2 → 1, so historical usage can legitimately exceed the
-        // current allowance. Flagged rather than clamped, so it does not read as a billing fault.
+        // Allowances changed on 2026-09-13 — plan letters were cut (Starter 30 → 10), and free usage
+        // recorded between the cutover instant and the deploy ran under the old 5-letter allowance — so
+        // usage can legitimately exceed the current allowance. Flagged rather than clamped, so it does not
+        // read as a billing fault. (Free usage from BEFORE the cutover is outside the window altogether.)
         over: used > allowance,
       });
     }
 
-    // Legacy credits are still a live fallback pool, so they are reported — but demoted, and only
-    // rendered when non-zero.
+    // Legacy credits pay for no generation since 2026-09-13; the balance is reported for the record —
+    // demoted, and only rendered when non-zero.
     const cr = await g(`SELECT credits_remaining, credits_total, expiry_date, last_purchase_date
                           FROM user_credits WHERE user_id = $1 ORDER BY id DESC LIMIT 1`, [userId]);
     if (cr) {
@@ -898,6 +915,19 @@ async function planStateOf(userId) {
     out.caveats.push('Some plan details could not be loaded.');
   }
   return out;
+}
+
+// The account that holds the one-time Free allowance of a device THIS account has reported, if that is
+// another account. Read-only, most recently used device first; null when unknown or when the tables
+// are missing — a caveat is only ever added on a positive answer.
+async function freeDeviceOwnerOf(userId) {
+  if (!(await tableExists('user_devices')) || !(await tableExists('trial_devices'))) return null;
+  const r = await g(
+    `SELECT t.first_user_id AS owner
+       FROM user_devices d JOIN trial_devices t ON t.device_id = d.device_id
+      WHERE d.user_id = $1 AND t.first_user_id IS NOT NULL AND t.first_user_id <> $1
+      ORDER BY d.last_seen DESC LIMIT 1`, [userId]);
+  return r && r.owner != null ? int(r.owner) : null;
 }
 
 async function hasOpenThread(userId) {
@@ -951,8 +981,8 @@ async function getUserOverview(userId) {
   return {
     user: publicUser(u),
     assets,
-    // What the user is actually on TODAY. `credits` below is the legacy pool, kept because it is
-    // still a live fallback for grandfathered accounts — but `plan` is the truth for everyone else.
+    // What the user is actually on TODAY. `credits` below is the legacy pool, kept for the record —
+    // since 2026-09-13 it pays for no resume or cover letter, so `plan` is the truth about generating.
     plan,
     credits: {
       remaining: creditRow ? int(creditRow.credits_remaining) : 0,

@@ -2733,16 +2733,17 @@ function exportSig(){
           return;
         }
       } else {
-      // Check for insufficient credits (402 status)
+      // 402 = the cover letter allowance is used up (Free plan or plan). Credits no longer pay for
+      // generation, so the way forward is Plans — never the legacy credits Usage screen.
       if (response.status === 402) {
-        console.log(`💳 [${requestId}] Insufficient credits error`);
-        const errorData = await response.json();
+        console.log(`💳 [${requestId}] Allowance used up`);
+        const errorData = await response.json().catch(() => ({}));
         Alert.alert(
-          'Insufficient Credits',
-          errorData.message || `You need credits to generate cover letters. Current balance: ${creditBalance}. Visit the Usage & Credits screen to purchase more.`,
+          'Allowance used up',
+          errorData.error || errorData.message || "You've used your cover letter allowance. Start a plan in Plans & Usage to keep generating.",
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'View Usage', onPress: () => setScreen('usage') }
+            { text: 'Not now', style: 'cancel' },
+            { text: 'See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
           ]
         );
         return;
@@ -2959,18 +2960,9 @@ function exportSig(){
     // Validate profile before generating
     if (!validateProfileForGeneration()) return;
 
-    // Check credits before generating
-    if (creditBalance <= 0) {
-      Alert.alert(
-        'Insufficient Credits',
-        'Remaining credits are 0. Please recharge to continue generating cover letters.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: '💎 See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
-        ]
-      );
-      return;
-    }
+    // ⚠️ NO CLIENT CREDIT GATE (2026-09-13). Generation is covered by the Free plan allowance or a
+    // plan, never by credits, and sending is free — so a 0 credit balance says nothing about whether
+    // this may run. The server decides and answers 402 quota_exhausted, which routes to Plans.
     
     try {
       isCancelledRef.current = false;
@@ -3099,18 +3091,9 @@ function exportSig(){
   };
 
   const sendAllApplicationsFromReview = async () => {
-    // Check credits before sending
-    if (creditBalance <= 0) {
-      Alert.alert(
-        'Insufficient Credits',
-        'Remaining credits are 0. Please recharge to continue sending applications.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: '💎 See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
-        ]
-      );
-      return;
-    }
+    // ⚠️ NO CLIENT CREDIT GATE (2026-09-13). Generation is covered by the Free plan allowance or a
+    // plan, never by credits, and sending is free — so a 0 credit balance says nothing about whether
+    // this may run. The server decides and answers 402 quota_exhausted, which routes to Plans.
     
     try {
       // Validate that all cover letters are generated
@@ -3232,18 +3215,9 @@ function exportSig(){
     // Validate profile before generating and sending
     if (!validateProfileForGeneration()) return;
 
-    // Check credits before generating and sending
-    if (creditBalance <= 0) {
-      Alert.alert(
-        'Insufficient Credits',
-        'Remaining credits are 0. Please recharge to continue generating and sending applications.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: '💎 See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
-        ]
-      );
-      return;
-    }
+    // ⚠️ NO CLIENT CREDIT GATE (2026-09-13). Generation is covered by the Free plan allowance or a
+    // plan, never by credits, and sending is free — so a 0 credit balance says nothing about whether
+    // this may run. The server decides and answers 402 quota_exhausted, which routes to Plans.
     
     try {
       isCancelledRef.current = false;
@@ -4566,9 +4540,18 @@ function exportSig(){
     }
   }, [screen]);
 
-  // Load packages when screen changes to 'packages'
+  // ⚠️ THE CREDIT-PACK STORE IS RETIRED (2026-09-13). Credits no longer pay for generating resumes or
+  // cover letters, so selling packs would take money for nothing. Any path that still sets the
+  // 'packages' screen is sent to Plans instead; the old grid below never renders.
   useEffect(() => {
-    if (screen === 'packages' && user?.token) {
+    if (screen !== 'packages') return;
+    setScreen('dashboard');
+    try { require('expo-router').router?.push?.('/(subscription)/plans'); } catch { /* optional */ }
+  }, [screen]);
+
+  // Load packages when screen changes to 'packages' (unreachable now — kept so admin tooling compiles)
+  useEffect(() => {
+    if (false && screen === 'packages' && user?.token) {
       const fetchUserPackages = async () => {
         try {
           setLoadingUserPackages(true);
@@ -7951,7 +7934,7 @@ function exportSig(){
             <Text style={styles.legalParagraph}>By accessing and using CVApplyr, you accept and agree to be bound by these Terms and Conditions. If you do not agree, please discontinue use immediately.</Text>
 
             <Text style={styles.legalSection}>2. Service Description</Text>
-            <Text style={styles.legalParagraph}>CVApplyr helps you find jobs, fill in application forms, and create cover letters and tailored resumes using AI. Searching, Auto Fill, page translation, applying and downloading your documents are free to use. AI generation — cover letters and resumes — runs on a monthly allowance.</Text>
+            <Text style={styles.legalParagraph}>CVApplyr helps you find jobs, fill in application forms, and create cover letters and tailored resumes using AI. Searching, Auto Fill, page translation and applying are free to use. AI generation — cover letters and tailored resumes — is covered only by the one-time Free plan allowance or a paid plan's monthly allowance; credits are not used for it. Downloading a document as PDF or Word needs a paid plan or a one-time download pass.</Text>
 
             <Text style={styles.legalSection}>3. User Account</Text>
             <Text style={styles.legalParagraph}>• You must provide accurate registration information{'\n'}• You are responsible for maintaining account security{'\n'}• One account per user is permitted{'\n'}• Sharing accounts is prohibited</Text>
@@ -7961,9 +7944,9 @@ function exportSig(){
                 Keep this section in step with server/services/entitlements.js and the website terms —
                 scripts/check-pricing-parity.js guards the server side of that. */}
             <Text style={styles.legalSection}>4. Free plan and subscriptions</Text>
-            <Text style={styles.legalParagraph}>Every account is on the <Text style={{ fontWeight: '700' }}>Free plan</Text>: 5 AI cover letters and 1 AI resume every 30 days, refilling automatically on a rolling 30-day cycle from the day you signed up. It does not expire, requires no payment details, and never converts into a paid plan on its own.</Text>
-            <Text style={styles.legalParagraph}>Paid plans are auto-renewable monthly subscriptions. Each runs for a length of 1 month and renews monthly until you cancel:{'\n'}{'\n'}• cvapplyr Starter — 1 month — US$4.99/month — 30 cover letters, 5 resumes{'\n'}• cvapplyr Plus — 1 month — US$9.99/month — 100 cover letters, 10 resumes{'\n'}• cvapplyr Pro — 1 month — US$14.99/month — 150 cover letters, 15 resumes{'\n'}• cvapplyr Power — 1 month — US$24.99/month — 300 cover letters, 25 resumes{'\n'}• cvapplyr Max — 1 month — US$49.99/month — 1000 cover letters, 50 resumes</Text>
-            <Text style={styles.legalParagraph}>Prices shown are the US prices; outside the US the store charges its own local price tier, and the exact amount in your currency is always shown before you confirm.{'\n'}{'\n'}• Payment is charged to your {Platform.OS === 'android' ? 'Google Play account' : 'Apple ID account'} at confirmation of purchase.{'\n'}• Your subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period.{'\n'}• Your account is charged for renewal within 24 hours prior to the end of the current period.{'\n'}• You can manage your subscription and turn off auto-renewal in your {Platform.OS === 'android' ? 'Google Play' : 'Apple ID'} account settings after purchase.{'\n'}• Your monthly allowance resets each period and does not carry over. Generation is counted only when it succeeds.{'\n'}• Cancelling stops the next renewal; you keep your plan until the end of the period you have paid for, then return to the Free plan.</Text>
+            <Text style={styles.legalParagraph}>Every account is on the <Text style={{ fontWeight: '700' }}>Free plan</Text>: 3 AI resume generations and 3 AI cover letters, one time. The allowance is given once for the life of the account — it does not refill or reset — and once per device: another account on a device that already used it does not get a new one. Downloads are not included. The Free plan requires no payment details and never converts into a paid plan on its own.</Text>
+            <Text style={styles.legalParagraph}>Paid plans are auto-renewable monthly subscriptions. Each runs for a length of 1 month and renews monthly until you cancel:{'\n'}{'\n'}• cvapplyr Starter — 1 month — US$4.99/month — 6 resumes, 10 cover letters, PDF & Word downloads{'\n'}• cvapplyr Plus — 1 month — US$9.99/month — 15 resumes, 25 cover letters, PDF & Word downloads{'\n'}• cvapplyr Pro — 1 month — US$14.99/month — 25 resumes, 50 cover letters, PDF & Word downloads{'\n'}• cvapplyr Power — 1 month — US$24.99/month — 40 resumes, 100 cover letters, PDF & Word downloads{'\n'}• cvapplyr Max — 1 month — US$49.99/month — 100 resumes, 500 cover letters, PDF & Word downloads</Text>
+            <Text style={styles.legalParagraph}>Prices shown are the US prices; outside the US the store charges its own local price tier, and the exact amount in your currency is always shown before you confirm.{'\n'}{'\n'}• Payment is charged to your {Platform.OS === 'android' ? 'Google Play account' : 'Apple ID account'} at confirmation of purchase.{'\n'}• Your subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period.{'\n'}• Your account is charged for renewal within 24 hours prior to the end of the current period.{'\n'}• You can manage your subscription and turn off auto-renewal in your {Platform.OS === 'android' ? 'Google Play' : 'Apple ID'} account settings after purchase.{'\n'}• A paid plan's monthly allowance resets each period and does not carry over; the Free plan allowance never resets. Generation is counted only when it succeeds, and it is never charged to credits.{'\n'}• Cancelling stops the next renewal; you keep your plan until the end of the period you have paid for, then return to the Free plan.</Text>
             <Text style={styles.legalParagraph}>
               Full terms:{' '}
               <Text style={{ color: '#3D7EFC', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/terms-of-service.html')}>Terms of Use</Text>
@@ -8125,13 +8108,13 @@ function exportSig(){
             <Text style={styles.legalParagraph}>Cancelling is not the same as a refund. Turning off auto-renewal in your {Platform.OS === 'android' ? 'Google Play' : 'Apple ID'} account settings stops the next charge; you keep your plan and its allowance until the end of the period you have already paid for, then return to the Free plan. Cancelling mid-period does not refund that period.</Text>
 
             <Text style={styles.legalSection}>4. The Free plan</Text>
-            <Text style={styles.legalParagraph}>The Free plan is provided at no cost, so nothing about it is refundable. Its allowance does not carry over, and unused generations are not converted into anything else.</Text>
+            <Text style={styles.legalParagraph}>The Free plan is provided at no cost, so nothing about it is refundable. Its one-time allowance does not refill, and unused generations are not converted into anything else.</Text>
 
             <Text style={styles.legalSection}>5. If something went wrong on our side</Text>
             <Text style={styles.legalParagraph}>If a generation failed, was charged against your allowance in error, or the service was unavailable, contact support@cvapplyr.com. We can restore allowance on your account directly — that is usually faster than a store refund, and we would rather fix it than have you pay for something that did not work.</Text>
 
             <Text style={styles.legalSection}>6. Legacy credits</Text>
-            <Text style={styles.legalParagraph}>Credits bought before we moved to plans remain usable and do not expire while your account is active. They are non-refundable, are used only after your plan or Free allowance is exhausted, and are forfeited if an account is terminated for a breach of our Terms.</Text>
+            <Text style={styles.legalParagraph}>Credit packs are no longer sold. From September 13, 2026, credits no longer pay for AI resume or cover letter generation — that is covered only by the Free plan allowance or a paid plan. Credits bought earlier are non-refundable and are forfeited if an account is terminated for a breach of our Terms.</Text>
 
             <Text style={styles.legalSection}>7. Chargebacks and Disputes</Text>
             <Text style={styles.legalParagraph}>• Please contact Apple or us before initiating a chargeback{'\n'}• Chargebacks may result in account suspension{'\n'}• We reserve the right to dispute illegitimate chargebacks{'\n'}• Evidence will be provided to payment processors</Text>
@@ -8783,17 +8766,7 @@ function exportSig(){
                       <TouchableOpacity
                         style={styles.reviewActionButtonFull}
                         onPress={() => {
-                          if (creditBalance <= 0) {
-                            Alert.alert(
-                              'Insufficient Credits',
-                              'Remaining credits are 0. Please recharge to continue downloading.',
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                { text: 'See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
-                              ]
-                            );
-                            return;
-                          }
+                          // No credit gate: the server decides (402 → Plans, 403 → the download paywall).
                           Alert.alert(
                             'Download Cover Letter',
                             'Choose a format',
@@ -8826,17 +8799,7 @@ function exportSig(){
                       <TouchableOpacity
                         style={styles.reviewActionButtonFull}
                         onPress={() => {
-                          if (creditBalance <= 0) {
-                            Alert.alert(
-                              'Insufficient Credits',
-                              'Remaining credits are 0. Please recharge to continue sending applications.',
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                { text: 'See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
-                              ]
-                            );
-                            return;
-                          }
+                          // No credit gate: the server decides (402 → Plans, 403 → the download paywall).
                           sendApplicationFromReview(currentReviewTab);
                         }}
                         disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || getCoverLetter(currentReviewTab).sent}
@@ -8883,17 +8846,7 @@ function exportSig(){
               <TouchableOpacity
                 style={styles.reviewEmptyActionBtn}
                 onPress={() => {
-                  if (creditBalance <= 0) {
-                    Alert.alert(
-                      'Insufficient Credits',
-                      'Remaining credits are 0. Please recharge to continue generating cover letters.',
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
-                      ]
-                    );
-                    return;
-                  }
+                  // No credit gate: the server decides (402 → Plans, 403 → the download paywall).
                   generateCoverLetterForReview(currentReviewTab);
                 }}
                 disabled={reviewGeneratingIndex === currentReviewTab || reviewGeneratingAll || reviewGeneratingAndSendingAll}

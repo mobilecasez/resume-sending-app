@@ -1012,7 +1012,7 @@ async function generateAI(req, res) {
     // seconds before this request; without this flag, a build whose last plan unit was spent in between
     // (another device, another build) would silently fall through to the legacy-credits lane and take
     // 2 credits nobody agreed to. With it, only plan / free / pass / cache may pay, or this is a 402.
-    // false is sent only after the user explicitly confirmed a credit charge.
+    // false is sent only when the user chose to build although the plan could not be read (there is no credit dialog any more).
     const coveredOnly = !!(req.body && req.body.coveredOnly === true);
 
     if (!rawText || rawText.trim().length < 20) {
@@ -1106,16 +1106,20 @@ async function generateAI(req, res) {
             });
         }
 
-        // ⚠️ NEVER CHARGE FOR AN ANSWER THE CLIENT CAN NO LONGER RECEIVE.
-        // The app aborts at 120s; a run that retries a truncated Gemini response routinely passes
-        // that, and then tells the user "tap Generate again — it usually succeeds on the next try".
-        // Charging anyway meant the retry was refused for a resume they had already paid for.
-        // The resume is still SAVED below, so nothing is lost — their retry regenerates and pays
-        // exactly once. Only the synchronous lane is guarded: asJob's capturing res has no
-        // writableEnded, and its request socket is deliberately closed after the 202.
+        // ⚠️ A CLIENT THAT GAVE UP IS NOT A WAIVER (2026-09-14). This lane used to skip the charge when the app
+        // disconnected before the answer ("never charge for an answer the client can no longer receive") while
+        // STILL saving the resume into user_resumes. On a one-time allowance that is an endless one: the gate
+        // only asks allow − used ≥ 1, a waived run spends nothing, so kill the app during the AI call, reopen
+        // the builder, find the resume saved — and repeat. So a saved resume is a paid-for resume (settlePayment),
+        // and a resume nothing will pay for is neither saved nor handed over. An employer build the user gave
+        // up on is also cached once paid, so their retry is a free hit rather than a second charge.
+        // The flag survives for the support log only. ⚠️ It listens on RES, not req: measured locally (Node 24,
+        // this repo's Express 5), IncomingMessage 'close' has already fired by the time this line runs — it is
+        // emitted once the body is consumed — so the old req listener never saw a real mid-AI abort. The waiver
+        // was dead code; "fixing" its listener would have switched the endless allowance on.
         let clientGone = false;
-        if (typeof res.writableEnded === 'boolean' && req && typeof req.on === 'function') {
-            req.on('close', () => { if (!res.writableEnded) clientGone = true; });
+        if (typeof res.writableEnded === 'boolean' && typeof res.on === 'function') {
+            res.on('close', () => { if (!res.writableEnded) clientGone = true; });
         }
         const RESUME_CREDIT_COST = await getEventCost('resume_ai_generate');   // legacy display only
         const creditCheck = { hasCredits: true };   // gate above is authoritative now
@@ -1223,22 +1227,29 @@ async function generateAI(req, res) {
         // ledger row exists, and loses cleanly. Taken AFTER the model returned: the lock IS a Postgres
         // transaction and must never be held across a 90-second AI call.
         // ⚠️ THE SAVE SITS UNDER IT TOO, because the free regeneration's only ledger is the regen_count
-        // bump — so the cache may only be written once that bump has landed.
-        // ⚠️ AND THIS IS THE SYNCHRONOUS SCREEN: THE USER IS HOLDING THE RESULT. Unlike the doc lane, which
-        // can only deliver by storing, this lane hands the resume back in the response — so a charge that
-        // cannot be confirmed, or a cache that will not take the write, costs the CACHE and never the
-        // answer: log it loudly, skip the store, still 200. Only the coveredOnly refusal is a non-answer
-        // (nothing charged, nothing saved), exactly as it was before.
-        let charged = false;   // did something actually pay for this run — the cache write depends on it
+        // bump — so the cache may only be written once that bump has landed, and a second free regeneration
+        // re-reads regen_count only after it has.
+        // ⚠️ A SAVED RESUME IS A DELIVERED RESUME, SO NOTHING UNPAID IS SAVED OR HANDED OVER (2026-09-14). This
+        // lane used to treat the response as the delivery and the charge as a cache concern: a charge that came
+        // back 'none' (the last unit went to an overlapping build) or 'error' still saved the resume and
+        // answered 200, uncached — so parallel Generates each got a resume for one unit, past a one-time
+        // allowance. Now 'none' is a 402 quota_exhausted (the app opens Plans), 'error' or anything unrecognised
+        // a 500, and in both nothing is saved, nothing is returned and whatever landed goes back
+        // (giveBackDocCharges). Only a CACHE that will not take the write still costs just the cache.
+        let charged = false;   // did something actually pay for this run — the save, the answer and the cache depend on it
         const paid = { passId: null, credits: null, ledgerId: null };   // what a refusal has to give back
         let refusal = null;    // { status, body } — decided under the lock, answered after it
         let savedRow = false;
+        const allowanceUsedUp = () => ({ status: 402, body: {
+            error: 'Your plan allowance was used up while this resume was being written. Open Plans & Usage to continue.',
+            reason: 'quota_exhausted',
+        } });
 
         /**
-         * Settle what this run costs: the pass first, the plan/credits second, and `refusal` when nothing
+         * Settle what this run costs: the pass first, the plan/free unit second, and `refusal` when nothing
          * that is allowed to pay still can. Leaves `charged` true only for a payment it watched land.
          * The free regeneration bypassed the gate, so it must not be counted against the quota either —
-         * its ledger is the regen_count bump in persistResume.
+         * its ledger is the regen_count bump in persistResume, re-read here under the lock.
          * ⚠️ Spend the PASS first when one covered this, and only fall back to the plan if the claim did
          * not land — two taps racing means the second must still be paid for by something, and silently
          * generating for free is the wrong way to lose that race.
@@ -1247,67 +1258,90 @@ async function generateAI(req, res) {
          * the pass claim may have lost a race. Then consumeOnSuccess would pick credits — the one lane
          * this build must never use. Refuse without charging or saving: handing it over free would make
          * racing builds a free-resume machine.
+         * ⚠️ NO WAIVER FOR A CLIENT THAT DISCONNECTED — see clientGone.
          */
         const settlePayment = async () => {
             let spentPass = false;
-            if (clientGone) {
-                console.warn('[resumeBuilder] client disconnected before delivery — resume saved, nothing charged');
-            } else {
-                if (viaPass) {
-                    const claimed = await downloads.claimGeneration(userId, 'resume', passEmployer, req);
-                    spentPass = !!(claimed && claimed.charged);
-                    if (spentPass) paid.passId = claimed.passId || null;
+            if (freeRegen) {
+                // ⚠️ THE ONE FREE REGENERATION, RE-READ UNDER THE LOCK. The gate read regen_count before the AI
+                // minute, so regenerations started together all read 0 and each landed its own bump: N taps, N
+                // free resumes. Under this lock the next one reads the bump the previous one wrote.
+                const rrow = await dbConfig.get('SELECT regen_count FROM user_resumes WHERE user_id = $1', [userId]);
+                if (rrow && (rrow.regen_count || 0) >= 1) {
+                    console.warn(`[resumeBuilder] a racing free regeneration for user ${userId} already used the one it had — refused, nothing saved`);
+                    refusal = { status: 403, body: {
+                        error: 'Your free plan includes one regeneration, and you have used it. Upgrade to keep refining your resume.',
+                        reason: 'regen_limit',
+                    } };
+                    return;
                 }
-                if (!spentPass && !freeRegen) {
-                    if (coveredOnly) {
-                        const now = await entitlements.canConsumeMany(userId, 'resume', 1, req);
-                        if (!now.allowed || now.via === 'credits') {
-                            console.warn(`[resumeBuilder] coveredOnly build for user ${userId} lost its cover during the run — refused, nothing charged`);
-                            refusal = { status: 402, body: {
-                                error: 'Your plan allowance was used up while this resume was being written. Open Plans & Usage to continue.',
-                                reason: 'quota_exhausted',
-                            } };
-                            return;
-                        }
-                    }
-                    const marks = await creditMarksFor(userId);   // read only by the fallback below
-                    const used = await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
-                    const via = used && used.via ? used.via : 'error';
-                    // Recorded before anything is decided: 'error' can still carry a deduction that landed first.
-                    if (used && used.ledgerId) paid.ledgerId = used.ledgerId;
-                    if (used && Object.prototype.hasOwnProperty.call(used, 'charge')) {
-                        if (used.charge && used.charge.charged) paid.credits = { charged: true, cost: Number(used.charge.cost) || 0 };
-                    } else if (via === 'credits') {
-                        // An entitlements that predates its own `charge` answer: the history marks are all
-                        // there is. Conservative — it can under-report a payment, never invent one.
-                        const d = await creditsDeductedSince(userId, marks);
-                        if (d.paid) paid.credits = { charged: true, cost: d.cost };
-                    }
-                    if (via === 'credits') {
-                        // ⚠️ 'credits' is what was ATTEMPTED, not what was paid: on a short balance
-                        // chargeCredits answers { charged:false, insufficient:true } WITHOUT throwing and
-                        // consumeOnSuccess still reports 'credits'. Its own result is the only proof.
-                        charged = !!paid.credits;
-                        if (!charged) console.warn(`[resumeBuilder] credits lane for user ${userId} deducted nothing (short balance or a racing build) — resume delivered, not cached`);
-                        if (coveredOnly) {
-                            // The residual race between the re-check above and consumeOnSuccess: this
-                            // build's own credits refunded and its ledger row deleted, then the same 402.
-                            await giveBackDocCharges(userId, paid, 'a coveredOnly build slipped into credits');
-                            refusal = { status: 402, body: {
-                                error: 'Your plan allowance was used up while this resume was being written. Open Plans & Usage to continue.',
-                                reason: 'quota_exhausted',
-                            } };
-                            return;
-                        }
-                    } else if (via === 'plan' || via === 'trial') {
-                        charged = true;                  // plan / trial: the ledger row IS the charge
-                    } else {
-                        // 'error', or anything unrecognised: nothing was recorded, so nothing is cached.
-                        console.error(`[resumeBuilder] the charge for user ${userId} could not be confirmed — resume delivered, not cached`);
-                    }
-                }
-                if (spentPass) charged = true;
             }
+            if (viaPass) {
+                const claimed = await downloads.claimGeneration(userId, 'resume', passEmployer, req);
+                spentPass = !!(claimed && claimed.charged);
+                if (spentPass) paid.passId = claimed.passId || null;
+            }
+            if (!spentPass && !freeRegen) {
+                if (coveredOnly) {
+                    const now = await entitlements.canConsumeMany(userId, 'resume', 1, req);
+                    if (!now.allowed || now.via === 'credits') {
+                        console.warn(`[resumeBuilder] coveredOnly build for user ${userId} lost its cover during the run — refused, nothing charged`);
+                        refusal = allowanceUsedUp();
+                        return;
+                    }
+                }
+                const marks = await creditMarksFor(userId);   // read only by the fallback below
+                const used = await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
+                const via = used && used.via ? used.via : 'error';
+                // Recorded before anything is decided: 'error' can still carry a deduction that landed first.
+                if (used && used.ledgerId) paid.ledgerId = used.ledgerId;
+                if (used && Object.prototype.hasOwnProperty.call(used, 'charge')) {
+                    if (used.charge && used.charge.charged) paid.credits = { charged: true, cost: Number(used.charge.cost) || 0 };
+                } else if (via === 'credits') {
+                    // An entitlements that predates its own `charge` answer: the history marks are all
+                    // there is. Conservative — it can under-report a payment, never invent one.
+                    const d = await creditsDeductedSince(userId, marks);
+                    if (d.paid) paid.credits = { charged: true, cost: d.cost };
+                }
+                if (via === 'credits') {
+                    // ⚠️ 'credits' is what was ATTEMPTED, not what was paid: on a short balance
+                    // chargeCredits answers { charged:false, insufficient:true } WITHOUT throwing and
+                    // consumeOnSuccess still reports 'credits'. Its own result is the only proof.
+                    charged = !!paid.credits;
+                    if (coveredOnly) {
+                        // The residual race between the re-check above and consumeOnSuccess: this
+                        // build's own credits refunded and its ledger row deleted, then the same 402.
+                        await giveBackDocCharges(userId, paid, 'a coveredOnly build slipped into credits');
+                        refusal = allowanceUsedUp();
+                        return;
+                    }
+                    if (!charged) {
+                        console.warn(`[resumeBuilder] credits lane for user ${userId} deducted nothing (short balance or a racing build) — refused, nothing saved`);
+                        await giveBackDocCharges(userId, paid, 'the credits lane deducted nothing');
+                        refusal = { status: 402, body: {
+                            error: 'You do not have enough credits left for this resume. Open Plans & Usage to continue.',
+                            reason: 'quota_exhausted',
+                        } };
+                        return;
+                    }
+                } else if (via === 'plan' || via === 'trial') {
+                    charged = true;                  // plan / trial: the ledger row IS the charge
+                } else if (via === 'none') {
+                    // ⚠️ NOTHING LEFT THAT MAY PAY: the gate saw a unit, an overlapping request spent it during the
+                    // AI minute, and consumeOnSuccess wrote no row. A refusal — never a free resume per parallel tap.
+                    console.warn(`[resumeBuilder] nothing left to pay for user ${userId}'s resume (the last unit went to an overlapping build) — refused, nothing saved`);
+                    await giveBackDocCharges(userId, paid, 'nothing left that may pay');
+                    refusal = allowanceUsedUp();
+                    return;
+                } else {
+                    // 'error', or anything unrecognised: nothing confirmed, so nothing is saved or handed over.
+                    console.error(`[resumeBuilder] the charge for user ${userId} could not be confirmed (${via}) — refused, nothing saved`);
+                    await giveBackDocCharges(userId, paid, 'the charge could not be confirmed');
+                    refusal = { status: 500, body: { error: 'We could not finish generating your resume. Please tap Generate again.', reason: 'failed' } };
+                    return;
+                }
+            }
+            if (spentPass) charged = true;
         };
 
         /** The build's row in user_resumes, plus the regeneration ledger the free lane counts on. */
@@ -1323,7 +1357,7 @@ async function generateAI(req, res) {
                 isRegenerate ? 'UPDATE user_resumes SET regen_count = regen_count + 1 WHERE user_id = $1'
                              : 'UPDATE user_resumes SET regen_count = 0 WHERE user_id = $1',
                 [userId]).then(() => true, () => false);
-            if (freeRegen && !clientGone && regenLanded) charged = true;
+            if (freeRegen && regenLanded) charged = true;
             return true;
         };
 
@@ -1331,18 +1365,18 @@ async function generateAI(req, res) {
         try {
             await withUsageLock(userId, 'resume', async () => {
                 await settlePayment();
-                if (refusal) return;                     // nothing charged: nothing saved, nothing stored
+                if (refusal) return;                     // nothing paid for: nothing saved, nothing stored
                 savedRow = await persistResume();
-                // ⚠️ WRITE THE CACHE ONLY FOR A BUILD SOMEONE PAID FOR. A stored document is a free hit for
-                // ever after; storing one the sync lane waived (clientGone) or whose charge did not record
-                // would turn a single uncharged run into unlimited free copies for that employer.
+                // ⚠️ WRITE THE CACHE ONLY FOR A BUILD SOMEONE PAID FOR. A stored document is a free hit for ever
+                // after; storing one whose charge did not record would turn a single uncharged run into
+                // unlimited free copies for that employer.
                 if (passEmployer && cacheFp && charged) {
                     const stored = await employerDocs.put({
                         userId, kind: 'resume', employer: passEmployer, jobUrl: (job && job.url) || '', jobTitle: (job && job.title) || '',
                         fingerprint: cacheFp, model: RESUME_MODEL, payload: resumeData, env,
                     });
-                    // ⚠️ NOT A REASON TO REFUSE, unlike the doc lane: the resume is already in the response
-                    // this user is waiting on. An unwritten cache only costs the identical rebuild its free
+                    // ⚠️ NOT A REASON TO REFUSE, unlike the doc lane: the resume is paid for, saved, and in the
+                    // response this user is waiting on. An unwritten cache only costs the identical rebuild its free
                     // hit — loud here so it surfaces as a support line, never as a silent second charge.
                     if (!stored) console.error(`[resumeBuilder] ⚠️ PAID RESUME NOT CACHED — user ${userId}, "${passEmployer}", fp ${String(cacheFp).slice(0, 12)} — an identical rebuild will be charged again`);
                 }
@@ -1354,13 +1388,27 @@ async function generateAI(req, res) {
             console.error(`[resumeBuilder] the charge/save for user ${userId} hit an error under the usage lock (${savedRow ? 'the resume was saved' : 'nothing saved yet'}):`, e.message);
         }
         if (refusal) return res.status(refusal.status).json(refusal.body);
-        // ⚠️ THE RESUME IS STILL DELIVERED WHEN THE LOCKED SAVE DID NOT LAND — a lock that could not be taken
-        // (nothing was charged then: every charge sits under it) or a save that threw under it (the charge
-        // may well stand). Either way this retry costs no money and is exactly what the user is waiting
-        // for, while the CACHE stays unwritten: a store outside the lock is the very race the lock exists
-        // to stop, and an uncached build only pays again. A save that fails even now is the one thing this
-        // lane cannot paper over: it throws to the handler's catch — "tap Generate again".
-        if (!savedRow) savedRow = await persistResume();
+        if (!savedRow) {
+            if (!charged) {
+                // ⚠️ NOTHING CONFIRMED PAID, SO NOTHING SAVED OR HANDED OVER. A lock that could not be taken (every
+                // charge sits under it) or a call that threw before the charge landed used to fall through to a save
+                // out here and a 200 — "this retry costs no money" — which made a lock failure a free resume.
+                await giveBackDocCharges(userId, paid, 'the usage lock failed before the charge was confirmed');
+                return res.status(500).json({ error: 'We could not finish generating your resume. Please tap Generate again.', reason: 'failed' });
+            }
+            // Paid, but the save under the lock threw: one retry out here. The charge is already in, so this races
+            // nothing that pays — and the CACHE stays unwritten: a store outside the lock is the race the lock
+            // exists to stop, and an uncached build only pays again.
+            try {
+                savedRow = await persistResume();
+            } catch (saveErr) {
+                // ⚠️ A PAID RESUME THAT CANNOT BE SAVED DOES NOT STAY PAID FOR: every charge this request made goes
+                // back before the handler's catch answers "tap Generate again", so the retry is not a second charge.
+                await giveBackDocCharges(userId, paid, 'the paid resume could not be saved');
+                throw saveErr;
+            }
+        }
+        if (clientGone) console.warn(`[resumeBuilder] user ${userId}'s client disconnected before delivery — the resume is saved and paid for, and the builder shows it on reopen`);
 
         return res.json({ success: true, resumeData, cached: false, tailoredFor: passEmployer });
     } catch (e) {
@@ -1436,7 +1484,9 @@ function docResearchSiteFor(company, job) {
  * exists, and loses cleanly: 402, nothing charged, nothing stored.
  * ⚠️ THE BUILDER LANE'S SYNCHRONOUS Generate TAKES IT TOO (kind 'resume', after the model returns), or a
  * Generate and a Home doc build landing together are two lanes racing for one unit with no lock between
- * them — which is how the last plan unit got spent twice.
+ * them — which is how the last plan unit got spent twice. The letter lanes take the same key for
+ * 'cover_letter': employerLetterController's own copy, and coverLetterController's (the details worker, the
+ * bulk screen, batch-process and the Job Hub letter).
  * ⚠️ THE LOCK IS ALL THE TRANSACTION HOLDS. The work inside runs on the pool (entitlements, downloads and
  * employerDocs have no transaction surface), so each write commits the moment it lands — which is exactly
  * what the NEXT holder has to see — and NOTHING is rolled back when this transaction fails. The caller
@@ -1457,9 +1507,10 @@ async function withUsageLock(userId, kind, fn) {
 /**
  * Give back every charge ONE resume build made, because it will not deliver what it charged for (a
  * refusal after payment, an unconfirmed charge, a document that could not be stored). Both resume lanes
- * call it: the doc lane on every path that cannot hand over a docId, the builder lane on its one refusal
- * (a coveredOnly build that slipped into credits) — a builder run that merely could not CACHE keeps its
- * charge, because the resume itself is in the response.
+ * call it: the doc lane on every path that cannot hand over a docId, the builder lane on every path that
+ * will not save and return its resume (nothing left to pay, an unconfirmed charge, a credits slip, a lock
+ * that failed first, a paid resume whose save failed twice) — a builder run that merely could not CACHE
+ * keeps its charge, because the resume itself is saved and in the response.
  * Never throws: each step runs on its own, and one that fails is logged loudly for support — never
  * retried blindly, since a refund applied twice is money handed out. `paid` is emptied as it goes, so a
  * second call is a no-op.
@@ -1666,14 +1717,17 @@ async function promoteServedDoc(userId, hit, employerId, env) {
  *   5. under this user's usage lock (withUsageLock), so parallel builds decide one at a time: a racing
  *      identical document is served free; else the pass claim, else consumeOnSuccess — coveredOnly re-asked
  *      at the moment of payment, and "paid" read off THIS request's own answers (the claim, the via, its
- *      chargeCredits result), never inferred from tables another build also writes;
+ *      chargeCredits result), never inferred from tables another build also writes. Nothing left that may
+ *      pay (via 'none': the last unit went to an overlapping build) is a 402 quota_exhausted, not a 500 —
+ *      the app opens Plans for it, and nothing is stored or charged;
  *   6. store ONLY what was actually paid for — a stored document is a free hit for ever after — and when
  *      the store fails, or anything after a charge refuses, give back EVERY charge this request made
  *      (giveBackDocCharges): the credits, the pass's generation, the ledger row.
  *
- * ⚠️ NO clientGone WAIVER, UNLIKE THE SYNC BUILDER LANE. That waiver exists because a disconnected client
- * never receives its resume. Here the document is stored and Home finds it on the next lookup, so a
- * client that gave up still gets what it paid for — and its retry is a free cache hit, not a second charge.
+ * ⚠️ NO clientGone WAIVER — and since 2026-09-14 the sync builder lane has none either: waiving a run that
+ * still saved its resume made a one-time allowance endless. Here the document is stored and Home finds it on
+ * the next lookup, so a client that gave up still gets what it paid for — and its retry is a free cache hit,
+ * not a second charge.
  */
 async function generateEmployerDoc(req, res) {
     const userId = req.user.id;
@@ -1893,6 +1947,18 @@ async function generateEmployerDoc(req, res) {
                         charged = true;
                     } else if (via === 'plan' || via === 'trial') {
                         charged = true;            // plan / trial: the ledger row IS the charge
+                    } else if (via === 'none') {
+                        // ⚠️ NOTHING LEFT THAT MAY PAY — A REFUSAL, NOT A FAILURE. The gate saw a unit, an overlapping
+                        // build spent it during the AI minute, and consumeOnSuccess wrote no row. This used to fall to
+                        // the 500 below ("could not finish"), so Home offered Try again — straight back into the same
+                        // wall. A 402 opens Plans; nothing is stored or charged either way.
+                        console.warn(`[resumeBuilder] employer doc for user ${userId} / "${company}": nothing left to pay for it (the last unit went to an overlapping build) — refused, not stored`);
+                        await giveBackDocCharges(userId, paid, 'nothing left that may pay');
+                        refusal = { status: 402, body: {
+                            error: 'Your plan allowance was used up while this resume was being written. Open Plans & Usage to continue.',
+                            reason: 'quota_exhausted',
+                        } };
+                        return;
                     }
                     // 'error', or anything unrecognised: nothing confirmed, so `charged` stays false.
                 }

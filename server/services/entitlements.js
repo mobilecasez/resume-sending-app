@@ -1,16 +1,23 @@
-// Subscription entitlements — quota-based plans replacing per-credit pricing for the two AI
-// features that cost real money (cover-letter generation, resume generation). ADDITIVE and
-// non-breaking: users with no trial and no plan fall back to the legacy credit balance at the
-// old per-event price, so nobody who could generate yesterday is blocked today.
+// Subscription entitlements — the quota model for the two AI features that cost real money
+// (resume generation, cover-letter generation). A paid plan or the one-time Free plan pays for
+// them, and NOTHING else does: there is no credit fallback any more.
 //
-// Model (2026-07-31):
-//   • Job fetch, Auto Fill, translate, apply (portal + email), downloads, searches → FREE
-//     (their ai_event_costs rows are zeroed by Migration 028; the admin screen can re-price).
-//   • 7-day FREE TRIAL: 2 resume generations + 5 cover letters. ONE trial per DEVICE — the app
-//     sends a keychain-persisted device id (x-device-id); re-registering with a new email on the
-//     same device does NOT reset the trial. No device id (old builds) → one trial per user.
-//   • Paid plans (monthly): see PLANS. Store products are not wired yet — an admin can assign a
-//     plan (source 'admin') for testing via POST /api/admin/set-subscription.
+// Model (2026-09-13 — the product owner's decisions; replaces the 2026-07-31 trial and the
+// 2026-08-10 refilling Free plan):
+//   • Job fetch, Auto Fill, translate, apply (portal + email), searches → FREE (their ai_event_costs
+//     rows are zeroed by Migration 028; the admin screen can re-price). Downloads are a plan
+//     allowance or a one-time single-download pass (services/downloads.js).
+//   • FREE PLAN: 3 resume generations + 3 cover letters, ONE TIME for the life of the account — it
+//     never refills and never expires. Counted from max(user_trials.started_at, FREE_CUTOVER), so
+//     every account that existed before the switch starts it with a fresh 3 + 3. ONE free allowance
+//     per DEVICE: the app sends a keychain-persisted device id (x-device-id), and a second account on
+//     a device whose allowance is already claimed gets none ('device_trial_used'). No device id at
+//     all (old builds) → one free allowance per user. quota_grants bonuses add on top.
+//   • Paid plans (monthly): see PLANS. Bought in the stores (storeSetSubscription); an admin can
+//     also assign one (source 'admin') via POST /api/admin/set-subscription.
+//   • NO CREDITS FOR GENERATION. A legacy credit balance no longer pays for a resume or a cover
+//     letter: an exhausted allowance answers quota_exhausted (→ the plans screen), never "this uses N
+//     credits". getStatus still reports the balance, for display only.
 //   • Deduction happens ONLY on success: controllers call consumeOnSuccess() after the AI work
 //     completed; pre-flight uses canConsumeMany() which checks but never reserves.
 //   • Every consumption is a usage_ledger row with details → the in-app Usage screen.
@@ -18,7 +25,6 @@
 
 const crypto = require('crypto');
 const dbConfig = require('../../db-config');
-const { getEventCost, chargeCredits } = require('./eventCosts');
 const { PRODUCTION, normalizeEnvironment, requestEnvironment } = require('./storeEnvironment');
 
 // ── The plan catalog. priceUsd is a DISPLAY FALLBACK ONLY — see the warning below. ────────────
@@ -36,16 +42,24 @@ const { PRODUCTION, normalizeEnvironment, requestEnvironment } = require('./stor
 // Connect (group 22290874). They are NOT `com.cvapplyr.sub.*`: that namespace was proposed but
 // never created on either store, and the app fetches its buyable SKUs from this very list, so the
 // wrong id here means fetchProducts returns nothing and the paywall has no buy button at all.
+//
+// ⚠️ ALLOWANCES (2026-09-13), resumes / letters a month: Starter 6 / 10, Plus 15 / 25, Pro 25 / 50,
+// Power 40 / 100, Max 100 / 500. Prices did not move. Letters were CUT from the 2026-07-31 numbers
+// (Starter 30 → 10, Max 1000 → 500) while resumes went up, so a subscriber part-way through a billing
+// period can already have used more letters than the new allowance. That is not a fault: remaining
+// clamps at 0 until the next period, and the admin screen flags the row as `over`. The website
+// (scripts/check-pricing-parity.js) and the store-listing tools read these literals as source, so
+// PLANS must stay one plain array literal ending in "\n];".
 const PLANS = [
-  { key: 'starter', label: 'Starter', priceUsd: 4.99,  letters: 30,   resumes: 5, downloads: 20,
+  { key: 'starter', label: 'Starter', priceUsd: 4.99,  letters: 10,  resumes: 6,   downloads: 20,
     productIos: 'com.cvapplyr.mobile.sub.starter', productAndroid: 'com.cvapplyr.mobile.sub.starter' },
-  { key: 'plus',    label: 'Plus',    priceUsd: 9.99,  letters: 100,  resumes: 10, downloads: 40,
+  { key: 'plus',    label: 'Plus',    priceUsd: 9.99,  letters: 25,  resumes: 15,  downloads: 40,
     productIos: 'com.cvapplyr.mobile.sub.plus', productAndroid: 'com.cvapplyr.mobile.sub.plus' },
-  { key: 'pro',     label: 'Pro',     priceUsd: 14.99, letters: 150,  resumes: 15, downloads: 60,
+  { key: 'pro',     label: 'Pro',     priceUsd: 14.99, letters: 50,  resumes: 25,  downloads: 60,
     productIos: 'com.cvapplyr.mobile.sub.pro', productAndroid: 'com.cvapplyr.mobile.sub.pro' },
-  { key: 'power',   label: 'Power',   priceUsd: 24.99, letters: 300,  resumes: 25, downloads: 100,
+  { key: 'power',   label: 'Power',   priceUsd: 24.99, letters: 100, resumes: 40,  downloads: 100,
     productIos: 'com.cvapplyr.mobile.sub.power', productAndroid: 'com.cvapplyr.mobile.sub.power' },
-  { key: 'max',     label: 'Max',     priceUsd: 49.99, letters: 1000, resumes: 50, downloads: 200,
+  { key: 'max',     label: 'Max',     priceUsd: 49.99, letters: 500, resumes: 100, downloads: 200,
     productIos: 'com.cvapplyr.mobile.sub.max', productAndroid: 'com.cvapplyr.mobile.sub.max' },
 ];
 
@@ -61,40 +75,59 @@ try {
     }
   }
 } catch (e) { console.warn('[entitlements] product id check skipped:', e.message); }
-// ── The FREE plan (replaced the 7-day trial, 2026-08-10) ──────────────────────────────────────
-// It never expires. Instead of one 7-day window it grants the same allowance again every 30 days,
-// counted ROLLING from the day the user joined — not from the 1st of the month, so nobody who signs
-// up on the 29th gets a two-day "month".
+// ── The FREE plan — ONE TIME since 2026-09-13 ─────────────────────────────────────────────────
+// 3 resume generations + 3 cover letters for the life of the account. It never refills and never
+// expires. Both earlier shapes are still visible in the data, so the history matters:
+//   • 2026-07-31  7-day trial, 2 resumes + 5 letters, one per device.
+//   • 2026-08-10  refilling Free plan: 1 resume + 5 letters again every 30 days from signup, and on
+//                 2026-08-12 the device rule came OFF (a refilling allowance gains a 2nd account nothing).
+//   • 2026-09-13  this: one-time — which is exactly why the device rule is back (see ensureTrial).
 //
-// ⚠️ Still exported as TRIAL. quotaGrants.js and adminUserOps.js read `ent.TRIAL.letters/.resumes`,
-// and `user_trials` remains the anchor row (its started_at is the rolling origin). Renaming the
-// export would break those callers silently; the shape is unchanged, only days/resumes/label moved.
-// The in-flight 7-day trials convert on their own: the same started_at now anchors 30-day windows,
-// so nobody loses access at their old ends_at.
+// ⚠️ COUNTED FROM max(user_trials.started_at, FREE_CUTOVER), never from started_at alone. Every account
+// older than the cutover would otherwise have its whole refilling-era history billed against 3 + 3 and
+// start the new model already exhausted — and the decision is that every existing user starts it with
+// a fresh 3 + 3. So usage AND bonus grants from before the cutover belong to the old model and are not
+// counted; after that the start never moves again. ⚠️ The cutover is a fixed instant, not the deploy:
+// free usage recorded between it and the deploy (under the old code) does count.
+//
+// ⚠️ Still exported as TRIAL, and the row still lives in `user_trials` (its started_at is the counting
+// origin; usage_ledger.source stays 'trial' — see consumeOnSuccess). quotaGrants.js and adminUserOps.js
+// read `ent.TRIAL.letters/.resumes`, and scripts/check-pricing-parity.js reads THIS literal by name, so
+// keep it one plain object literal.
+// ⚠️ `days` IS NOT AN ALLOWANCE PERIOD. It survives only because user_trials.ends_at is NOT NULL and
+// ensureTrial has to write something there. Nothing grants or refuses on ends_at; the app is told not
+// to render `days` when oneTime is set.
 // ⚠️ downloads: 0 is not a new restriction — downloads have ALWAYS been paid-only. A free
 // user buys a single-download pass or subscribes.
-const FREE = { key: 'free', label: 'Free plan', days: 30, letters: 5, resumes: 1, downloads: 0 };
+const FREE = { key: 'free', label: 'Free plan', letters: 3, resumes: 3, downloads: 0, oneTime: true, days: 30 };
 const TRIAL = FREE;
-const FREE_WINDOW_MS = FREE.days * 24 * 60 * 60 * 1000;
+/** The instant the one-time model began. Nothing before it counts against the Free plan. */
+const FREE_CUTOVER = '2026-09-13T00:00:00.000Z';
+const FREE_CUTOVER_MS = Date.parse(FREE_CUTOVER);
 
-/** Start of the free window the user is in RIGHT NOW. Usage and bonus grants are both counted from
- *  here, so the allowance refills on the anniversary of signup and never part-way through. */
+/**
+ * Where the free allowance's counting starts: max(started_at, FREE_CUTOVER). Usage and bonus grants
+ * are both counted from here. It never rolls — a one-time allowance has one window, open for good.
+ * ⚠️ FAILS CLOSED. An unparseable started_at counts from the cutover, the earliest start any account
+ * can have, which can only count MORE usage than the true start, never less. (The refilling version
+ * answered "now" — a fresh window — which on a one-time allowance would be an unlimited one.)
+ */
 function freeWindowStart(startedAt) {
-  const start = new Date(startedAt).getTime();
-  if (!Number.isFinite(start)) return new Date();      // unparseable → treat as a fresh window
-  const now = Date.now();
-  if (now <= start) return new Date(start);
-  return new Date(start + Math.floor((now - start) / FREE_WINDOW_MS) * FREE_WINDOW_MS);
+  const start = startedAt == null ? NaN : new Date(startedAt).getTime();
+  if (!Number.isFinite(start)) return new Date(FREE_CUTOVER_MS);
+  return new Date(Math.max(start, FREE_CUTOVER_MS));
 }
-/** When the current allowance refills — shown in the app so "0 left" has a date attached. */
-function freeWindowEnd(startedAt) {
-  return new Date(freeWindowStart(startedAt).getTime() + FREE_WINDOW_MS);
+/**
+ * When the free allowance refills: never, so ALWAYS null. Kept as a function rather than deleted so a
+ * caller that used to show "refills on <date>" gets an explicit "there is none" — never a crash, and
+ * never a date reconstructed from started_at.
+ */
+function freeWindowEnd() {
+  return null;
 }
 const planByKey = (k) => PLANS.find((p) => p.key === k) || null;
 
 const KIND_QUOTA_FIELD = { cover_letter: 'letters', resume: 'resumes', download: 'downloads' };
-// Legacy credit price keys, for the fallback pool only.
-const KIND_LEGACY_EVENT = { cover_letter: 'cover_letter_generate', resume: 'resume_ai_generate' };
 
 const ipHashOf = (req) => {
   try {
@@ -121,21 +154,27 @@ async function reportDevice(userId, deviceId, ipHash) {
 
 // ── free plan ─────────────────────────────────────────────────────────────────────────────────
 // Returns the user's free-plan row (table still named user_trials), creating one lazily on first
-// read. Every account gets one — there is no eligibility test any more, because the free tier is
-// the baseline entitlement rather than a one-off promotion. See the note inside on the device rule.
+// read — unless this device's one free allowance already belongs to another account, in which case
+// it answers { blocked: 'device_trial_used' } and creates nothing.
 async function ensureTrial(userId, deviceId, ipHash) {
   const rows = await dbConfig.query('SELECT * FROM user_trials WHERE user_id = $1', [userId]);
   if (rows && rows.length) return rows[0];
 
-  // ⚠️ NO LONGER BLOCKS. The one-trial-per-device rule protected a ONE-SHOT trial, where a second
-  // account bought you a second helping. The Free plan refills every 30 days, so a new account
-  // gains nothing you would not get by waiting — while the block was permanent and total: a second
-  // person on the same phone (a shared tablet, a second-hand device, a reviewer making a test
-  // account) got ZERO free generations for ever, with paying as the only way out. That is the
-  // wrong trade now the free tier is the baseline entitlement rather than a promotion.
-  // The device is still recorded below, so abuse stays visible in the data if it ever appears.
+  // ⚠️ ONE FREE ALLOWANCE PER DEVICE — BACK since 2026-09-13, because the allowance is one-time again.
+  // It came off on 2026-08-12 for a reason that was right then: the Free plan refilled every 30 days,
+  // so a second account on the same phone gained nothing that waiting would not also give, while the
+  // block was permanent and total for a second person on a shared tablet or a second-hand phone. A
+  // ONE-TIME allowance flips that trade straight back: without the block a new email IS a new 3 + 3,
+  // and "sign out, sign up again" is an unlimited free tier. So a second account on a device whose
+  // allowance is claimed gets none (Plans & Usage renders 'device_trial_used'); the account that
+  // claimed it keeps its own, and a plan or a download pass still works for everyone.
+  // ⚠️ ONLY CREATING A ROW IS GATED. An account that already has one keeps it — the second accounts
+  // made on shared devices while the rule was off included — because every existing user starts the
+  // one-time model with a fresh 3 + 3. The rule exists to stop the NEXT extra account.
+  if (await deviceClaimedByAnother(userId, deviceId)) return { blocked: 'device_trial_used' };
 
   try {
+    // ends_at only because the column is NOT NULL (see FREE.days) — nothing reads it as an expiry.
     await dbConfig.query(
       `INSERT INTO user_trials (user_id, device_id, started_at, ends_at)
        VALUES ($1,$2,NOW(),NOW() + INTERVAL '${TRIAL.days} days') ON CONFLICT (user_id) DO NOTHING`,
@@ -149,6 +188,33 @@ async function ensureTrial(userId, deviceId, ipHash) {
   } catch (e) { console.warn('[entitlements] ensureTrial:', e.message); }
   const again = await dbConfig.query('SELECT * FROM user_trials WHERE user_id = $1', [userId]);
   return (again && again[0]) || { blocked: 'trial_unavailable' };
+}
+
+/**
+ * Does another account already hold the one free allowance of the device this request comes from?
+ *
+ * The device is the request's own x-device-id when it sent one. ⚠️ NOT EVERY QUOTA CHECK SENDS ONE —
+ * Home's calls now send x-device-id; the older lanes (e.g. the Letters screen's generate-cover-letter-details) still do not — so without it this falls back to the
+ * device the account most recently reported (POST /subscription/device, once per launch). Checking
+ * nothing there would let whichever header-less call happened to land first create the row unchecked,
+ * which makes the rule one race away from optional.
+ * The asymmetry is deliberate: a refusal resting on that inference is TRANSIENT (no row is written, and
+ * the next request that names its device decides again), whereas a device is only ever CLAIMED —
+ * permanently — from an id the request itself sent (the trial_devices insert in ensureTrial).
+ * No device on record at all (builds that never send one) → one free allowance per user, as always.
+ * A read that fails throws, like every other entitlement read, so it can never become an allowance.
+ */
+async function deviceClaimedByAnother(userId, deviceId) {
+  let device = deviceId || null;
+  if (!device) {
+    const seen = await dbConfig.query(
+      'SELECT device_id FROM user_devices WHERE user_id = $1 ORDER BY last_seen DESC LIMIT 1', [userId]);
+    device = seen && seen[0] ? seen[0].device_id : null;
+  }
+  if (!device) return false;
+  const dev = await dbConfig.query('SELECT first_user_id FROM trial_devices WHERE device_id = $1', [device]);
+  const owner = dev && dev[0] ? dev[0].first_user_id : null;
+  return owner != null && Number(owner) !== Number(userId);
 }
 
 // ── core reads ────────────────────────────────────────────────────────────────────────────────
@@ -267,20 +333,20 @@ async function getStatus(userId, req) {
 
   const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
   if (trial && !trial.blocked) {
-    // The free plan does not end, so `active` is now simply "not superseded by a paid plan".
-    // Usage is counted from the START OF THE CURRENT 30-DAY WINDOW, which is what makes the
-    // allowance refill instead of running out once and staying out.
+    // ONE-TIME: counted from max(started_at, FREE_CUTOVER) and never rolled, so `active` is simply
+    // "not superseded by a paid plan", and what is left is left for good.
     const winStart = freeWindowStart(trial.started_at);
-    const winEnd = freeWindowEnd(trial.started_at);
     const uL = await usedSince(userId, 'cover_letter', 'trial', '$4', [winStart]);
     const uR = await usedSince(userId, 'resume', 'trial', '$4', [winStart]);
     const aL = await allowanceIn(userId, 'cover_letter', FREE.letters, winStart);
     const aR = await allowanceIn(userId, 'resume', FREE.resumes, winStart);
     out.trialState = {
-      active: !sub, startedAt: trial.started_at,
-      // `endsAt` now means "when this allowance refills", not "when access dies". The app already
-      // renders it as a date, so it keeps working and simply reads as the reset day.
-      endsAt: winEnd.toISOString(), renewsAt: winEnd.toISOString(), windowStart: winStart.toISOString(),
+      active: !sub, startedAt: trial.started_at, oneTime: true,
+      windowStart: winStart.toISOString(),
+      // ⚠️ NULL, NOT A DATE. Both used to carry the next 30-day refill. The allowance no longer refills
+      // or expires, so any date here would be rendered as "Refills on …" — a promise the server will
+      // not keep. Clients key their copy off oneTime and must not reconstruct one from startedAt.
+      endsAt: null, renewsAt: null,
       used: { letters: uL, resumes: uR },
     };
     // ⚠️ A paid plan always wins. Filling these in when `sub` exists would overwrite the plan's
@@ -294,7 +360,8 @@ async function getStatus(userId, req) {
   } else if (trial && trial.blocked) {
     out.trialState = { active: false, blocked: trial.blocked };
   }
-  // legacy credits still shown so grandfathered users understand what they're spending
+  // Legacy credits: DISPLAY ONLY. Since 2026-09-13 they pay for no resume and no cover letter, so the
+  // app must never word this balance as a way to keep generating.
   try {
     const acct = await dbConfig.get('SELECT credits_remaining FROM user_credits WHERE user_id = ?', [userId]);
     out.legacyCredits = acct ? (acct.credits_remaining || 0) : 0;
@@ -308,33 +375,39 @@ async function canConsumeMany(userId, kind, count, req) {
   const n = Math.max(1, parseInt(count, 10) || 1);
   const deviceId = req ? deviceIdOf(req) : null;
 
-  // ⚠️ ORDER IS LOAD-BEARING and unchanged: plan → trial → legacy credits. The only thing added
-  // here is WHICH plan is visible — a store plan earned in another environment is not one of them.
+  // ⚠️ ORDER IS LOAD-BEARING: plan → free, and NOTHING after them. There used to be a third lane —
+  // legacy credits at the old per-event price — and it is gone on purpose (2026-09-13): credits no
+  // longer pay for generation, and downloads never had a credit price. An exhausted allowance is
+  // simply exhausted, and the answer is quota_exhausted, which every caller turns into the plans
+  // screen. Which plan is visible is environment-scoped: a store plan from another environment is not.
   const sub = await activeSubscription(userId, requestEnvironment(req || {}));
+  let left = 0;          // what the lane that was asked still has, for an honest refusal below
+  let blocked = null;    // why the free lane could not even be asked
   if (sub) {
     const plan = planByKey(sub.plan_key);
     if (plan) {
       const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
       const allow = await allowanceIn(userId, kind, plan[field], sub.period_start);
       if (allow - used >= n) return { allowed: true, via: 'plan', remaining: allow - used };
-      // plan exhausted → fall through to credits fallback below (never to trial)
+      left = Math.max(0, allow - used);
+      // plan exhausted → refused below. Never the free allowance: a subscriber's usage is the plan's.
     }
   } else {
-    // Free plan: no expiry check any more — only "is there allowance left in THIS window".
+    // Free plan: no expiry and no refill — only "is there allowance left since the counting start".
     const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
     if (trial && !trial.blocked) {
       const winStart = freeWindowStart(trial.started_at);
       const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
       const allow = await allowanceIn(userId, kind, FREE[field], winStart);
       if (allow - used >= n) return { allowed: true, via: 'free', remaining: allow - used };
+      left = Math.max(0, allow - used);
+    } else if (trial) {
+      blocked = trial.blocked;
     }
   }
 
-  // Legacy pool: existing credit balances keep working at the old per-event price.
-  // ⚠️ NOT for downloads. Migration 028 deliberately took downloads out of the credit pool, and a
-  // download has no per-event price — reintroducing one here would silently start charging credits
-  // for something that has not cost credits since.
-  if (!KIND_LEGACY_EVENT[kind]) {
+  // ── refused ──
+  if (kind !== 'resume' && kind !== 'cover_letter') {
     return {
       allowed: false, via: null, reason: 'quota_exhausted',
       message: sub
@@ -342,48 +415,57 @@ async function canConsumeMany(userId, kind, count, req) {
         : 'Downloads are on paid plans. You can buy a single download instead.',
     };
   }
-  const price = await getEventCost(KIND_LEGACY_EVENT[kind]);
-  try {
-    const acct = await dbConfig.get('SELECT credits_remaining FROM user_credits WHERE user_id = ?', [userId]);
-    const bal = acct ? (acct.credits_remaining || 0) : 0;
-    if (price > 0 && bal >= price * n) return { allowed: true, via: 'credits', remaining: Math.floor(bal / price) };
-  } catch { /* fall through to denial */ }
-
   const noun = kind === 'resume' ? 'resume generations' : 'cover letters';
-  return {
-    allowed: false, via: null, reason: 'quota_exhausted',
-    message: sub
-      ? `You've used all the ${noun} in your plan this month. Upgrade in Plans & Usage (menu) to continue.`
-      : `You've used your free ${noun}. Open Plans & Usage in the menu to start a plan and continue.`,
-  };
+  const leftNoun = left === 1 ? noun.slice(0, -1) : noun;   // "1 cover letter left", not "1 cover letters"
+  let message;
+  if (sub) {
+    message = left > 0
+      ? `You have ${left} ${leftNoun} left in your plan this month, not enough for ${n}. Upgrade in Plans & Usage to continue.`
+      : `You've used all the ${noun} in your plan this month. Upgrade in Plans & Usage to continue.`;
+  } else if (blocked === 'device_trial_used') {
+    // Not "you've used your 3": this account never had them — the device's allowance went to another.
+    message = 'The free plan on this device was already used by another account. Start a plan in Plans & Usage to keep going.';
+  } else if (blocked) {
+    // trial_unavailable — the row could not be written. A transient failure, not a used-up allowance.
+    message = "We couldn't check your free allowance just now. Please try again in a moment.";
+  } else {
+    message = left > 0
+      ? `You have ${left} free ${leftNoun} left, not enough for ${n}. Start a plan in Plans & Usage to keep going.`
+      : `You've used your ${FREE[field]} free ${noun}. Start a plan in Plans & Usage to keep going.`;
+  }
+  return { allowed: false, via: null, reason: 'quota_exhausted', message, ...(blocked ? { blocked } : {}) };
 }
 
 // ── the deduction — call ONLY after the work succeeded ────────────────────────────────────────
-// Picks the pool in the same priority order as the gate, writes the ledger row (with details for
-// the Usage screen) and, for the legacy pool, performs the old credit deduction. Never throws.
+// Picks the pool in the same priority order as the gate (plan → free) and writes the ledger row, with
+// details for the Usage screen. Never throws, and never touches a credit balance.
 //
-// Returns { via, charge, ledgerId } — `via` is what every caller always read; the other two are
-// additive, and exist so a caller can decide on ITS OWN charge instead of inferring it afterwards:
-//   • charge — the chargeCredits result on the credits lane ({ charged, cost, insufficient?,
-//     remaining? }), null on the plan/trial lanes. ⚠️ via:'credits' IS WHAT WAS ATTEMPTED, NOT WHAT WAS
-//     PAID: chargeCredits answers { charged:false, insufficient:true } on a short balance without
-//     throwing, and the ledger row below is written either way. Reading the balance or the history
-//     table afterwards to find out cannot tell this request's deduction from an overlapping one's —
-//     that inference once withheld a letter the user had really paid for. charge.charged is the
-//     guarded UPDATE's own answer.
+// Returns { via, charge, ledgerId }:
+//   • via — 'plan', or 'trial' (the Free plan's ledger spelling, see below), when a pool paid.
+//     'none' when NOTHING that may pay still can: the gate said yes, then the last unit went to an
+//     overlapping build before this ran (canConsumeMany checks, it never reserves). No row is written
+//     and nothing is charged. The Home doc/letter lanes read an unrecognised via as "not confirmed paid"
+//     and refuse without storing, and every generation lane refuses it with 402 quota_exhausted and delivers nothing, so the
+//     race never stores a free document; the letter lanes (coverLetterController, employerLetterController, the Job Hub lane) refuse it too, as
+//     they logged a credits lane that deducted nothing. Home's coveredOnly re-check runs in the same usage
+//     lock just before this call, so there only a lane that takes no lock can still cause it.
+//     'error' when recording failed.
+//     ⚠️ NEVER 'credits' ANY MORE (2026-09-13). This used to fall through to the legacy pool, which is
+//     exactly how a generation would be paid in credits nobody agreed to after credits stopped paying
+//     for generation at all.
+//   • charge — ALWAYS null now; nothing here deducts. Kept rather than deleted because the lanes test
+//     hasOwnProperty('charge') to know this answer is authoritative — without it they fall back to
+//     inferring a credit deduction from history, which is the inference this field replaced.
 //   • ledgerId — the usage_ledger row THIS call inserted, so a caller that cannot deliver what was
 //     paid for (a store that failed) can delete exactly that row and give the unit back.
-// ⚠️ ON via:'error' charge IS STILL REPORTED when the deduction landed before the failure (e.g. the
-// ledger INSERT threw after chargeCredits debited). 'error' used to mean "nothing recorded" while the
-// credits were gone; a caller that sees charge.charged here must refund it.
 async function consumeOnSuccess(userId, kind, detail = {}, req) {
-  let charge = null;
+  const charge = null;
   try {
     const deviceId = req ? deviceIdOf(req) : null;
     // Same environment scope as the gate. If these two disagreed, a sandbox tester would be let
-    // through canConsumeMany and then charged legacy credits by consumeOnSuccess (or vice versa).
+    // through canConsumeMany and then billed against the wrong allowance by consumeOnSuccess.
     const sub = await activeSubscription(userId, requestEnvironment(req || {}));
-    let via = 'credits';
+    let via = null;
     if (sub && planByKey(sub.plan_key)) {
       const plan = planByKey(sub.plan_key);
       const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
@@ -396,15 +478,15 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
         const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
         const allow = await allowanceIn(userId, kind, FREE[KIND_QUOTA_FIELD[kind]], winStart);
         // ⚠️ THE LEDGER SOURCE STAYS 'trial'. usage_ledger.source is what usedSince() matches on,
-        // and every historical free-tier row carries 'trial'. Writing 'free' here would make the
-        // counter stop seeing both the old rows AND the new ones — every user would silently get
-        // unlimited free generations. The user-facing name changed; the stored label must not.
+        // and every free-tier row ever written carries 'trial'. Writing 'free' here would make the
+        // counter stop seeing the new rows — every user would silently get unlimited free
+        // generations. The user-facing name changed; the stored label must not.
         if (allow - used >= 1) via = 'trial';
       }
     }
-    if (via === 'credits') {
-      // legacy path — same deduction the old code performed (no-op when the price is 0)
-      charge = await chargeCredits(userId, KIND_LEGACY_EVENT[kind], detail);
+    if (!via) {
+      console.warn(`[entitlements] consumeOnSuccess: no allowance left for ${kind} (user ${userId}) — nothing recorded, nothing charged`);
+      return { via: 'none', charge, ledgerId: null };
     }
     const rows = await dbConfig.query(
       `INSERT INTO usage_ledger (user_id, kind, source, plan_key, detail, created_at)
@@ -651,15 +733,15 @@ async function storeSubscriptionFor(userId, environment = PRODUCTION) {
 }
 
 module.exports = {
-  PLANS, TRIAL,
+  PLANS, TRIAL, FREE, FREE_CUTOVER,
   reportDevice, ensureTrial, getStatus, canConsumeMany, consumeOnSuccess, getUsage,
   adminSetSubscription, storeSetSubscription, storeSubscriptionFor, deviceIdOf, ipHashOf,
   // exported for the lifecycle nudges (which must know what a user has LEFT before offering more)
   activeSubscription, usedSince, bonusSince, allowanceIn, planByKey, KIND_QUOTA_FIELD,
-  // The rolling free-plan window. Exported so the admin screens compute "used this period" the
-  // same way the app does — counting from signup instead makes every account older than 30 days
-  // look permanently exhausted.
-  freeWindowStart, freeWindowEnd, FREE_WINDOW_MS,
+  // The one-time free-plan counting start, and its absent end. Exported so the admin screens and bonus
+  // grants count "used" exactly the way the app does — counting from signup instead would bill every
+  // pre-cutover generation against the fresh 3 + 3 and show older accounts as already exhausted.
+  freeWindowStart, freeWindowEnd,
   // re-exported so callers do not have to know where the environment vocabulary lives
   PRODUCTION, normalizeEnvironment, requestEnvironment,
 };

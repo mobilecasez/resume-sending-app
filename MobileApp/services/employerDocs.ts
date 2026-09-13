@@ -23,7 +23,7 @@ import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../config';
 import { signedInAccount } from './homeAddEmployer';
 import type { DocKind } from './homeAddEmployer';
-import { cachedJobListing, cleanJobUrl, keepJobListings } from './employerHomeService';
+import { cachedJobListing, cleanJobUrl, deviceHeaders, keepJobListings } from './employerHomeService';
 import type { Target } from './employerHomeService';
 
 export type Design = {
@@ -117,9 +117,10 @@ async function call(path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?
   try {
     const r = await fetch(`${API_BASE}${path}`, {
       method: init.method || 'GET',
+      // x-device-id on every call, like the rest of Home (see employerHomeService deviceHeaders).
       headers: init.body !== undefined
-        ? { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' }
-        : { Authorization: `Bearer ${t}` },
+        ? { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json', ...(await deviceHeaders()) }
+        : { Authorization: `Bearer ${t}`, ...(await deviceHeaders()) },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal: ctl.signal,
     });

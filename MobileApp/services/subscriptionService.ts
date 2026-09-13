@@ -1,7 +1,7 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
 // Client for the subscription/quota backend: plan catalog + the user's entitlement picture,
-// the detailed usage ledger, and the once-per-launch device report (trial dedupe).
+// the detailed usage ledger, and the once-per-account device report (trial dedupe).
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
@@ -30,7 +30,12 @@ export type Plan = {
 };
 export type SubscriptionStatus = {
   plans: Plan[];
-  trial: { key: string; label: string; days: number; letters: number; resumes: number };
+  /**
+   * The Free plan (the server's FREE constant). ⚠️ Since 2026-09-13 it is ONE-TIME (`oneTime: true`):
+   * N resume generations + N cover letters for the life of the account, never refilled, one per
+   * device. `days` is a leftover of the old 30-day refilling window — do not render it when oneTime.
+   */
+  trial: { key: string; label: string; days?: number; letters: number; resumes: number; oneTime?: boolean };
   subscription: {
     planKey: string; label: string; periodEnd: string; source: string;
     /**
@@ -42,10 +47,27 @@ export type SubscriptionStatus = {
     pendingPlanKey?: string | null;
     pendingLabel?: string | null;
   } | null;
-  trialState?: { active: boolean; startedAt?: string; endsAt?: string; blocked?: string; used?: { letters: number; resumes: number } };
+  /**
+   * The Free plan's state. ⚠️ `endsAt` / `renewsAt` are NULL on the one-time allowance — there is no
+   * refill date and no expiry, so a screen must never fall back to rendering one. `windowStart` is
+   * where counting began (max(started_at, the 2026-09-13 cutover)). A device whose free allowance
+   * was already claimed by another account reads `{ active: false, blocked: 'device_trial_used' }`.
+   */
+  trialState?: {
+    active: boolean; startedAt?: string; oneTime?: boolean; windowStart?: string;
+    endsAt?: string | null; renewsAt?: string | null; blocked?: string;
+    used?: { letters: number; resumes: number };
+  };
   remaining: { letters: number; resumes: number };
   used: { letters: number; resumes: number };
-  via: 'plan' | 'trial' | null;
+  /** quota_grants bonuses on top of the allowance in effect (already included in `remaining`). */
+  bonus?: { letters: number; resumes: number };
+  // The server answers 'free' for the Free plan; 'trial' is the older spelling, kept so either parses.
+  via: 'plan' | 'free' | 'trial' | null;
+  /**
+   * ⚠️ DISPLAY ONLY. Legacy credits no longer pay for resume or cover letter generation (product
+   * decision 2026-09-13) — never word this balance as a fallback for generating.
+   */
   legacyCredits?: number;
   /** The App Store environment this answer was computed in — 'Production' for every real customer. */
   environment?: 'Production' | 'Sandbox';
@@ -122,15 +144,41 @@ export async function fetchUsage(limit = 100): Promise<UsageItem[]> {
   return (data?.items ?? []) as UsageItem[];
 }
 
-/** Fire-and-forget device report; the server uses it to enforce one-trial-per-device. */
-export async function reportDeviceOnce(): Promise<void> {
-  try {
-    const auth = await authHeader();
-    if (!auth.Authorization) return;
-    const deviceId = await getDeviceId();
-    if (!deviceId) return;
-    await axios.post(`${API_BASE}/subscription/device`, { deviceId }, { headers: auth, timeout: 15000 });
-  } catch { /* never block launch on this */ }
+/**
+ * Fire-and-forget device report; the server uses it to enforce one free allowance per device.
+ *
+ * ⚠️ ONCE PER ACCOUNT, NOT ONCE PER LAUNCH. It used to run a single time, 4 s after launch, and do nothing
+ * while signed out — so an account created LATER in that launch was never recorded on this device, and a
+ * quota check that carried no x-device-id found no device for it at all (a second full 3 + 3 on a phone
+ * that had used one; sign out, sign up, repeat). app/_layout.tsx now calls this repeatedly (a cheap poll
+ * plus every return to the foreground); this function makes that safe to do: it is one SecureStore read,
+ * and it POSTs only when the signed-in account differs from the last one it reported successfully.
+ * A failed POST is not remembered, so the next call retries; signing out forgets the account, so signing
+ * back in (same account or another) reports again. Concurrent calls share one in-flight report.
+ * Resolves to what happened, for the caller's own bookkeeping — it never throws.
+ */
+let reportedAccount: string | null = null;
+let reportInFlight: Promise<'reported' | 'unchanged' | 'signed_out' | 'failed'> | null = null;
+export function reportDeviceOnce(): Promise<'reported' | 'unchanged' | 'signed_out' | 'failed'> {
+  if (reportInFlight) return reportInFlight;
+  reportInFlight = (async () => {
+    try {
+      const s = await session();
+      if (!s?.token) { reportedAccount = null; return 'signed_out'; }
+      // The account id when the session carries one; else the token itself (a re-login of the same
+      // account then reports once more — one idempotent upsert, harmless).
+      const account = s.id != null && String(s.id) ? 'u:' + String(s.id) : 't:' + String(s.token);
+      if (account === reportedAccount) return 'unchanged';
+      const deviceId = await getDeviceId();
+      if (!deviceId) return 'failed';
+      await axios.post(`${API_BASE}/subscription/device`, { deviceId },
+        { headers: { Authorization: `Bearer ${s.token}` }, timeout: 15000 });
+      reportedAccount = account;
+      return 'reported';
+    } catch { return 'failed'; /* never block anything on this; the next call retries */ }
+    finally { reportInFlight = null; }
+  })();
+  return reportInFlight;
 }
 
 // ── Store purchases ───────────────────────────────────────────────────────────────────────────

@@ -34,7 +34,17 @@ for (const [name, src] of Object.entries(FILES)) {
   ok(name + ' parses', good);
   ok(name + ' carries the mandatory header', /^\/\/ AI Hub — new feature\. Safe to delete/.test(src));
 }
-ok('App.js is not touched by this feature', !/download.?pass/i.test(R('../App.js')));
+// ⚠️ RETARGETED 2026-09-14: the in-app Terms (App.js legal <Text>) now SAY that a download needs a paid plan or a
+// one-time download pass — required disclosure, not feature code. What this pins is that no pass CODE lives in
+// App.js: no import of the pass service or paywall, no pass identifier, no pass endpoint (storeBilling is
+// imported there for SUBSCRIPTIONS, which is not this feature). Prose inside <Text>
+// children is removed first so the disclosure cannot trip it, and nothing else is loosened.
+{
+  const appCode = strip(R('../App.js')).replace(/<Text\b[^>]*>[^<]*(?:<Text\b[^>]*>[^<]*<\/Text>[^<]*)*<\/Text>/g, '<Text/>');
+  ok('App.js is not touched by this feature (no pass code; the Terms may name the pass)',
+    !/download.?pass/i.test(appCode) && !/DownloadPaywall|downloadPassService|\/downloads\/state/.test(appCode),
+    (appCode.match(/.{0,60}download.?pass.{0,60}/i) || [])[0]);
+}
 
 console.log('── ⚠️ the client never grants anything to itself ──');
 ok('the state comes from the SERVER', /\/downloads\/state/.test(svc));

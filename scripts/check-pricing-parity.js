@@ -25,9 +25,12 @@ const PAGE = process.argv[2] || path.join(ROOT, 'public', 'index.html');
 const ENTITLEMENTS = path.join(ROOT, 'server', 'services', 'entitlements.js');
 const src = fs.readFileSync(ENTITLEMENTS, 'utf8');
 function literal(name, open, close) {
-  const start = src.indexOf(`const ${name} = ${open}`);
-  if (start === -1) throw new Error(`could not find "const ${name} = ${open}" in ${ENTITLEMENTS}`);
-  const from = src.indexOf(open, start);
+  // Tolerates an Object.freeze( wrapper, and nothing else: anything cleverer than a plain literal
+  // between the `=` and the bracket should fail here by name, not be half-evaluated.
+  const esc = open === '[' ? '\\[' : '\\{';
+  const m = new RegExp(`const ${name} = (?:Object\\.freeze\\(\\s*)?${esc}`).exec(src);
+  if (!m) throw new Error(`could not find "const ${name} = ${open}" in ${ENTITLEMENTS}`);
+  const from = m.index + m[0].length - 1;
   let depth = 0;
   for (let i = from; i < src.length; i++) {
     if (src[i] === open) depth++;
@@ -59,25 +62,59 @@ for (const p of PLANS) {
   }
   // Allowances, with or without a thousands separator (1000 renders as "1,000").
   const grouped = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  // Phrase-matched ("<strong>10</strong> cover letters") so a swapped pair — letters shown as
+  // resumes — fails instead of passing on the bare numbers.
+  const shown = (n, noun) => [String(n), grouped(n)].some((v) => new RegExp(`<strong>${v}</strong>\\s+${noun}`, 'i').test(html));
   for (const [what, n] of [['cover letters', p.letters], ['resumes', p.resumes]]) {
-    if (!html.includes(`<strong>${n}</strong>`) && !html.includes(`<strong>${grouped(n)}</strong>`)) {
+    if (!shown(n, what)) {
       problems.push(`plan "${p.label}": ${what} allowance ${n} not shown`);
     }
   }
 }
 
 // ── the Free plan ─────────────────────────────────────────────────────────────────────────────
-// It replaced the 7-day trial. The site must not still promise a trial that no longer exists, and
-// must state the monthly allowance a visitor actually gets for nothing.
-if (/free trial/i.test(html)) {
+// It replaced the 7-day trial, then (2026-09-13) stopped refilling: 3 resumes + 3 letters ONCE for
+// the life of the account. The site must not still promise a trial or a refill that no longer
+// exists, and must state the allowance a visitor actually gets for nothing.
+if (/free trial|\d+-day trial/i.test(html)) {
   problems.push('the site still advertises a "free trial" — the Free plan replaced it');
 }
 if (!/free plan/i.test(html)) {
   problems.push('the Free plan is not mentioned');
 }
-for (const [n, what] of [[TRIAL.letters, 'cover letter'], [TRIAL.resumes, 'resume']]) {
-  if (!new RegExp(`<strong>${n}</strong>`).test(html)) {
+// The allowance is checked as a PHRASE ("<strong>3</strong> resumes"), not a bare <strong>3</strong>:
+// with 3 + 3 a bare number is satisfied by either half, and the plan cards contain other numbers.
+for (const [n, re, what] of [
+  [TRIAL.letters, 'cover letters?', 'cover letter'],
+  [TRIAL.resumes, '(?:AI )?resumes?(?: generations?)?', 'resume'],
+]) {
+  if (!new RegExp(`<strong>${n}</strong>\\s+(?:AI\\s+)?${re}`, 'i').test(html)) {
     problems.push(`Free plan: ${what} allowance ${n} not shown`);
+  }
+}
+if (TRIAL.oneTime) {
+  // A one-time allowance described as recurring is the exact promise a user would hold us to.
+  if (!/one[- ]time/i.test(html)) problems.push('Free plan is one-time, but the page never says "one time"');
+  for (const [re, label] of [
+    [/every\s+30\s+days/i, '"every 30 days"'],
+    [/rolling\s+30/i,       '"rolling 30 days"'],
+  ]) {
+    if (re.test(html)) problems.push(`page still says the Free plan refills (${label}) — it is one-time`);
+  }
+} else if (TRIAL.days && !new RegExp(`every\\s+${TRIAL.days}\\s+days`, 'i').test(html)) {
+  problems.push(`Free plan refills every ${TRIAL.days} days, but the page does not say so`);
+}
+
+// ── downloads ─────────────────────────────────────────────────────────────────────────────────
+// They have always been paid (a plan, or a one-time pass) and FREE.downloads is 0 — yet the page
+// said "Always free: … downloading your documents" and "$0 to search, fill & download".
+if (!TRIAL.downloads) {
+  for (const [re, label] of [
+    [/downloads?\s+(?:are|is)\s+free/i,              '"downloads are free"'],
+    [/always free:(?:<\/strong>)?[^.]*download/i,     '"Always free: … downloading"'],
+    [/(?:search|fill)[^<]{0,20}(?:&amp;|&|and)\s*download/i, '"$0 to search, fill & download"'],
+  ]) {
+    if (re.test(html)) problems.push(`page claims ${label} — downloads need a plan or a download pass`);
   }
 }
 
@@ -101,4 +138,5 @@ if (problems.length) {
   console.error('\nUpdate the pricing section (and the FAQ JSON-LD) to match the catalog.');
   process.exit(1);
 }
-console.log(`✓ pricing parity: ${PLANS.length} plans + the Free plan (${TRIAL.letters} letters / ${TRIAL.resumes} resume per ${TRIAL.days} days) all match entitlements.js`);
+const freeCadence = TRIAL.oneTime ? 'one time' : `per ${TRIAL.days} days`;
+console.log(`✓ pricing parity: ${PLANS.length} plans + the Free plan (${TRIAL.resumes} resumes / ${TRIAL.letters} letters, ${freeCadence}) all match entitlements.js`);

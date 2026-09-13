@@ -23,7 +23,7 @@
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE } from '../config';
-import { gradFor, cleanJobUrl } from './employerHomeService';
+import { gradFor, cleanJobUrl, deviceHeaders } from './employerHomeService';
 
 export type DocKind = 'resume' | 'cover_letter';
 
@@ -159,9 +159,12 @@ async function call(path: string, init: { method?: 'GET' | 'POST'; body?: any; m
   try {
     const r = await fetch(`${API_BASE}${path}`, {
       method: init.method || 'GET',
+      // x-device-id rides with EVERY call here, the gate and both build lanes included: without it a
+      // just-created account had no device for the server's one-free-allowance-per-device check (see
+      // deviceHeaders). The device is not part of ctx — it is the phone's, not the session's.
       headers: init.body !== undefined
-        ? { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' }
-        : { Authorization: `Bearer ${t}` },
+        ? { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json', ...(await deviceHeaders()) }
+        : { Authorization: `Bearer ${t}`, ...(await deviceHeaders()) },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal: ctl.signal,
     });
@@ -948,7 +951,7 @@ async function recoverLost(saved: Inflight, f: Flight, ctx: Session): Promise<Ou
 /**
  * Build the resume or cover letter for one employer, or one posting at it.
  * `coveredOnly` (default true): the server may spend only plan, free allowance, pass or cache, and
- * refuses with 'quota_exhausted' otherwise. Pass false ONLY after the user confirmed a credit charge.
+ * refuses with 'quota_exhausted' otherwise. Pass false ONLY when the user chose to build although the plan could not be read (no credit dialog exists any more).
  * `kind` (default 'resume').
  */
 export async function buildForEmployer(

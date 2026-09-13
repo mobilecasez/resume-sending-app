@@ -4548,15 +4548,19 @@ async function findRecruiterEmails(req, res) {
 /**
  * POST /api/ai-hub/jobs/:jobId/generate-cover-letter
  * Generates a tailored cover letter for a specific job using the user's resume.
- * Costs 1 credit.
+ *   402 { reason: 'quota_exhausted' } when the plan / Free plan has no cover letter left.
+ *
+ * ⚠️ ONE COVER LETTER FROM THE ALLOWANCE, LIKE EVERY OTHER LETTER LANE (2026-09-14). This lane used to debit
+ * getEventCost('job_cover_letter') legacy credits before the model ran and never asked the quota at all — so
+ * after credits stopped paying for generation (2026-09-13) it was the one letter a user with no allowance left
+ * could still get, paid in a currency the app no longer sells, and a plan's letters never counted it. Now:
+ * canConsumeMany before the AI (check only), consumeOnSuccess after it under the shared usage lock, no credit
+ * debit anywhere, and a letter nothing will pay for (via 'none') is a 402 — never delivered.
+ * The admin test (req.adminTest) stays free: no gate, no charge.
  */
 async function generateJobCoverLetter(req, res) {
     const userId     = req.user.id;
     const { jobId }  = req.params;
-
-    // Out here so the catch can reach it: the debit lands immediately before the Gemini call, so
-    // a model failure would otherwise charge for a letter that was never written.
-    let charge = null;
 
     try {
         // Load user + resume
@@ -4612,33 +4616,27 @@ async function generateJobCoverLetter(req, res) {
         );
         const skillsList = skills.map(s => s.name).join(', ') || 'Not specified';
 
-        // Check credits (admin-configurable cost)
-        //
         // `req.adminTest` is set ONLY by the admin "generate a test cover letter" route, which runs
         // this exact handler so what the admin reviews is byte-for-byte what the user would get —
         // a lookalike reimplementation would drift and then the test would stop proving anything.
-        // The one thing it must not do is bill a real person for an admin's curiosity, so the
-        // charge (and only the charge) is skipped. It is set server-side on a synthetic request; no
-        // client can send it.
+        // The one thing it must not do is spend a real person's allowance on an admin's curiosity, so
+        // the gate and the charge (and only those) are skipped. It is set server-side on a synthetic
+        // request; no client can send it.
         const adminTest = req.adminTest === true;
-        const jclCost = adminTest ? 0 : await getEventCost('job_cover_letter');
-        const credits = await dbConfig.get(`SELECT credits_remaining FROM user_credits WHERE user_id = $1`, [userId]);
-        if (jclCost > 0 && (!credits || credits.credits_remaining < jclCost)) {
-            return res.status(402).json({ error: `Insufficient credits. ${jclCost} credit(s) required.` });
-        }
-        if (jclCost > 0) {
-            // ⚠️ ONE guarded statement — never SELECT-then-UPDATE this balance. The read above is a
-            // fast path for the obvious "no credits" case; it decides nothing. Two taps on
-            // "generate cover letter" with one credit left both passed it and both decremented, and
-            // the balance went negative — free credits. RETURNING is what tells us the row matched.
-            const debited = await dbConfig.get(
-                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 AND credits_remaining >= $3 RETURNING credits_remaining`,
-                [jclCost, userId, jclCost]
-            );
-            if (!debited) {
-                return res.status(402).json({ error: `Insufficient credits. ${jclCost} credit(s) required.` });
+        const entitlements = adminTest ? null : require('../services/entitlements');
+
+        // ── THE GATE — check only, before the AI minute; nothing is reserved or charged here ─────────
+        if (!adminTest) {
+            let gate;
+            try {
+                gate = await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
+            } catch (e) {
+                console.error('[aiHub] generateJobCoverLetter gate:', e.message);
+                return res.status(500).json({ error: 'Failed to check your plan allowance' });
             }
-            charge = { charged: true, cost: jclCost }; // shape refundCredits() expects
+            if (!gate.allowed) {
+                return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', ...(gate.blocked ? { blocked: gate.blocked } : {}) });
+            }
         }
 
         // Build Gemini prompt
@@ -4675,13 +4673,53 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
         console.log(`[aiHub] Generating cover letter for job "${job.title}" at "${employer?.name}"`);
         const result = await model.generateContent(prompt);
         const coverLetterText = result.response.text().trim();
+        // An empty answer is not a letter, and must never be the thing a unit is spent on.
+        if (!coverLetterText) throw new Error('AI_EMPTY_OUTPUT');
+
+        // ── THE CHARGE — only now that the letter exists, one payment decision at a time per user ────
+        // ⚠️ Under the SAME usage lock as every other letter lane (coverLetterController.withUsageLock — the
+        // shared advisory-lock key), because the gate above reserved nothing: two letters finishing together
+        // would both read "1 left" and both be delivered. consumeOnSuccess's own answer decides: 'plan' /
+        // 'trial' deliver; 'none' (the last unit went to an overlapping request) is a 402 and the letter is NOT
+        // handed over; 'error' or anything unrecognised is not a payment either, and its row (if any) goes back.
+        if (!adminTest) {
+            let used = null;
+            try {
+                const { withUsageLock } = require('./coverLetterController');
+                await withUsageLock(userId, 'cover_letter', async () => {
+                    used = await entitlements.consumeOnSuccess(userId, 'cover_letter', {
+                        companyName: employer?.name || '', position: job.title || '', jobId: String(jobId), screen: 'job_hub_cover_letter',
+                    }, req);
+                });
+            } catch (e) {
+                // The lock's transaction failed; what ran under it was on the pool, so `used` still decides.
+                console.error('[aiHub] generateJobCoverLetter usage lock:', e.message);
+            }
+            const via = used && used.via ? used.via : 'error';
+            if (via === 'none') {
+                console.warn(`[aiHub] nothing left to pay for user ${userId}'s job ${jobId} cover letter — refused, not delivered`);
+                return res.status(402).json({
+                    error: 'Your plan allowance was used up while this cover letter was being written. Open Plans & Usage to continue.',
+                    reason: 'quota_exhausted',
+                });
+            }
+            if (via !== 'plan' && via !== 'trial') {
+                if (used && used.ledgerId) {
+                    await dbConfig.run('DELETE FROM usage_ledger WHERE id = $1 AND user_id = $2', [used.ledgerId, userId])
+                        .catch((e) => console.error(`[aiHub] ⚠️ USAGE ROW NOT GIVEN BACK — user ${userId}, usage_ledger ${used.ledgerId} — support must make this good:`, e.message));
+                }
+                console.error(`[aiHub] the charge for user ${userId}'s job ${jobId} cover letter could not be confirmed (${via}) — not delivered`);
+                return res.status(500).json({ error: 'Failed to generate cover letter. Please try again.' });
+            }
+        }
 
         return res.json({
             success: true,
             coverLetter: coverLetterText,
             jobTitle: job.title,
             companyName: employer?.name || '',
-            creditsUsed: jclCost,
+            // Kept for old clients and the admin screen's type: no credit is ever spent here any more.
+            creditsUsed: 0,
             adminTest,
             // What the letter was actually written FROM. An admin checking "is this working" needs
             // to see the inputs, because a bland letter is usually a thin résumé, not a bad prompt.
@@ -4696,9 +4734,8 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
 
     } catch (error) {
         console.error('[aiHub] generateJobCoverLetter error:', error.message);
-        // The only work after the debit is the Gemini call, so a throw here means no letter was
-        // delivered — refund rather than bill for it. No-op when we never charged (adminTest).
-        await refundCredits(userId, 'job_cover_letter', charge);
+        // Nothing is charged before the letter exists (the charge follows the model call), so a throw here
+        // has nothing to give back.
         return res.status(500).json({ error: 'Failed to generate cover letter. Please try again.' });
     }
 }

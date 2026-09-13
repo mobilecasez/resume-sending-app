@@ -1,9 +1,13 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// Plans & Usage — the user's entitlement picture in one place: current plan (or trial), what's
-// left this period, and the DETAILED ledger: every deduction with what it was for, when, and
-// which pool paid it (trial / plan / legacy credits). Deductions happen only after a successful
-// generation, so every row here corresponds to a letter or resume the user actually received.
+// Plans & Usage — the user's entitlement picture in one place: current plan (or the Free plan),
+// what's left, and the DETAILED ledger: every deduction with what it was for, when, and which pool
+// paid it (free / plan; 'credits' rows are history from before 2026-09-13, when credits stopped
+// paying for generation). Deductions happen only after a successful generation, so every row here
+// corresponds to a letter or resume the user actually received.
+//
+// ⚠️ THE FREE PLAN IS ONE-TIME: its allowance never refills, so there is no "Refills <date>" line
+// (the server sends renewsAt/endsAt as null) and none may be reconstructed from startedAt.
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl,
@@ -21,10 +25,13 @@ const T = {
 };
 
 const SOURCE_META: Record<string, { label: string; color: string }> = {
-  trial: { label: 'Free trial', color: T.cyan },
+  trial: { label: 'Free plan', color: T.cyan },
   plan: { label: 'Plan', color: T.emerald },
-  credits: { label: 'Credits', color: T.amber },
+  credits: { label: 'Credits', color: T.amber },   // history only — rows from before 2026-09-13
 };
+// A source this screen does not know yet. ⚠️ Not the credits pill: that would tell a user a generation
+// was paid in credits, which cannot happen since 2026-09-13.
+const SOURCE_OTHER = { label: 'Used', color: T.faint };
 
 const when = (iso: string) => {
   try { return new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
@@ -70,6 +77,11 @@ export default function UsageScreen() {
   const quotaTotals = sub
     ? status!.plans.find((p) => p.key === sub.planKey)
     : (trialActive ? status!.trial : null);
+  const oneTime = !!(status?.trial?.oneTime || trial?.oneTime);
+  // A bar's total is the allowance PLUS any quota_grants bonus: `remaining` already includes the
+  // bonus, so used + remaining is the true size whenever it is larger than the plain allowance.
+  const totalOf = (base: number, used: number, left: number) => Math.max(base, used + left);
+  const freeUsedUp = trialActive && status!.remaining.letters + status!.remaining.resumes === 0;
 
   return (
     <ScrollView
@@ -91,20 +103,24 @@ export default function UsageScreen() {
               {sub ? sub.label : trialActive ? (status?.trial?.label || 'Free plan') : trial?.blocked === 'device_trial_used' ? 'Free allowance already used on this device' : 'No plan'}
             </Text>
             {sub ? <Text style={s.planSub}>Renews {when(sub.periodEnd)}</Text>
-              : trialActive && ((trial as any)?.renewsAt || trial?.endsAt)
-                ? <Text style={s.planSub}>Refills {when((trial as any).renewsAt || trial.endsAt)}</Text>
+              : trialActive && freeUsedUp
+                ? <Text style={s.planSub}>All used — pick a plan to keep generating</Text>
+              : trialActive && oneTime
+                ? <Text style={s.planSub}>One-time allowance — it does not refill</Text>
               : <Text style={s.planSub}>Pick a plan to keep generating</Text>}
           </View>
           <Ionicons name={sub ? 'diamond-outline' : trialActive ? 'time-outline' : 'lock-closed-outline'} size={26} color="#22D3EE" />
         </View>
         {quotaTotals ? (
           <>
-            <QuotaBar label="Cover letters" used={status!.used.letters} total={quotaTotals.letters} color="#22D3EE" />
-            <QuotaBar label="Resume generations" used={status!.used.resumes} total={quotaTotals.resumes} color="#A78BFA" />
+            <QuotaBar label="Resume generations" used={status!.used.resumes} total={totalOf(quotaTotals.resumes, status!.used.resumes, status!.remaining.resumes)} color="#A78BFA" />
+            <QuotaBar label="Cover letters" used={status!.used.letters} total={totalOf(quotaTotals.letters, status!.used.letters, status!.remaining.letters)} color="#22D3EE" />
           </>
         ) : null}
         {typeof status?.legacyCredits === 'number' && status.legacyCredits > 0 && (
-          <Text style={s.legacy}>+ {status.legacyCredits} legacy credits (still usable as backup)</Text>
+          // ⚠️ Not "still usable as backup": since 2026-09-13 credits never pay for a resume or a
+          // cover letter, and saying otherwise sends a user into a generation that will be refused.
+          <Text style={s.legacy}>{status.legacyCredits} legacy credits — not used for resume or cover letter generation</Text>
         )}
         <TouchableOpacity style={s.plansBtn} activeOpacity={0.9} onPress={() => router.push('/(subscription)/plans' as never)}>
           <Text style={s.plansBtnText}>{sub ? 'Change plan' : 'See plans'}</Text>
@@ -115,7 +131,9 @@ export default function UsageScreen() {
       {/* ── What's free ── */}
       <View style={s.freeRow}>
         <Ionicons name="gift-outline" size={15} color={T.emerald} />
-        <Text style={s.freeText}>Job search, fetching jobs, Auto Fill, translate, applying and downloads are all free — plans only count cover letters and resume generations.</Text>
+        {/* ⚠️ Downloads are NOT in this list: they need a plan's download allowance or a one-time
+            single-download pass (the Free plan includes none). Saying they were free sent users into a paywall. */}
+        <Text style={s.freeText}>Job search, fetching jobs, Auto Fill, translate and applying are all free. Plans count resume generations and cover letters; downloads need a paid plan or a single-download pass.</Text>
       </View>
 
       {/* ── Ledger ── */}
@@ -123,7 +141,7 @@ export default function UsageScreen() {
       {items.length === 0 ? (
         <View style={s.empty}><Ionicons name="receipt-outline" size={34} color={T.faint} /><Text style={s.emptyText}>Nothing used yet — deductions appear here only after a successful generation.</Text></View>
       ) : items.map((it) => {
-        const src = SOURCE_META[it.source] || SOURCE_META.credits;
+        const src = SOURCE_META[it.source] || SOURCE_OTHER;
         const isLetter = it.kind === 'cover_letter';
         const title = isLetter
           ? (it.detail?.position ? `${it.detail.position}` : 'Cover letter')

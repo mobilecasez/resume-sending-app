@@ -7,6 +7,12 @@
 // under a company badge — so scrolling revealed the same designs a second time and told the user
 // nothing new. This shows something only they know: what they bought.
 //
+// ⚠️ A TAP OPENS THE PAGE, IT NEVER DOWNLOADS (the product owner's call, 2026-09-13). A card grows into
+// the same zoomed page a hero page does (PaperZoom), with the same two doors — Customize and View PDF —
+// and the download happens from View PDF exactly as it does from the hero. So a card only REPORTS: which
+// row, and where its paper is on screen (onOpen). What that row opens — the employer's saved document,
+// the base resume, or for a letter with nothing saved the file itself — is Home's decision, not this list's.
+//
 // ⚠️ THE GLASS IS DRAWN FROM ITS EDGES, NOT FROM A BLUR. expo-blur is installed, and it is still
 // the wrong tool here: BlurView over a scrolling parent samples imperfectly on Android and costs
 // real frames, so the card would look like two different materials on two platforms. What actually
@@ -48,6 +54,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { E } from './theme';
 import { gradFor, DownloadHistoryItem } from '../../services/employerHomeService';
+import type { OriginRect } from './PaperZoom';
 
 /** 48 x 68 is the renderer's own A4 ratio (68 * 300/424 = 48.1). */
 const CHIP_W = 50;
@@ -194,18 +201,19 @@ function Letterpress({ accent, letter }: { accent: string; letter: boolean }) {
 /* ── one row ────────────────────────────────────────────────────────────────────────────────── */
 
 function Row({
-  item, image, accent, index, busy, onAgain, onPay,
+  item, image, accent, index, busy, onOpen,
 }: {
   item: DownloadHistoryItem;
   image?: string | null;
   accent: string;
   index: number;
   busy: boolean;
-  onAgain: (it: DownloadHistoryItem) => void;
-  onPay: (employer: string | null) => void;
+  onOpen: (it: DownloadHistoryItem, origin: OriginRect | null) => void;
 }) {
   const a = useRef(new Animated.Value(0)).current;
   const p = useRef(new Animated.Value(0)).current;
+  // The paper the zoom grows out of — see `tap`.
+  const paper = useRef<View>(null);
   const [justDone, setJustDone] = useState(false);
   const wasBusy = useRef(false);
 
@@ -234,14 +242,22 @@ function Row({
   const pair = gradFor(item.employer || item.templateName);
   const shims = Math.min(2, Math.max(0, (item.times || 1) - 1));
 
+  /**
+   * Open this card. ⚠️ MEASURED FROM THE PAPER, NOT FROM THE ROW. PaperZoom puts frame one of the page on the
+   * rectangle it is handed with ONE uniform scale taken from that rectangle's width, so the rectangle has to
+   * be page-shaped: the 50×70 paper is the renderer's own A4 ratio, and the page grows straight out of it. A
+   * full-width row would start the page wider than it ends and shrink it into place. null = the paper could
+   * not be measured, and the zoom opens from the centre instead.
+   * A padlock does not stop the tap: looking is free, and whether the download goes through is View PDF's
+   * question, answered by the same gate as a first download.
+   */
   const tap = useCallback(() => {
     if (busy) return;
-    try {
-      if (free) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      else Haptics.selectionAsync();
-    } catch {}
-    if (free) onAgain(item); else onPay(item.employer || null);
-  }, [busy, free, item, onAgain, onPay]);
+    try { Haptics.selectionAsync(); } catch {}
+    const node: any = paper.current;
+    if (!node || typeof node.measureInWindow !== 'function') { onOpen(item, null); return; }
+    node.measureInWindow((x: number, y: number, w: number, h: number) => onOpen(item, w ? { x, y, w, h } : null));
+  }, [busy, item, onOpen]);
 
   return (
     <Animated.View
@@ -258,9 +274,10 @@ function Row({
         accessibilityLabel={
           busy ? 'Getting your file'
             : justDone ? 'Saved'
-            : free ? `Download ${item.templateName} for ${item.employer || 'this employer'} again`
-            : `${item.templateName} for ${item.employer || 'this employer'} is locked because your plan ended`
+            : free ? `Open ${item.templateName} for ${item.employer || 'this employer'}`
+            : `Open ${item.templateName} for ${item.employer || 'this employer'}. Downloading it again is locked because your plan ended`
         }
+        accessibilityHint={busy || justDone ? undefined : 'Opens the page, with Customize and View PDF'}
       >
         <Animated.View
           style={[s.shell, { transform: [{ scale: p.interpolate({ inputRange: [0, 1], outputRange: [1, 0.982] }) }] }]}
@@ -280,7 +297,9 @@ function Row({
                     upserted on document identity rather than appended per tap. */}
                 {shims >= 2 && <View style={[s.shim, s.shim2]} />}
                 {shims >= 1 && <View style={[s.shim, s.shim1]} />}
-                <View style={s.chipLift}>
+                {/* collapsable={false}: Android may flatten a view that only lays out, and a flattened view
+                    cannot be measured — this one carries the zoom's starting rectangle. */}
+                <View ref={paper} collapsable={false} style={s.chipLift}>
                   <View style={s.chipClip}>
                     {image ? (
                       <ExpoImage
@@ -335,11 +354,16 @@ function Row({
                 </View>
               </View>
 
-              {/* ── the action, same geometry in every state so nothing shifts ── */}
+              {/* ── what a tap does, same geometry in every state so nothing shifts ──
+                  ⚠️ "Open", never a download arrow: the tap opens the page (see the header), and an arrow
+                  promised a file the tap no longer fetches. The padlock stays — it is the server's answer
+                  to whether downloading this again is free right now. The spinner and the tick belong to
+                  the only paths that still fetch a file from here: a letter card with no saved letter to
+                  open, and a file the paywall has just unlocked. */}
               <View style={[s.act, free ? s.actFree : s.actLocked]}>
                 {busy ? <ActivityIndicator size="small" color={E.mint} />
                   : justDone ? <Ionicons name="checkmark" size={17} color={E.mint} />
-                  : free ? <Ionicons name="arrow-down" size={17} color={E.mint} />
+                  : free ? <Ionicons name="expand-outline" size={16} color={E.mint} />
                   : <Ionicons name="lock-closed" size={14} color="rgba(255,255,255,0.42)" />}
               </View>
             </View>
@@ -474,7 +498,7 @@ function EmptyState({ mode, onScrollToTop }: { mode: 'resume' | 'letter'; onScro
 /* ── the section ────────────────────────────────────────────────────────────────────────────── */
 
 export default function DownloadHistory({
-  mode, items, loading, expanded, busyId, thumbFor, accentFor, onAgain, onPay, onExpand,
+  mode, items, loading, expanded, busyId, thumbFor, accentFor, onOpen, onExpand,
   onScrollToTop, onMoreJobs,
 }: {
   mode: 'resume' | 'letter';
@@ -487,8 +511,17 @@ export default function DownloadHistory({
   thumbFor: (templateId: string) => string | null | undefined;
   /** The design's accent from the catalogue Home already loaded. */
   accentFor: (templateId: string) => string;
-  onAgain: (it: DownloadHistoryItem) => void;
-  onPay: (employer: string | null) => void;
+  /**
+   * A card was tapped: open it. `origin` is its paper's rectangle on screen (measureInWindow), for the zoom
+   * to grow out of; null when it could not be measured.
+   */
+  onOpen: (item: DownloadHistoryItem, origin: OriginRect | null) => void;
+  /**
+   * ⚠️ NO LONGER CALLED BY A TAP — a card opens its page (see the header). Optional, and read by nothing in
+   * this file, so a caller that still passes them type-checks and a tap still cannot download.
+   */
+  onAgain?: (it: DownloadHistoryItem) => void;
+  onPay?: (employer: string | null) => void;
   onExpand: () => void;
   onScrollToTop: () => void;
   /** The one affordance the section this replaced had, and the only route to the jobs tab from
@@ -562,8 +595,7 @@ export default function DownloadHistory({
                 image={mode === 'letter' ? null : thumbFor(it.templateId)}
                 accent={accentFor(it.templateId)}
                 busy={busyId === it.id}
-                onAgain={onAgain}
-                onPay={onPay}
+                onOpen={onOpen}
               />
             ))}
           </View>
@@ -591,7 +623,7 @@ export default function DownloadHistory({
           )}
 
           {mode === 'resume' && (
-            <Text style={s.footnote}>Re-downloads use your latest resume in that design.</Text>
+            <Text style={s.footnote}>Tap one to open it · a download uses your latest resume in that design.</Text>
           )}
         </Animated.View>
       )}

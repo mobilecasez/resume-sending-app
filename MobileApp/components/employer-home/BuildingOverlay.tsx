@@ -8,9 +8,14 @@
 // page stamps complete and the overlay gets out of the way by itself, so the caller can scroll to the
 // new card.
 //
-// ⚠️ THIS FILE STARTS NOTHING AND CHARGES NOTHING. The gate (plan / free / pass / ask-first credits)
-// is the caller's, and so is every network call. This only ever calls back. That is on purpose: the
+// ⚠️ THIS FILE STARTS NOTHING AND CHARGES NOTHING. The gate (plan / free allowance / pass / cache) is
+// the caller's, and so is every network call. This only ever calls back. That is on purpose: the
 // letters auto-regeneration incident came from a SCREEN deciding to spend money on entry.
+//
+// ⚠️ A USED-UP ALLOWANCE NEVER MENTIONS CREDITS (the product owner's call, 2026-09-13). Credits no longer
+// pay for a resume or a letter: generation is a plan's monthly allowance or the free one — 3 resumes and
+// 3 letters, ONE TIME for the life of the account, never refilled. So "used up" says WHICH of the two ran
+// out (allowanceOf) and offers exactly one way on: See plans.
 //
 // ⚠️ "KEEP IT BUILDING IN THE BACKGROUND" IS NOT CANCEL, AND ITS COPY MUST NEVER SAY SO. The async job
 // is already on the server and is charged whether or not anyone watches it; closing this only hides
@@ -253,7 +258,7 @@ function Paper({ w, h, mode, reduce }: { w: number; h: number; mode: PaperMode; 
     }
     if (mode === 'hold') {
       // ⚠️ AN ERROR NEVER FINISHES THE PAGE. Completing the drawing here put a whole, finished-looking
-      // resume behind "You've used this plan's resume builds" — a picture of the thing we just said
+      // resume behind "You've used your free resume generations" — a picture of the thing we just said
       // the user cannot have. Whatever was drawn stays exactly as it was (blank, for a gate refusal).
       // Under reduce motion the run page is a whole placeholder with no in-between, so blank is the
       // only honest picture — and it is a cut, not a motion.
@@ -644,6 +649,22 @@ function Secondary({ label, onPress }: { label: string; onPress: () => void }) {
 type Outcome = 'plans' | 'upload' | 'retry' | 'wait' | 'built' | 'unknown';
 
 /**
+ * Which allowance a 'quota_exhausted' / 'regen_limit' refusal ran out of: the FREE one (one time, never
+ * refilled) or a PLAN's month.
+ * ⚠️ THE SERVER'S OWN SENTENCE WINS WHEN IT SAYS. It refuses a free account with its "free" generations or
+ * cover letters and a plan with "in your plan this month" — it counted the pool that refused, so it cannot be
+ * wrong about which one. Only a sentence that names neither (a client-side gate refusal, say) falls back to
+ * the caller's plan state; and 'regen_limit' only ever came from the free plan.
+ */
+function allowanceOf(reason: string, message: string, isPaid?: boolean): 'free' | 'plan' {
+  if (reason === 'regen_limit') return 'free';
+  const said = String(message || '');
+  if (/\bfree\b/i.test(said)) return 'free';
+  if (/\bthis month\b/i.test(said)) return 'plan';
+  return isPaid ? 'plan' : 'free';
+}
+
+/**
  * What each non-running state honestly means, and what the core shows while saying it.
  *
  * ⚠️ A REASON THIS FILE DOES NOT RECOGNISE IS NOT A FAILURE. The old default said "That build didn't
@@ -652,7 +673,7 @@ type Outcome = 'plans' | 'upload' | 'retry' | 'wait' | 'built' | 'unknown';
  * twice. The polling deadline is now 'pending' (still running, never a rebuild), and anything else we
  * cannot name gets a neutral title, no Try again, and no red.
  */
-function errorCopy(reason: string, message: string, company: string, kind: DocKind): {
+function errorCopy(reason: string, message: string, company: string, kind: DocKind, isPaid?: boolean): {
   title: string; body: string; icon: IconName; tint: string; outcome: Outcome;
 } {
   const forWho = company ? `for ${company}` : 'for this employer';
@@ -662,29 +683,34 @@ function errorCopy(reason: string, message: string, company: string, kind: DocKi
   const noun = wordsFor(kind).noun;
   switch (reason) {
     case 'quota_exhausted':
+    case 'regen_limit': {
+      // ⚠️ NO CREDITS, AND NO PROMISE THE FREE ONES COME BACK: they are one time. See the header.
+      const used = allowanceOf(reason, message, isPaid);
+      if (used === 'free') {
+        return letter
+          ? {
+            title: "You've used your free cover letters",
+            body: `Free cover letters are a one-time allowance, so they don’t refill. Pick a plan to write the cover letter ${forWho}, and to keep writing one for every employer you add.`,
+            icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
+          }
+          : {
+            title: "You've used your free resume generations",
+            body: `Free generations are a one-time allowance, so they don’t refill. Pick a plan to build the resume ${forWho}, and to keep tailoring one to every employer you add.`,
+            icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
+          };
+      }
       return letter
         ? {
-          title: 'You’ve used this plan’s cover letters',
-          body: `Pick a plan to write the cover letter ${forWho}, and to keep writing one for every employer you add.`,
+          title: "You've used this month's cover letters",
+          body: `Your plan’s cover letters for this month are used. A plan with more lets you write the cover letter ${forWho} now.`,
           icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
         }
         : {
-          title: "You've used this plan's resume builds",
-          body: `Pick a plan to build the resume ${forWho}, and to keep tailoring one to every employer you add.`,
+          title: "You've used this month's resume generations",
+          body: `Your plan’s resume generations for this month are used. A plan with more lets you build the resume ${forWho} now.`,
           icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
         };
-    case 'regen_limit':
-      return letter
-        ? {
-          title: 'Your free cover letter is used',
-          body: `The free plan’s cover letter has been used. A plan lets you write one ${forWho}.`,
-          icon: 'refresh-circle-outline', tint: E.purpleLite, outcome: 'plans',
-        }
-        : {
-          title: 'Your free rebuild is used',
-          body: `The free plan includes one resume rebuild, and it has been used. A plan lets you build one ${forWho}.`,
-          icon: 'refresh-circle-outline', tint: E.purpleLite, outcome: 'plans',
-        };
+    }
     case 'no_resume':
       return {
         title: 'Upload your resume first',
@@ -735,12 +761,14 @@ const STILL_BACKDROP = ['#070A18', '#111A44', '#1A2C5E'] as const;
 /** Below this the page is a smudge; at that point the copy is the whole story and the stage steps aside. */
 const MIN_PAGE_W = 64;
 
-function Scene({ kind, company, stage, mode, error, buildKey, dismiss, onRetry, onSeePlans }: {
+function Scene({ kind, company, stage, mode, error, buildKey, isPaid, dismiss, onRetry, onSeePlans }: {
   kind: DocKind;
   company: string;
   stage: BuildStage | null;
   mode: Mode;
   error: { reason: string; message: string } | null;
+  /** See BuildingOverlay's prop. */
+  isPaid?: boolean;
   /** The bound build's store key — see Progress. */
   buildKey?: string;
   dismiss: () => void;
@@ -778,7 +806,7 @@ function Scene({ kind, company, stage, mode, error, buildKey, dismiss, onRetry, 
   const showStage = known && stageH > 0 && pw >= MIN_PAGE_W;
 
   const who = (company || '').trim();
-  const fail = mode === 'error' && error ? errorCopy(error.reason, error.message, who, kind) : null;
+  const fail = mode === 'error' && error ? errorCopy(error.reason, error.message, who, kind, isPaid) : null;
   const outcome = fail ? fail.outcome : null;
   const paperMode: PaperMode = mode === 'run' ? 'run' : mode === 'done' ? 'done' : outcome === 'built' ? 'built' : 'hold';
   const look: CoreLook = mode === 'run' ? 'run'
@@ -922,7 +950,7 @@ function Scene({ kind, company, stage, mode, error, buildKey, dismiss, onRetry, 
 }
 
 export default function BuildingOverlay({
-  visible, kind = 'resume', company, stage, done, error, buildKey, onDismiss, onRetry, onSeePlans,
+  visible, kind = 'resume', company, stage, done, error, buildKey, isPaid, onDismiss, onRetry, onSeePlans,
 }: {
   visible: boolean;
   /** Which document is being made. Changes the words only; defaults to the resume lane. */
@@ -937,6 +965,12 @@ export default function BuildingOverlay({
    * chip the user just tapped; left out, the screen behaves exactly as it did before it existed.
    */
   buildKey?: string;
+  /**
+   * The account has a plan, so a used-up allowance is that plan's month rather than the one-time free one.
+   * Only the WORDS of a quota refusal read it, and only when the server's own sentence did not already say
+   * which allowance it was (allowanceOf). Left out, the free wording is the fallback.
+   */
+  isPaid?: boolean;
   onDismiss: () => void;
   onRetry?: () => void;
   onSeePlans?: () => void;
@@ -979,7 +1013,7 @@ export default function BuildingOverlay({
           is what runs those cleanups — so a hidden overlay has no loops, not merely invisible ones. */}
       {visible && (
         <Scene
-          kind={kind} company={company} stage={stage} mode={mode} error={error || null} buildKey={buildKey}
+          kind={kind} company={company} stage={stage} mode={mode} error={error || null} buildKey={buildKey} isPaid={isPaid}
           dismiss={dismiss} onRetry={onRetry ? retry : undefined} onSeePlans={onSeePlans ? seePlans : undefined}
         />
       )}

@@ -20,6 +20,21 @@
 // reads (doc / docCards / docList) — one chip with a ranked deck and fit badges, one whose document is
 // stale (the Refresh pill), and chips with nothing saved (the Tailor / Write action). Nothing here can
 // start a build: this harness has no account, and a build needs one.
+//
+// ⚠️ A LETTER PAGE HAS BOTH DOORS NOW, AND A LIBRARY CARD OPENS A PAGE (2026-09-13). A zoomed cover letter
+// offers Customize and View PDF like a resume, and a card under "Downloaded" opens the same zoom instead of
+// downloading — so the library fixtures cover every way a card resolves (EmployerHome.openHistoryItem):
+//   • a saved document whose page the deck on screen already has — the Airbus "Executive Professional"
+//     row (the Airbus chip leads, and that design tops its ranking, so the deck's first wave renders it);
+//   • a saved document whose page is not in hand, filled from `docCards` — the Azure Airbus rows, and
+//     Eneco's, whose document is not the one on screen at all;
+//   • nothing saved — the Siemens and Zalando resume rows open the base resume in that design. Siemens'
+//     Bold Banner is one of the five base pages the `cards` fixture has; Zalando's design is not, and since
+//     the harness never renders a page, it opens on a blank sheet (the app fetches that one page);
+//   • a letter with a saved letter — both Airbus letter rows (one locked: looking is free, the padlock is
+//     about downloading), and the Airbus chip's own letter deck in Letter mode;
+//   • a letter with NOTHING to preview — the Siemens letter row falls back to getting the file, which
+//     signed out is a "Preview only" alert, as are the letter's Customize and View PDF.
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -310,11 +325,15 @@ const RESUME_HISTORY: DownloadHistoryItem[] = [
   { id: 6, kind: 'resume', employer: 'Siemens', templateId: 'banner', templateName: 'Bold Banner', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
   { id: 5, kind: 'resume', employer: 'Zalando SE', templateId: 'minimal', templateName: 'Modern Minimal', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 30 * 60000).toISOString(), ownsEmployer: true, unlocked: true },
   { id: 1, kind: 'resume', employer: 'Airbus', templateId: 'azure', templateName: 'Azure Sidebar', format: 'pdf', mode: 'a4', times: 2, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 3, kind: 'resume', employer: 'Airbus', templateId: 'executive', templateName: 'Executive Dark', format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  // Eneco has a saved (stale) resume that is not the chip on screen, so its card's page comes from docCards.
+  { id: 4, kind: 'resume', employer: 'Eneco', templateId: 'mono', templateName: 'Tech Mono', format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 5 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 3, kind: 'resume', employer: 'Airbus', templateId: 'exec_pro', templateName: 'Executive Professional', format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
   { id: 2, kind: 'resume', employer: 'Airbus', templateId: 'azure', templateName: 'Azure Sidebar', format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
 ];
+// Siemens has no saved letter (nothing to preview: the file fallback); both Airbus rows open letter 201.
 const LETTER_HISTORY: DownloadHistoryItem[] = [
   { id: 8, kind: 'cover_letter', employer: 'Siemens', templateId: 'german', templateName: 'German Professional', format: 'docx', mode: 'a4', times: 1, downloadedAt: new Date(T0 - DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 9, kind: 'cover_letter', employer: 'Airbus', templateId: 'technical', templateName: 'Technical Specialist', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 3 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
   { id: 7, kind: 'cover_letter', employer: 'Airbus', templateId: 'ats_pro', templateName: 'ATS Professional', format: 'pdf', mode: 'a4', times: 3, downloadedAt: new Date(T0 - 12 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
 ];
 

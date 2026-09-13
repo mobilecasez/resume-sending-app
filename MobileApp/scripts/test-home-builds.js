@@ -4,8 +4,9 @@
 //   node MobileApp/scripts/test-home-builds.js
 //
 // ⚠️ WHY: this hook decides when money is spent. A build starts only from an explicit request; a covered
-// gate starts it with coveredOnly:true; credits or an unreadable gate ask first (and a Build tap is the only
-// consent coveredOnly:false ever gets); a quota refusal builds nothing; a recovered build lands exactly once;
+// gate starts it with coveredOnly:true; an unreadable gate asks first (and its Build tap is the only consent
+// coveredOnly:false ever gets); a gate that still says 'credits' asks in plan words and is built coveredOnly:true
+// (no credits lane exists for generation since 2026-09-13); a quota refusal builds nothing; a recovered build lands exactly once;
 // and nothing of one account survives into the next.
 'use strict';
 const fs = require('fs');
@@ -239,33 +240,50 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     ok('no record, no gate, no build', !rec(store, 'resume|emp_1') && svc.calls.gate.length === 0 && svc.calls.build.length === 0);
   }
 
-  console.log('── 3. credits: Alert first; Cancel clears; Build sends coveredOnly:false ──');
+  // ⚠️ RETARGETED 2026-09-14. This used to pin "This uses 2 credits." and a Build that sent coveredOnly:false —
+  // consent to a credit charge. Since 2026-09-13 generation has no credits lane at all, so that dialog was consent
+  // to something that cannot happen. A gate that still answers 'credits' (an older or misconfigured server) now
+  // gets the plan-words question, and its Build goes out coveredOnly:TRUE: the server may use plan, free
+  // allowance, pass or cache, and otherwise refuses into the plans state. Nothing on Home can agree to credits.
+  const noCreditWords = (a) => !!a && !/credit/i.test(String(a.title)) && !/credit/i.test(String(a.msg)) && (a.buttons || []).every((b) => !/credit/i.test(b.text));
+  console.log('── 3. a gate that still says credits: plan-words Alert first; Not now clears; Build is COVERED-ONLY ──');
   {
     const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: false, via: 'credits', credits: 2 }); } });
     c.r.request(JOB(), { explicit: true });
     await advance(0);
     ok('an Alert, no build', alerts.length === 1 && svc.calls.build.length === 0);
-    ok('Alert copy names the charge', alerts[0].title === 'Build your Amazon resume?' && alerts[0].msg === 'This uses 2 credits.');
-    alerts[0].buttons.find((b) => b.text === 'Cancel').onPress();
+    ok('⚠️ the Alert names the plan, never a credit price',
+      alerts[0].title === 'Build your Amazon resume?' && /could not check your plan/.test(alerts[0].msg) && noCreditWords(alerts[0]), alerts[0] && { t: alerts[0].title, m: alerts[0].msg });
+    ok('Not now / Try again / Build', alerts[0].buttons.map((b) => b.text).join(',') === 'Not now,Try again,Build');
+    alerts[0].buttons.find((b) => b.text === 'Not now').onPress();
     await flush();
-    ok('Cancel clears the record, builds nothing', !rec(store, 'resume|emp_1') && svc.calls.build.length === 0);
+    ok('Not now clears the record, builds nothing', !rec(store, 'resume|emp_1') && svc.calls.build.length === 0);
     c.r.request(JOB(), { explicit: true });
     await advance(0);
     ok('asked again', alerts.length === 2);
     alerts[1].buttons.find((b) => b.text === 'Build').onPress();
     await flush();
-    ok('Build → coveredOnly:false', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === false);
+    ok('⚠️ Build → coveredOnly:TRUE (never consent to a credit charge)', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true, svc.calls.build.map((b) => b.coveredOnly));
     alerts[1].buttons.find((b) => b.text === 'Build').onPress();
     await flush();
     ok('a double tap builds once', svc.calls.build.length === 1);
+    const gates = svc.calls.gate.length;
+    c.r.request(JOB({ rk: 'emp_2', company: 'Bolt' }), { explicit: true });
+    await advance(0);
+    alerts[2].buttons.find((b) => b.text === 'Try again').onPress();
+    await advance(0);
+    ok('Try again reads the gate again (and asks again), building nothing', svc.calls.gate.length === gates + 2 && alerts.length === 4 && svc.calls.build.length === 1);
   }
 
-  console.log('── 3b. letter credits copy ──');
+  console.log('── 3b. letter copy: plan words too ──');
   {
     const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: false, via: 'credits', credits: 1 }); } });
     c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true });
     await advance(0);
-    ok('letter Alert', alerts[0]?.title === 'Build your Amazon cover letter?' && alerts[0]?.msg === 'This uses 1 credit.');
+    ok('letter Alert', alerts[0]?.title === 'Build your Amazon cover letter?' && /write this letter now from your plan/.test(alerts[0]?.msg) && noCreditWords(alerts[0]), alerts[0] && alerts[0].msg);
+    alerts[0].buttons.find((b) => b.text === 'Build').onPress();
+    await flush();
+    ok('⚠️ …and its Build is covered-only as well', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true && svc.calls.build[0].kind === 'cover_letter');
   }
 
   console.log('── 4. unreadable gate: checking overlay, then ASK (never auto) ──');
@@ -278,8 +296,8 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     ok('"Checking your plan…" after the grace', c.r.overlay.visible && c.r.overlay.stage?.stage === 'checking');
     await advance(8000);
     ok('overlay hidden for the question', c.r.overlay.visible === false);
-    ok('asked, not built', alerts.length === 1 && svc.calls.build.length === 0 && /plan allowance or credits/.test(alerts[0].msg));
-    ok('Not now / Build', alerts[0].buttons.map((b) => b.text).join(',') === 'Not now,Build');
+    ok('asked, not built — in plan words', alerts.length === 1 && svc.calls.build.length === 0 && /could not check your plan/.test(alerts[0].msg) && noCreditWords(alerts[0]), alerts[0] && alerts[0].msg);
+    ok('Not now / Try again / Build', alerts[0].buttons.map((b) => b.text).join(',') === 'Not now,Try again,Build');
     alerts[0].buttons.find((b) => b.text === 'Build').onPress();
     await flush();
     ok('Build → coveredOnly:false', svc.calls.build[0]?.coveredOnly === false);
@@ -320,23 +338,27 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     ok('4th building', rec(store, 'resume|emp_4')?.phase === 'building');
   }
 
-  console.log('── 7. capacity + consent: not asked twice for the same number; asked for a bigger one ──');
+  // ⚠️ RETARGETED 2026-09-14: there is no credit price to consent to, so no "same number / bigger number" either.
+  // What a queued build may carry is only the unread gate's "go ahead" — and it never covers a credits answer.
+  console.log('── 7. capacity + consent: an unread gate\'s go-ahead carries to a still-unread gate; a credits answer never rides one ──');
   {
     const { c, store } = await fresh();
     for (let n = 1; n <= 3; n++) c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
     await advance(0);
-    svc.gateImpl = async () => ({ covered: false, via: 'credits', credits: 2 });
+    svc.gateImpl = () => new Promise(() => {});                      // unreadable
     c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await advance(9000);
+    ok('the unread gate asks', alerts.length === 1 && /could not check your plan/.test(alerts[0].msg));
     alerts[0].buttons.find((b) => b.text === 'Build').onPress();
     await flush();
     ok('consented but full → queued', rec(store, 'resume|emp_4')?.phase === 'queued' && svc.calls.build.length === 3);
     svc.finish(svc.calls.build[0].key, { ok: true, cached: false, docId: 1 });
-    await advance(0);
-    ok('same price → starts without a second dialog, coveredOnly:false', alerts.length === 1 && svc.calls.build.length === 4 && svc.calls.build[3].coveredOnly === false);
-    // bigger price
+    await advance(9000);
+    ok('still unread on drain → starts without a second dialog, coveredOnly:false', alerts.length === 1 && svc.calls.build.length === 4 && svc.calls.build[3].coveredOnly === false,
+      { alerts: alerts.length, builds: svc.calls.build.map((b) => b.coveredOnly) });
+    // the same kind of go-ahead, but the re-read gate now says credits
     c.r.request(JOB({ rk: 'emp_5', company: 'Co5' }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await advance(9000);
     ok('dialog for Co5', alerts.length === 2);
     alerts[1].buttons.find((b) => b.text === 'Build').onPress();
     await flush();
@@ -344,7 +366,10 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     svc.gateImpl = async () => ({ covered: false, via: 'credits', credits: 5 });
     svc.finish(svc.calls.build[1].key, { ok: true, cached: false, docId: 2 });
     await advance(0);
-    ok('higher price → asked again, not built', alerts.length === 3 && svc.calls.build.length === 4 && alerts[2].msg === 'This uses 5 credits.');
+    ok('⚠️ a credits answer is asked again (plan words), never run on the older go-ahead', alerts.length === 3 && svc.calls.build.length === 4 && noCreditWords(alerts[2]), { alerts: alerts.length, builds: svc.calls.build.length });
+    alerts[2].buttons.find((b) => b.text === 'Build').onPress();
+    await flush();
+    ok('⚠️ …and its Build starts covered-only', svc.calls.build.length === 5 && svc.calls.build[4].company === 'Co5' && svc.calls.build[4].coveredOnly === true, svc.calls.build.map((b) => b.coveredOnly));
   }
 
   console.log('── 8. named null stands down; named value is what is gated and built ──');
@@ -669,7 +694,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     await advance(0);
     ok('one dialog', alerts.length === 1);
     ok('second waits', rec(store, 'resume|b')?.phase === 'queued');
-    alerts[0].buttons.find((b) => b.text === 'Cancel').onPress();
+    alerts[0].buttons.find((b) => b.text === 'Not now').onPress();
     await advance(0);
     ok('second asked after the first was answered', alerts.length === 2 && /Build your B resume/.test(alerts[1].title));
     ok('still nothing built', svc.calls.build.length === 0);

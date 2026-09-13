@@ -68,13 +68,25 @@ if (!Array.isArray(PLANS) || PLANS.length !== 5) {
 // groupLevel 1 = highest tier. Apple ranks upgrade/downgrade by this, so Max must be level 1.
 const LEVEL_BY_KEY = { max: 1, power: 2, pro: 3, plus: 4, starter: 5 };
 
+// The store-facing description (Apple caps it at 55 chars, hence hand-written rather than templated).
+// Allowances are the 2026-09-13 subscription model: resumes + cover letters per month, no credits.
+// They used to say 30/5 … 1000/50 — the pre-2026-09-13 catalog — and nothing noticed the drift, so
+// the loop below now refuses to run when a description disagrees with PLANS from entitlements.js.
 const DESCRIPTIONS = {
-  starter: 'Monthly plan: 30 AI cover letters and 5 AI resumes.',
-  plus:    'Monthly plan: 100 AI cover letters and 10 AI resumes.',
-  pro:     'Monthly plan: 150 AI cover letters and 15 AI resumes.',
-  power:   'Monthly plan: 300 AI cover letters and 25 AI resumes.',
-  max:     'Monthly plan: 1000 AI cover letters and 50 AI resumes.',
+  starter: 'Monthly plan: 6 AI resumes and 10 AI cover letters.',
+  plus:    'Monthly plan: 15 AI resumes and 25 AI cover letters.',
+  pro:     'Monthly plan: 25 AI resumes and 50 AI cover letters.',
+  power:   'Monthly plan: 40 AI resumes and 100 AI cover letters.',
+  max:     'Monthly plan: 100 AI resumes and 500 AI cover letters.',
 };
+for (const plan of PLANS) {
+  const d = DESCRIPTIONS[plan.key] || '';
+  const want = `${plan.resumes} AI resumes and ${plan.letters} AI cover letters`;
+  if (!d.includes(want) || d.length > 55) {
+    console.error(`DESCRIPTIONS.${plan.key} is stale or over 55 chars — expected "${want}", got "${d}" (${d.length}). Refusing.`);
+    process.exit(1);
+  }
+}
 
 // ── transport ─────────────────────────────────────────────────────────────────────────────────
 function api(method, urlPath, body) {
