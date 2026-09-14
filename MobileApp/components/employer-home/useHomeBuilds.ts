@@ -11,11 +11,14 @@
 // cards show THEIR build's progress, and BuildingOverlay is only a window onto one record — bound to a key,
 // opened and closed without ever touching the build behind it.
 //
-// ⚠️ NEVER A SILENT CHARGE (the letters auto-regen drain). request() is the only way in, it demands
-// `explicit: true` (in its type AND again at run time), and a build starts on its own ONLY when the server's
-// dry-run gate says the plan, the free allowance, a download pass or the cache covers it — and then it is
-// sent coveredOnly, so the server refuses rather than fall through to anything else. A gate we could not
-// read is an Alert first; exhausted quota is the plans state.
+// ⚠️ NEVER A SILENT CHARGE (the letters auto-regen drain). request() is the only way in, and it demands
+// `explicit: true` (in its type AND again at run time). ⚠️ SINCE 2026-09-14 EVEN THAT TAP SPENDS NOTHING ON ITS
+// OWN (the product owner's ask): a build starts without a question ONLY on the server's 'cache' answer — a
+// document already built, which is free. Covered by the plan, the free allowance or a download pass is a
+// question on the confirm sheet (GenerateConfirmSheet: what tailoring does, how many are left, Continue /
+// Cancel), and only its Continue starts the build — sent coveredOnly, so the server refuses rather than fall
+// through to anything else. Nothing left is the same sheet, empty: "Generate once" buys the one-time pass for
+// THIS employer and builds with it, or See plans. A gate we could not read is still an Alert first.
 // ⚠️ NO USER EVER SEES THE WORD "CREDITS" HERE. Since 2026-09-13 a resume or a letter is paid for by the plan
 // or the free allowance only — the server has no credits lane for them, so a dialog asking consent to a
 // credit charge was consent to something that cannot happen. The gate type still carries via 'credits' (an
@@ -26,11 +29,20 @@
 // ⚠️ A LOST POST IS NEVER RESENT BY A MOUNT, A SWEEP OR ANOTHER CHIP'S TRY AGAIN. A record with no job id is
 // a build the user was told had failed (or whose chip they removed); resending it from a remount charged
 // them for something they had walked away from. Only Try again on THAT build passes its key as resendKey.
+// ⚠️ AND A CONFIRMED BUILD NAMES ITS PAYER, NOT JUST "COVERED" (contract C2). coveredOnly is one permission for
+// four different pockets, so a Continue given to "1 of 3 free left" also let the server spend a one-time pass
+// bought for another employer. Every build the sheet starts carries expectVia — the payer that was on screen —
+// and a server that would really use another refuses with 409 before binding or charging anything. That answer
+// (payer_changed, or cache_miss for a promised cache that is gone) is not a failure to show: nothing was spent,
+// so regate() reads the gate again and asks the same question about what is true NOW.
+// ⚠️ A PAYMENT THAT WENT THROUGH IS NEVER SOLD TWICE (contract C1). "Generate once" treats the store's `paid`
+// (charged, not visible on the server yet) and `pending` (Ask-to-Buy) answers as bought, exactly like ok: the
+// button becomes "Use my one-time pass", which only re-reads the gate. It used to offer to buy again.
 //
 // ⚠️ THE ASYNC LANE CHARGES SOMEONE WHO WALKS AWAY. Closing the overlay, leaving Home, killing the app —
 // none of them stop a build the server has, so nothing here is called cancel and no copy may say a build
 // was cancelled. Only what has NOT started can be withdrawn: a gate still being read, a question still on
-// screen, a place in the queue (cancelQueued).
+// screen (the dialog, or the sheet before its Continue), a place in the queue (cancelQueued).
 //
 // ⚠️ MODULE SCOPE, NOT HOOK STATE. EmployerHome unmounts whenever the Dashboard is shown and a build outlives
 // it, so the queue, the runs and the records live in this module; the hook is only the screen watching them
@@ -38,7 +50,8 @@
 // onLanded go to whichever Home is mounted when it lands, or to nobody.
 //
 // ⚠️ NOTHING TICKS HERE. Stages go to the store; the hook's only React state is which record the overlay is
-// bound to, and it subscribes to that ONE record only while the overlay is up. The creeping percentage is
+// bound to (it subscribes to that ONE record only while the overlay is up), a mirror of the one question the
+// sheet is asking, and a single re-render when a MODAL_GAP_MS pause ends. The creeping percentage is
 // useCreepPct inside the small components that draw it. There are no Animated values in this file.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
@@ -46,8 +59,9 @@ import * as Haptics from 'expo-haptics';
 import {
   checkBuildGate, gateJobFor, buildForEmployer, resumeInflightBuilds, activeBuildCount, buildKeyOf, peekInflight,
   signedInAccount, forgetInflight, MAX_PARALLEL_BUILDS,
-  type DocKind, type BuildGate, type BuildStage, type BuildResult, type InflightMeta,
+  type DocKind, type BuildGate, type BuildStage, type BuildResult, type InflightMeta, type GateUsage, type GatePass,
 } from '../../services/homeAddEmployer';
+import { buyDownloadPass, type BuyResult } from '../../services/downloadPassService';
 import {
   storeKeyOf, getBuilds, setBuild, patchBuild, clearBuild, clearAllBuilds, useTargetBuild,
   type BuildPhase,
@@ -97,6 +111,45 @@ export type OverlayView = {
   canRetry: boolean;
 };
 
+/**
+ * What GenerateConfirmSheet shows (contract 5): the ONE question on screen about ONE build, BEFORE anything is
+ * spent. 'confirm' = something the user already has pays, and Continue starts it; 'empty' = nothing does, and
+ * Generate once buys the one-time pass for this employer (or See plans).
+ * ⚠️ WHAT THE TWO COUNTS MEAN IS DECIDED HERE, so the sheet never has to guess what pays. In 'confirm' mode
+ * `pass` is non-null (and `available`) exactly when the one-time pass pays — `forThisEmployer` = it already
+ * belongs to this employer, false = Continue binds it to them — and `usage` is set only when the allowance it
+ * counts (plan or free) is the one paying and has one to give; both null means something pays that the server
+ * did not count for us. In 'empty' mode `usage` is the allowance that ran out (null when the server sent no
+ * count), and `pass` is null until a pass was bought from this very sheet without starting the build — then it
+ * is { available: true, forThisEmployer: false } and the primary button USES that pass instead of selling a
+ * second one. ⚠️ "BOUGHT" INCLUDES A PAYMENT THE SERVER HAS NOT SHOWN YET (contract C1, `payment` below): the
+ * store has taken it (or will, on approval), so selling a second one would charge twice for one need. ⚠️ The server's own `pass` is never shown in 'empty' mode: a pass that could pay would have made
+ * the gate answer via 'pass', so one riding on a refusal is at best about the other kind of document.
+ * `error` is the one line under the question — a failure, or a note that must be read (a pass bought that did
+ * not start the build). `busy` = the purchase, or a gate read around it, is running: nothing may be tapped.
+ * ⚠️ `payment` is a purchase from THIS sheet that the server has not shown yet (contract C1): 'applying' = the
+ * store charged them and the pass has not surfaced, 'approval' = Ask-to-Buy, where approving it later charges.
+ * Both are "bought" as far as this sheet is concerned — it may re-read, never sell again — and both change what
+ * the primary button says. `canCancel` = busy, but past the store: Cancel may take the question away, and what
+ * was paid for stays theirs (nothing here can open the store a second time).
+ */
+export type ConfirmSheetView = {
+  visible: boolean;
+  mode: 'confirm' | 'empty';
+  kind: DocKind;
+  company: string;
+  usage: GateUsage | null;
+  pass: GatePass | null;
+  busy: boolean;
+  error: string | null;
+  payment?: Payment;
+  canCancel?: boolean;
+  onContinue: () => void;
+  onCancel: () => void;
+  onBuyOnce: () => void;
+  onSeePlans: () => void;
+};
+
 type NoticeAction = { label: string; kind: DocKind; rk: string };
 
 type RequestHow = {
@@ -106,6 +159,12 @@ type RequestHow = {
   /** The job under the name and website tracking settled on. null = build nothing (see beginRequest). */
   named?: Promise<HomeBuildJob | null>;
   showOverlay?: boolean;
+  /**
+   * One line to carry into the question this request ends at — used by regate(), so a build the server refused
+   * without spending anything says what became of the money before it asks again. ⚠️ Never a claim that a
+   * charge happened (see SHEET_COPY); dropped when the question has to wait in line rather than open now.
+   */
+  note?: string | null;
 };
 
 /* ── timings and copy ─────────────────────────────────────────────────────────────────────────── */
@@ -117,6 +176,17 @@ type RequestHow = {
 const GATE_WAIT_MS = 8000;
 /** With no hold, how long a quick gate gets before "Checking your plan…" goes up, so a fast one never flashes it. */
 const QUICK_GATE_MS = 300;
+/**
+ * ⚠️ ONE MODAL AT A TIME, WITH A BREATH BETWEEN. The sheet and BuildingOverlay are two react-native Modals, and
+ * on iOS a Modal is a view controller presented from the one that owns it: one presented while the other is still
+ * there or still being dismissed is refused by UIKit without an error, while RN believes it is up — a question
+ * nobody can see, holding the one question slot for good. So whichever comes second waits this long after the
+ * first went away (and GenerateConfirmSheet retries a presentation that never showed, for Home's other Modals).
+ */
+const MODAL_GAP_MS = 380;
+/** After a purchase the pass can take a moment to reach the gate: read it this many times, this far apart. */
+const PASS_READS = 3;
+const PASS_READ_GAP_MS = 1200;
 /** ⚠️ A place in line EXPIRES: a wait from long ago is not consent to spend a plan build now. */
 const QUEUE_TTL_MS = 10 * 60 * 1000;
 /** How long a finished build keeps its record (the chip's mint check reads the first 6 s of it). */
@@ -170,13 +240,54 @@ const DONE: BuildStage = { stage: 'done', label: 'Ready', pct: 100 };
 const PENDING_LABEL = 'Still working on it…';
 const UNREAD: BuildGate = { covered: false, via: null, reason: 'unknown' };
 
+/** The sheet's own sentences. ⚠️ None of them may say a charge happened that did not, or did not that did. */
+const SHEET_COPY = {
+  unread: 'We couldn’t check your plan just now, so nothing was bought. Please try again.',
+  failed: 'That didn’t go through. Please try again.',
+  paidNotReady: 'Your payment went through, but we couldn’t start it yet. Tap “Use my one-time pass” to try again — you won’t be charged twice.',
+  // The store charged them and the server has not shown the pass yet — the same fact as paidNotReady, one step
+  // earlier, so it says where the pass is rather than blaming the build.
+  applying: 'Your payment went through — we’re still applying your one-time pass. Tap “Use my one-time pass” in a moment; you won’t be charged twice.',
+  // Ask-to-Buy / deferred: nothing has been charged YET, and approving it later is what charges. Saying
+  // "your payment went through" here would be the exact lie this file exists to avoid.
+  approval: 'Your payment is waiting to be approved, so nothing has been charged yet. When it clears, tap “Use my one-time pass”.',
+  saved: 'Your one-time pass is saved — it covers the next employer you use it for.',
+  savedApplying: 'Your payment went through — your one-time pass covers the next employer you use it for.',
+  savedApproval: 'Your payment is waiting to be approved. When it clears, your one-time pass covers the next employer you use it for.',
+  covered: 'Good news — this one is already covered, so nothing was bought.',
+  // After a 409 (contract C2). Nothing was bound, charged or stored — and the question that follows is about
+  // what pays NOW, so the note has to say why it is being asked again.
+  payerChanged: 'What pays for this changed, so nothing was charged. Here’s what covers it now.',
+  cacheMiss: 'Your saved copy wasn’t there any more, so nothing was charged. Here’s what a new one uses.',
+};
+
 /* ── module state ─────────────────────────────────────────────────────────────────────────────── */
 
+/** What pays for a confirmed build: the plan, the free allowance, or the one-time pass. */
+type Pool = 'plan' | 'free' | 'pass';
+
 /**
- * What the user already agreed to on a dialog, carried with a build that then had to wait for a slot.
- * ⚠️ Only { via: 'unknown' } is ever created now; the credits shape is kept for the type, not produced.
+ * Every answer a gate can give, as runBuild is told it. ⚠️ The first four ARE the expectVia sent to the server
+ * (contract C2) when the build is covered-only; 'credits' and 'unknown' name no payer and send none, which is
+ * the older behaviour — the only two sends that go out coveredOnly:false are 'unknown' anyway.
  */
-type Consent = { via: 'credits'; credits: number } | { via: 'unknown' };
+type GateVia = Pool | 'cache' | 'credits' | 'unknown';
+
+/**
+ * A purchase from the sheet that the server has not shown yet (contract C1): 'applying' = the store charged
+ * them, 'approval' = Ask-to-Buy (nothing charged until it clears). null = nothing pending — either no purchase,
+ * or one the server has already confirmed.
+ */
+export type Payment = 'applying' | 'approval' | null;
+
+/**
+ * What the user already agreed to, carried with a build that then had to wait for a slot.
+ *   { via: 'unknown' }   — Build on the dialog that said the plan could not be checked (coveredOnly:false).
+ *   { via: 'confirmed' } — Continue on the sheet, or a pass bought on it: covers the SAME pool when the line
+ *                          moves, and nothing else — a pool that changed while it waited is asked about again.
+ * ⚠️ The credits shape is kept for the type, not produced.
+ */
+type Consent = { via: 'credits'; credits: number } | { via: 'unknown' } | { via: 'confirmed'; pool: Pool };
 
 /** One build on its way, keyed by buildKeyOf — the identity the service's flights and records share. */
 type Run = {
@@ -212,6 +323,8 @@ type Host = {
   rkFor: (meta: InflightMeta) => string | null;
   landed: (job: HomeBuildJob, docId: number | null, cached: boolean, watched: boolean) => void;
   notice: (text: string, action?: NoticeAction) => void;
+  /** The screen's plans route — only ever the user's own tap on the sheet's See plans. */
+  seePlans: () => void;
 };
 
 /**
@@ -233,6 +346,13 @@ const vers = new Map<string, number>();
 /** Error records that are plan refusals: nothing started, so they clear once seen. */
 const refused = new Set<string>();
 /**
+ * Chips whose last build was refused with 'cache_miss' — the gate promised a free cached document the build
+ * could not find. ⚠️ BELIEVED TWICE IT IS A LOOP WITH NO TAP IN IT: a cache answer starts a build on its own
+ * (it is free), so the same wrong promise would start, be refused, and start again. Cleared when that chip
+ * builds something, when it goes, or with the account.
+ */
+const missedCache = new Set<string>();
+/**
  * How each build last ended. ⚠️ A recovery (a remount, a sweep) joins the same flight a tap is waiting on, and
  * whichever hears the end second finds no run left — without this it would land the build again (a second
  * "ready", a second onLanded) or re-adopt it and flip a finished chip back to building.
@@ -250,6 +370,35 @@ let draining = false;
 let drainAgain = false;
 let sweepTimer: ReturnType<typeof setTimeout> | null = null;
 let host: Host | null = null;
+
+/**
+ * The confirm sheet's ONE question. ⚠️ IT SHARES `asking` WITH THE DIALOG, so a sheet and a dialog never stack
+ * and a second question waits in line. Module scope like everything else here: a purchase that outlives the
+ * Home that started it still lands. `shown` is false during MODAL_GAP_MS; `bought` = a pass was bought from
+ * THIS question, so nothing on it may ever buy a second one; `show` = raise the overlay once it starts.
+ */
+type Ask = {
+  id: number; key: string; job: HomeBuildJob; mode: 'confirm' | 'empty'; pool: Pool | null;
+  usage: GateUsage | null; pass: GatePass | null; busy: boolean; error: string | null; bought: boolean;
+  shown: boolean; startedAt: number; show: boolean; at?: number; epoch: number;
+  /** A purchase from this question the server has not shown yet — `bought` is true for these too. */
+  payment: Payment;
+  /**
+   * The store call for this question has returned (however it answered). ⚠️ THE ONLY THING THAT UNLOCKS CANCEL
+   * WHILE BUSY: before it, a tap could land between "Generate once" and the store's own sheet; after it, nothing
+   * here can open the store again, so leaving merely keeps what was paid for.
+   */
+  storeDone: boolean;
+};
+let sheet: Ask | null = null;
+/** The last question published, so a closing sheet keeps its words instead of flashing blank ones. */
+let sheetLast: Ask | null = null;
+const sheetWatchers = new Set<(a: Ask | null) => void>();
+/**
+ * When a Modal of ours last went away — see MODAL_GAP_MS. Stamped by closeSheet for the sheet and by the hook's
+ * setBound for the overlay (every way that window closes goes through it).
+ */
+let modalAt = 0;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const keyOfJob = (j: { kind: DocKind; rk: string }) => storeKeyOf(j.kind, j.rk);
@@ -270,7 +419,13 @@ function withHost<T>(fn: (h: Host) => T, fallback: T): T {
 const hostAlive = () => withHost((h) => !!h.alive(), false);
 const watching = (key: string) => withHost((h) => h.watching(key), false);
 const overlayUp = () => withHost((h) => h.overlayUp(), false);
+/**
+ * ⚠️ NEVER OVER THE SHEET. A question on the sheet (or one waiting out MODAL_GAP_MS to come up) is a Modal the
+ * overlay would be presented on top of — refused by UIKit without an error. Unwatched, a build tells its news
+ * in a notice instead, which is exactly what a build nobody is watching does anyway.
+ */
 function showOverlay(key: string, t: { kind: DocKind; rk: string; company: string }) {
+  if (sheet) return;
   if (hostAlive()) withHost<void>((h) => h.show(key, t.kind, t.rk, t.company), undefined);
 }
 function hideOverlay(key: string) {
@@ -302,16 +457,42 @@ async function readGate(job: HomeBuildJob): Promise<BuildGate> {
  * a build that will not run — the 'cache' it promised would miss, and a refused board host would be
  * researched as the employer. So it is read again for the latest job; one still moving after three reads
  * is no answer at all ('unknown' → ask).
+ * ⚠️ AND A CACHE THE BUILD JUST MISSED IS NOT PROMISED AGAIN (see missedCache): every path that can start a
+ * build reads its gate through here, so the distrust is applied once, where the answer is produced.
  */
 async function stableGate(key: string, job: HomeBuildJob): Promise<{ job: HomeBuildJob; gate: BuildGate; ver: number }> {
   let cur = job;
   for (let n = 0; n < 3; n++) {
     const v = verOf(key);
     const gate = await readGate(cur);
-    if (verOf(key) === v) return { job: cur, gate, ver: v };
+    if (verOf(key) === v) return { job: cur, gate: trusted(key, gate), ver: v };
     cur = jobs.get(key) || cur;
   }
   return { job: cur, gate: UNREAD, ver: verOf(key) };
+}
+
+/**
+ * A 'cache' answer for a chip whose last build was refused with 'cache_miss' is no answer at all — it ASKS
+ * instead (the unread-gate dialog), which is the truth: the one thing we know is that this gate was wrong.
+ * ⚠️ It only ever makes the app ask MORE, never spend more: every other answer is passed through untouched.
+ */
+const trusted = (key: string, gate: BuildGate): BuildGate =>
+  (gate.covered && gate.via === 'cache' && missedCache.has(key) ? UNREAD : gate);
+
+/**
+ * The consent a build keeps while it waits for a slot — only the kind that matches how it is sent. ⚠️ A
+ * covered-only build never carries the unread gate's "go ahead" (that would send it coveredOnly:false when
+ * the line moves), and a coveredOnly:false build never carries a Continue.
+ */
+function carried(coveredOnly: boolean, c: Consent | null | undefined): Consent | null {
+  if (!c) return null;
+  if (coveredOnly) return c.via === 'confirmed' ? c : null;
+  return c.via === 'unknown' ? c : null;
+}
+
+/** Whether a Continue the user already tapped covers what the gate says NOW: the same pool, and only that. */
+function confirmedCovers(c: Consent | null, via: 'plan' | 'free' | 'pass' | 'cache'): boolean {
+  return !!c && c.via === 'confirmed' && via !== 'cache' && c.pool === via;
 }
 
 /** Whether a dialog the user already said Build on covers what the gate says NOW. */
@@ -399,10 +580,13 @@ function expireQueue() {
 
 /**
  * Start what waited behind the builds that just ended — through the gate like any Add, so waiting in line
- * is never a pre-approved charge (a dialog the user already said Build on is the one exception: it is not
- * asked twice for the same thing, and only up to what it named).
- * ⚠️ A QUESTION NEEDS SOMEONE TO ANSWER IT: with no Home mounted, a dialog already up, or a build being
+ * is never a pre-approved charge (a question the user already answered — Build on the dialog, Continue on the
+ * sheet — is the one exception: it is not asked twice for the same thing, and only up to what it named: the
+ * same unread gate, the same pool). A cache hit is free and simply starts.
+ * ⚠️ A QUESTION NEEDS SOMEONE TO ANSWER IT: with no Home mounted, a question already up, or a build being
  * watched in the overlay, a build that needs asking keeps its place and is asked on the next pass.
+ * ⚠️ AND A COVERED BUILD NOBODY SAID CONTINUE TO NEVER STARTS UNSEEN. It used to, the moment a slot freed; now
+ * it waits for its sheet like any other question (or expires with QUEUE_TTL_MS).
  */
 async function drain(): Promise<void> {
   if (!queue.length) return;
@@ -438,9 +622,14 @@ async function drain(): Promise<void> {
       const rec = getBuilds()[q.key];
       if (!rec || rec.phase !== 'queued') { queue = queue.filter((x) => x.id !== q.id); continue; }
       if (activeBuildCount() >= MAX_PARALLEL_BUILDS) break;
-      if (gate.covered) {
+      if (gate.covered && gate.via === 'cache') {
         queue = queue.filter((x) => x.id !== q.id);
         runBuild(job, gate.via, true, { at: q.at });
+        continue;
+      }
+      if (gate.covered && confirmedCovers(q.consent, gate.via)) {
+        queue = queue.filter((x) => x.id !== q.id);
+        runBuild(job, gate.via, true, { consent: q.consent, at: q.at });   // Continue was tapped for this very pool
         continue;
       }
       if (consentCovers(q.consent, gate)) {
@@ -448,14 +637,25 @@ async function drain(): Promise<void> {
         runBuild(job, 'unknown', false, { consent: q.consent, at: q.at });   // only an unread gate gets here
         continue;
       }
-      if (gate.via === 'credits' || gate.reason === 'unknown') {
+      if (!gate.covered && (gate.via === 'credits' || gate.reason === 'unknown')) {
         if (asking !== null || !hostAlive() || overlayUp()) continue;   // keeps its place
         queue = queue.filter((x) => x.id !== q.id);
         askToBuild(job, gate, { show: false, startedAt: rec.startedAt, at: q.at });
         continue;
       }
+      // Covered with nobody's Continue yet, or nothing left: the sheet's question. ⚠️ Nothing left is a question
+      // too now (it offers the one-time pass), so with nobody to answer it, it keeps its place like the rest —
+      // never started unseen, never turned into a refusal the user would only find later.
+      const offer = offerFor(gate);
+      if (offer) {
+        if (asking !== null || !hostAlive() || overlayUp()) continue;   // keeps its place
+        queue = queue.filter((x) => x.id !== q.id);
+        askOnSheet(job, offer, { show: true, startedAt: rec.startedAt, at: q.at });
+        continue;
+      }
+      if (gate.covered) continue;   // not reached: a covered answer is the cache, a Continue, or an offer
       queue = queue.filter((x) => x.id !== q.id);
-      refuse(job, gate.reason, { show: hostAlive() && !overlayUp() });
+      refuse(job, gate.reason, { show: hostAlive() && !overlayUp() && !sheet });
     }
   } finally {
     draining = false;
@@ -469,14 +669,19 @@ async function drain(): Promise<void> {
  * Start one build now — or join the same build already on its way, or wait for a slot when
  * MAX_PARALLEL_BUILDS are running.
  *
- * `coveredOnly` is the consent: true = the server may spend only plan, free allowance, pass or cache and
+ * `coveredOnly` is how it is sent: true = the server may spend only plan, free allowance, pass or cache and
  * must refuse (402 → the plans state) rather than fall through to anything else. ⚠️ false ONLY after the
  * user tapped Build on the dialog that said the plan could not be checked — "the user agreed to proceed
- * without a gate answer". `consent` carries that, so a build that then has to wait for a slot is not asked
- * the same question twice.
+ * without a gate answer". ⚠️ Nothing but a cache hit calls this without an answered question behind it.
+ * `consent` carries that answer (the dialog's, or the sheet's Continue — see carried), so a build that then
+ * has to wait for a slot is not asked the same question twice.
+ * ⚠️ `via` IS ALSO WHAT THE SERVER IS TOLD TO EXPECT (expectVia, contract C2): the answer the user was shown
+ * and agreed to, so a server that would really spend a different pocket — an unbound pass nobody said Continue
+ * to — refuses with 409 instead of taking it. 'credits' and 'unknown' name no payer and send none, which is
+ * all those two ever had.
  */
 function runBuild(
-  final: HomeBuildJob, via: string, coveredOnly: boolean,
+  final: HomeBuildJob, via: GateVia, coveredOnly: boolean,
   o: { show?: boolean; consent?: Consent | null; at?: number } = {},
 ): void {
   const key = keyOfJob(final);
@@ -492,7 +697,7 @@ function runBuild(
     return;
   }
   if (activeBuildCount() >= MAX_PARALLEL_BUILDS) {
-    enqueue(final, coveredOnly ? null : (o.consent || null), 'capacity', o.at);
+    enqueue(final, carried(coveredOnly, o.consent), 'capacity', o.at);
     return;
   }
   const run: Run = {
@@ -507,11 +712,14 @@ function runBuild(
   const noun = nounOf(final.kind);
   // ⚠️ ONE STEP WITH THE COUNT ABOVE: buildForEmployer claims its flight synchronously, before its first
   // await, so nothing can take the slot between our check and the claim.
+  // Named only where a payer really was named, and only under coveredOnly: the two coveredOnly:false sends are
+  // the unread gate's, which promised the server nothing to hold them to.
+  const expectVia = coveredOnly && via !== 'credits' && via !== 'unknown' ? via : undefined;
   buildForEmployer(
     {
       company: final.company, website: final.website, jobUrl: final.jobUrl, postingUrl: final.postingUrl,
       jobText: final.jobText, jobTitle: final.jobTitle, employerId: final.employerId ?? null,
-      country: final.country ?? null, coveredOnly, kind: final.kind,
+      country: final.country ?? null, coveredOnly, expectVia, kind: final.kind,
     },
     (s) => stageRun(run, s),
   )
@@ -524,7 +732,7 @@ function runBuild(
         run.over = true;
         if (runs.get(bk) === run) runs.delete(bk);
         for (const [k, rk] of Array.from(run.keys)) {
-          enqueue(jobs.get(k) || { ...final, rk }, coveredOnly ? null : (o.consent || null), 'capacity', o.at);
+          enqueue(jobs.get(k) || { ...final, rk }, carried(coveredOnly, o.consent), 'capacity', o.at);
         }
         return;
       }
@@ -595,6 +803,13 @@ function settle(run: Run, r: BuildResult) {
     void drain();
     return;
   }
+  // ⚠️ REFUSED BEFORE ANYTHING WAS BOUND, CHARGED OR STORED (contract C2): not an ending to show, a question to
+  // ask again. Before the error record below on purpose — "that build didn't finish" with a Try again that
+  // resends the same, now wrong, expectation is a loop the user cannot get out of.
+  if (!r.ok && (r.reason === 'payer_changed' || r.reason === 'cache_miss')) {
+    regate(run, r.reason);
+    return;
+  }
   run.over = true;
   if (runs.get(run.buildKey) === run) runs.delete(run.buildKey);
   const job = run.job;
@@ -606,6 +821,8 @@ function settle(run: Run, r: BuildResult) {
   for (const [k] of entries) endedFor.set(k, run.buildKey);
   if (r.ok) {
     const docId = typeof r.docId === 'number' && isFinite(r.docId) ? r.docId : null;
+    // This chip's gate has been proved right by a build that landed: its next 'cache' answer is trusted again.
+    for (const [k] of entries) missedCache.delete(k);
     for (const [k, rk] of entries) {
       const prev = getBuilds()[k];
       record(k, { kind: job.kind, rk, company: (prev && prev.company) || job.company }, 'done', run.startedAt, { stage: DONE, docId });
@@ -637,6 +854,48 @@ function settle(run: Run, r: BuildResult) {
     }
     track('home_build_fail', { kind: job.kind, reason });
     if (!watched) notify(`Your ${job.company} ${noun} didn’t finish — tap its card to see why`, { label: 'See why', kind: job.kind, rk: job.rk });
+  }
+  void drain();
+}
+
+/**
+ * The server refused what this build expected to pay with (contract C2) — nothing was bound, charged or stored.
+ *
+ * ⚠️ SO IT IS ASKED AGAIN, NOT REPORTED. The build goes back through the ONE door (beginRequest): a fresh gate
+ * read decides what is true now, and its answer is the same sheet with the new numbers, the empty sheet, the
+ * plans refusal, or a real cache hit (free, and the one thing that starts without a tap). Nothing here starts a
+ * build, and nothing here spends.
+ * ⚠️ WITH NOBODY TO ASK, OR NOTHING TO ASK ABOUT, IT SAYS SO INSTEAD. No Home is mounted (the question would be
+ * cleared unseen), or this session never held the job — a build recovered after a relaunch carries half a one
+ * (adoptRecovered), and re-gating from that would ask about the wrong thing. The record then says both that the
+ * build did not happen and that nothing was charged; its Try again goes through the gate like any other.
+ */
+function regate(run: Run, reason: 'payer_changed' | 'cache_miss') {
+  run.over = true;
+  if (runs.get(run.buildKey) === run) runs.delete(run.buildKey);
+  const entries = Array.from(run.keys);
+  const kind = run.job.kind;
+  // Remembered like any other ending, so a recovery that hears the same refusal does not act on it twice.
+  ended.set(run.buildKey, { at: Date.now(), ok: false, reason });
+  for (const [k] of entries) endedFor.set(k, run.buildKey);
+  track('home_build_regate', { kind, reason });
+  const note = reason === 'cache_miss' ? SHEET_COPY.cacheMiss : SHEET_COPY.payerChanged;
+  for (const [k, rk] of entries) {
+    if (reason === 'cache_miss') missedCache.add(k);
+    const job = jobs.get(k);
+    const watched = watching(k);
+    const prev = getBuilds()[k];
+    const company = (prev && prev.company) || run.job.company;
+    if (!job || !hostAlive()) {
+      refused.add(k);
+      record(k, { kind, rk, company }, 'error', run.startedAt, {
+        error: { reason: 'failed', message: `${note} Start it again from its card.` },
+      });
+      if (!watched) notify(`Your ${company} ${nounOf(kind)} wasn’t started — nothing was charged.`, { label: 'See why', kind, rk });
+      continue;
+    }
+    // The overlay follows it only if the user was watching this build; the question comes either way.
+    beginRequest({ ...job, rk }, { explicit: true, showOverlay: watched, note });
   }
   void drain();
 }
@@ -727,6 +986,304 @@ function refuse(final: HomeBuildJob, reason: 'quota_exhausted' | 'regen_limit', 
   record(key, final, 'error', prev ? prev.startedAt : Date.now(), { error: { reason, message: GATE_COPY[final.kind][reason] } });
   if (o.show && hostAlive()) { showOverlay(key, final); return; }
   notify(`Your ${final.company} ${nounOf(final.kind)} wasn’t started — your plan has none left.`, { label: 'See why', kind: final.kind, rk: final.rk });
+}
+
+/* ── the confirm sheet ────────────────────────────────────────────────────────────────────────── */
+
+/** What one gate answer asks on the sheet: its mode, the pool that would pay (confirm only), and what it may show. */
+type Offer = { mode: 'confirm' | 'empty'; pool: Pool | null; usage: GateUsage | null; pass: GatePass | null };
+
+/**
+ * The sheet's question for a gate answer — or null when the sheet has none to ask: a cache hit (free, it simply
+ * starts), a gate we could not read or one that still says 'credits' (the dialog asks those), and 'regen_limit'
+ * (the builder's one free rebuild, which Home's doc lane never asks about — it stays the plans refusal).
+ * ⚠️ ONLY THE PAYING POOL'S COUNT, AND ONLY WHILE IT HAS ONE TO GIVE. A plan answer shows the plan's count and a
+ * free answer the free one; a count about some other allowance, or one that says nothing is left while the gate
+ * says covered, is dropped — the sheet then says less, never a number about money this build does not touch.
+ * A pass answer shows the pass and no count at all.
+ */
+function offerFor(gate: BuildGate): Offer | null {
+  if (gate.covered) {
+    if (gate.via === 'cache') return null;
+    if (gate.via === 'pass') {
+      return { mode: 'confirm', pool: 'pass', usage: null, pass: { available: true, forThisEmployer: !!(gate.pass && gate.pass.forThisEmployer) } };
+    }
+    const u = gate.usage;
+    return { mode: 'confirm', pool: gate.via, usage: u && u.pool === gate.via && u.remaining > 0 ? u : null, pass: null };
+  }
+  if (gate.via === null && gate.reason === 'quota_exhausted') {
+    return { mode: 'empty', pool: null, usage: gate.usage || null, pass: null };
+  }
+  return null;
+}
+
+/** Tell every watching Home what the sheet is asking now. ⚠️ Guarded per watcher, like withHost. */
+function publishSheet() {
+  if (sheet) sheetLast = sheet;
+  const now = sheet;
+  for (const w of Array.from(sheetWatchers)) {
+    try { w(now); } catch { /* one watcher must not stop the others */ }
+  }
+}
+
+function patchSheet(id: number, patch: Partial<Ask>) {
+  if (!sheet || sheet.id !== id) return;
+  sheet = { ...sheet, ...patch };
+  publishSheet();
+}
+
+/** The question goes away, answered or withdrawn. ⚠️ Its Modal starts to leave NOW — see MODAL_GAP_MS. */
+function closeSheet(id: number) {
+  if (!sheet || sheet.id !== id) return;
+  if (sheet.shown) modalAt = Date.now();
+  sheet = null;
+  if (asking === id) asking = null;
+  publishSheet();
+}
+
+/** Still the same ask: not removed, not taken over by another request or a recovery, not another account's. */
+function sheetWanted(a: Ask): boolean {
+  if (a.epoch !== epoch) return false;
+  const rec = getBuilds()[a.key];
+  return !!rec && (rec.phase === 'checking' || rec.phase === 'queued') && rec.startedAt === a.startedAt;
+}
+
+/**
+ * Put one build's question on the sheet. ⚠️ THE CALLER HAS CHECKED THE SLOT (`asking`) AND THE OVERLAY, and this
+ * takes the slot. The record keeps saying what it said (checking, or its place in line) — nothing has started.
+ * The sheet comes up only once MODAL_GAP_MS has passed since the last Modal of ours went away.
+ */
+function askOnSheet(final: HomeBuildJob, offer: Offer, o: { show: boolean; startedAt: number; at?: number; note?: string | null }) {
+  const id = ++seq;
+  const wait = Math.max(0, MODAL_GAP_MS - (Date.now() - modalAt));
+  asking = id;
+  // ⚠️ A PURCHASE THIS CHIP MADE THAT HAS NOT SURFACED YET IS REMEMBERED ACROSS ASKS. Cancel, then Tailor again
+  // before the server shows the pass, used to rebuild the sheet from scratch — `bought:false` — and an empty gate
+  // answer offered "Generate once" a second time. The memo re-seeds the sheet as paid, so the button is
+  // "Use my one-time pass" (a read, never a sale) until the pass is seen or the memo ages out.
+  const memo = offer.mode === 'empty' ? paidMemoFor(keyOfJob(final)) : null;
+  sheet = {
+    id, key: keyOfJob(final), job: final, mode: offer.mode, pool: offer.pool, usage: offer.usage,
+    pass: memo ? { available: true, forThisEmployer: false } : offer.pass,
+    busy: false, error: memo ? settlingCopy(memo.payment) : (o.note || null),
+    bought: !!memo, payment: memo ? memo.payment : null, storeDone: false,
+    shown: wait === 0, startedAt: o.startedAt, show: o.show, at: o.at, epoch,
+  };
+  track('home_build_sheet', { kind: final.kind, mode: offer.mode, pool: offer.pool || 'none' });
+  publishSheet();
+  if (wait > 0) {
+    setTimeout(() => { if (sheet && sheet.id === id && !sheet.shown) patchSheet(id, { shown: true }); }, wait);
+  }
+}
+
+/**
+ * Take a question off the sheet without building: the record it was holding goes (when it is still this ask's),
+ * the slot frees, and the line may move. ⚠️ A PASS BOUGHT HERE THAT BUILT NOTHING IS NOT LOST, and the user is
+ * told so — it stays theirs, for the next employer they use it on. ⚠️ AND ONE THE SERVER HAS NOT SHOWN YET IS
+ * NOT CALLED SAVED: a payment still being applied says so, and an Ask-to-Buy waiting for approval says that
+ * nothing has been charged at all.
+ */
+function withdrawAsk(a: Ask) {
+  closeSheet(a.id);
+  if (sheetWanted(a)) { requests.delete(a.key); clearBuild(a.key); }
+  if (a.bought && a.epoch === epoch) notify(savedCopy(a.payment));
+  void drain();
+}
+
+/** What a bought-but-unused pass is called when the question goes — by where its payment has got to. */
+const savedCopy = (payment: Payment): string =>
+  (payment === 'approval' ? SHEET_COPY.savedApproval : payment === 'applying' ? SHEET_COPY.savedApplying : SHEET_COPY.saved);
+
+/**
+ * Continue — THE tap that lets a plan, free or pass build start. Sent coveredOnly, and carrying the pool it named,
+ * so a build that has to wait for a slot starts on that same pool without asking again, and on nothing else.
+ * The overlay (when the build wants it) comes up MODAL_GAP_MS after the sheet went: the hook holds it back.
+ */
+function sheetContinue(id: number) {
+  const a = sheet;
+  if (!a || a.id !== id || !a.shown || a.busy || a.mode !== 'confirm' || !a.pool || a.epoch !== epoch) return;
+  const pool = a.pool;
+  closeSheet(id);
+  if (sheetWanted(a)) {
+    const job = jobs.get(a.key) || a.job;   // a retarget while the sheet was up is honoured: the consent is for the build
+    track('home_build_confirmed', { kind: job.kind, pool, bought: a.bought });
+    runBuild(job, pool, true, { show: a.show, consent: { via: 'confirmed', pool }, at: a.at });
+  }
+  void drain();
+}
+
+/**
+ * Cancel, the backdrop, the back button, See plans: nothing starts. Refused while a purchase is on its way.
+ * ⚠️ EXCEPT CANCEL, ONCE THE STORE HAS ANSWERED (`storeDone`). Everything after that — applying the pass,
+ * reading the gate again — is a wait, and a stalled network could hold it for the better part of a minute; the
+ * sheet used to be locked for all of it. Nothing here can open the store a second time, so leaving only keeps
+ * what was paid for, and withdrawAsk says so. See plans stays shut while busy: it is a screen change, not a way
+ * out of the wait.
+ */
+function sheetDecline(id: number, why: 'cancel' | 'plans'): boolean {
+  const a = sheet;
+  if (!a || a.id !== id || (a.busy && !(why === 'cancel' && a.storeDone))) return false;
+  track(why === 'plans' ? 'home_build_see_plans' : 'home_build_declined', { kind: a.job.kind, gate: a.mode === 'empty' ? 'empty' : String(a.pool) });
+  withdrawAsk(a);
+  return true;
+}
+
+/** See plans: the question goes first (a Modal left up would cover the plans screen), then the screen's route. */
+function sheetSeePlans(id: number) {
+  if (sheetDecline(id, 'plans')) withHost<void>((h) => h.seePlans(), undefined);
+}
+
+type GateRead = { job: HomeBuildJob; gate: BuildGate };
+
+/**
+ * Generate once — <price>: buy the one-time pass for THIS employer, then build with it.
+ * ⚠️ NEVER A PURCHASE THE BUILD DOES NOT NEED. The gate is read again before the store opens: a question that sat
+ * on screen can be out of date (a plan bought on another device, the document built meanwhile, a pass already
+ * owned). Covered now is started (cache, pass) or turned into its Continue (plan, free) — no store sheet — and a
+ * gate that cannot be read buys nothing.
+ * ⚠️ NEVER TWO PURCHASES FROM ONE SHEET. Once a pass is bought here (`bought`) the button USES it: another tap
+ * reads the gate again and buys nothing. After the purchase the pass can take a moment to reach the gate, so it
+ * is read up to PASS_READS times.
+ * ⚠️ AND "BOUGHT" IS THE STORE'S WORD, NOT THE SERVER'S (contract C1). A purchase that COMPLETED but has not
+ * surfaced on the server (paid), and one waiting for approval (pending), are both money this sheet must never
+ * ask for again — they set `bought` exactly like ok does, and the button becomes "Use my one-time pass", which
+ * only re-reads. Offering "Generate once" on either of them is how one need is paid for twice.
+ * ⚠️ WHAT MAY START A BUILD FROM HERE: 'pass' (what the tap paid for) or 'cache' (free). A plan or free answer
+ * becomes the Continue question instead — nobody said Continue to spending THAT.
+ * A cancelled store sheet is not an error, and says nothing.
+ */
+async function sheetBuyOnce(id: number): Promise<void> {
+  const a0 = sheet;
+  if (!a0 || a0.id !== id || !a0.shown || a0.busy || a0.mode !== 'empty' || a0.epoch !== epoch) return;
+  const myEpoch = epoch;
+  const read = (): Promise<GateRead> => stableGate(a0.key, jobs.get(a0.key) || a0.job);
+  // Is this still THE question on screen? Once the store has answered, Cancel can take it away under us — and
+  // that Cancel has already said what became of the money (withdrawAsk), so everything here goes quiet.
+  const mine = () => !!sheet && sheet.id === id && sheet.epoch === epoch;
+  let bought = a0.bought;
+  let payment: Payment = a0.payment;
+  patchSheet(id, { busy: true, error: null });
+  try {
+    if (!bought) {
+      const pre = await read();
+      if (epoch !== myEpoch || !mine()) return;
+      if (!sheetWanted(a0)) { withdrawAsk(a0); return; }
+      if (!(pre.gate.covered === false && pre.gate.via === null && pre.gate.reason === 'quota_exhausted')) {
+        landBuyRead(id, pre, { bought: false, failure: null, before: true });
+        return;
+      }
+      track('home_build_buy_once', { kind: a0.job.kind });
+      let r: BuyResult;
+      try { r = await buyDownloadPass(a0.job.company); } catch { r = { ok: false }; }
+      if (epoch !== myEpoch) return;
+      // The store has spoken, whatever it said: from here the sheet may be cancelled while it waits.
+      patchSheet(id, { storeDone: true });
+      if (r.ok || r.paid || r.pending) {
+        bought = true;
+        // paid = charged, not visible yet; pending = Ask-to-Buy, charged only when it clears. The note says
+        // which, because the two are not the same promise to make about someone's money.
+        payment = r.ok ? null : r.pending ? 'approval' : 'applying';
+        if (payment) paidMemo.set(a0.key, { payment, at: Date.now() });
+        track('home_build_pass_bought', { kind: a0.job.kind, settling: payment || 'none' });
+        patchSheet(id, {
+          bought: true, payment, pass: { available: true, forThisEmployer: false },
+          error: payment ? SHEET_COPY[payment] : null,
+        });
+      } else if (r.cancelled) {
+        if (!mine()) return;
+        if (!sheetWanted(a0)) { withdrawAsk(a0); return; }
+        patchSheet(id, { busy: false });
+        return;
+      } else {
+        // One quiet read: the pass may have landed after all (a slow verification), and then it builds.
+        const after = await read();
+        if (epoch !== myEpoch || !mine()) return;
+        if (!sheetWanted(a0)) { withdrawAsk(a0); return; }
+        landBuyRead(id, after, { bought: false, failure: r.message || SHEET_COPY.failed, before: false });
+        return;
+      }
+    }
+    let got: GateRead | null = null;
+    for (let n = 0; n < PASS_READS; n++) {
+      if (n) await sleep(PASS_READ_GAP_MS);
+      if (epoch !== myEpoch || !mine()) return;
+      if (!sheetWanted(a0)) break;
+      got = await read();
+      if (epoch !== myEpoch || !mine()) return;
+      if (got.gate.covered) break;
+    }
+    // The chip let go of the question while the store was out: nothing is built, and the pass stays theirs.
+    if (!sheetWanted(a0)) { if (mine()) withdrawAsk({ ...a0, bought, payment }); return; }
+    landBuyRead(id, got, { bought: true, failure: null, before: false });
+  } catch {
+    if (epoch !== myEpoch || !mine()) return;
+    patchSheet(id, { busy: false, error: bought ? settlingCopy(payment) : SHEET_COPY.failed });
+  }
+}
+
+/**
+ * Purchases made from the sheet whose pass the server has not shown yet, by chip store key. Read by askOnSheet so
+ * a re-opened empty sheet starts as PAID. Ends when a gate read shows the chip covered, on forgetHomeBuilds, or
+ * after PAID_MEMO_MS (by then the pass has surfaced or support is needed — and a stale "paid" would hide a real
+ * buy button from someone who never bought).
+ */
+const PAID_MEMO_MS = 30 * 60 * 1000;
+const paidMemo = new Map<string, { payment: Payment; at: number }>();
+function paidMemoFor(key: string): { payment: Payment; at: number } | null {
+  const m = paidMemo.get(key);
+  if (!m) return null;
+  if (Date.now() - m.at > PAID_MEMO_MS) { paidMemo.delete(key); return null; }
+  return m;
+}
+
+/** The one line for a purchase this sheet made that has not become a usable pass yet. */
+const settlingCopy = (payment: Payment): string =>
+  (payment === 'approval' ? SHEET_COPY.approval : payment === 'applying' ? SHEET_COPY.applying : SHEET_COPY.paidNotReady);
+
+/**
+ * What a gate read around Generate once means for the sheet that asked it (see sheetBuyOnce).
+ * `before` = read before any purchase; `bought` = a pass was bought from this sheet; `failure` = the store's words.
+ */
+function landBuyRead(id: number, got: GateRead | null, how: { bought: boolean; failure: string | null; before: boolean }) {
+  const a = sheet;
+  if (!a || a.id !== id || a.epoch !== epoch) return;
+  // What the money is doing, in this sheet's words: a purchase the server has not shown yet (a.payment) says so;
+  // one it HAS shown that still did not start the build is the older paidNotReady.
+  const settling = settlingCopy(a.payment);
+  const gate = got ? got.gate : UNREAD;
+  const job = got ? got.job : (jobs.get(a.key) || a.job);
+  if (gate.covered) paidMemo.delete(a.key);
+  if (gate.covered && (gate.via === 'cache' || gate.via === 'pass')) {
+    closeSheet(id);
+    track('home_build_confirmed', { kind: job.kind, pool: gate.via, bought: how.bought });
+    runBuild(job, gate.via, true, {
+      show: a.show, consent: gate.via === 'pass' ? { via: 'confirmed', pool: 'pass' } : null, at: a.at,
+    });
+    void drain();
+    return;
+  }
+  const offer = offerFor(gate);
+  if (offer && offer.mode === 'confirm') {
+    // Covered by the plan or the free allowance after all: a Continue nobody has tapped yet. Its note says what
+    // became of the money — the pass bought here is kept, or nothing was bought at all.
+    patchSheet(id, {
+      mode: 'confirm', pool: offer.pool, usage: offer.usage, pass: offer.pass, busy: false,
+      error: how.bought ? savedCopy(a.payment) : SHEET_COPY.covered,
+    });
+    return;
+  }
+  if (offer && offer.mode === 'empty') {
+    patchSheet(id, {
+      busy: false, usage: offer.usage || a.usage,
+      error: how.bought ? settling : (how.failure || SHEET_COPY.failed),
+    });
+    return;
+  }
+  // Unread, 'credits', 'regen_limit': no answer to act on — and before a purchase, nothing is bought on it.
+  patchSheet(id, {
+    busy: false,
+    error: how.bought ? settling : how.before ? SHEET_COPY.unread : (how.failure || SHEET_COPY.failed),
+  });
 }
 
 /* ── requests ─────────────────────────────────────────────────────────────────────────────────── */
@@ -833,16 +1390,29 @@ function beginRequest(job: HomeBuildJob, how: RequestHow) {
       if (show) showOverlay(key, final);
       return;
     }
-    if (gate.covered) { runBuild(final, gate.via, true, { show }); return; }
+    // ⚠️ ONLY A CACHE HIT STARTS WITHOUT A QUESTION: that document is already built, and it is free.
+    if (gate.covered && gate.via === 'cache') { runBuild(final, gate.via, true, { show }); return; }
     if (checking) hideOverlay(key);
-    if (gate.via === 'credits' || gate.reason === 'unknown') {
+    if (!gate.covered && (gate.via === 'credits' || gate.reason === 'unknown')) {
       // Nobody on Home to answer (it unmounted during the gate read): nothing is asked, nothing starts.
       if (!hostAlive()) { standDown(); return; }
-      // One dialog at a time; this one waits and is asked when the other is answered.
+      // One question at a time; this one waits and is asked when the other is answered.
       if (asking !== null) { enqueue(final, null, 'asking'); return; }
       askToBuild(final, gate, { show: wantOverlay, startedAt: t0 });
       return;
     }
+    // Covered by the plan, the free allowance or a pass — or nothing left: the sheet's question, before any spend.
+    const offer = offerFor(gate);
+    if (offer) {
+      if (!hostAlive()) { standDown(); return; }
+      // ⚠️ The sheet is a Modal, so never over the overlay: Try again's overlay on this very build goes first, and
+      // one open on another build (or another question already up) makes this one wait its turn in line.
+      if (watching(key)) hideOverlay(key);
+      if (asking !== null || overlayUp()) { enqueue(final, null, 'asking'); return; }
+      askOnSheet(final, offer, { show, startedAt: t0, note: how.note });
+      return;
+    }
+    if (gate.covered) { standDown(); return; }   // not reached: a covered answer is the cache or an offer
     refuse(final, gate.reason, { show: true });
   })().catch(() => { standDown(); });
 }
@@ -896,8 +1466,8 @@ async function retryJob(job: HomeBuildJob) {
 
 /**
  * The chip was removed: take back everything about it that has NOT started — its place in line, a gate
- * still being read, a dialog still up (its Build will find nothing to build). A running build is left to
- * finish; its document is saved and comes back if the employer is added again.
+ * still being read, a dialog still up (its Build will find nothing to build), a question on the sheet. A running
+ * build is left to finish; its document is saved and comes back if the employer is added again.
  * ⚠️ AND THE SERVICE FORGETS ITS REMEMBERED BUILD. A lost POST (a record with no job id) is a build the user
  * was told had failed; with its chip gone there is no Try again left to consent to resending it, so it is
  * dropped here rather than left for some later explicit retry to find. ⚠️ EXCEPT one this module is still
@@ -914,6 +1484,7 @@ function cancelQueuedFor(kind: DocKind, rk: string) {
   if (last) bks.add(last);
   queue = queue.filter((q) => q.key !== key);
   requests.delete(key);
+  missedCache.delete(key);
   const rec = getBuilds()[key];
   if (rec && (rec.phase === 'checking' || rec.phase === 'queued')) { hideOverlay(key); clearBuild(key); }
   for (const bk of Array.from(bks)) {
@@ -921,6 +1492,10 @@ function cancelQueuedFor(kind: DocKind, rk: string) {
     if (run && !run.over && run.epoch === epoch) continue;
     forget(bk);
   }
+  // Its question on the sheet goes too. ⚠️ Not one whose purchase is on its way: that lands first (sheetBuyOnce),
+  // finds nothing left to build, and tells the user the pass is saved.
+  const a = sheet;
+  if (a && a.key === key && !a.busy) withdrawAsk(a);
 }
 
 /** ⚠️ Guarded: a service without forgetInflight (or one that throws) must never break a chip's removal. */
@@ -950,6 +1525,7 @@ function retargetFor(kind: DocKind, rk: string, patch: Partial<HomeBuildJob>) {
   if (!Object.keys(fields).length) return;
   const cur = jobs.get(key);
   if (cur) jobs.set(key, { ...cur, ...fields });
+  if (sheet && sheet.key === key) patchSheet(sheet.id, { job: { ...sheet.job, ...fields } });
   queue = queue.map((q) => {
     if (q.key !== key) return q;
     const next: HomeBuildJob = { ...q.job, ...fields };
@@ -1170,9 +1746,15 @@ function forgetAll() {
   requests.clear();
   vers.clear();
   refused.clear();
+  missedCache.clear();
+  paidMemo.clear();   // another account's purchase memory must never seed this account's sheet
   ended.clear();
   endedFor.clear();
   asking = null;
+  // ⚠️ So did the question on the sheet. A purchase already on its way lands nowhere: every step checks the epoch.
+  sheet = null;
+  sheetLast = null;
+  publishSheet();
   drainAgain = false;
   if (sweepTimer) { clearTimeout(sweepTimer); sweepTimer = null; }
   withHost<void>((h) => h.hideAll(), undefined);
@@ -1194,16 +1776,30 @@ type Bound = { key: string; kind: DocKind; rk: string; company: string; visible:
 
 const CLOSED: OverlayView = { visible: false, key: null, kind: 'resume', company: '', stage: null, done: false, error: null, canRetry: false };
 
+const noop = () => {};
+/** The sheet before any question was ever asked: closed, and every button a no-op. */
+const NO_SHEET: ConfirmSheetView = {
+  visible: false, mode: 'confirm', kind: 'resume', company: '', usage: null, pass: null, busy: false, error: null,
+  onContinue: noop, onCancel: noop, onBuyOnce: noop, onSeePlans: noop,
+};
+
+/** How long is left of the breath between two Modals of ours (MODAL_GAP_MS); 0 when none is. */
+const gapLeft = () => Math.max(0, MODAL_GAP_MS - (Date.now() - modalAt));
+
 /**
  * Home's builds.
- *  request         — the one door: gate, then start / ask / refuse (never on focus, switch or mount).
+ *  request         — the one door: gate, then start (a cache hit) / ask on the sheet / ask the dialog / refuse
+ *                    (never on focus, switch or mount).
  *  openOverlayFor  — bind the overlay to a chip's build and show its live stage, done or error.
  *  cancelQueued    — take back what has not started for a removed chip, and its lost POST (forgetInflight).
  *  retarget        — the job behind a chip changed before its build started.
  *  overlay         — what BuildingOverlay shows; dismissOverlay hides it (the build continues).
  *  retryOverlay    — Try again on the bound build (only when overlay.canRetry) — the only resend of a lost POST.
- * `onSeePlans` is the screen's: the overlay's See plans is wired by the caller from overlay.error, and this
- * hook never navigates on its own — a refusal is shown, and leaving for the plans screen is the user's tap.
+ *  confirm         — what GenerateConfirmSheet shows (contract 5). Its Continue and its Generate once are the only
+ *                    taps that let a plan, free or pass build start; Cancel and See plans start nothing.
+ * `onSeePlans` is the screen's: the overlay's See plans is wired by the caller from overlay.error, the sheet's
+ * calls it after the question has gone, and this hook never navigates on its own — leaving for the plans screen
+ * is always the user's tap.
  */
 export function useHomeBuilds(opts: {
   alive: () => boolean;
@@ -1219,6 +1815,7 @@ export function useHomeBuilds(opts: {
   overlay: OverlayView;
   dismissOverlay: () => void;
   retryOverlay: () => void;
+  confirm: ConfirmSheetView;
 } {
   // ⚠️ THE LATEST CALLBACKS LIVE IN A REF. Home hands down fresh arrows on every render; the module calls
   // whichever are current when a build lands, minutes after the render that started it.
@@ -1232,9 +1829,16 @@ export function useHomeBuilds(opts: {
   // notice under a spinner that never stamped done.
   const boundRef = useRef<Bound | null>(null);
   const setBound = useCallback((next: Bound | null) => {
+    // A window that closes is a Modal leaving: whatever comes up next waits out MODAL_GAP_MS.
+    const was = boundRef.current;
+    if (was && was.visible && !(next && next.visible)) modalAt = Date.now();
     boundRef.current = next;
     setBoundState(next);
   }, []);
+  // The question the sheet is asking, mirrored from the module (null = none).
+  const [ask, setAsk] = useState<Ask | null>(sheet);
+  // Bumped when a Modal gap ends, so an overlay held back by it comes up.
+  const [gapTick, setGapTick] = useState(0);
 
   // Subscribed to the ONE bound record, and only while the overlay is up: a hidden overlay costs Home no renders.
   const rec = useTargetBuild(bound ? bound.kind : 'resume', bound && bound.visible ? bound.rk : null);
@@ -1251,6 +1855,7 @@ export function useHomeBuilds(opts: {
       rkFor: (meta) => latest.current.rkFor(meta),
       landed: (job, docId, cached, watched) => latest.current.onLanded(job, docId, cached, watched),
       notice: (text, action) => latest.current.onNotice(text, action),
+      seePlans: () => latest.current.onSeePlans(),
     };
     host = me;
     let off = false;
@@ -1264,14 +1869,27 @@ export function useHomeBuilds(opts: {
       .then(() => { if (!off && host === me && pendingLeft()) scheduleSweep(); })
       .catch(() => {});
     // ⚠️ Not a new build: whatever waited in line was an explicit request inside its expiry, and it is
-    // re-gated before it starts — covered goes, an unread gate asks, nothing goes after QUEUE_TTL_MS, and drain
-    // checks whose line it is before anything goes out.
+    // re-gated before it starts — a cache hit goes, a Continue already tapped goes on its own pool, anything else
+    // is asked (the sheet or the dialog), nothing goes after QUEUE_TTL_MS, and drain checks whose line it is first.
     void drain();
     return () => {
       off = true;
       if (host === me) host = null;
+      // ⚠️ A QUESTION NOBODY CAN SEE IS WITHDRAWN, never left holding the one question slot until some later Home.
+      // Not one whose purchase is on its way: the money is spent, so that one lands by itself (sheetBuyOnce).
+      const a = sheet;
+      if (!host && a && !a.busy) withdrawAsk(a);
     };
   }, [setBound]);
+
+  // The sheet's question, mirrored. Re-read once subscribed: a question published between the first render and
+  // this effect would otherwise be missed.
+  useEffect(() => {
+    const watch = (a: Ask | null) => setAsk(a);
+    sheetWatchers.add(watch);
+    setAsk(sheet);
+    return () => { sheetWatchers.delete(watch); };
+  }, []);
 
   // A bound record that went away (cleared, forgotten, withdrawn) closes the window instead of leaving it
   // open to reappear over some unrelated later build under the same key.
@@ -1279,9 +1897,20 @@ export function useHomeBuilds(opts: {
     if (bound && bound.visible && !rec && !getBuilds()[bound.key]) setBound({ ...bound, visible: false });
   }, [bound, rec, setBound]);
 
+  // An overlay asked for inside a Modal gap comes up when the gap ends (see `overlay` below).
+  useEffect(() => {
+    if (!bound || !bound.visible) return;
+    const left = gapLeft();
+    if (left <= 0) return;
+    const id = setTimeout(() => setGapTick((n) => n + 1), left);
+    return () => clearTimeout(id);
+  }, [bound, gapTick]);
+
   const request = useCallback((job: HomeBuildJob, how: RequestHow) => requestBuild(job, how), []);
 
   const openOverlayFor = useCallback((kind: DocKind, rk: string) => {
+    // ⚠️ Not over a question on the sheet (see showOverlay): the chip's build is still there once it is answered.
+    if (sheet) return;
     const key = storeKeyOf(kind, rk);
     const r = getBuilds()[key];
     if (!r) return;
@@ -1323,7 +1952,10 @@ export function useHomeBuilds(opts: {
       ? { ...QUEUED_VIEW, label: (r.stage && r.stage.label) || QUEUED_VIEW.label }
       : r.phase === 'done' ? DONE : r.phase === 'error' ? null : r.stage;
     return {
-      visible: true,
+      // ⚠️ HELD BACK FOR THE MODAL GAP. Right after the sheet (or this overlay) went away, raising the overlay is
+      // the refused second presentation MODAL_GAP_MS exists for — so it comes up when the gap ends (gapTick).
+      // The build is watched all the same meanwhile (boundRef): its landing is a done stamp, never a notice.
+      visible: gapLeft() <= 0,
       key: bound.key,
       kind: bound.kind,
       company: r.company || bound.company,
@@ -1332,10 +1964,42 @@ export function useHomeBuilds(opts: {
       error: err ? { reason: err.reason, message: err.message } : null,
       canRetry: !!err && RETRYABLE.has(err.reason) && jobs.has(bound.key),
     };
-  }, [bound, rec]);
+    // gapTick is read through gapLeft(): it is the re-render that lets the held-back overlay up.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bound, rec, gapTick]);
+
+  /**
+   * What GenerateConfirmSheet shows. ⚠️ EVERY BUTTON NAMES ITS QUESTION: a tap meant for one question can never
+   * answer the next (a sheet that closed and reopened for another build between the render and the tap), and
+   * each handler checks it again. Closing keeps the last words on screen rather than flashing blank ones.
+   */
+  const confirm: ConfirmSheetView = useMemo(() => {
+    const a = ask || sheetLast;
+    if (!a) return NO_SHEET;
+    const id = a.id;
+    return {
+      visible: !!ask && ask.shown && ask.epoch === epoch,
+      mode: a.mode,
+      kind: a.job.kind,
+      company: a.job.company,
+      usage: a.usage,
+      pass: a.pass,
+      busy: !!ask && ask.busy,
+      payment: a.payment,
+      // ⚠️ Cancel comes back once the STORE has answered (Ask.storeDone): nothing left in this question can open
+      // it again, so leaving simply keeps what was paid for. Before that, a tap must not slip between
+      // "Generate once" and the store's own sheet.
+      canCancel: !!ask && ask.busy && ask.storeDone,
+      error: a.error,
+      onContinue: () => sheetContinue(id),
+      onCancel: () => { sheetDecline(id, 'cancel'); },
+      onBuyOnce: () => { sheetBuyOnce(id).catch(() => {}); },
+      onSeePlans: () => sheetSeePlans(id),
+    };
+  }, [ask]);
 
   return useMemo(
-    () => ({ request, openOverlayFor, cancelQueued, retarget, overlay, dismissOverlay, retryOverlay }),
-    [request, openOverlayFor, cancelQueued, retarget, overlay, dismissOverlay, retryOverlay],
+    () => ({ request, openOverlayFor, cancelQueued, retarget, overlay, dismissOverlay, retryOverlay, confirm }),
+    [request, openOverlayFor, cancelQueued, retarget, overlay, dismissOverlay, retryOverlay, confirm],
   );
 }

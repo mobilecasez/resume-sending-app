@@ -67,7 +67,12 @@ ok('previewTemplates accepts an ids batch', /Array\.isArray\(ids\)/.test(ctl));
 ok('the batch is capped (all-at-once is the OLD break)', /\.slice\(0, 6\)/.test(ctl));
 ok('unknown ids are dropped, not 500s', /\.filter\(Boolean\)/.test(ctl.slice(ctl.indexOf('async function previewTemplates'))));
 ok('legacy {region} mode still works for older app builds', /templatesForRegion\(region\);\s*\/\/ legacy/.test(ctl));
-ok('the a4 band comes from the template entry (variants recolor it)', /tpl && tpl\.band/.test(renderer));
+// ⚠️ RETARGETED 2026-09-15: a branded document (employer colour) composites the RECOLOURED band, and the
+// template's own band stands only when the brand names no colour — so the entry is read through
+// brandedTemplate when opts.brand is set, and as `tpl.band` when it is not. The local BANDS table is still
+// only the fallback for the two base ids.
+ok('the a4 band comes from the template entry (variants recolor it; a brand re-hues it)',
+  /opts\.brand \? brandedTemplate\(tpl, opts\.brand\)\.band : tpl\.band/.test(renderer) && /\|\| BANDS\[templateId\]/.test(renderer));
 
 console.log('── app: the preview screen no longer breaks ──');
 ok('a server miss falls back to the AsyncStorage copy', /if \(!gotServerCopy\) \{[\s\S]{0,200}resumeBuilderData/.test(prev));
@@ -115,7 +120,13 @@ console.log('── preview speed: the cold start is paid once, not per request 
 // "Azure Sidebar takes forever" was the first render paying chromium launch + a live Google
 // Fonts download on EVERY request (fresh browser = empty cache). These pins keep that fixed.
 const rend = R('../../server/utils/resumeRenderer.js');
-ok('a warm browser is shared across preview requests', /getWarmBrowser/.test(rend) && /armWarmIdle/.test(rend));
+ok('a warm browser is shared across preview requests', /async function getWarmPage/.test(rend) && /armWarmIdle/.test(rend));
+// ⚠️ Single-process chromium EXITS when a page closes (prod 2026-09-14: "browser.newPage: Target page,
+// context or browser has been closed" on the first View PDF). Renders reuse ONE warm page, serialised.
+ok('renders reuse the warm page under a lock, and never close a page on its own',
+  /withWarmLock\(async \(\) => \{\s*const page = await getWarmPage\(\)/.test(rend)
+  && !/renderOne[\s\S]{0,1600}page\.close\(/.test(rend.slice(rend.indexOf('async function renderPreviews')))
+  && !/warmPreviews[\s\S]{0,1400}page\.close\(/.test(rend.slice(rend.indexOf('async function warmPreviews'))));
 ok('…and renderPreviews no longer closes it', !/renderAll[\s\S]{0,2400}browser\.close/.test(rend.slice(rend.indexOf('async function renderPreviews'))));
 ok('it self-heals with a per-template retry on a dead handle', /one clean retry, fresh browser, this template only/.test(rend));
 // --single-process chromium crashes after ~4-5 consecutive renders in one session (reproduced
@@ -129,13 +140,14 @@ ok('a composited frame is forced between resize and screenshot',
   /clip: \{ x: 0, y: 0, width: 8, height: 8 \}/.test(rend) && !/requestAnimationFrame/.test(rend));
 ok('the idle timer never keeps the process alive', /warmTimer\.unref/.test(rend));
 ok('Google Fonts are served from an in-memory cache', /fontCache/.test(rend) && /route\(/.test(rend));
-ok('request interception applies to EVERY prepared page (previews, PDFs and the warm primer)',
-  (rend.match(/routeRequests\(page\)/g) || []).length >= 2);
+ok('request interception applies to EVERY page (one page factory, and it routes)',
+  (rend.match(/\.newPage\(/g) || []).length === 1 && /async function newRoutedPage[\s\S]{0,400}routeRequests\(page\)/.test(rend));
 // ⚠️ THE RESUME RENDERER RUNS WHATEVER SURVIVED ESCAPING, and a tailored document can be edited by
 // hand (PUT /api/employer-docs/:id). Three fences, mirroring coverLetterRenderer: no page script, a
 // route that passes only data: URIs and the two Google Fonts hosts, and a blackhole proxy for the
 // loads the route never sees (<link rel=prefetch>), with <-loopback> so 127.0.0.1 cannot be reached.
-ok('no page script runs in a render', (rend.match(/javaScriptEnabled: false/g) || []).length >= 2);
+ok('no page script runs in a render (the one page factory turns it off)',
+  /async function newRoutedPage[\s\S]{0,120}newPage\([^\n]{0,120}javaScriptEnabled: false/.test(rend));
 ok('a blackhole proxy catches what the route cannot see, loopback included',
   /BLACKHOLE_PROXY/.test(rend) && /'<-loopback>'/.test(rend));
 ok('only data: URIs and https Google Fonts are allowed out', (() => {

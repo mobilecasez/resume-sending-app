@@ -1,6 +1,8 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// The plan catalog: the Free plan and five monthly tiers, wired to real store subscriptions.
+// The plan catalog: the Free plan, the monthly tiers (wired to real store subscriptions) and the
+// one-time pass ("Just need one?"). Every allowance number on a card — resumes, cover letters,
+// downloads — is READ from the server's plan list, never written here.
 //
 // ── The rule this screen is built around ─────────────────────────────────────────────────────
 // A plan gets a BUY button only if the store returned a product for it, and its price is the
@@ -38,13 +40,58 @@ import {
   type StoreSubscriptionProduct, type PlayReplacementMode,
 } from '../../services/storeBilling';
 import type { Purchase } from 'react-native-iap';
+import {
+  buyDownloadPass, fetchPassPrice, fetchDownloadState, type DownloadState,
+} from '../../services/downloadPassService';
 
 const T = {
   bg: '#F0F4FA', card: '#FFFFFF', ink: '#0B0F22', muted: '#5B6B8A', faint: '#8896B0',
-  line: 'rgba(11,15,34,0.06)', blue: '#2563EB', cyan: '#06B6D4', emerald: '#10B981',
+  line: 'rgba(11,15,34,0.06)', blue: '#2563EB', cyan: '#06B6D4', emerald: '#10B981', amber: '#D97706',
 };
 // The middle tier is what most people should pick — flag it.
 const POPULAR_KEY = 'plus';
+
+/**
+ * The server's PLANS rows carry `downloads` (the monthly download allowance) but the shared `Plan`
+ * type does not declare it yet. Read it defensively: a number or nothing, never a default — a
+ * download count this screen invented is a count the paywall would later contradict.
+ */
+function downloadsOf(p: Plan): number | null {
+  const n = (p as Plan & { downloads?: unknown }).downloads;
+  return typeof n === 'number' && n >= 0 ? n : null;
+}
+
+/** Shared by every card: every generation researches the employer first (employerResearch.js),
+ *  on the Free plan and the one-time pass as much as on a paid plan — it is not a paid-only perk. */
+const RESEARCH_LINE = 'Every employer researched · designs ranked by fit';
+
+/**
+ * A pass purchase that MONEY HAS MOVED ON (or may still move on) but the server has not shown yet.
+ *   paid    — the store transaction completed: the user is charged, the pass is just not visible.
+ *   pending — deferred / Ask-to-Buy: no charge yet, but approving it later charges them.
+ * ⚠️ Either way the Buy button must NOT come back. It used to: buyDownloadPass returned ok:false
+ * with a note, the button re-enabled, and a second tap bought a second pass for the same need.
+ * `baseline` is the unused-pass count BEFORE the purchase, so "confirmed" means the count went UP —
+ * an older unused pass is not proof that THIS payment landed.
+ * Module scope, not component state: leaving Plans and coming back must not resurrect the button
+ * for the rest of this app session (a relaunch is covered by the stranded-purchase recovery that
+ * buyDownloadPass runs before it ever opens the store sheet).
+ */
+type PassSettling = { kind: 'paid' | 'pending'; baseline: number };
+let passSettlingMemo: PassSettling | null = null;
+
+/**
+ * Whether a failed buyDownloadPass result still means the store CHARGED them (contract C1 adds
+ * `paid`). Until every build of the service carries it, read the service's own wording too: its
+ * "payment went through" and "could not confirm … applied automatically" branches both come AFTER
+ * the store transaction completed. Cancelled is never paid.
+ */
+function passResultPaid(r: { cancelled?: boolean; message?: string } & { paid?: boolean }): boolean {
+  if (r.cancelled) return false;
+  if (r.paid === true) return true;
+  const m = (r.message || '').toLowerCase();
+  return /payment went through|still applying it|applied automatically|could not confirm the purchase/.test(m);
+}
 
 /**
  * What the SERVER decided about a store purchase.
@@ -110,6 +157,24 @@ export default function PlansScreen() {
   const [restoring, setRestoring] = useState(false);
   const alive = useRef(true);
   const recovered = useRef(false);
+  /**
+   * The one-time pass ("Just need one?"). `passPrice` is the STORE's localized string or null — the
+   * same rule as the plans: no store price, no Buy button (the card then explains that the option is
+   * offered right on the resume when you tailor it). `dl` also tells the plan cards whether downloads
+   * are metered yet: unmetered, a subscriber's downloads are not counted, so a "/ month" figure would
+   * be a limit that does not exist.
+   */
+  const [passPrice, setPassPrice] = useState<string | null>(null);
+  const [dl, setDl] = useState<DownloadState | null>(null);
+  const [passBusy, setPassBusy] = useState(false);
+  const [passNote, setPassNote] = useState<string | null>(null);
+  /** See PassSettling. Seeded from the module memo so a remount keeps the Buy button away. */
+  const [passSettling, setPassSettlingState] = useState<PassSettling | null>(passSettlingMemo);
+  const [passChecking, setPassChecking] = useState(false);
+  const setPassSettling = useCallback((v: PassSettling | null) => {
+    passSettlingMemo = v;
+    if (alive.current) setPassSettlingState(v);
+  }, []);
 
   const storeUsable = isStoreBillingAvailable();
   // Declared up here, not next to the JSX that also uses it: `choose` closes over it, and anything
@@ -155,6 +220,22 @@ export default function PlansScreen() {
     }
     return tally;
   }, [settleOne]);
+
+  // Independent of the subscription load: a slow or missing pass product must never hold up the
+  // plan list, and a failure here just leaves the card in its "offered when you tailor" state.
+  useEffect(() => {
+    let on = true;
+    fetchPassPrice().then((p) => { if (on) setPassPrice(p); }).catch(() => {});
+    fetchDownloadState().then((d) => {
+      if (!on) return;
+      setDl(d);
+      // Came back to Plans after the payment landed elsewhere (App.js's listener, recovery): the
+      // count is up, so the settling card has nothing left to wait for.
+      const memo = passSettlingMemo;
+      if (memo && d.passes > memo.baseline) { passSettlingMemo = null; setPassSettlingState(null); }
+    }).catch(() => {});
+    return () => { on = false; };
+  }, []);
 
   useEffect(() => {
     alive.current = true;
@@ -393,6 +474,64 @@ export default function PlansScreen() {
     }
   }, [busyKey, restoring, status, settleAll, loadStatus]);
 
+  /**
+   * Buy the one-time pass WITHOUT an employer. downloadPassService supports it (the server holds it
+   * unbound, and the first generation or download binds it — downloads.passCoversGeneration), so
+   * the pass lands on whichever employer the user tailors for next. The store's own sheet is the
+   * confirmation; nothing is granted here — buyDownloadPass waits for the SERVER to show the pass.
+   */
+  const buyPass = useCallback(async () => {
+    // A paid or pending purchase is still settling: never open the store sheet again (see PassSettling).
+    if (passBusy || busyKey || restoring || passSettlingMemo) return;
+    setPassBusy(true); setPassNote(null);
+    // The count BEFORE this purchase — the settling card only clears once it goes above this.
+    const baseline = dl?.passes || 0;
+    try {
+      const r = await buyDownloadPass(null);
+      if (r.ok) {
+        setPassSettling(null);
+        const fresh = await fetchDownloadState().catch(() => null);
+        if (alive.current && fresh) setDl(fresh);
+        Alert.alert(
+          'Your one-time pass is ready',
+          'It attaches to the first employer you use it on: one tailored resume and one cover letter '
+          + 'for that employer, plus their downloads. Add the employer on Home and tap Tailor.'
+        );
+        return;
+      }
+      if (r.cancelled) return;                      // they changed their mind; say nothing
+      // Charged (or awaiting approval) but not yet visible on the server: lock the Buy button and
+      // hand them a refresh instead. Our own copy, not r.message — the service's wording is written
+      // for the resume screen ("try the download again"), and there is no download on this screen.
+      const paid = passResultPaid(r as typeof r & { paid?: boolean });
+      if (paid || r.pending) {
+        setPassSettling({ kind: paid ? 'paid' : 'pending', baseline });
+        return;
+      }
+      if (alive.current) setPassNote(r.message || 'That did not go through. You have not been charged.');
+    } finally {
+      if (alive.current) setPassBusy(false);
+    }
+  }, [passBusy, busyKey, restoring, dl, setPassSettling]);
+
+  /**
+   * "Refresh" on the settling card. It only RE-READS the server — it never buys, never opens the
+   * store sheet. The card clears once the unused-pass count rises above the pre-purchase baseline.
+   */
+  const recheckPass = useCallback(async () => {
+    if (passChecking) return;
+    setPassChecking(true);
+    try {
+      const fresh = await fetchDownloadState().catch(() => null);
+      if (!alive.current || !fresh) return;
+      setDl(fresh);
+      const memo = passSettlingMemo;
+      if (memo && fresh.passes > memo.baseline) setPassSettling(null);
+    } finally {
+      if (alive.current) setPassChecking(false);
+    }
+  }, [passChecking, setPassSettling]);
+
   if (loading) return <View style={s.center}><ActivityIndicator size="large" color={T.blue} /></View>;
 
   const current = status?.subscription?.planKey || null;
@@ -421,10 +560,12 @@ export default function PlansScreen() {
     };
   })();
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  // "Tailored resume", not "resume generation": since 2026-09-14 every generation is built for ONE
+  // employer (research → ranked designs → their conventions), and that is what the allowance buys.
   const offerText = freeOffer
-    ? `${plural(freeOffer.resumes, 'resume generation', 'resume generations')} + ${plural(freeOffer.letters, 'cover letter', 'cover letters')}`
+    ? `${plural(freeOffer.resumes, 'tailored resume', 'tailored resumes')} + ${plural(freeOffer.letters, 'cover letter', 'cover letters')}`
     : '';
-  const busy = !!busyKey || restoring;
+  const busy = !!busyKey || restoring || passBusy;
 
   // A subscription bought on the other store cannot be changed from here — Apple and Google each
   // only manage their own. Showing buy buttons anyway is how someone ends up paying twice.
@@ -435,8 +576,38 @@ export default function PlansScreen() {
   // left to be inferred from five greyed-out rows.
   const nothingOnSale = storeChecked && Object.keys(store).length === 0;
 
+  // The hero's one-line answer to "where am I?". Read from the same server fields as the cards below,
+  // so the two can never disagree.
+  const heroStatus = current
+    ? `You're on ${currentLabel}`
+    : trialActive && freeLeft
+      ? (freeLeft.resumes + freeLeft.letters === 0
+        ? 'Your free allowance is used up'
+        : `Free plan · ${plural(freeLeft.resumes, 'resume', 'resumes')} + ${plural(freeLeft.letters, 'letter', 'letters')} left`)
+      : 'Pick a plan to keep generating';
+
+  const unusedPasses = dl?.passes || 0;
+  // The pass Buy button follows the plans' rule: a real store price or no button at all.
+  const passBuyable = storeUsable && !!passPrice;
+
   return (
     <ScrollView style={{ flex: 1, backgroundColor: T.bg }} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+      {/* ── Hero ── what every plan (and the Free plan, and the pass) actually buys. No numbers in
+          here: they live on the cards, read from the server. */}
+      <View style={s.hero}>
+        <LinearGradient colors={['#0B0F22', '#13205A', '#0B0F22']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFillObject} />
+        <Text style={s.heroEyebrow}>PLANS</Text>
+        <Text style={s.heroTitle}>Every application, tailored to the employer</Text>
+        <Text style={s.heroBody}>
+          We research each employer — its country, sector and hiring system — rank resume designs by fit,
+          and shape your resume and cover letter to what they expect.
+        </Text>
+        <View style={s.heroChip}>
+          <Ionicons name={current ? 'diamond-outline' : trialActive ? 'gift-outline' : 'lock-closed-outline'} size={13} color="#22D3EE" />
+          <Text style={s.heroChipText} numberOfLines={1}>{heroStatus}</Text>
+        </View>
+      </View>
+
       {/* ── Free plan card ──
           ⚠️ EVERY NUMBER AND THE NAME COME FROM THE SERVER (`status.trial`, which now carries the
           Free plan). This card used to hard-code "7-day free trial / 5 + 2", so when the server
@@ -444,9 +615,29 @@ export default function PlansScreen() {
           about the offer may be written in here again (the numbers are read, never defaulted). */}
       <View style={[s.trialCard, trialActive ? s.trialOn : null]}>
         <View style={s.trialHead}>
-          <Ionicons name={trialActive ? 'checkmark-circle' : trial?.blocked ? 'close-circle-outline' : 'time-outline'} size={20} color={trialActive ? T.emerald : T.faint} />
+          <Ionicons name={trialActive ? 'checkmark-circle' : trial?.blocked ? 'close-circle-outline' : 'gift-outline'} size={20} color={trialActive ? T.emerald : T.faint} />
           <Text style={s.trialTitle}>{status?.trial?.label || 'Free plan'}</Text>
+          <View style={{ flex: 1 }} />
+          {freeOffer && oneTime ? <View style={s.pillMuted}><Text style={s.pillMutedText}>ONE TIME</Text></View> : null}
+          {trialActive ? <View style={s.pillOn}><Text style={s.pillOnText}>ACTIVE</Text></View> : null}
         </View>
+        {freeOffer ? (
+          <Text style={s.freeOffer}>
+            {offerText}{oneTime ? ', one time' : ` every ${freeOffer.days ?? 30} days`}
+          </Text>
+        ) : null}
+        {trialActive && freeLeft ? (
+          <View style={s.leftRow}>
+            <View style={s.leftChip}>
+              <Ionicons name="document-text-outline" size={13} color="#7C6BFF" />
+              <Text style={s.leftText}>{plural(freeLeft.resumes, 'resume', 'resumes')} left</Text>
+            </View>
+            <View style={s.leftChip}>
+              <Ionicons name="mail-outline" size={13} color={T.cyan} />
+              <Text style={s.leftText}>{plural(freeLeft.letters, 'cover letter', 'cover letters')} left</Text>
+            </View>
+          </View>
+        ) : null}
         <Text style={s.trialBody}>
           {trial?.blocked === 'device_trial_used'
             ? 'Free allowance already used on this device. Start a plan below to keep generating.'
@@ -454,12 +645,19 @@ export default function PlansScreen() {
               ? 'Searching, Auto Fill, translating and applying are always unlimited.'
               : trialActive && freeLeft
                 ? (freeLeft.resumes + freeLeft.letters === 0
-                  ? `You have used your ${offerText}${oneTime ? ' — a one-time allowance, it does not refill' : ''}. Start a plan below to keep generating.`
-                  : `Active — ${plural(freeLeft.resumes, 'resume generation', 'resume generations')} and ${plural(freeLeft.letters, 'cover letter', 'cover letters')} left of your ${oneTime ? 'one-time ' : ''}${offerText}.`)
+                  ? `You have used your ${offerText}${oneTime ? ' — a one-time allowance, it does not refill' : ''}. Start a plan below, or use the one-time option, to keep generating.`
+                  : `${oneTime ? 'A one-time allowance — it does not refill. ' : ''}Searching, Auto Fill, translating and applying are always unlimited.`)
                 : oneTime
-                  ? `${offerText}, free — one time per device, it does not refill. Searching, Auto Fill, translating and applying are always unlimited.`
-                  : `${offerText} free every ${freeOffer.days ?? 30} days. Searching, Auto Fill, translating and applying are always unlimited.`}
+                  ? 'Free — one time per device, it does not refill. Searching, Auto Fill, translating and applying are always unlimited.'
+                  : 'Searching, Auto Fill, translating and applying are always unlimited.'}
         </Text>
+        {freeOffer ? (
+          <View style={s.features}>
+            <Feature icon="sparkles-outline" text={RESEARCH_LINE} />
+            {/* FREE.downloads is 0 on the server — see the note under this card. */}
+            <Feature icon="download-outline" text="Downloads not included — a plan or the one-time option adds them" muted />
+          </View>
+        ) : null}
         {/* ⚠️ A PAID PLAN HIDES NOTHING. The Free plan stays on this screen whatever you are on,
             because a subscriber has to be able to SEE the thing they can fall back to. What a paid
             plan changes is only which allowance is in EFFECT — so when one is active this says how
@@ -475,12 +673,12 @@ export default function PlansScreen() {
       </View>
 
       {/* ⚠️ DOWNLOADS ARE NOT FREE, and never were: each plan includes a number of them, and without one
-          a single file is a one-time download pass (server/services/entitlements.js — FREE.downloads is 0).
+          a file comes with the one-time pass (server/services/entitlements.js — FREE.downloads is 0).
           This note used to list downloads among the free things, promising a file the paywall then asked
-          money for. It also says one time PER DEVICE: a second account on the same phone gets no new
-          Free plan. */}
+          money for. The Free plan is also one time PER DEVICE: a second account on the same phone gets
+          no new Free plan. */}
       <Text style={s.freeNote}>
-        <Ionicons name="gift-outline" size={13} color={T.emerald} />  Searching, fetching jobs, Auto Fill, translate and applying stay free on every plan. Downloads come with a paid plan, or one at a time with a single-download pass.
+        <Ionicons name="gift-outline" size={13} color={T.emerald} />  Searching, fetching jobs, Auto Fill, translate and applying stay free on every plan. Downloads come with a paid plan, or with the one-time option below.
       </Text>
 
       {otherStore ? (
@@ -503,6 +701,8 @@ export default function PlansScreen() {
         </View>
       ) : null}
 
+      <Text style={s.sectionTitle}>Monthly plans</Text>
+
       {/* ── Plans ── */}
       {(status?.plans || []).map((p) => {
         const isCurrent = current === p.key;
@@ -514,6 +714,7 @@ export default function PlansScreen() {
         // did nothing.
         const buyable = !!prod && !otherStore && !isCurrent && !isPending;
         const thisBusy = busyKey === p.key;
+        const downloads = downloadsOf(p);
         return (
           <TouchableOpacity
             key={p.key}
@@ -529,13 +730,15 @@ export default function PlansScreen() {
             )}
             <View style={s.planRow}>
               <View style={{ flex: 1 }}>
-                <Text style={s.planName}>
-                  {p.label}
-                  {isCurrent ? '  ·  current' : ''}
-                  {isPending ? `  ·  starts ${whenText(status?.subscription?.periodEnd)}` : ''}
-                </Text>
-                <Text style={s.planQuota}>{p.letters} cover letters / month</Text>
-                <Text style={s.planQuota}>{p.resumes} resume generations / month</Text>
+                <Text style={s.planName}>{p.label}</Text>
+                {isCurrent || isPending ? (
+                  <View style={s.tagRow}>
+                    {isCurrent ? <View style={s.pillOn}><Text style={s.pillOnText}>CURRENT PLAN</Text></View> : null}
+                    {isPending ? (
+                      <View style={s.pillMuted}><Text style={s.pillMutedText}>STARTS {whenText(status?.subscription?.periodEnd).toUpperCase()}</Text></View>
+                    ) : null}
+                  </View>
+                ) : null}
               </View>
               <View style={s.priceBox}>
                 {thisBusy ? (
@@ -551,10 +754,24 @@ export default function PlansScreen() {
                 )}
               </View>
             </View>
+            <View style={s.features}>
+              <Feature icon="document-text-outline" text={`${plural(p.resumes, 'tailored resume', 'tailored resumes')} / month`} strong />
+              <Feature icon="mail-outline" text={`${plural(p.letters, 'cover letter', 'cover letters')} / month`} strong />
+              {/* A count only once downloads are METERED (downloads.js DOWNLOADS_METERED). Until then a
+                  subscriber's downloads are not counted, and "/ month" would advertise a cap that the
+                  server does not enforce — or, worse, one it later starts enforcing differently. */}
+              <Feature
+                icon="download-outline"
+                text={dl?.metered && downloads !== null
+                  ? `${plural(downloads, 'PDF & Word download', 'PDF & Word downloads')} / month`
+                  : 'PDF & Word downloads'}
+              />
+              <Feature icon="sparkles-outline" text={RESEARCH_LINE} />
+            </View>
             {buyable ? (
-              <View style={s.buyRow}>
-                <Text style={s.buyText}>Subscribe</Text>
-                <Ionicons name="arrow-forward" size={14} color={T.blue} />
+              <View style={[s.buyBtn, popular && s.buyBtnPopular]}>
+                <Text style={[s.buyText, popular && s.buyTextPopular]}>Subscribe</Text>
+                <Ionicons name="arrow-forward" size={14} color={popular ? '#FFFFFF' : T.blue} />
               </View>
             ) : !prod ? (
               <Text style={s.unavailable}>{storeChecked ? 'Not on sale yet' : 'Checking the store…'}</Text>
@@ -562,6 +779,74 @@ export default function PlansScreen() {
           </TouchableOpacity>
         );
       })}
+
+      {/* ── Just need one? ── the one-time pass (com.cvapplyr.mobile.download.single). It covers ONE
+          employer: one tailored resume + one cover letter + that employer's downloads
+          (downloads.passCoversGeneration / claimGeneration). The price is the store's own string
+          or nothing — the same rule as the plans above. Without a store price the card still
+          explains the option, because the confirm sheet offers it right on the resume. */}
+      <View style={s.passCard}>
+        <View style={s.trialHead}>
+          <Ionicons name="flash-outline" size={20} color={T.amber} />
+          <Text style={s.trialTitle}>Just need one?</Text>
+          <View style={{ flex: 1 }} />
+          <View style={s.pillAmber}><Text style={s.pillAmberText}>ONE TIME</Text></View>
+        </View>
+        <Text style={s.trialBody}>
+          Applying to a single employer? Pay once, no subscription. It covers one employer, fully:
+        </Text>
+        <View style={s.features}>
+          <Feature icon="document-text-outline" text="One tailored resume" strong />
+          <Feature icon="mail-outline" text="One cover letter" strong />
+          <Feature icon="download-outline" text="Their PDF & Word downloads" />
+          <Feature icon="sparkles-outline" text={RESEARCH_LINE} />
+        </View>
+        {unusedPasses > 0 ? (
+          <View style={s.passOwned}>
+            <Ionicons name="checkmark-circle" size={15} color={T.emerald} />
+            <Text style={s.passOwnedText}>
+              You have {unusedPasses === 1 ? 'an unused pass' : `${unusedPasses} unused passes`} — it attaches to the next employer you tailor for.
+            </Text>
+          </View>
+        ) : null}
+        {passSettling ? (
+          // Replaces the Buy button while a paid/pending purchase settles — there is deliberately no
+          // way to start a second purchase from here. Refresh only re-reads fetchDownloadState.
+          <View style={s.passSettling}>
+            <View style={s.passSettlingHead}>
+              <Ionicons name={passSettling.kind === 'paid' ? 'time-outline' : 'hourglass-outline'} size={15} color={T.amber} />
+              <Text style={s.passSettlingTitle}>
+                {passSettling.kind === 'paid' ? 'Your payment is being applied' : 'Checking your payment…'}
+              </Text>
+            </View>
+            <Text style={s.passSettlingBody}>
+              {passSettling.kind === 'paid'
+                ? `Your payment went through. Your pass will appear here in a moment — you will not be charged again. Unused passes right now: ${unusedPasses}.`
+                : `${storeName} is still confirming this payment (it may be waiting for approval). Nothing more to do — your pass appears here once it clears. Unused passes right now: ${unusedPasses}.`}
+            </Text>
+            <TouchableOpacity style={[s.actionBtn, s.passSettlingBtn]} disabled={passChecking} onPress={recheckPass} activeOpacity={0.8}>
+              {passChecking ? <ActivityIndicator size="small" color={T.blue} /> : <Ionicons name="refresh-outline" size={16} color={T.blue} />}
+              <Text style={s.actionText}>Refresh</Text>
+            </TouchableOpacity>
+          </View>
+        ) : passBuyable ? (
+          <>
+            <TouchableOpacity style={[s.passBtn, busy && !passBusy && s.planDim]} activeOpacity={0.9} disabled={busy} onPress={buyPass}>
+              {passBusy
+                ? <ActivityIndicator size="small" color="#FFFFFF" />
+                : <Text style={s.passBtnText}>Generate once — {passPrice}</Text>}
+            </TouchableOpacity>
+            <Text style={s.passHint}>
+              A one-time purchase. It attaches to the first employer you use it on — or buy it right on the resume when you tailor it, and it covers exactly that employer.
+            </Text>
+          </>
+        ) : (
+          <Text style={s.passHint}>
+            It is offered right on the resume when you tailor it for an employer — pick the employer on Home, tap Tailor, and choose Generate once.
+          </Text>
+        )}
+        {passNote ? <Text style={s.passErr}>{passNote}</Text> : null}
+      </View>
 
       {/* ── Store actions ── */}
       {storeUsable ? (
@@ -580,7 +865,7 @@ export default function PlansScreen() {
       ) : null}
 
       <Text style={s.fine}>
-        Deductions happen only after a generation succeeds — a failed attempt never counts. Full history in Plans & Usage.
+        Deductions happen only after a generation succeeds — a failed attempt never counts, and re-opening a document you already have is free. Full history in Plans & Usage.
       </Text>
 
       {/* Required disclosure — Apple and Google both reject a paywall without it. */}
@@ -597,35 +882,94 @@ export default function PlansScreen() {
   );
 }
 
+/** One benefit line on a card. Static — no animation, so nothing here competes for a driver. */
+function Feature({ icon, text, strong, muted }: {
+  icon: React.ComponentProps<typeof Ionicons>['name']; text: string; strong?: boolean; muted?: boolean;
+}) {
+  return (
+    <View style={s.feature}>
+      <View style={[s.featureIcon, muted && s.featureIconMuted]}>
+        <Ionicons name={icon} size={12} color={muted ? T.faint : T.blue} />
+      </View>
+      <Text style={[s.featureText, strong && s.featureStrong, muted && s.featureMuted]}>{text}</Text>
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: T.bg },
+
+  hero: { borderRadius: 24, overflow: 'hidden', padding: 18, marginBottom: 14 },
+  heroEyebrow: { color: '#22D3EE', fontSize: 10, fontWeight: '800', letterSpacing: 1.4 },
+  heroTitle: { color: '#FFFFFF', fontSize: 21, fontWeight: '800', marginTop: 5, letterSpacing: -0.4, lineHeight: 26 },
+  heroBody: { color: 'rgba(255,255,255,0.72)', fontSize: 12.5, lineHeight: 18, marginTop: 7, fontWeight: '500' },
+  heroChip: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: 13, backgroundColor: 'rgba(34,211,238,0.12)', borderWidth: 1, borderColor: 'rgba(34,211,238,0.35)', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 5, maxWidth: '100%' },
+  heroChipText: { color: '#E0FBFF', fontSize: 12, fontWeight: '700', flexShrink: 1 },
+
   trialCard: { backgroundColor: T.card, borderRadius: 18, borderWidth: 1, borderColor: T.line, padding: 15, marginBottom: 12 },
   trialOn: { borderColor: 'rgba(16,185,129,0.4)', backgroundColor: '#F2FDF8' },
   trialHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   trialTitle: { fontSize: 15, fontWeight: '800', color: T.ink },
   trialBody: { fontSize: 12.5, color: T.muted, lineHeight: 18 },
   trialFallback: { color: '#94A3B8', fontSize: 12.5, lineHeight: 18, marginTop: 8, fontStyle: 'italic' },
+  freeOffer: { fontSize: 14.5, fontWeight: '800', color: T.ink, marginBottom: 6, letterSpacing: -0.2 },
+  leftRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 8 },
+  leftChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 4 },
+  leftText: { fontSize: 12, fontWeight: '700', color: T.ink },
   freeNote: { fontSize: 12, color: '#047857', fontWeight: '600', lineHeight: 18, marginBottom: 14, marginLeft: 2 },
+
+  pillOn: { backgroundColor: 'rgba(16,185,129,0.14)', borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3 },
+  pillOnText: { color: '#047857', fontSize: 9.5, fontWeight: '800', letterSpacing: 0.8 },
+  pillMuted: { backgroundColor: 'rgba(91,107,138,0.12)', borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3 },
+  pillMutedText: { color: T.muted, fontSize: 9.5, fontWeight: '800', letterSpacing: 0.8 },
+  pillAmber: { backgroundColor: 'rgba(217,119,6,0.12)', borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3 },
+  pillAmberText: { color: T.amber, fontSize: 9.5, fontWeight: '800', letterSpacing: 0.8 },
 
   noticeCard: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', backgroundColor: 'rgba(37,99,235,0.07)', borderRadius: 14, padding: 12, marginBottom: 12 },
   noticeText: { flex: 1, fontSize: 12, color: T.muted, lineHeight: 17, fontWeight: '600' },
 
+  sectionTitle: { fontSize: 15, fontWeight: '800', color: T.ink, marginBottom: 10, marginLeft: 2, letterSpacing: -0.2 },
+
   plan: { backgroundColor: T.card, borderRadius: 20, borderWidth: 1.5, borderColor: T.line, padding: 16, marginBottom: 11, overflow: 'hidden' },
-  planPopular: { borderColor: T.cyan },
+  planPopular: { borderColor: T.cyan, paddingTop: 24 },
   planCurrent: { borderColor: T.emerald, backgroundColor: '#F6FEFA' },
   planDim: { opacity: 0.5 },
   popularTag: { position: 'absolute', top: 0, right: 0, borderBottomLeftRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
   popularText: { color: '#fff', fontSize: 9, fontWeight: '800', letterSpacing: 1 },
   planRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  planName: { fontSize: 16.5, fontWeight: '800', color: T.ink, marginBottom: 5, letterSpacing: -0.2 },
-  planQuota: { fontSize: 12.5, color: T.muted, fontWeight: '600', marginTop: 1 },
+  planName: { fontSize: 18, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 5 },
   priceBox: { alignItems: 'flex-end', minWidth: 74 },
   price: { fontSize: 21, fontWeight: '800', color: T.ink, letterSpacing: -0.5 },
   priceStub: { color: T.faint },
   per: { fontSize: 11, color: T.faint, fontWeight: '600' },
-  buyRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 11, paddingTop: 10, borderTopWidth: 1, borderTopColor: T.line },
-  buyText: { fontSize: 13, fontWeight: '800', color: T.blue },
+
+  features: { marginTop: 10, gap: 6 },
+  feature: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  featureIcon: { width: 20, height: 20, borderRadius: 7, backgroundColor: 'rgba(37,99,235,0.09)', alignItems: 'center', justifyContent: 'center' },
+  featureIconMuted: { backgroundColor: 'rgba(91,107,138,0.09)' },
+  featureText: { flex: 1, fontSize: 12.5, color: T.muted, fontWeight: '600', lineHeight: 18, paddingTop: 1 },
+  featureStrong: { color: T.ink, fontWeight: '700' },
+  featureMuted: { color: T.faint },
+
+  buyBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 13, height: 42, borderRadius: 13, borderWidth: 1.5, borderColor: 'rgba(37,99,235,0.35)' },
+  buyBtnPopular: { backgroundColor: T.blue, borderColor: T.blue },
+  buyText: { fontSize: 13.5, fontWeight: '800', color: T.blue },
+  buyTextPopular: { color: '#FFFFFF' },
   unavailable: { fontSize: 11.5, color: T.faint, fontWeight: '600', marginTop: 10 },
+
+  passCard: { backgroundColor: '#FFFBF3', borderRadius: 20, borderWidth: 1.5, borderColor: 'rgba(217,119,6,0.28)', padding: 16, marginTop: 4, marginBottom: 14 },
+  passOwned: { flexDirection: 'row', alignItems: 'flex-start', gap: 7, backgroundColor: '#ECFDF5', borderRadius: 12, padding: 10, marginTop: 12 },
+  passOwnedText: { flex: 1, fontSize: 12, color: '#047857', fontWeight: '700', lineHeight: 17 },
+  passBtn: { alignItems: 'center', justifyContent: 'center', height: 46, borderRadius: 14, backgroundColor: T.ink, marginTop: 13 },
+  passBtnText: { color: '#FFFFFF', fontSize: 14.5, fontWeight: '800' },
+  passHint: { fontSize: 11.5, color: T.muted, lineHeight: 17, marginTop: 9, fontWeight: '500' },
+  passSettling: { backgroundColor: '#FFFBEB', borderRadius: 12, padding: 11, marginTop: 12 },
+  passSettlingHead: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  passSettlingTitle: { flex: 1, fontSize: 13, fontWeight: '800', color: '#92400E' },
+  passSettlingBody: { fontSize: 12, color: '#92400E', lineHeight: 17, marginTop: 5, fontWeight: '500' },
+  passSettlingBtn: { alignSelf: 'flex-start', marginTop: 9 },
+  passErr: { fontSize: 12, color: '#B42318', fontWeight: '700', marginTop: 8, lineHeight: 17 },
 
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginTop: 4, marginBottom: 6 },
   actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: T.card, borderRadius: 14, borderWidth: 1, borderColor: T.line, paddingVertical: 11, paddingHorizontal: 14 },

@@ -8,8 +8,15 @@
  * country at GENERATION time; these templates are the visual layer.
  *
  * data = { sender:{name,title,email,phone,location}, company:{name,address}, bodyHtml }
- * opts = { mode:'onepage'|'a4' }
+ * opts = { mode:'onepage'|'a4', photo?, brandColor?: '#hex', brandFont?: { family, google } }
+ *
+ * brandColor / brandFont are the EMPLOYER's brand (a Home employer letter's design.brand — see
+ * employerLetterController): every style's accent hexes are re-hued to the colour, luminance-matched
+ * exactly as the resume families are (resumeTemplates' branding notes), and a verified Google font
+ * leads the stacks. Neither given → the HTML is byte-identical to the unbranded letter.
  */
+
+const { brandThemeOf, recolorHexes, brandFontHtml, normHex, shiftHex } = require('./resumeTemplates');
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -87,7 +94,7 @@ function buildLetter(data, opts, style) {
   .cl-word{font-size:11pt;color:#27313f}
   .cl-name{font-weight:700;font-size:11pt;color:#111827;margin-top:18px}
   `;
-  return `<!DOCTYPE html><html lang="en"><head>${fontsHead('Cover Letter')}<style>
+  const html = `<!DOCTYPE html><html lang="en"><head>${fontsHead('Cover Letter')}<style>
 ${baseCss}${style.css}
   ${clPageRule(opts.mode)}
 </style></head><body><div class="sheet">
@@ -98,12 +105,47 @@ ${baseCss}${style.css}
   <div class="body">${body}</div>
   <div class="closing"><div class="cl-word">${esc(style.closing || 'Sincerely,')}</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
 </div></body></html>`;
+  return brandLetterHtml(html, style.id, opts);
+}
+
+// ── Employer branding ─────────────────────────────────────────────────────────
+// The hexes that ARE each style's accent scheme (from its own CSS below — keep in sync when a style's
+// CSS changes): the rule, the title, the card tint. Names and body inks are neutral and never move —
+// ATS Professional's rule shares its ink hex with the name, so both re-hue there, at ink darkness.
+const LETTER_ACCENTS = {
+  ats_pro:         ['#111827'],
+  exec_leader:     ['#b8995a', '#7c6a45'],
+  technical:       ['#0e7490'],
+  german:          ['#94a3b8'],
+  euro_motivation: ['#c7b8a3', '#8a7a5e'],
+  graduate:        ['#5b5bd6', '#e5e5f3', '#f4f4fb'],
+};
+// The brand on a finished letter: opts.brandColor re-hues the style's accents with a theme referenced
+// against the style's own registry accent (so the ink-dark ATS rule and the gold Executive rule both
+// land on the brand's hue at their own darkness); opts.brandFont leads the stacks when it is a verified
+// Google font. No brand → the HTML passes through untouched.
+function brandLetterHtml(html, styleId, opts) {
+  const tpl = TEMPLATES.find((t) => t.id === styleId);
+  const theme = opts && opts.brandColor ? brandThemeOf(opts.brandColor, tpl ? tpl.accent : null) : null;
+  const out = theme ? recolorHexes(html, LETTER_ACCENTS[styleId] || [], theme, { rgba: true }) : html;
+  return brandFontHtml(out, opts && opts.brandFont);
+}
+// The accent a branded design shows (the renderer reports it beside each card image): the generic
+// design paints the raw colour on its label bars; every other style shows its accent re-hued.
+function brandedLetterAccent(tpl, brandColor) {
+  const hx = normHex(brandColor);
+  if (!tpl) return null;
+  if (!hx) return tpl.accent;
+  if (tpl.generic) return hx;
+  const theme = brandThemeOf(hx, tpl.accent);
+  return theme ? shiftHex(tpl.accent, theme) : tpl.accent;
 }
 
 // ── 6 master styles ───────────────────────────────────────────────────────────
 const STYLES = {
   // 1 — ATS Professional (US/CA): clean, direct, ATS-safe
   ats_pro: {
+    id: 'ats_pro',
     salutation: 'Dear Hiring Manager,', closing: 'Sincerely,',
     header: (s, contact) => `<header class="lh"><div class="name">${esc(raw(s.name))}</div>${raw(s.title) ? `<div class="title">${esc(s.title)}</div>` : ''}${contact ? `<div class="contact">${contact}</div>` : ''}</header>`,
     css: `
@@ -114,6 +156,7 @@ const STYLES = {
   },
   // 2 — Executive Leadership (US/UK/AU/SG): premium, centered, refined
   exec_leader: {
+    id: 'exec_leader',
     salutation: 'Dear Hiring Manager,', closing: 'Respectfully,',
     header: (s, contact) => `<header class="lh"><div class="name">${esc(raw(s.name))}</div>${raw(s.title) ? `<div class="title">${esc(s.title)}</div>` : ''}${contact ? `<div class="contact">${contact}</div>` : ''}</header>`,
     css: `
@@ -126,6 +169,7 @@ const STYLES = {
   },
   // 3 — Technical Specialist (IN/US/CA): modern, teal accent
   technical: {
+    id: 'technical',
     salutation: 'Dear Hiring Manager,', closing: 'Best regards,',
     header: (s, contact) => `<header class="lh"><div class="name">${esc(raw(s.name))}</div>${raw(s.title) ? `<div class="title">${esc(s.title)}</div>` : ''}${contact ? `<div class="contact">${contact}</div>` : ''}</header>`,
     css: `
@@ -137,6 +181,7 @@ const STYLES = {
   },
   // 4 — German Professional (DE/AT/CH): formal, structured, conservative
   german: {
+    id: 'german',
     salutation: 'Dear Sir or Madam,', closing: 'Yours faithfully,',
     header: (s, contact) => `<header class="lh"><div class="hl"><div class="name">${esc(raw(s.name))}</div>${raw(s.title) ? `<div class="title">${esc(s.title)}</div>` : ''}</div><div class="hr">${contact ? contact.split('&nbsp;&nbsp;•&nbsp;&nbsp;').map(x => `<div>${x}</div>`).join('') : ''}</div></header>`,
     css: `
@@ -149,6 +194,7 @@ const STYLES = {
   },
   // 5 — European Motivation Letter (FR/ES/IT/EU): elegant, warm
   euro_motivation: {
+    id: 'euro_motivation',
     salutation: 'Dear Hiring Manager,', closing: 'Yours sincerely,',
     header: (s, contact) => `<header class="lh"><div class="name">${esc(raw(s.name))}</div>${raw(s.title) ? `<div class="title">${esc(s.title)}</div>` : ''}${contact ? `<div class="contact">${contact}</div>` : ''}</header>`,
     css: `
@@ -161,6 +207,7 @@ const STYLES = {
   },
   // 6 — Graduate / Entry Level (Global): modern, approachable, indigo
   graduate: {
+    id: 'graduate',
     salutation: 'Dear Hiring Manager,', closing: 'Sincerely,',
     header: (s, contact) => `<header class="lh"><div class="name">${esc(raw(s.name))}</div>${raw(s.title) ? `<div class="title">${esc(s.title)}</div>` : ''}${contact ? `<div class="contact">${contact}</div>` : ''}</header>`,
     css: `
@@ -186,7 +233,9 @@ function standardLetter(data, opts = {}) {
   const footRows = [raw(s.email), raw(s.location)].filter(Boolean).map(x => `<div>${esc(x)}</div>`).join('');
   const topRight = [raw(s.location), raw(s.email)].filter(Boolean).map(x => `<div>${esc(x)}</div>`).join('');
   const pageRule = opts.mode === 'a4' ? '@page{size:A4;margin:0}.sheet{min-height:0}' : '@page{margin:0}.sheet{min-height:297mm}';
-  return `<!DOCTYPE html><html lang="en"><head>${fontsHead('Cover Letter')}<style>
+  // The brand colour paints the label bars outright (this design IS the branded one — no re-hue);
+  // the brand font, when a verified Google font, leads the stacks like everywhere else.
+  return brandFontHtml(`<!DOCTYPE html><html lang="en"><head>${fontsHead('Cover Letter')}<style>
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{background:#fff;font-family:'Lato',-apple-system,'Segoe UI',Roboto,Arial,sans-serif;color:#2b333b}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -225,7 +274,7 @@ function standardLetter(data, opts = {}) {
     <div class="body">${body}</div>
     <div class="closing"><div class="cl-word">Best regards,</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
   </main>
-</div></body></html>`;
+</div></body></html>`, opts.brandFont);
 }
 
 const TEMPLATES = [
@@ -259,4 +308,4 @@ function renderCoverLetterHtml(templateId, data, opts = {}) {
   return tpl.build(data || {}, opts);
 }
 
-module.exports = { TEMPLATES, TEMPLATE_IDS, REGIONS, templatesForRegion, renderCoverLetterHtml };
+module.exports = { TEMPLATES, TEMPLATE_IDS, REGIONS, templatesForRegion, renderCoverLetterHtml, brandedLetterAccent, LETTER_ACCENTS };

@@ -705,6 +705,244 @@ function localFamilyBrief() {
         .join('\n');
 }
 
+// ── The employer's hiring conventions (employerResearch `conventions`) ─────────────────────────────────
+// ONE grounded research call reads how THIS employer hires and what CV conventions hold in its country and
+// sector: { hqCountry, roleCountry, employerType, sector, atsVendor, cv: { photo, length, personalDetails,
+// dateFormat, format, notes }, tone, sources } — every field null when unknown, and the whole object null on a
+// cache row that predates it or a research call that failed. The doc lane turns it into three things: the
+// prompt's HIRING CONVENTIONS facts (employerResearch.conventionsPromptBlock), its FORMATTING rules
+// (docFormattingBlock), and the design ranking's employer-first inputs (rankDocDesign / rerankStoredResumeDesign).
+// ⚠️ IT IS A MODEL'S READING OF PUBLIC PAGES — untrusted, possibly wrong. So it only ever shapes format and
+// emphasis, every enum is checked against its closed list here, and free text is capped and flattened before it
+// can reach a prompt or a headline.
+
+const DOC_EMPLOYER_TYPES = ['public_sector', 'enterprise', 'sme', 'startup', 'agency', 'ngo', 'academia', 'other'];
+
+/** research.conventions when it is a usable object, else null (an old cache row, an old research module). */
+function conventionsOfResearch(research) {
+    const c = research && typeof research === 'object' && !Array.isArray(research) ? research.conventions : null;
+    return c && typeof c === 'object' && !Array.isArray(c) ? c : null;
+}
+
+/** A date pattern the prompt may quote ("MM/YYYY", "Month YYYY", "DD.MM.YYYY"), else null. */
+function docDateFormatOf(v) {
+    const s = typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '';
+    if (!s || s.length > 24 || !/^[A-Za-z0-9 .,/-]+$/.test(s)) return null;
+    return /y{2,4}|year/i.test(s) ? s : null;
+}
+
+/**
+ * Flattened, capped free text from the research, or null. "===" runs go, so a string cannot fake a prompt header,
+ * and the cap falls at a word ("SuccessFactors Recruiting", never "SuccessFactors Recruiting Managem").
+ */
+function docConventionText(v, max) {
+    if (typeof v !== 'string') return null;
+    const s = v.replace(/\p{Cc}+/gu, ' ').replace(/={3,}/g, '—').replace(/\s+/g, ' ').trim();
+    if (!s) return null;
+    if (s.length <= max) return s;
+    return s.slice(0, max + 1).replace(/\s+\S*$/, '').trim() || s.slice(0, max);
+}
+
+/**
+ * A researcher that found nothing often says so in words — "Unknown", "N/A", "Global", "in-house" — and that word
+ * must not become a fact: "Acme screens applications with Unknown", "Employers in Worldwide". Null instead.
+ */
+const DOC_NOT_A_COUNTRY_RE = /^(unknown|not (known|found|specified|available)|n\/?a|none|null|global|worldwide|international|multiple|various|remote|europe|asia|africa|emea|apac|latam|americas|middle east)$/i;
+const DOC_NOT_AN_ATS_RE = /^(unknown|not (known|found|specified|available)|n\/?a|none|null|no|other|in-house|inhouse|internal|proprietary|email|e-mail|custom)$/i;
+const docFactOr = (v, junk) => (v && !junk.test(v) ? v : null);
+
+/**
+ * The conventions as THIS lane reads them — enums checked against their closed lists, text capped — or null when
+ * nothing actionable is left. Never throws. The RAW object is still what designFit / employerResearch receive
+ * (they sanitise their own inputs); this view is only for the rules, the backstop and the headline below.
+ */
+function docConventionsOf(raw) {
+    const c = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!c) return null;
+    const one = (v, allowed) => (typeof v === 'string' && allowed.includes(v) ? v : null);
+    const cv = c.cv && typeof c.cv === 'object' && !Array.isArray(c.cv) ? c.cv : {};
+    const out = {
+        hqCountry: docFactOr(docConventionText(c.hqCountry, 60), DOC_NOT_A_COUNTRY_RE),
+        roleCountry: docFactOr(docConventionText(c.roleCountry, 60), DOC_NOT_A_COUNTRY_RE),
+        employerType: one(c.employerType, DOC_EMPLOYER_TYPES),
+        sector: docFactOr(docConventionText(c.sector, 80), DOC_NOT_A_COUNTRY_RE),
+        atsVendor: docFactOr(docConventionText(c.atsVendor, 40), DOC_NOT_AN_ATS_RE),
+        cv: {
+            photo: one(cv.photo, ['expected', 'optional', 'avoid']),
+            length: one(cv.length, ['one_page', 'two_pages', 'flexible']),
+            personalDetails: one(cv.personalDetails, ['include', 'avoid']),
+            dateFormat: docDateFormatOf(cv.dateFormat),
+            format: one(cv.format, ['tabular', 'narrative', 'europass', 'ats_plain']),
+        },
+    };
+    const any = out.hqCountry || out.roleCountry || out.employerType || out.sector || out.atsVendor
+        || Object.values(out.cv).some((v) => v != null);
+    return any ? out : null;
+}
+
+const DOC_TECH_SECTOR_RE = /\b(software|saas|tech\w*|internet|cloud|data|ai|artificial intelligence|developer\w*|digital|fintech|cyber\w*|telecom\w*|semiconductor\w*|it services|e-?commerce)\b/i;
+
+/**
+ * The FORMATTING section of the employer-doc prompt: what THIS employer's hiring conventions change about how the
+ * resume is written — which details it carries, how long it runs, how dates read, how plain the bullets are, and
+ * what leads inside each entry. '' when the research carried no conventions.
+ *
+ * ⚠️ FORMAT AND EMPHASIS ONLY. Every rule moves, condenses, blanks or re-words what the candidate's own material
+ * already says; none may add a fact, and the ZERO-MISS rule still holds (condense, never drop an entry).
+ * ⚠️ DETERMINISTIC: the enums map onto fixed instructions, so the same research always writes the same rules.
+ * The personal-details rule is also enforced in code (applyPersonalDetailsConvention) — a prompt is advice.
+ */
+function docFormattingBlock(conventions, company) {
+    const c = docConventionsOf(conventions);
+    if (!c) return '';
+    const cv = c.cv;
+    const rules = [];
+    if (cv.personalDetails === 'avoid') {
+        rules.push('- Personal details: leave personal_info.date_of_birth and personal_info.nationality as "" even when the material states them — employers here do not expect them on a CV.');
+    } else if (cv.personalDetails === 'include') {
+        rules.push('- Personal details: employers here expect them — keep personal_info.date_of_birth and personal_info.nationality exactly as the material states them. When the material does not state one, leave it "" — never guess.');
+    }
+    if (cv.length === 'one_page') {
+        rules.push(`- Length: ONE page of content. Keep every experience and education entry, but give each role at most 3 highlights (the ones that matter to ${company}) and older or less relevant roles one or two, keep the summary to 3 sentences before its bullets, and merge minor bullets. Never drop an entry.`);
+    } else if (cv.length === 'two_pages') {
+        rules.push('- Length: up to two pages is normal here — keep the detail the material has instead of cutting highlights to save space.');
+    }
+    if (cv.dateFormat) {
+        rules.push(`- Dates: write every experience start_date and end_date as ${cv.dateFormat} ("Present" for an ongoing role); an education end_date may stay a year alone when the material gives only the year.`);
+    }
+    if (cv.format === 'ats_plain' || c.atsVendor) {
+        rules.push(`- Plain text for screening software${c.atsVendor ? ` (${company} is known to screen applications with ${c.atsVendor})` : ''}: no tables, symbols, emoji or decorative separators inside a bullet, no ALL-CAPS phrases, and standard wording for job titles and skills.`);
+    }
+    if (cv.format === 'tabular') rules.push('- Tabular CV: keep each entry crisp and factual — dates, role, employer, then short highlights — because the page is read as a table.');
+    if (cv.format === 'europass') rules.push('- Europass-style CV: give a language a CEFR level (A1-C2) ONLY where the material states that level; never estimate one.');
+    if (cv.format === 'narrative') rules.push('- Narrative CV: the summary may use all four sentences, and highlights read as complete sentences.');
+    switch (c.employerType) {
+        case 'startup':
+            rules.push('- Emphasis (a startup): inside each experience entry lead with what the candidate built, shipped and owned; the projects the material has come early, and skills.technical leads with the tools they built with.');
+            break;
+        case 'public_sector':
+            rules.push('- Emphasis (the public sector): inside each entry lead with responsibilities, compliance and process work, and the stakeholders served, in the material\'s own terms; keep the wording formal, with no sales language.');
+            break;
+        case 'academia':
+            rules.push('- Emphasis (academia): when the material has research, teaching or publications, lead the summary with them and put publications and research projects first among projects; keep every education detail (thesis, grade, honours).');
+            break;
+        case 'agency':
+            rules.push('- Emphasis (an agency): make skills.technical keyword-dense — every tool, platform and method the material names, in the role\'s vocabulary where it is the same thing — and lead highlights with client-facing delivery.');
+            break;
+        case 'enterprise':
+            rules.push('- Emphasis (a large employer): lead highlights with the scope and scale the material states (teams, systems, regions, budgets) and cross-functional work; use standard job titles.');
+            break;
+        case 'sme':
+            rules.push('- Emphasis (a smaller employer): lead with breadth and hands-on ownership — the end-to-end work the candidate owned.');
+            break;
+        case 'ngo':
+            rules.push('- Emphasis (a non-profit): lead with mission-related work, volunteering and community impact when the material has them.');
+            break;
+        default: break;
+    }
+    if (c.employerType !== 'startup' && c.sector && DOC_TECH_SECTOR_RE.test(c.sector)) {
+        rules.push('- Emphasis (a technology employer): inside each entry, projects and shipped work come first.');
+    }
+    if (!rules.length) return '';
+    return [
+        `=== FORMATTING FOR ${company} (from its hiring conventions) ===`,
+        ...rules,
+        '- These rules change FORMAT and EMPHASIS only. They never add, infer or embellish a fact, and every entry in the material still appears.',
+    ].join('\n');
+}
+
+/**
+ * employerResearch.conventionsPromptBlock (the conventions as facts, with their own guard rails), defensively: ''
+ * without conventions, or when the export is missing (a research module from before conventions) or throws.
+ */
+function conventionsBlockForDoc(conventions, company) {
+    if (!conventions) return '';
+    try {
+        const er = require('../services/employerResearch');
+        if (typeof er.conventionsPromptBlock !== 'function') return '';
+        return String(er.conventionsPromptBlock(conventions, company, { forLetter: false }) || '');
+    } catch (e) {
+        console.warn('[resumeBuilder] conventions block unavailable:', e.message);
+        return '';
+    }
+}
+
+/**
+ * The one formatting convention enforced in CODE as well as in the prompt: an employer whose conventions say a CV
+ * carries NO personal details gets none, whatever the draft says. A date of birth or a nationality on a CV sent
+ * where they are not expected is noise at best and, where hiring guards against discrimination, a reason to set
+ * it aside. It is the candidate's own fact, so blanking it on THIS employer's copy loses nothing: the base resume
+ * keeps it. ('include' is prompt-only: the code cannot tell a fact the model dropped from one it never had.)
+ */
+function applyPersonalDetailsConvention(resumeData, conventions) {
+    const c = docConventionsOf(conventions);
+    if (!c || c.cv.personalDetails !== 'avoid') return;
+    const pi = resumeData && resumeData.personal_info;
+    if (!pi || typeof pi !== 'object' || Array.isArray(pi)) return;
+    pi.date_of_birth = '';
+    pi.nationality = '';
+}
+
+// ── The employer's sector, and the top lines written for it ──────────────────────────────────────────
+// ⚠️ EVERY EMPLOYER'S RESUME CAME BACK THE SAME (2026-09-15). The prompt said "rewrite the title and summary for
+// what Amazon needs" and the model kept the candidate's own title and its generic opening for Amazon, Nordex and
+// a Moroccan agency alike — a document the user paid for per employer that read like the base résumé. So the
+// prompt now names the SECTOR in one place (docSectorOf — the same words the corrective pass and the sameness
+// guard use), tells the model exactly which lines must read as written for it, and the lane measures the answer
+// (docSamenessOf) instead of trusting it.
+
+const DOC_EMPLOYER_TYPE_TEXT = {
+    public_sector: 'a public-sector body', enterprise: 'a large enterprise', sme: 'a small or medium-sized company',
+    startup: 'a startup', agency: 'an agency', ngo: 'a non-profit', academia: 'a university or research institute',
+};
+
+/**
+ * The employer's sector in words — the conventions' `sector` first (the hiring research names it for the CV), else
+ * the researcher's `industry` — capped and flattened, or null when nothing names one. ⚠️ ONE ANSWER for the prompt,
+ * the corrective pass and the guard's "industry known": three readings of the research would disagree on the edge.
+ */
+function docSectorOf(research, conventions) {
+    const conv = docConventionsOf(conventions !== undefined ? conventions : conventionsOfResearch(research));
+    if (conv && conv.sector) return conv.sector;
+    const r = research && typeof research === 'object' && !Array.isArray(research) ? research : null;
+    return docFactOr(docConventionText(r ? r.industry : null, 80), DOC_NOT_A_COUNTRY_RE);
+}
+
+/** "Industrial automation" reads as "industrial automation" mid-sentence; "SaaS" and "IT services" stay as they are. */
+function docSectorPhraseOf(sector) {
+    const s = String(sector || '').trim();
+    return s.length > 1 && /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s;
+}
+
+/**
+ * The WRITTEN FOR section of the employer-doc prompt: which lines a recruiter reads first and what each must say
+ * for THIS sector — the title in the candidate's real roles, the summary's first sentence as their fit for the
+ * sector, the bullets in the employer's vocabulary, and the detail level the conventions set. Always present: even
+ * without research the sector the employer hires in is something the model may bring to EMPHASIS (it is not a
+ * fact about the candidate). ⚠️ Emphasis and wording only, same as every other block — the never-invent rules
+ * stand, and this one restates them where the temptation is strongest.
+ */
+function docTopLinesBlock({ company, sector, conventions } = {}) {
+    const conv = docConventionsOf(conventions);
+    const typeText = conv && conv.employerType ? DOC_EMPLOYER_TYPE_TEXT[conv.employerType] || null : null;
+    const phrase = sector ? docSectorPhraseOf(sector) : `the field ${company} hires in`;
+    const who = typeText ? `${phrase} (${company} is ${typeText})` : phrase;   // the type once, in the opening line
+    const length = conv ? conv.cv.length : null;
+    const detail = length === 'one_page'
+        ? `one page: at most 3 highlights per role (the ones that matter to ${company}), a summary of at most 3 sentences before its 3 bullets, and minor bullets merged — never an entry dropped.`
+        : length === 'two_pages' || length === 'flexible'
+            ? `full: keep every highlight the material has, reworded and reordered for ${company}.`
+            : `as the material has it: full where the material is detailed, tight where it is not.`;
+    return [
+        `=== WRITTEN FOR ${company}: THE TOP LINES ===`,
+        `A recruiter at ${company} reads the title and the first sentence of the summary before anything else. Both must read as written for ${who} — from the candidate's real record, never from what ${company} would like to hear:`,
+        `- personal_info.title: phrase it for ${phrase} using the candidate's REAL roles — the shape is "<their real role> — <the specialism of theirs that this sector needs>" (e.g. a backend engineer applying to a payments company: "Backend Engineer — Payment Systems & APIs"). Never a role the material does not support, never ${company}'s name.`,
+        `- summary, first sentence: state the candidate's fit for ${phrase} with their most relevant REAL strengths — the skills, domains and work in the material that match this sector come first. A generic opening that would suit any employer is wrong here.`,
+        `- Experience highlights and skills: where the material describes the SAME thing, say it in the vocabulary ${company} uses — the technologies, products and mission named in the research above, in that wording — and put those bullets first. A technology or product the candidate has not touched stays out, whatever the research names.`,
+        `- Detail level, ${detail}`,
+    ].join('\n');
+}
+
 /**
  * The prompt for Home's employer document: a FULL rewrite of the candidate's resume for one employer,
  * grounded by that employer's web research, plus a design score per layout family — in ONE call.
@@ -726,10 +964,24 @@ function localFamilyBrief() {
  * an employer they really worked at, a product they used ("Amazon Web Services") — is their record and
  * stays as written; a blanket ban would make the model drop a real skill, which breaks ZERO-MISS.
  *
+ * ⚠️ THE EMPLOYER DECIDES THE FORMAT, NOT THE CANDIDATE'S SENIORITY (2026-09-14). Nexplore, a Moroccan public
+ * agency and a Ghanaian job site all came back in prod with the exec_pro family first, because the design brief
+ * weighed seniority and the region fell back to 'generic' for .ma/.com hosts. The research's `conventions` (photo,
+ * length, personal details, date format, CV format, employer type, ATS) now feed three places: the HIRING
+ * CONVENTIONS facts, the FORMATTING rules (docFormattingBlock) and the design brief's order of weight, where
+ * seniority is a minor tie-breaker. `conventions` defaults to research.conventions; without any, the prompt reads
+ * exactly as before apart from that brief.
+ *
+ * ⚠️ THE TOP LINES ARE WRITTEN FOR THE SECTOR (2026-09-15) — see docTopLinesBlock: the title in the candidate's
+ * real roles phrased for the employer's sector, the summary opening as their fit for it, the bullets in the
+ * employer's vocabulary, and the detail level from the conventions (one page → ≤3 highlights per role and a
+ * ≤3-sentence summary). generateEmployerDoc MEASURES the answer against the base résumé (docSamenessOf) and
+ * sends one corrective pass when it came back generic — the prompt is the first line, not the only one.
+ *
  * Output = the resume JSON schema buildParsePrompt uses (so every template renders it) PLUS a `design`
  * object that generateEmployerDoc strips before storing: the payload is the resume and nothing else.
  */
-function buildEmployerDocPrompt({ name, email, phone, location, rawText, uploadedResumeContext, job, research, familyBrief, country } = {}) {
+function buildEmployerDocPrompt({ name, email, phone, location, rawText, uploadedResumeContext, job, research, familyBrief, country, conventions } = {}) {
     const j = job && typeof job === 'object' ? job : {};
     const company = String(j.company || '').replace(/\s+/g, ' ').trim().slice(0, 160) || 'this employer';
     const website = String(j.website || '').replace(/\s+/g, '').trim().slice(0, 300);
@@ -743,6 +995,23 @@ function buildEmployerDocPrompt({ name, email, phone, location, rawText, uploade
         const { researchPromptBlock } = require('../services/employerResearch');
         researchBlock = research ? researchPromptBlock(research, company) : '';
     } catch (e) { console.warn('[resumeBuilder] research block unavailable:', e.message); }
+    const rawConventions = conventions !== undefined ? conventions : conventionsOfResearch(research);
+    const conv = docConventionsOf(rawConventions);
+    // The facts block is employerResearch's to judge (it may carry notes this lane's enums do not read); the rules are ours.
+    const conventionsBlock = rawConventions ? conventionsBlockForDoc(rawConventions, company) : '';
+    const formattingBlock = conv ? docFormattingBlock(rawConventions, company) : '';
+    // The sector the top lines are written for, and the block that says how (docTopLinesBlock) — the same
+    // docSectorOf reading the corrective pass and the sameness guard use.
+    const sector = docSectorOf(research, rawConventions);
+    const topLinesBlock = docTopLinesBlock({ company, sector, conventions: rawConventions });
+    const onePage = !!(conv && conv.cv.length === 'one_page');
+    const avoidPersonal = !!(conv && conv.cv.personalDetails === 'avoid');
+    const personalSlot = avoidPersonal ? 'always an empty string for this employer' : 'ONLY if the material states it, else empty string';
+    const modeRule = conv && conv.cv.length === 'one_page'
+        ? '"onepage" — one page is the norm for this employer.'
+        : conv && conv.cv.length === 'two_pages'
+            ? '"a4" — two pages are normal for this employer.'
+            : '"onepage" where one page is the norm or the real material is concise; "a4" when the candidate\'s real material needs the room.';
 
     const uploadedBlock = uploadedResumeContext
         ? `\n=== THE CANDIDATE'S UPLOADED RESUME (also their own material — MERGE it with the text above; capture every job, project, skill, certification and education entry from BOTH, never invent anything) ===\n${uploadedResumeContext}\n`
@@ -774,9 +1043,11 @@ ${uploadedBlock}
 === THE EMPLOYER ===
 Company: ${company}
 ${website ? `Website: ${website}   (identifies the company only — do not describe it)\n` : ''}${place ? `Applying in: ${place}\n` : ''}${roleBlock}
-${researchBlock ? `${researchBlock}\n` : ''}
+${researchBlock ? `${researchBlock}\n` : ''}${conventionsBlock ? `\n${conventionsBlock}\n` : ''}${formattingBlock ? `\n${formattingBlock}\n` : ''}
+${topLinesBlock}
+
 === WHAT YOU MAY CHANGE (this is a full rewrite for ${company}) ===
-- Rewrite \`personal_info.title\` and \`summary\` for what ${company} needs from someone with THIS candidate's real background: its industry, its priorities, its vocabulary.
+- Rewrite \`personal_info.title\` and \`summary\` for what ${company} needs from someone with THIS candidate's real background: its sector, its priorities, its vocabulary — exactly as WRITTEN FOR ${company} above says. A title or an opening sentence that would suit any employer is not a rewrite.
 - Rewrite the wording of every experience highlight and project bullet in the vocabulary ${company} uses — only where it describes the SAME thing the candidate did. Re-wording is not a licence to claim.
 - Reorder the highlights inside each experience entry, the projects, and \`skills.technical\` / \`skills.soft\`, so what matters most to ${company} comes first.
 - Condense highlights that are clearly irrelevant to ${company}: shorten them, or merge two minor ones into one line. Condense — never drop an entry: every experience entry and every education entry must still appear.
@@ -794,21 +1065,25 @@ ${researchBlock ? `${researchBlock}\n` : ''}
 Tailoring never loses information. Every job, internship, freelance role, project, education entry (including school level: Class X / Class XII), grade, certification, spoken language and achievement in the material must appear in the JSON. When unsure whether something belongs, INCLUDE IT.
 
 === WRITING RULES ===
-- Summary: implied first person — never "I", "me", "my", the candidate's name, "he", "she" or "they". A tight paragraph of 3-4 sentences, then exactly 3 bullets; separate them with \\n and start each bullet with "• ". Wrap 3-6 genuinely important terms per sentence in **double asterisks** (technologies, domains, years of experience the material states). No clichés ("passionate", "go-getter", "team player", "proven track record").
+- Summary: implied first person — never "I", "me", "my", the candidate's name, "he", "she" or "they". A tight paragraph of ${onePage ? 'at most 3 sentences (one page is the norm for this employer)' : '3-4 sentences'}, opening with the candidate's fit for ${company}'s sector (see WRITTEN FOR ${company}), then exactly 3 bullets; separate them with \\n and start each bullet with "• ". Wrap 3-6 genuinely important terms per sentence in **double asterisks** (technologies, domains, years of experience the material states). No clichés ("passionate", "go-getter", "team player", "proven track record").
 - Experience highlights: one sentence each, at most 22 words, starting with a strong past-tense action verb, outcome first. Use a number ONLY when the material states that number.
 - Projects: "about" is 1-2 sentences on what the project is, from the material only; "role" is the candidate's role; "role_highlights" are 2-3 action-verb bullets.
-- Dates: "Month YYYY" or "Present"; a year alone is fine for education.
+- Dates: ${conv && conv.cv.dateFormat ? `${conv.cv.dateFormat}, as FORMATTING above says,` : '"Month YYYY"'} or "Present"; a year alone is fine for education.
 - Education "grade": exactly as written (e.g. "85.40%", "8.5 CGPA"), else "".
-- personal_info.nationality and personal_info.date_of_birth: ONLY if the material states them, else "".
+- personal_info.nationality and personal_info.date_of_birth: ${avoidPersonal ? 'always "" for this employer, even when the material states them (see FORMATTING above).' : 'ONLY if the material states them, else "".'}
 - Write in the same language as the candidate's material.
 
-=== DESIGN — how well each layout family fits THIS candidate applying to ${company} ===
+=== DESIGN — how well each layout family fits the way ${company} hires ===
 ${familyBrief || localFamilyBrief()}
-- Score EVERY family id above from 0 to 100. Weigh how strictly ${company} is likely to screen with ATS software (large employers; the US, the UK and India), photo conventions where the candidate is applying (expected in Germany, Austria and Switzerland; unusual in the US and the UK), the candidate's seniority, and ${company}'s industry and tone.
+- Score EVERY family id above from 0 to 100, EMPLOYER FIRST — in this order of weight:
+  1. the CV conventions where the candidate is applying${conv ? ' (the conventions and FORMATTING above)' : ''}: whether a photo is expected, optional or avoided (expected in Germany, Austria and Switzerland; common across much of continental Europe, the Middle East and Latin America; unusual in the US, the UK, Ireland, Canada and Australia), one page or two, personal details, and the CV format (tabular, Europass, plain for screening software). A family that breaks a convention scores low however good it looks;
+  2. ${company}'s type and sector: public bodies, universities, banks and law firms read conservative layouts; startups and technology companies modern ones; agencies and media visual ones;
+  3. its screening software: favour ATS-safe single-column families when ${company} is known to use an applicant tracking system, or is a large employer where they are near-universal (the US, the UK, India);
+  4. only then the candidate's seniority — a minor tie-breaker, never the reason a family leads.
 - Give each family a "reason" of at most 90 characters, written to the candidate, e.g. "Plain layout that large banks' screening software reads reliably".
-- "mode": "onepage" for a concise early-career resume or where one page is the norm; "a4" when the candidate's real material needs the room.
+- "mode": ${modeRule}
 - "tone": at most 40 characters naming the look that suits ${company}, e.g. "Conservative enterprise".
-- "headline": at most 120 characters telling the candidate why your top-scored family suits ${company}. Say nothing about ${company} that the research above does not support.
+- "headline": at most 120 characters, in plain words, telling the candidate WHY your top-scored family leads for ${company} — the convention or employer trait that decides it, e.g. "Swiss employers expect a tabular CV with a photo slot — this design leads" or "Large US banks screen with ATS software — this plain layout leads". Say nothing about ${company} that the research above does not support.
 
 === REQUIRED OUTPUT SCHEMA (return ONLY this JSON) ===
 {
@@ -819,11 +1094,11 @@ ${familyBrief || localFamilyBrief()}
     "location": "",
     "linkedin_url": "",
     "portfolio_url": "",
-    "title": "Professional headline aimed at the roles ${company} hires for, supported by the material — never the company's name",
-    "nationality": "ONLY if the material states it, else empty string",
-    "date_of_birth": "ONLY if the material states it, else empty string"
+    "title": "The candidate's real role phrased for ${sector ? docSectorPhraseOf(sector) : `the field ${company} hires in`} (see WRITTEN FOR ${company}), supported by the material — never the company's name",
+    "nationality": "${personalSlot}",
+    "date_of_birth": "${personalSlot}"
   },
-  "summary": "3-4 sentence implied-first-person paragraph, then exactly 3 bullets using the bullet prefix and newline separator",
+  "summary": "${onePage ? 'At most 3-sentence' : '3-4 sentence'} implied-first-person paragraph whose first sentence states the fit for ${company}'s sector, then exactly 3 bullets using the bullet prefix and newline separator",
   "experience": [
     { "company": "", "role": "", "location": "", "start_date": "", "end_date": "", "highlights": ["Action-verb achievement, a number only when the material states it"] }
   ],
@@ -995,6 +1270,106 @@ function employerNameLeaks(resumeData, company, sourceText) {
     if (typeof pi.title === 'string' && re.test(pi.title)) where.push('personal_info.title');
     if (typeof resumeData.summary === 'string' && re.test(resumeData.summary)) where.push('summary');
     return where;
+}
+
+// ── Sameness: did the rewrite actually write for THIS employer? ─────────────────────────────────────
+// ⚠️ THE MODEL SAYS "REWRITTEN FOR AMAZON" AND HANDS BACK THE BASE RÉSUMÉ. Every employer's document came
+// back with the candidate's own title and the same generic opening (2026-09-15), and nothing checked. The lane
+// now measures the two lines a recruiter reads first against the base material the prompt was given — the
+// narrative Home sends as rawText (resumeScorer.flattenResume: "Current title: …", a SUMMARY section) and the
+// parsed upload (resume_metadata: summary, job_titles) — and a generic answer costs ONE corrective pass, the
+// same pass placeholders and name leaks already share. Wording is measured, never facts: a summary that keeps
+// every fact and says them for the sector scores LOW here, which is exactly the answer wanted.
+
+const DOC_SUMMARY_SAME_MAX = 0.8;    // token-Jaccard above this = the base summary in different clothes
+const DOC_STOPWORD_MAX_LEN = 3;      // "the", "and", "for", "with"… carry no sector; dropped before comparing
+
+/** The comparable words of a text: lower-cased, punctuation and bold markers gone, short stopwords dropped. */
+function docTokensOf(s) {
+    const out = new Set();
+    for (const m of String(s || '').toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)) if (m[0].length > DOC_STOPWORD_MAX_LEN) out.add(m[0]);
+    return out;
+}
+
+/**
+ * Token-Jaccard similarity of two texts, 0..1: |A ∩ B| / |A ∪ B| over docTokensOf. Two empty texts are the same
+ * text (1); one empty text shares nothing (0). A summary re-worded for a sector scores well under 0.6 against its
+ * base; the base summary with a sentence moved scores above 0.9 — see scripts/test-employer-doc-lane.js.
+ */
+function tokenJaccard(a, b) {
+    const A = docTokensOf(a);
+    const B = docTokensOf(b);
+    if (!A.size && !B.size) return 1;
+    if (!A.size || !B.size) return 0;
+    let both = 0;
+    for (const t of A) if (B.has(t)) both++;
+    return both / (A.size + B.size - both);
+}
+
+/** A title as compared: case, punctuation and spacing folded — "Backend Engineer" is "backend-engineer". */
+const docTitleKeyOf = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * The base material's own top lines: { title, titles, summary } — the narrative's "Current title:" line and SUMMARY
+ * section, the upload's job_titles and summary (experience_summary as its fallback). Each null / [] when the material
+ * does not carry it, so a check with nothing to compare against is skipped, never guessed. Never throws.
+ */
+function baseTopLinesOf(rawText, uploadedResumeContext) {
+    const out = { title: null, titles: [], summary: null };
+    const text = String(rawText || '');
+    const t = text.match(/^Current title:\s*(.+?)\s*$/m);
+    if (t) out.title = t[1].replace(/\s+/g, ' ');
+    const lines = text.split('\n');
+    const at = lines.findIndex((l) => l.trim() === 'SUMMARY');
+    if (at >= 0) {
+        const body = [];
+        for (let i = at + 1; i < lines.length; i++) {
+            const l = lines[i].trim();
+            if (!l || /^[A-Z][A-Z &/]+$/.test(l)) break;              // a blank line or the next section header ends it
+            body.push(l);
+        }
+        if (body.length) out.summary = body.join(' ');
+    }
+    try {
+        const up = uploadedResumeContext ? JSON.parse(uploadedResumeContext) : null;
+        if (up && typeof up === 'object' && !Array.isArray(up)) {
+            if (Array.isArray(up.job_titles)) for (const jt of up.job_titles) if (typeof jt === 'string' && jt.trim()) out.titles.push(jt.trim());
+            if (!out.summary) {
+                const s = [up.summary, up.experience_summary].find((v) => typeof v === 'string' && v.trim());
+                if (s) out.summary = s.replace(/\s+/g, ' ').trim();
+            }
+        }
+    } catch { /* the upload context is JSON the prompt reads as text; unreadable here just means no upload lines */ }
+    if (out.title) out.titles.unshift(out.title);
+    return out;
+}
+
+/**
+ * How generic a draft's top lines are against the base material: { summarySim, titleUnchanged, sectorKnown, generic }.
+ *   summarySim     — tokenJaccard of the draft's summary and the base summary (the paragraph before the bullets on
+ *                    both sides), or null when either side has none;
+ *   titleUnchanged — the draft's title is, folded, one of the base titles (the narrative's current title, the
+ *                    upload's job_titles); false with no title on either side;
+ *   generic        — summarySim > DOC_SUMMARY_SAME_MAX, or the sector is known AND the title is unchanged. Without a
+ *                    known sector an unchanged title is not evidence: there was nothing to phrase it for.
+ */
+function docSamenessOf(draft, base, sector) {
+    const b = base && typeof base === 'object' ? base : { title: null, titles: [], summary: null };
+    const pi = draft && draft.personal_info && typeof draft.personal_info === 'object' ? draft.personal_info : {};
+    const para = (s) => String(s || '').split('\n').filter((l) => !/^\s*•/.test(l)).join(' ').trim();
+    const draftSummary = para(draft && draft.summary);
+    const baseSummary = para(b.summary);
+    const summarySim = draftSummary && baseSummary ? tokenJaccard(draftSummary, baseSummary) : null;
+    const key = docTitleKeyOf(pi.title);
+    const titleUnchanged = !!key && (b.titles || []).some((t) => docTitleKeyOf(t) === key);
+    const sectorKnown = !!sector;
+    return { summarySim, titleUnchanged, sectorKnown, generic: (summarySim != null && summarySim > DOC_SUMMARY_SAME_MAX) || (sectorKnown && titleUnchanged) };
+}
+
+/** "summary similarity 0.93, title unchanged" — one log phrase for before and after. */
+function docSamenessText(s) {
+    if (!s) return 'not measured';
+    return `summary similarity ${s.summarySim == null ? 'n/a' : s.summarySim.toFixed(2)}, title ${s.titleUnchanged ? 'unchanged' : 'rewritten'}`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1585,24 +1960,44 @@ async function writeDocDraft(prompt, report) {
     throw new Error('AI_BAD_OUTPUT');
 }
 
-/** What the draft got wrong that one more pass may fix. The design block is not the resume, so it is not scanned. */
-function docProblemsOf(draft, company, sourceText) {
+/**
+ * What the draft got wrong that one more pass may fix: placeholders, the employer's name, and — when `base` is
+ * given — top lines that are the base résumé's (docSamenessOf; `sameness` is always measured, `generic` is the
+ * problem). The design block is not the resume, so it is not scanned.
+ */
+function docProblemsOf(draft, company, sourceText, { base = null, sector = null } = {}) {
     const resumeOnly = { ...draft, design: undefined };
-    return { placeholders: findPlaceholders(resumeOnly), leaks: employerNameLeaks(resumeOnly, company, sourceText) };
+    const sameness = base ? docSamenessOf(resumeOnly, base, sector) : null;
+    return {
+        placeholders: findPlaceholders(resumeOnly),
+        leaks: employerNameLeaks(resumeOnly, company, sourceText),
+        sameness,
+        generic: !!(sameness && sameness.generic),
+    };
 }
-const problemCount = (p) => p.placeholders.length + p.leaks.length;
+const problemCount = (p) => p.placeholders.length + p.leaks.length + (p.generic ? 1 : 0);
 
 /**
- * The ONE corrective pass: the same prompt, the draft that broke a rule, and exactly which rule. Returns
- * the corrected resume, or null. Never throws — the first draft is still deliverable after stripping.
+ * The ONE corrective pass: the same prompt, the draft that broke a rule, and exactly which rule — placeholders,
+ * the employer's name, and top lines that are still the base résumé's (`sector` names what to rewrite them for).
+ * Returns the corrected resume, or null. Never throws — the first draft is still deliverable after stripping.
  */
-async function correctDocDraft(prompt, draft, problems, company) {
+async function correctDocDraft(prompt, draft, problems, company, { sector = null } = {}) {
     const lines = [];
     if (problems.placeholders.length) {
         lines.push(`- It contains placeholder text, which is forbidden: ${problems.placeholders.slice(0, 12).map((p) => JSON.stringify(p)).join(', ')}. Rewrite every sentence that holds one so it reads naturally WITHOUT that number — never invent a number.`);
     }
     if (problems.leaks.length) {
         lines.push(`- It names ${company} in ${problems.leaks.join(' and ')}. Remove ${company} from them: the resume is about the candidate, not a message to ${company}.`);
+    }
+    if (problems.generic) {
+        const s = problems.sameness || {};
+        const why = [
+            s.summarySim != null && s.summarySim > DOC_SUMMARY_SAME_MAX ? `the summary is ${Math.round(s.summarySim * 100)}% the same as the base resume's` : '',
+            s.titleUnchanged ? 'the title is the candidate\'s current title, unchanged' : '',
+        ].filter(Boolean).join(' and ');
+        const forWhat = sector ? docSectorPhraseOf(sector) : `the field ${company} hires in`;
+        lines.push(`- It reads like the candidate's general resume, not one written for ${company}${why ? ` (${why})` : ''}. Rewrite the title and the summary opening for ${forWhat}: personal_info.title phrased for ${forWhat} using the candidate's REAL roles ("<real role> — <their specialism this sector needs>"), and the summary's first sentence stating their fit for ${forWhat} with their most relevant real strengths; reword the experience highlights in ${company}'s vocabulary where they describe the same work. Wording and emphasis only — every fact stays exactly as the material states it, nothing is added, and ${company}'s name stays out.`);
     }
     const fixPrompt = `${prompt}
 
@@ -1634,31 +2029,421 @@ function familyScoresOf(raw) {
     return Object.keys(out).length ? out : null;
 }
 
+// ── The design: employer-first, a headline that says WHY, re-ranked on read for free ─────────────────────
+
+/** The layout family a template id belongs to, or null. */
+function familyOfTemplateId(id) {
+    const t = typeof id === 'string' ? TEMPLATES.find((x) => x.id === id) : null;
+    return t ? (t.family || t.id) : null;
+}
+
 /**
- * The document's Design (see designFit): the AI's family scores blended with the rules, every design
- * ranked. null when designFit is unavailable or throws — the row is then stored without one and the read
- * routes rank it rule-only. ⚠️ Runs BEFORE the charge, and can never fail the build.
+ * What a headline may claim about a family's layout: { family, photo, ats }, or null. `photo` = "has a photo slot":
+ * designFit's FAMILY_META when it is loadable (azure, executive and minimal render an avatar the catalogue does not
+ * flag), else the catalogue's own flag.
  */
-function rankDocDesign({ aiDesign, resumeData, research, country, website }) {
+function familyTraitsOf(fit, familyId) {
+    const fam = familyId ? FAMILIES.find((f) => f.id === familyId) : null;
+    if (!fam) return null;
+    const meta = (fit && fit._internals && fit._internals.FAMILY_META && fit._internals.FAMILY_META[familyId]) || {};
+    return { family: familyId, photo: typeof meta.photo === 'boolean' ? meta.photo : !!fam.photo, ats: Number(fam.ats) || Number(meta.ats) || 3 };
+}
+
+const DOC_TABULAR_FAMILIES = new Set(['germany', 'europass', 'timeline']);
+const DOC_FORMAL_FAMILIES = new Set(['ats', 'exec_pro', 'elegant', 'minimal', 'germany', 'europass', 'compact']);
+const DOC_MODERN_FAMILIES = new Set(['startup', 'mono', 'minimal', 'compact', 'rightrail']);
+const DOC_VISUAL_FAMILIES = new Set(['banner', 'rightrail', 'timeline', 'startup', 'azure', 'executive']);
+const DOC_HEADLINE_MAX = 120;
+
+/** A headline cut at a word, never mid-word, to designFit's 120 characters. */
+function capHeadline(s) {
+    const t = String(s || '').replace(/\s+/g, ' ').trim();
+    if (t.length <= DOC_HEADLINE_MAX) return t;
+    return `${t.slice(0, DOC_HEADLINE_MAX - 1).replace(/\s+\S*$/, '').trimEnd()}…`;
+}
+
+/** "Employers in Morocco" / "Employers in the United Kingdom" — null for a place a headline should not print (a code, junk). */
+function employersInOf(place) {
+    const p = typeof place === 'string' ? place.trim() : '';
+    if (!p || p.length > 40 || /^[A-Z]{2,3}$/.test(p) || !/^\p{L}[\p{L} .'-]*$/u.test(p)) return null;
+    const the = !/^the\s/i.test(p) && /\b(united|states|kingdom|emirates|republic|islands|netherlands|philippines|bahamas|gambia|maldives|comoros|seychelles)\b/i.test(p);
+    return `Employers in ${the ? 'the ' : ''}${p}`;
+}
+
+/**
+ * The plain-words WHY for the design that LEADS, from the employer's conventions — "Employers in Switzerland expect a
+ * tabular CV with a photo slot — this design leads" — or null when no convention is a claim the leader satisfies.
+ * ⚠️ EVERY CLAIM IS CHECKED AGAINST THE LEADER'S LAYOUT: a photo claim only over a family with a photo slot, "ATS-safe"
+ * only over an ATS-5 family, "photo-free" only without a slot, "one-page" only in onepage mode, a look only over a
+ * family that has it. A headline naming a convention the top card breaks is worse than no headline.
+ */
+function conventionsHeadlineOf(fit, design, conventions, company) {
+    const c = docConventionsOf(conventions);
+    const top = design && Array.isArray(design.ranked) ? design.ranked[0] : null;
+    const tr = c && top ? familyTraitsOf(fit, familyOfTemplateId(top.id)) : null;
+    if (!tr) return null;
+    const cv = c.cv;
+    const inPlace = employersInOf(c.roleCountry || c.hqCountry);
+    const name = docConventionText(company, 160);
+    const who = name && name.length <= 40 ? name : 'This employer';
+    const lines = [];
+    if (cv.photo === 'expected' && tr.photo && inPlace) {
+        if (cv.format === 'europass' && tr.family === 'europass') lines.push(`${inPlace} often ask for a Europass CV with a photo — this design leads`);
+        else if (cv.format === 'tabular' && DOC_TABULAR_FAMILIES.has(tr.family)) lines.push(`${inPlace} expect a tabular CV with a photo slot — this design leads`);
+        else lines.push(`${inPlace} expect a CV with a photo — this design has the photo slot and leads`);
+    }
+    if (c.atsVendor && tr.ats >= 5) lines.push(`${who} screens applications with ${c.atsVendor} — this ATS-safe design leads`);
+    if (cv.format === 'ats_plain' && tr.ats >= 5 && inPlace) lines.push(`${inPlace} screen CVs with software — this plain, ATS-safe design leads`);
+    if (cv.photo === 'avoid' && !tr.photo && inPlace) lines.push(`${inPlace} expect no photo on a CV — this photo-free design leads`);
+    if (cv.format === 'europass' && tr.family === 'europass' && inPlace) lines.push(`${inPlace} often ask for a Europass CV — this design leads`);
+    if (cv.length === 'one_page' && design.mode === 'onepage' && inPlace) lines.push(`${inPlace} expect a one-page resume — this design leads`);
+    if (c.employerType === 'public_sector' && DOC_FORMAL_FAMILIES.has(tr.family)) lines.push('Public-sector employers favour a formal, understated CV — this design leads');
+    if (c.employerType === 'academia' && (DOC_FORMAL_FAMILIES.has(tr.family) || tr.family === 'timeline')) lines.push('Universities and research bodies favour a classic, well-structured CV — this design leads');
+    if (c.employerType === 'enterprise' && tr.ats >= 4 && !DOC_VISUAL_FAMILIES.has(tr.family)) lines.push('Large employers screen CVs with software — this clean, ATS-friendly design leads');
+    if (c.employerType === 'startup' && DOC_MODERN_FAMILIES.has(tr.family)) lines.push('Startups favour a modern, skimmable resume — this design leads');
+    if (c.employerType === 'agency' && DOC_VISUAL_FAMILIES.has(tr.family)) lines.push('Agencies favour a bold, visual resume — this design leads');
+    return lines.length ? capHeadline(lines[0]) : null;
+}
+
+/**
+ * The headline a design is stored or shown with. ⚠️ IT MUST DESCRIBE THE DESIGN THAT LEADS, so, in order:
+ *   1. the prior headline — the AI's at build time, the stored one on read — only while ITS family still leads
+ *      (the AI wrote it about its own top family, and the rules can put another one first);
+ *   2. the conventions' plain-words WHY for the leader (conventionsHeadlineOf);
+ *   3. designFit's own ("<design> fits best — <reason>").
+ */
+function docHeadlineFor(fit, design, { priorFamily = null, priorHeadline = null, conventions = null, company = '' } = {}) {
+    const top = design && Array.isArray(design.ranked) && design.ranked[0] ? familyOfTemplateId(design.ranked[0].id) : null;
+    const prior = typeof priorHeadline === 'string' ? priorHeadline.replace(/\s+/g, ' ').trim() : '';
+    if (prior && priorFamily && top && priorFamily === top) return capHeadline(prior);
+    return conventionsHeadlineOf(fit, design, conventions, company) || (design && design.headline) || null;
+}
+
+/** The family the AI scored highest (a variant key counts for its family), or null. */
+function aiTopFamilyOf(scores) {
+    let best = null;
+    for (const [id, v] of Object.entries(scores || {})) {
+        const raw = v && typeof v === 'object' ? v.score : v;
+        const n = typeof raw === 'number' ? raw : (typeof raw === 'string' ? parseFloat(raw) : NaN);
+        const fam = FAMILIES.some((f) => f.id === id) ? id : familyOfTemplateId(id);
+        if (!fam || !Number.isFinite(n)) continue;
+        if (!best || n > best.n) best = { fam, n };
+    }
+    return best ? best.fam : null;
+}
+
+/**
+ * The AI's own family scores as a stored design keeps them for a later re-rank: { [familyId]: { score, reason } }
+ * with known families only (a variant key counts for its family, and an exact family key beats it — designFit's
+ * rule), integer scores 0..100 and reasons ≤ 90 chars — or null when it scored none. Only used when designFit does
+ * not return aiFamilies itself.
+ */
+function aiFamiliesOf(scores) {
+    const out = {};
+    for (const [id, v] of Object.entries(scores || {})) {
+        const exact = FAMILIES.some((f) => f.id === id);
+        const fam = exact ? id : familyOfTemplateId(id);
+        if (!fam || (!exact && out[fam])) continue;
+        const raw = v && typeof v === 'object' ? v.score : v;
+        const n = typeof raw === 'number' ? raw : (typeof raw === 'string' ? parseFloat(raw) : NaN);
+        if (!Number.isFinite(n)) continue;
+        const reason = v && typeof v === 'object' && typeof v.reason === 'string' ? v.reason.replace(/\s+/g, ' ').trim().slice(0, 90) : '';
+        out[fam] = { score: Math.min(100, Math.max(0, Math.round(n))), reason };
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/**
+ * normaliseDesign keeps the fields it knows. One that predates contract 2 would drop aiFamilies and conventionsSummary —
+ * the two fields that let a stored design be RE-RANKED later without AI — so they are carried over from the raw
+ * ranking, only where the normalised design has no such key at all (never over a value normaliseDesign chose).
+ */
+function keepDesignExtras(normalised, raw) {
+    if (!normalised || typeof normalised !== 'object' || !raw || typeof raw !== 'object') return normalised || null;
+    const out = { ...normalised };
+    const has = (k) => Object.prototype.hasOwnProperty.call(out, k);
+    if (!has('aiFamilies') && Object.prototype.hasOwnProperty.call(raw, 'aiFamilies')) {
+        out.aiFamilies = raw.aiFamilies && typeof raw.aiFamilies === 'object' && !Array.isArray(raw.aiFamilies) ? raw.aiFamilies : null;
+    }
+    if (!has('conventionsSummary') && Object.prototype.hasOwnProperty.call(raw, 'conventionsSummary')) {
+        const s = typeof raw.conventionsSummary === 'string' ? raw.conventionsSummary.replace(/\s+/g, ' ').trim() : '';
+        out.conventionsSummary = s ? s.slice(0, 120) : null;
+    }
+    return out;
+}
+
+/**
+ * Every catalogue design exactly once, integer scores, best first — the invariant every reader of `ranked` relies on.
+ * `ids` is the catalogue of the design's kind (the resume catalogue by default).
+ */
+function isCompleteRanking(d, ids = TEMPLATE_IDS) {
+    if (!d || typeof d !== 'object' || !Array.isArray(d.ranked) || d.ranked.length !== ids.length) return false;
+    const seen = new Set();
+    return d.ranked.every((r, i, a) => {
+        if (!r || !ids.includes(r.id) || seen.has(r.id) || !Number.isInteger(r.score)) return false;
+        seen.add(r.id);
+        return i === 0 || a[i - 1].score >= r.score;
+    });
+}
+
+/**
+ * The convention region for a design: employerResearch.regionForConventions (the chip's country, the research's
+ * conventions and the website — covering every country, so a .ma or .com host is no longer 'generic' by default),
+ * else designFit.regionFor for a research module that predates it. Never throws.
+ */
+function docRegionFor(fit, conventions, { country = null, website = null } = {}) {
+    try {
+        const er = require('../services/employerResearch');
+        if (typeof er.regionForConventions === 'function') {
+            const region = er.regionForConventions(conventions || null, { country: country || null, website: website || null });
+            if (typeof region === 'string' && region) return region;
+        }
+    } catch (e) { console.warn('[resumeBuilder] regionForConventions unavailable — region from the country and website alone:', e.message); }
+    return fit.regionFor({ country: country || '', website: website || '' });
+}
+
+// ── The employer's brand: what every render of a document is recoloured with ─────────────────────────
+// ⚠️ EVERY EMPLOYER'S RESUME LOOKED THE SAME (2026-09-15): the design was ranked per employer, but every page was
+// drawn in the catalogue's own accents. The research now carries `brand` (employerResearch.brandOf: the colour
+// and font read off the employer's website, else the researcher's brandColor / fontName), it is stored on the
+// document's design as design.brand = { accent, font }, and EVERY doc-mode render passes it — the Home cards,
+// the gallery, the PDF and the Word file — so the pages the phone tints for match the pages that arrive.
+// ⚠️ THE BRAND IS PART OF THE PAGE, SO IT IS PART OF EVERY CACHE KEY (brandKeyOf): a document whose brand
+// changed is re-rendered, never served in yesterday's colour.
+
+const BRAND_HEX_RE = /^#[0-9a-f]{6}$/i;
+
+/** A { accent, font } brand exactly as the renderer reads it (accent lower-cased, family ≤ 80 chars, google a boolean), or null when neither half is usable. */
+function docBrandShapeOf(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const accent = typeof raw.accent === 'string' && BRAND_HEX_RE.test(raw.accent.trim()) ? raw.accent.trim().toLowerCase() : null;
+    const f = raw.font && typeof raw.font === 'object' && !Array.isArray(raw.font) ? raw.font : null;
+    const family = f && typeof f.family === 'string' ? f.family.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+    const font = family ? { family, google: f.google === true } : null;
+    return accent || font ? { accent, font } : null;
+}
+
+/**
+ * employerResearch.brandOf(research) → { accent, font } | null, defensively: a research module from before brandOf
+ * (or one that fails to load) answers with the same precedence the contract names — the extracted brand's primary
+ * colour and font, else the researcher's brandColor and fontName (a font the extractor did not verify is not a
+ * Google font: the renderer leaves the design's own stack — the same deterministic answer brandOf itself gives
+ * since 2026-09-15, so the two paths cannot disagree on a stored document). Never throws.
+ */
+function brandOfResearch(research) {
+    const r = research && typeof research === 'object' && !Array.isArray(research) ? research : null;
+    if (!r) return null;
+    try {
+        const er = require('../services/employerResearch');
+        if (typeof er.brandOf === 'function') return docBrandShapeOf(er.brandOf(r));
+    } catch (e) { console.warn('[resumeBuilder] brandOf unavailable — the researcher\'s colour and font stand in:', e.message); }
+    const b = r.brand && typeof r.brand === 'object' && !Array.isArray(r.brand) ? r.brand : null;
+    const fontName = typeof r.fontName === 'string' && r.fontName.trim() ? r.fontName.trim() : '';
+    return docBrandShapeOf({
+        accent: (b && b.primary) || r.brandColor || null,
+        font: (b && b.font) || (fontName ? { family: fontName, google: false } : null),
+    });
+}
+
+/**
+ * The brand a STORED document renders in: its design's `brand` (what the build stored), else its research's
+ * (a document stored before brands existed — its research may still carry the researcher's colour). ONE answer for
+ * every read: /current and GET /:id (the phone's tint), home-cards ?doc=, the gallery, the PDF and the Word file.
+ * ⚠️ DETERMINISTIC (2026-09-15): the answer is a function of the ROW alone. A researcher font on the research with no
+ * verified Google answer (a pre-brand snapshot's bare fontName) is google:false on every process — employerResearch
+ * .brandOf no longer consults brandExtract's per-process font memory, which made such a document's brand key (and so
+ * every thumb and preview cache name) flip after a deploy, after any user's build checked that family, and back a
+ * day later. Synchronous on purpose: rerankStoredDesign and docDesignOf are synchronous and shared with the routes.
+ * The one asynchronous complement is withSharedBrand (the shared row's brand for a document that has none).
+ */
+function docBrandOf(doc) {
+    let stored = doc && doc.design;
+    if (typeof stored === 'string') { try { stored = JSON.parse(stored); } catch { stored = null; } }
+    const own = stored && typeof stored === 'object' && !Array.isArray(stored) ? docBrandShapeOf(stored.brand) : null;
+    return own || brandOfResearch(doc && doc.research);
+}
+
+/**
+ * A stored document with NO brand of its own catches up with the shared employer row (2026-09-15): a build whose
+ * website read missed its deadline stored design.brand = null over a research snapshot without a brand, and that
+ * document stayed unbranded for good — even after patchBrand had written the employer's colour and font to
+ * employer_research_cache for everyone. When docBrandOf answers null and the snapshot names its domain, the row's
+ * brand (employerResearch.cachedBrandFor — ONE read-only SELECT: never the researcher, never the website, never a
+ * write, so a render can bill nobody) is laid over the snapshot as research.brand, exactly where brandOf reads a
+ * brand the build had — so every later docBrandOf (the design's accent, the cache key, the pages) sees it. The doc
+ * OBJECT is changed, in memory, for this request; the row is never written back. Returns the same doc.
+ * Only a document WITH a research snapshot: one without has no domain of record (job_input.website is the
+ * requester's spelling), and a stub research would put it on rerankStoredDesign's re-rank path, which /current
+ * does not take for it — two screens, two orders. Never throws; any failure leaves the document as it was.
+ */
+async function withSharedBrand(doc) {
+    try {
+        if (!doc || typeof doc !== 'object' || docBrandOf(doc)) return doc;
+        const research = doc.research && typeof doc.research === 'object' && !Array.isArray(doc.research) ? doc.research : null;
+        const domain = research && typeof research.domain === 'string' ? research.domain.trim() : '';
+        if (!domain) return doc;
+        const er = require('../services/employerResearch');
+        if (typeof er.cachedBrandFor !== 'function') return doc;
+        const brand = await er.cachedBrandFor(domain);
+        if (!brand || !docBrandShapeOf(brandOfResearch({ ...research, brand }))) return doc;
+        doc.research = { ...research, brand };
+    } catch (e) { console.warn('[resumeBuilder] shared brand unreadable — the document renders unbranded:', e.message); }
+    return doc;
+}
+
+/** A short stable key of a brand for cache names ('plain' without one): the accent and the font, nothing else. */
+function brandKeyOf(brand) {
+    const b = docBrandShapeOf(brand);
+    if (!b) return 'plain';
+    return crypto.createHash('sha256')
+        .update(JSON.stringify([b.accent, b.font ? [b.font.family.toLowerCase(), b.font.google] : null]))
+        .digest('hex').slice(0, 12);
+}
+
+/**
+ * The document's Design (see designFit): the AI's family scores blended with the rules — EMPLOYER-FIRST since
+ * 2026-09-14: the conventions, the employer type and its ATS lead, seniority is a minor factor — every design ranked,
+ * with what a later read needs to RE-RANK it for free: aiFamilies (the AI's own scores) and conventionsSummary.
+ * null when designFit is unavailable or throws — the row is then stored without one and the read routes rank it
+ * rule-only. ⚠️ Runs BEFORE the charge, and can never fail the build.
+ * ⚠️ A LENGTH CONVENTION DECIDES THE MODE (one_page → onepage, two_pages → a4): the prompt wrote the content to that
+ * length. Otherwise the AI's mode, as before. The headline follows docHeadlineFor — never one about a design that
+ * does not lead.
+ * `brand` (brandOfResearch) rides on the result as design.brand — what every render of the document is recoloured
+ * with — and its accent is the colour the variants are ordered by (closest first), ahead of the researcher's.
+ */
+function rankDocDesign({ aiDesign, resumeData, research, country, website, conventions = null, company = '', brand = null }) {
     try {
         const fit = require('../services/designFit');
         const r = research && typeof research === 'object' ? research : {};
         const d = aiDesign && typeof aiDesign === 'object' ? aiDesign : {};
         const text = (v) => (typeof v === 'string' ? stripPlaceholderText(v) : null);
+        const conv = docConventionsOf(conventions);
+        const aiFamilyScores = familyScoresOf(d.families);
+        const mode = conv && conv.cv.length === 'one_page' ? 'onepage'
+            : conv && conv.cv.length === 'two_pages' ? 'a4' : d.mode;
         const ranked = fit.rankResumeDesigns({
-            aiFamilyScores: familyScoresOf(d.families),
-            region: fit.regionFor({ country, website }),
-            brandColor: r.brandColor || null,
+            aiFamilyScores,
+            region: docRegionFor(fit, conventions, { country, website }),
+            brandColor: (brand && brand.accent) || r.brandColor || null,
             companySize: r.companySize || null,
             industry: r.industry || null,
             seniorityYears: fit.seniorityYearsOf(resumeData),
-            mode: d.mode, tone: text(d.tone), headline: text(d.headline),
+            mode, tone: text(d.tone), headline: null,
+            conventions: conventions || null,
+            employerType: conv ? conv.employerType : null,
         });
-        return fit.normaliseDesign(ranked, 'resume');
+        const design = keepDesignExtras(fit.normaliseDesign(ranked, 'resume'), ranked);
+        if (!design) return null;
+        if (!Object.prototype.hasOwnProperty.call(design, 'aiFamilies')) design.aiFamilies = aiFamiliesOf(aiFamilyScores);
+        if (!Object.prototype.hasOwnProperty.call(design, 'conventionsSummary')) design.conventionsSummary = null;
+        design.headline = docHeadlineFor(fit, design, {
+            priorFamily: aiTopFamilyOf(aiFamilyScores), priorHeadline: text(d.headline), conventions, company,
+        });
+        design.brand = docBrandShapeOf(brand);       // null = rendered in the design's own colours (the phone reads it so)
+        return design;
     } catch (e) {
         console.warn('[resumeBuilder] design ranking failed — stored without one (the routes rank it on read):', e.message);
         return null;
     }
+}
+
+/**
+ * A STORED employer document's design, RE-RANKED on read: its stored design put through today's rules again
+ * (designFit.rerankDesign — its stored aiFamilies, no AI, no I/O, never written back), or for a row stored before
+ * designs existed a rule-only ranking from the same inputs. null when the row carries no research, when designFit
+ * cannot re-rank (an older module: the stored design then stands) or answers something incomplete — the caller
+ * keeps its old path.
+ *   opts.kind           — 'resume' (default) | 'cover_letter';
+ *   opts.seniorityYears — a letter's, which its payload cannot say (employerDocsRoutes reads the employer's resume
+ *                         document); a resume's comes from its own payload when not given;
+ *   opts.isTechnicalRole — a letter's, from its job title and position.
+ *
+ * WHY: nearly every employer used to lead with the same exec_pro layout (the region fell back to 'generic' for
+ * .ma/.com hosts, and seniority outweighed the employer). A document built before the employer-first rules must not
+ * keep that order until its owner pays for a Refresh: the order is a VIEW of the document, not what they paid for.
+ *
+ * ⚠️ ONE ANSWER FOR EVERY READ OF A DOCUMENT: /api/employer-docs/current and GET /:id (DocMeta.design — the order and
+ * fit % the phone's deck draws), home-cards ?doc= (preferred, fit, reason) and a download's default mode. So every
+ * input comes from the ROW, never from what one screen sends — two screens showing one document in two orders is
+ * the bug to avoid:
+ *   region     — the one the design was BUILT with when it named one (the build knew the chip's country), else the
+ *                research's conventions and domain (docRegionFor);
+ *   brand colour (a letter's own first), size, industry, conventions — the stored research's.
+ * ⚠️ NEVER MONEY, NEVER STALENESS: nothing is written, and `stale` is a separate label (employerDocsRoutes' staleFor).
+ * ⚠️ THE MODE STAYS THE BUILD'S: the content was condensed for it, and a re-rank does not touch the content.
+ * ⚠️ THE HEADLINE describes the leader: a resume's follows docHeadlineFor (the stored one while its family still
+ * leads, else the conventions' WHY); a letter keeps its stored headline only while the same design leads.
+ */
+function rerankStoredDesign(doc, { kind = 'resume', seniorityYears = null, isTechnicalRole = false } = {}) {
+    const research = doc && doc.research && typeof doc.research === 'object' && !Array.isArray(doc.research) ? doc.research : null;
+    if (!research) return null;
+    const k = kind === 'cover_letter' ? 'cover_letter' : 'resume';
+    let fit;
+    let ids;
+    try {
+        fit = require('../services/designFit');
+        ids = k === 'resume' ? TEMPLATE_IDS : require('../utils/coverLetterTemplates').TEMPLATE_IDS;
+    } catch (e) {
+        console.warn('[resumeBuilder] designFit unavailable for the re-rank:', e.message);
+        return null;
+    }
+    try {
+        let stored = doc.design;
+        if (typeof stored === 'string') { try { stored = JSON.parse(stored); } catch { stored = null; } }
+        stored = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : null;
+        if (stored && typeof fit.rerankDesign !== 'function') return null;
+        const before = stored ? fit.normaliseDesign(stored, k) : null;
+        const conventions = conventionsOfResearch(research);
+        const conv = docConventionsOf(conventions);
+        const payload = doc.payload && typeof doc.payload === 'object' ? doc.payload : {};
+        const builtRegion = before && typeof before.region === 'string' && before.region !== 'generic' ? before.region : null;
+        const years = seniorityYears != null && Number.isFinite(Number(seniorityYears)) ? Math.max(0, Number(seniorityYears))
+            : (k === 'resume' ? fit.seniorityYearsOf(payload) : 0);
+        const hex = (v) => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim() : null);
+        // The brand this document renders in (its design's, else its research's — docBrandOf): what the phone tints
+        // with, and the accent the variants are ordered by, so the order matches the colour the cards were drawn in.
+        const brand = docBrandOf(doc);
+        const inputs = {
+            conventions: conventions || null,
+            region: builtRegion || docRegionFor(fit, conventions, { website: typeof research.domain === 'string' ? research.domain : null }),
+            brandColor: (k === 'cover_letter' ? hex(payload.brandColor) : null) || (brand && brand.accent) || research.brandColor || null,
+            companySize: research.companySize || null,
+            industry: research.industry || null,
+            seniorityYears: years,
+            employerType: conv ? conv.employerType : null,
+            kind: k,
+            ...(k === 'cover_letter' ? { isTechnicalRole: !!isTechnicalRole } : {}),
+        };
+        const raw = stored ? fit.rerankDesign(stored, inputs)
+            : (k === 'resume' ? fit.rankResumeDesigns({ aiFamilyScores: null, ...inputs }) : fit.rankLetterDesigns(inputs));
+        // Something that is not a ranking at all (null, a promise) is no answer — never "repaired" by normaliseDesign
+        // into a catalogue of zero scores that would read as a real order.
+        if (!raw || typeof raw !== 'object' || !Array.isArray(raw.ranked) || !raw.ranked.length) return null;
+        let design = isCompleteRanking(raw, ids) ? { ...raw } : keepDesignExtras(fit.normaliseDesign(raw, k), raw);
+        if (!isCompleteRanking(design, ids)) return null;
+        design = { ...design };
+        if (stored && (stored.mode === 'a4' || stored.mode === 'onepage')) design.mode = stored.mode;
+        if (k === 'resume') {
+            design.headline = docHeadlineFor(fit, design, {
+                priorFamily: before && before.ranked[0] ? familyOfTemplateId(before.ranked[0].id) : null,
+                priorHeadline: before ? before.headline : null,
+                conventions, company: doc.employer_name || '',
+            });
+        } else if (before && before.headline && before.ranked[0] && before.ranked[0].id === design.ranked[0].id) {
+            design.headline = before.headline;
+        }
+        design.brand = brand;                        // normaliseDesign keeps only the fields it knows — the brand rides on after
+        return design;
+    } catch (e) {
+        console.warn(`[resumeBuilder] design re-rank (${k}) failed — the stored design stands:`, e.message);
+        return null;
+    }
+}
+
+/** The resume case of rerankStoredDesign — what docDesignOf (home-cards ?doc=, a download's default mode) shows. */
+function rerankStoredResumeDesign(doc) {
+    return rerankStoredDesign(doc, { kind: 'resume' });
 }
 
 /**
@@ -1692,12 +2477,46 @@ async function promoteServedDoc(userId, hit, employerId, env) {
 }
 
 /**
+ * contract C2 — the one answer for "what would pay for this resume is not what you confirmed".
+ *
+ * Home asks before it spends: the sheet names the payer ("Covered by your one-time pass for Acme", "2 of 3
+ * free resume generations left") and the build the user confirms sends that word back as `expectVia`. Between
+ * the two, a plan can lapse, a parallel build can take the last unit, another tap can spend the pass. Charging
+ * whatever is left is charging for something nobody agreed to — so the build is refused instead.
+ * ⚠️ NOTHING BOUND, NOTHING CHARGED, NOTHING STORED on this path, ever. Whatever this request had already
+ * taken when it found out goes back first (giveBackDocCharges).
+ * ⚠️ 409, NOT 402: this is not "you are out of allowance", it is "ask again". The app re-reads the gate and
+ * puts the sheet back up with what the resume would really cost now, instead of sending anyone to Plans.
+ */
+const PAYER_CHANGED = Object.freeze({
+    status: 409,
+    body: Object.freeze({
+        success: false, reason: 'payer_changed',
+        error: 'What pays for this resume changed after you confirmed it. Check it and confirm again.',
+    }),
+});
+
+/**
+ * contract C2 — the answer for a build confirmed as a FREE one ("it is already built") that no longer is: the
+ * résumé or the posting moved between the gate and the build, so building it now would cost something the user
+ * was never asked about. Refused before every gate — no reservation, no research, no AI, no charge.
+ */
+const CACHE_MISS = Object.freeze({
+    status: 409,
+    body: Object.freeze({
+        success: false, reason: 'cache_miss',
+        error: 'Your saved resume for this employer has changed. Check what building it again would use, then confirm.',
+    }),
+});
+
+/**
  * POST /api/resume-builder/generate-ai with saveTo:'employer_doc' — the resume Home shows for ONE
  * employer chip, fully rewritten for that employer and stored in employerDocs with its ranked designs.
- *   body { __async, clientBuildId, coveredOnly, saveTo, employerId?, country?, rawText, name, email,
+ *   body { __async, clientBuildId, coveredOnly, expectVia?, saveTo, employerId?, country?, rawText, name, email,
  *          phone, location, includeUploadedResume, docJobUrl?, job: { company, title?, url?, description?, website? } }
  *   → { success, cached, docId, tailoredFor }
  *   400 { reason: 'no_resume' | 'no_employer' }   402 { reason: 'quota_exhausted' }   500/504 { reason: 'failed' }
+ *   409 { reason: 'payer_changed' | 'cache_miss' }   (contract C2 — only for a build that sent `expectVia`)
  *
  * `job` is the build's INPUT (the fingerprint, the posting scrape); `docJobUrl` is the stored document's
  * IDENTITY — the job_url Home looks the chip's document up by ('' for an employer chip). Old clients that
@@ -1709,11 +2528,18 @@ async function promoteServedDoc(userId, hit, employerId, env) {
  * no regen_count — and switching chips can show each employer's own resume straight from the DB.
  *
  * ⚠️ MONEY, IN THIS ORDER, CLAUSE FOR CLAUSE WITH generateAI:
+ *   0. `expectVia` (contract C2), when the app sends it: the payer the user CONFIRMED on Home's sheet. At every
+ *      point below where this lane is about to bind or charge, the payer it would really use is worked out
+ *      first and compared with it — and a build that would now be paid for some other way is refused with 409
+ *      payer_changed (PAYER_CHANGED), having bound, charged and stored nothing. A build that sends no
+ *      expectVia behaves exactly as it always has;
  *   1. the fingerprint and the cache — a hit is FREE: no gate, no pass, no AI, no charge, nothing stored;
  *   2. the gates — plan/free quota, then the pass (reserving only when quota cannot pay); there is NO
  *      free-regeneration lane here, so generationGate answers this lane without one too;
  *   3. coveredOnly refuses BEFORE ANY PAID WORK — and research is paid work (a grounded AI call);
- *   4. research (of the VETTED website only) → the AI → the placeholder guard → the design ranking;
+ *   4. research (of the VETTED website only, its hiring conventions and brand included) → the AI → ONE corrective
+ *      pass at most, for placeholders, the employer's name and top lines that are still the base résumé's
+ *      (docSamenessOf) → the personal-details convention → the design ranking, the brand stored on it;
  *   5. under this user's usage lock (withUsageLock), so parallel builds decide one at a time: a racing
  *      identical document is served free; else the pass claim, else consumeOnSuccess — coveredOnly re-asked
  *      at the moment of payment, and "paid" read off THIS request's own answers (the claim, the via, its
@@ -1734,6 +2560,10 @@ async function generateEmployerDoc(req, res) {
     const body = req.body || {};
     const { name, email, phone, location, rawText } = body;
     const coveredOnly = body.coveredOnly === true;
+    // ⚠️ contract C2 — WHAT THE USER CONFIRMED ON THE SHEET ('plan' | 'free' | 'pass' | 'cache'), or null when
+    // the body carries none (an older app): then this lane decides what pays alone, exactly as it always has.
+    // Every comparison against it happens BEFORE the thing it guards — see the gates and the charge below.
+    const expectVia = downloads.expectedPayerOf(body);
     const startedAt = Date.now();
 
     if (typeof rawText !== 'string' || rawText.trim().length < 20) {
@@ -1792,13 +2622,44 @@ async function generateEmployerDoc(req, res) {
             console.log(`[resumeBuilder] employer doc cache hit for "${company}" (doc ${hit.id}) — no AI call, nothing charged`);
             return res.json({ success: true, cached: true, docId: Number(hit.id), tailoredFor: company });
         }
+        // ⚠️ CONFIRMED AS FREE, AND IT IS NOT (contract C2). The app starts a 'cache' build with no sheet at all,
+        // because a stored document costs nothing — so a miss here would charge someone who was never asked.
+        // Before every gate: nothing reserved, nothing researched, nothing spent.
+        if (expectVia === 'cache') {
+            console.log(`[resumeBuilder] employer doc for user ${userId} / "${company}" was confirmed as a saved document, but the cache misses now — refused, nothing charged`);
+            return res.status(CACHE_MISS.status).json(CACHE_MISS.body);
+        }
 
         // ── 2. THE GATES — generateAI's order: plan/free first, the pass second ─────────────────────────
         const quota = await entitlements.canConsumeMany(userId, 'resume', 1, req);
         // Under coveredOnly the credits lane does not exist, so quota that only credits could pay is
         // exhausted for this build — and the pass is consulted in full, exactly as generationGate answers.
         const quotaCovers = !!quota.allowed && !(coveredOnly && quota.via === 'credits');
-        const viaPass = await downloads.passCoversGeneration(userId, 'resume', company, req, { boundOnly: quota.allowed && quotaCovers }).catch(() => false);
+        const boundOnly = quota.allowed && quotaCovers;
+        // ⚠️ C2 IS ASKED BEFORE passCoversGeneration, BECAUSE THAT CALL BINDS. With boundOnly false it is a
+        // RESERVATION — an UPDATE tying the oldest unspent pass to this employer. Refusing after it would leave
+        // the one company a pass buys spent on a build nobody agreed to pay for that way. passWouldCoverResume
+        // is its read-only twin, clause for clause, so the comparison happens while nothing has moved.
+        if (expectVia !== null) {
+            const would = await passWouldCoverResume(userId, company, req, { boundOnly });
+            const payer = would ? 'pass' : downloads.quotaPayerOf(quota);
+            if (payer !== expectVia) {
+                console.warn(`[resumeBuilder] employer doc for user ${userId} / "${company}" was confirmed as '${expectVia}' but ${payer || 'nothing'} would pay now — refused, nothing bound or charged`);
+                return res.status(PAYER_CHANGED.status).json(PAYER_CHANGED.body);
+            }
+        }
+        const viaPass = await downloads.passCoversGeneration(userId, 'resume', company, req, { boundOnly }).catch(() => false);
+        // The gate's OWN answer, compared again — a mismatch here is a race, and never a binding this refusal
+        // would strand: the reservation lost one (then it bound nothing), or it found the employer's own pass
+        // a read a moment ago did not. It cannot be a pass it has just bound, because the only build that
+        // reaches that branch is one whose confirmed payer was already 'pass'.
+        if (expectVia !== null) {
+            const payer = viaPass ? 'pass' : downloads.quotaPayerOf(quota);
+            if (payer !== expectVia) {
+                console.warn(`[resumeBuilder] employer doc for user ${userId} / "${company}": '${expectVia}' was confirmed, ${payer || 'nothing'} would pay at the gate — refused, nothing charged`);
+                return res.status(PAYER_CHANGED.status).json(PAYER_CHANGED.body);
+            }
+        }
         if (!viaPass && !quota.allowed) {
             return res.status(402).json({ error: quota.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
         }
@@ -1830,28 +2691,46 @@ async function generateEmployerDoc(req, res) {
         // the model as the employer.
         const promptJob = { ...job, website: researchSite };
         if (needPosting && posting) promptJob.description = [posting.title, posting.description].filter(Boolean).join('\n');
+        // How THIS employer hires (photo, length, personal details, dates, CV format, employer type, ATS) — part of
+        // the same research answer, null on a cache row or a research module from before it. It shapes the prompt's
+        // formatting, the personal-details backstop and the design ranking; it is never a fact about the candidate.
+        // ⚠️ Not in the fingerprint (RESEARCH_REV is): conventions arriving on an old cache row must not make
+        // every saved document stale and paid to refresh.
+        const conventions = conventionsOfResearch(research);
+        // The employer's look (its website's colour and font when the extractor found them, else the researcher's):
+        // stored on the design and passed to EVERY render of this document — the cards, the gallery, the PDF, the Word file.
+        const brand = brandOfResearch(research);
+        // The sector the top lines are written for — the prompt's, the corrective pass's and the guard's one reading.
+        const sector = docSectorOf(research, conventions);
 
         await report('writing', `Rewriting your resume for ${company}`, 38);
         let familyBrief = '';
         try { familyBrief = require('../services/designFit').resumeFamilyBrief(); }
         catch (e) { console.warn('[resumeBuilder] designFit unavailable for the prompt:', e.message); familyBrief = localFamilyBrief(); }
         const prompt = buildEmployerDocPrompt({
-            name, email, phone, location, rawText, uploadedResumeContext, job: promptJob, research, familyBrief, country,
+            name, email, phone, location, rawText, uploadedResumeContext, job: promptJob, research, familyBrief, country, conventions,
         });
         let draft = await writeDocDraft(prompt, report);
 
-        // The placeholder guard, and the employer's name kept out of the title and summary: ONE corrective
-        // pass while there is time, then whatever placeholder is left is removed. A name that survives the
-        // pass is delivered as written — cutting a name out of a sentence would garble it.
+        // The placeholder guard, the employer's name kept out of the title and summary, and the top lines measured
+        // against the base résumé (docSamenessOf — a generic answer is a problem like the other two): ONE corrective
+        // pass for all of them while there is time, then whatever placeholder is left is removed. A name or a generic
+        // opening that survives the pass is delivered as written — cutting into a sentence would garble it.
         const sourceText = [rawText, uploadedResumeContext].join('\n');
-        let problems = docProblemsOf(draft, company, sourceText);
+        const base = baseTopLinesOf(rawText, uploadedResumeContext);
+        let problems = docProblemsOf(draft, company, sourceText, { base, sector });
+        if (problems.generic) console.log(`[resumeBuilder] employer doc for "${company}" came back generic (${docSamenessText(problems.sameness)}) — one corrective pass for ${sector || 'the field it hires in'}`);
         if (problemCount(problems) && Date.now() - startedAt < DOC_LANE_CORRECTION_BUDGET_MS) {
-            await report('polishing', 'Polishing the wording', 70);
-            const fixed = await correctDocDraft(prompt, draft, problems, company);
+            const onlyGeneric = problems.generic && !problems.placeholders.length && !problems.leaks.length;
+            await report('polishing', onlyGeneric ? `Sharpening it for ${company}` : 'Polishing the wording', 70);
+            const fixed = await correctDocDraft(prompt, draft, problems, company, { sector });
             if (fixed) {
-                const after = docProblemsOf(fixed, company, sourceText);
+                const after = docProblemsOf(fixed, company, sourceText, { base, sector });
+                if (problems.generic) console.log(`[resumeBuilder] employer doc for "${company}" after the corrective pass: ${docSamenessText(after.sameness)}${after.generic ? ' — still generic, delivered as written' : ''}`);
                 if (problemCount(after) <= problemCount(problems)) {
-                    if (!(fixed.design && typeof fixed.design === 'object')) fixed.design = draft.design;
+                    // ⚠️ THE FIRST DRAFT'S DESIGN STANDS. The pass corrects wording; the family scores are the model's
+                    // reading of the EMPLOYER, and a second answer would re-roll them for nothing the fix asked for.
+                    fixed.design = draft.design && typeof draft.design === 'object' ? draft.design : fixed.design;
                     draft = fixed;
                     problems = after;
                 }
@@ -1871,9 +2750,13 @@ async function generateEmployerDoc(req, res) {
         if (phone)    resumeData.personal_info.phone     = phone;
         if (location) resumeData.personal_info.location  = location;
         resumeData._buildMethod = 'ai';
+        // The prompt's personal-details rule, enforced: where the conventions say a CV carries none, it carries none.
+        applyPersonalDetailsConvention(resumeData, conventions);
 
         await report('designing', `Ranking designs for ${company}`, 86);
-        const design = rankDocDesign({ aiDesign, resumeData, research, country, website: job.website });
+        // The region reads the VETTED employer site first (a job board's TLD says nothing about the employer) — the
+        // same domain the stored research carries, so a later re-rank on read starts from the same place.
+        const design = rankDocDesign({ aiDesign, resumeData, research, country, website: researchSite || job.website, conventions, company, brand });
 
         // ── 5 + 6. THE CHARGE, THEN THE STORE — one request at a time per user (withUsageLock) ────────────
         // ⚠️ EVERY MONEY DECISION BELOW IS THIS REQUEST'S OWN ANSWER: the pass claim's charged + passId, and
@@ -1904,11 +2787,27 @@ async function generateEmployerDoc(req, res) {
                     if (spentPass) paid.passId = claimed.passId || null;
                 }
                 if (!spentPass) {
+                    // ⚠️ C2 AT THE MOMENT OF PAYMENT: the confirmed pass did not land (a racing tap for this same
+                    // employer won it), so what would pay now is the plan or the free allowance — a payer the user
+                    // never agreed to. Losing that race must not mean a free resume, and it must not mean a silent
+                    // charge either: refused here, nothing charged, and the app asks again.
+                    if (expectVia === 'pass') {
+                        console.warn(`[resumeBuilder] employer doc for user ${userId} / "${company}": the confirmed pass was spent elsewhere during the run — refused, nothing charged`);
+                        refusal = PAYER_CHANGED;
+                        return;
+                    }
                     // ⚠️ coveredOnly, re-asked at the moment of payment: the gate above ran before research and
                     // the AI, canConsumeMany never reserves, and a lost pass claim lands here too. Under the lock,
                     // a parallel build's unit is already in the ledger when this reads it.
-                    if (coveredOnly) {
+                    // ⚠️ And with a payer confirmed (C2), the answer must still BE that payer: a plan that ended
+                    // mid-build leaves the free allowance paying for a resume the user confirmed against a plan.
+                    if (coveredOnly || expectVia !== null) {
                         const now = await entitlements.canConsumeMany(userId, 'resume', 1, req);
+                        if (expectVia !== null && downloads.quotaPayerOf(now) !== expectVia) {
+                            console.warn(`[resumeBuilder] employer doc for user ${userId} / "${company}": '${expectVia}' no longer pays for it (${downloads.quotaPayerOf(now) || 'nothing'} would) — refused, nothing charged`);
+                            refusal = PAYER_CHANGED;
+                            return;
+                        }
                         if (!now.allowed || now.via === 'credits') {
                             console.warn(`[resumeBuilder] coveredOnly employer doc for user ${userId} lost its cover during the run — refused, nothing charged or stored`);
                             refusal = { status: 402, body: {
@@ -1923,6 +2822,18 @@ async function generateEmployerDoc(req, res) {
                     if (used && used.charge && used.charge.charged) paid.credits = used.charge;
                     if (used && used.ledgerId) paid.ledgerId = used.ledgerId;
                     const via = used ? used.via : 'error';
+                    // ⚠️ C2, ON WHAT ACTUALLY PAID. consumeOnSuccess picks the pool itself, and in the sliver
+                    // between the re-check above and this call it can pick another one (a plan that ended, the
+                    // last unit taken by a lane that holds no lock). Recorded above, so whatever it took goes
+                    // straight back — and the document is never stored for a payer the user did not confirm.
+                    // 'error' and anything unrecognised are not a payer at all: they fall through to the
+                    // "charge could not be confirmed" path below, which already gives everything back.
+                    if (expectVia !== null && downloads.namesPayer(via) && downloads.payerWordOf(via) !== expectVia) {
+                        console.warn(`[resumeBuilder] employer doc for user ${userId} / "${company}": ${via} paid where '${expectVia}' was confirmed — given back and refused`);
+                        await giveBackDocCharges(userId, paid, 'a payer the user did not confirm');
+                        refusal = PAYER_CHANGED;
+                        return;
+                    }
                     if (via === 'credits') {
                         if (coveredOnly) {
                             // The residual race between the re-check above and consumeOnSuccess: give it all back.
@@ -2017,7 +2928,7 @@ async function generateEmployerDoc(req, res) {
         }
 
         await report('pages', 'Laying out your top designs', 96);
-        await prerenderDocThumbs(userId, docId, resumeData, design, 3, 20000);
+        await prerenderDocThumbs(userId, docId, resumeData, design, brand, 3, 20000);
         return res.json({ success: true, cached: false, docId: Number(docId), tailoredFor: company });
     } catch (e) {
         console.error('[resumeBuilder] employer doc error:', e.message);
@@ -2064,9 +2975,52 @@ async function passWouldCoverResume(userId, employer, req, { boundOnly }) {
 }
 
 /**
+ * The doc-lane gate's two DISPLAY reads for Home's confirm sheet (contract 3) → { usage, pass }, each null when it
+ * cannot be read. Never throws: a count the server could not read is a sheet that says less, never a failed gate.
+ *   usage — entitlements.usageFor(userId, 'resume', req): the numbers canConsumeMany enforces, for the pool that
+ *           would pay ("2 of 3 free resume generations left", "12 of 15 left this month on Plus").
+ *   pass  — downloads.passStateFor(…, { kind: 'resume' }): READ-ONLY. Never passCoversGeneration from here — that
+ *           one binds a pass, and a user who only looked at a company would have spent the one company it buys.
+ */
+async function docGateExtrasFor(userId, employer, req) {
+    const [usage, pass] = await Promise.all([
+        (async () => {
+            try {
+                if (typeof entitlements.usageFor !== 'function') return null;
+                const u = await entitlements.usageFor(userId, 'resume', req);
+                return u && typeof u === 'object' ? u : null;
+            } catch (e) {
+                console.warn('[resumeBuilder] gate usage unreadable — the sheet shows no count:', e.message);
+                return null;
+            }
+        })(),
+        (async () => {
+            try {
+                if (!employer || typeof downloads.passStateFor !== 'function') return null;
+                const p = await downloads.passStateFor(userId, employer, req, { kind: 'resume' });
+                return p && typeof p === 'object' ? { available: !!p.available, forThisEmployer: !!p.forThisEmployer } : null;
+            } catch (e) {
+                console.warn('[resumeBuilder] gate pass state unreadable — the sheet names no pass:', e.message);
+                return null;
+            }
+        })(),
+    ]);
+    return { usage, pass };
+}
+
+/**
  * POST /api/resume-builder/generation-gate   body { employer, job?: { title?, url?, description?, website? } }
  *   200 { covered, via: 'plan'|'free'|'pass'|'cache'|'credits'|null, credits: number|null,
- *         reason: 'quota_exhausted'|'regen_limit'|null }
+ *         reason: 'quota_exhausted'|'regen_limit'|null,
+ *         usage: { kind, pool, planLabel, remaining, allowance, used, oneTime } | null,   (saveTo 'employer_doc' only)
+ *         pass:  { available, forThisEmployer } | null }                                  (saveTo 'employer_doc' only)
+ *
+ * ⚠️ usage / pass ARE WHAT HOME'S CONFIRM SHEET SAYS BEFORE ANYTHING IS SPENT (contract 3): the count left in the
+ * pool that would pay, and what a one-time pass means for this employer — or, with nothing left, the empty sheet
+ * beside the $0.99 offer. Read-only and DISPLAY-ONLY (docGateExtrasFor): `covered` / `via` stay this dry run's own
+ * answer, and the build asks every gate again under coveredOnly. They are null on a cache hit (it needs no sheet,
+ * and a hit stays a path that reads no billing), on the no_employer refusal and on a failed gate. Only the doc lane
+ * carries them: Home is their one reader, and the builder lane's free regeneration is no pool they describe.
  *
  * The question the app asks BEFORE it auto-starts a build: "would this be paid for by something the
  * user already has?" ⚠️ STANDING RULE (a real incident): never generate-and-charge silently. An explicit
@@ -2103,11 +3057,14 @@ async function generationGate(req, res) {
         title: String(rawJob.title || ''), url: String(rawJob.url || ''),
         description: String(rawJob.description || ''), website: String(rawJob.website || ''),
     };
-    const answer = (covered, via, credits, reason) => res.json({ covered, via, credits, reason });
+    // usage / pass ride on every doc-lane answer; `extras` stays null until the dry run below has read them.
+    const answer = (covered, via, credits, reason, extras = null) => res.json(docLane
+        ? { covered, via, credits, reason, usage: (extras && extras.usage) || null, pass: (extras && extras.pass) || null }
+        : { covered, via, credits, reason });
     // ⚠️ The doc lane refuses a build with no employer (a '(none)' money key) before any work — so its gate
     // must not answer "covered" for one: an auto-start on that answer would only ever meet the build's 400.
     if (docLane && downloads.employerKeyOf(employer) === downloads.NONE) {
-        return res.status(400).json({ covered: false, via: null, credits: null, reason: 'no_employer', error: 'Pick an employer to write this resume for.' });
+        return res.status(400).json({ covered: false, via: null, credits: null, reason: 'no_employer', usage: null, pass: null, error: 'Pick an employer to write this resume for.' });
     }
     try {
         if (employer && !regenerate) {
@@ -2134,19 +3091,22 @@ async function generationGate(req, res) {
         const quota = await entitlements.canConsumeMany(userId, 'resume', 1, req);
         const quotaCovers = !!quota.allowed && (quota.via === 'plan' || quota.via === 'free');
         const viaPass = employer ? await passWouldCoverResume(userId, employer, req, { boundOnly: quotaCovers }) : false;
+        // The confirm sheet's numbers — read AFTER the gates they describe, so a free-plan row canConsumeMany has
+        // just created is the one usageFor counts. Display only: no branch below reads them.
+        const extras = docLane ? await docGateExtrasFor(userId, employer, req) : null;
         // generateAI spends the pass first whenever it covered — so the pass is what pays.
-        if (viaPass) return answer(true, 'pass', null, null);
-        if (!quota.allowed) return answer(false, null, null, 'quota_exhausted');
-        if (quotaCovers) return answer(true, quota.via, null, null);
+        if (viaPass) return answer(true, 'pass', null, null, extras);
+        if (!quota.allowed) return answer(false, null, null, 'quota_exhausted', extras);
+        if (quotaCovers) return answer(true, quota.via, null, null, extras);
         if (quota.via === 'credits') {
             const price = await getEventCost('resume_ai_generate');
-            return answer(false, 'credits', Number(price) || 0, null);
+            return answer(false, 'credits', Number(price) || 0, null, extras);
         }
         // An allowance we cannot name is not one we may spend without asking.
-        return answer(false, null, null, null);
+        return answer(false, null, null, null, extras);
     } catch (e) {
         console.warn('[resumeBuilder] generation-gate failed:', e.message);
-        return res.status(500).json({ covered: false, via: null, credits: null, reason: null, error: 'Could not check your plan.' });
+        return res.status(500).json({ covered: false, via: null, credits: null, reason: null, ...(docLane ? { usage: null, pass: null } : {}), error: 'Could not check your plan.' });
     }
 }
 
@@ -2331,12 +3291,15 @@ const hasDocId = (body) => !!body && body.docId !== undefined && body.docId !== 
 /**
  * This user's resume document by id, or null. Owner-, environment- and kind-scoped in employerDocs'
  * SQL. A row whose payload has no object personal_info renders nothing, so it is null too. Never throws.
+ * The document comes back with the shared row's brand laid over its research when it had none of its own.
  */
 async function loadResumeDoc(userId, id, reqOrEnv) {
     try {
         const doc = await employerDocs.getById(userId, id, reqOrEnv, { kind: 'resume' });
         const pi = doc && doc.payload && typeof doc.payload === 'object' ? doc.payload.personal_info : null;
-        return pi && typeof pi === 'object' && !Array.isArray(pi) ? doc : null;
+        // Every render path loads through here (home-cards ?doc=, the gallery, the PDF, the Word file), so this is
+        // where a brand-less document meets the shared row's brand (withSharedBrand) — once, before any cache key.
+        return pi && typeof pi === 'object' && !Array.isArray(pi) ? withSharedBrand(doc) : null;
     } catch (e) {
         console.warn('[resumeBuilder] employer doc read failed:', e.message);
         return null;
@@ -2362,22 +3325,27 @@ const docGone = (res) => res.status(410).json({
 const billingEmployerOf = (doc, body) => (doc ? doc.employer_name || null : (body && body.employer) || null);
 
 /**
- * The design a stored document is shown with: its own (repaired against today's catalogue), else a
- * rule-only ranking computed now. ⚠️ Computed, never written back — see employerDocsRoutes' designFor.
- * The row carries no country, so the region comes from the researched domain. null if designFit is out.
+ * The design a stored document is shown with: re-ranked against today's employer-first rules when the row carries
+ * research (rerankStoredResumeDesign — the SAME answer /api/employer-docs/current and GET /:id give, so the cards'
+ * order, fit and reason match the DocMeta the phone pages them by); else its own (repaired against today's
+ * catalogue); else a rule-only ranking computed now. ⚠️ Computed, never written back — see employerDocsRoutes'
+ * designFor. The row carries no country, so the region comes from the researched domain. null if designFit is out.
  */
 function docDesignOf(doc) {
+    const reranked = rerankStoredResumeDesign(doc);
+    if (reranked) return reranked;
     try {
         const fit = require('../services/designFit');
+        const brand = docBrandOf(doc);               // every path answers with the brand the document renders in
         const stored = fit.normaliseDesign(doc.design, 'resume');
-        if (stored) return stored;
+        if (stored) return { ...stored, brand };
         const r = doc.research && typeof doc.research === 'object' ? doc.research : {};
-        return fit.rankResumeDesigns({
+        return { ...fit.rankResumeDesigns({
             aiFamilyScores: null,
             region: fit.regionFor({ website: typeof r.domain === 'string' ? r.domain : '' }),
-            brandColor: r.brandColor || null, companySize: r.companySize || null, industry: r.industry || null,
+            brandColor: (brand && brand.accent) || r.brandColor || null, companySize: r.companySize || null, industry: r.industry || null,
             seniorityYears: fit.seniorityYearsOf(doc.payload),
-        });
+        }), brand };
     } catch (e) {
         console.warn('[resumeBuilder] document design unavailable:', e.message);
         return null;
@@ -2447,7 +3415,8 @@ async function generatePDF(req, res) {
             const needsRect = tplId === 'germany' || tplId === 'europass';
             const photo = await loadPhotoDataUri(photoPath);
             const photoRect = needsRect ? await loadPhotoDataUri(photoPath, 'rect') : null;
-            const pdfBuffer = await renderPdf(tplId, resume, { photo, photoRect, mode });
+            // A stored document renders in ITS employer's brand (docBrandOf) — the accent and font its cards were drawn in.
+            const pdfBuffer = await renderPdf(tplId, resume, { photo, photoRect, mode, brand: doc ? docBrandOf(doc) : null });
             const tSafe = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
             const tFile = `${tSafe}_Resume_${Date.now()}.pdf`;
             const tDir  = path.join(__dirname, '../../temp');
@@ -2864,8 +3833,9 @@ async function generateDocx(req, res) {
         const pi = resume.personal_info || {};
         const strip = (t) => String(t || '').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#39;/gi, "'").replace(/&quot;/gi, '"').replace(/\*\*(.+?)\*\*/g, '$1').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
 
-        // Vary the Word layout/accent by the selected template, like the PDF.
-        const docxBuffer = await buildResumeDocx(resume, { photo: photoDataUri, photoRect: photoRectUri, template: tplId });
+        // Vary the Word layout/accent by the selected template, like the PDF — and, for a stored document, in its
+        // employer's brand (docBrandOf: the accent, and the font when it is a Google family Word can substitute for).
+        const docxBuffer = await buildResumeDocx(resume, { photo: photoDataUri, photoRect: photoRectUri, template: tplId, brand: doc ? docBrandOf(doc) : null });
 
         const safeName = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
         const fileName = `${safeName}_Resume_${Date.now()}.docx`;
@@ -2950,14 +3920,17 @@ async function previewTemplates(req, res) {
     try {
         let row;
         let docTag = '';
+        let brand = null;
         if (hasDocId(req.body)) {
             // The gallery for ONE employer's stored document renders that document. Its previews share
             // this cache, namespaced by the document id (a document and the base row can carry the same
-            // updated_at millisecond, and must never serve each other's pages).
+            // updated_at millisecond, and must never serve each other's pages) and by the brand it renders
+            // in (the brand is drawn INTO the page, so a brand that changed is a different page).
             const doc = await loadResumeDoc(userId, req.body.docId, req);
             if (!doc) return res.status(404).json({ success: false, error: 'That version of your resume is no longer saved.', reason: 'doc_gone' });
             row = { resume_data: doc.payload, updated_at: doc.updated_at };
-            docTag = `doc${Number(doc.id)}-`;
+            brand = docBrandOf(doc);
+            docTag = `doc${Number(doc.id)}-${brandKeyOf(brand)}-`;
         } else {
             await ensureResumeTable();
             // ⚠️ updated_at IS HALF THE CACHE KEY (previewFile). It used to be missing from this SELECT, so
@@ -2988,7 +3961,7 @@ async function previewTemplates(req, res) {
         let fresh = [];
         if (missing.length) {
             const { photo, photoRect } = await photosFor(userId);
-            fresh = await renderPreviews(row.resume_data, { photo, photoRect }, missing);
+            fresh = await renderPreviews(row.resume_data, { photo, photoRect, brand }, missing);
             for (const p of fresh) await writePreviewCache(userId, row, p, pver);
             prunePreviews(userId);                       // fire and forget
         }
@@ -3254,28 +4227,32 @@ async function homeCards(req, res) {
 // and res.sendFile refuses it the same way. File names are sha256 hashes, so nothing in a name is
 // guessable either. ⚠️ Do not rename this directory to one without the leading dot.
 //
-// The key is (user, document, its updated_at, the photo's version, the design): an edit, a rebuild or a
-// new photo is a different file, never a stale image. Letter thumbs (cl_ prefix) share the directory;
-// this LRU only ever counts and deletes its own 64-hex-char names.
+// The key is (user, document, its updated_at, the photo's version, the design, the brand it renders in —
+// brandKeyOf): an edit, a rebuild, a new photo or a brand that changed is a different file, never a stale
+// image. Letter thumbs (cl_ prefix) share the directory; this LRU only ever counts and deletes its own
+// 64-hex-char names.
 const DOC_THUMB_ROOT = path.join(__dirname, '../../uploads/.thumb_cache');
 const DOC_THUMB_KEEP = 240;
 const DOC_THUMB_NAME = /^[0-9a-f]{64}\.jpg$/;
 const docThumbDirOf = (userId) => path.join(DOC_THUMB_ROOT, String(parseInt(userId, 10) || 0));
 const docThumbFlights = new Map();   // absolute path → Promise — one render per file, however many ask
 
-function docThumbNameOf(userId, doc, pver, tplId) {
+function docThumbNameOf(userId, doc, pver, tplId, brand) {
     const ms = new Date(doc.updated_at || 0).getTime() || 0;
     return crypto.createHash('sha256')
-        .update(['resume-doc-thumb:v1', userId, doc.id, ms, pver, tplId].join('|'))
+        .update(['resume-doc-thumb:v2', userId, doc.id, ms, pver, tplId, brandKeyOf(brand)].join('|'))
         .digest('hex') + '.jpg';
 }
 
-/** One design of one stored document → { image, name } (a downscaled JPEG data URI). Throws on a failed render. */
-async function docThumb(userId, doc, tplId, pver) {
+/**
+ * One design of one stored document → { image, name } (a downscaled JPEG data URI), rendered in `brand` (the
+ * document's — docBrandOf — which every caller passes so the key and the page agree). Throws on a failed render.
+ */
+async function docThumb(userId, doc, tplId, pver, brand = null) {
     const tpl = TEMPLATES.find((t) => t.id === tplId);
     if (!tpl) throw new Error(`unknown design ${tplId}`);
     const dir = docThumbDirOf(userId);
-    const name = docThumbNameOf(userId, doc, pver, tplId);
+    const name = docThumbNameOf(userId, doc, pver, tplId, brand);
     const abs = path.join(dir, name);
     try {
         const buf = await fs.readFile(abs);
@@ -3286,7 +4263,7 @@ async function docThumb(userId, doc, tplId, pver) {
     if (docThumbFlights.has(abs)) return docThumbFlights.get(abs);
     const flight = (async () => {
         const { photo, photoRect } = await photosFor(userId);
-        const [pv] = await renderPreviews(doc.payload, { photo, photoRect }, [tpl]);
+        const [pv] = await renderPreviews(doc.payload, { photo, photoRect, brand }, [tpl]);
         const full = Buffer.from(String(pv && pv.image || '').split(',')[1] || '', 'base64');
         if (!full.length) throw new Error('empty render');
         let thumb = full;
@@ -3348,6 +4325,10 @@ async function docHomeCards(req, res) {
         const doc = await loadResumeDoc(userId, req.query.doc, req);
         if (!doc) return res.status(404).json({ success: false, reason: 'doc_gone', error: 'That version of your resume is no longer saved.' });
         const design = docDesignOf(doc);
+        // The brand every card is drawn in — the design's (docDesignOf attaches docBrandOf's answer), else the
+        // document's own reading when designFit is out. Also each card's `accent`: with a brand, every variant
+        // is recoloured to that hue, so the catalogue swatch colour would promise a page that never arrives.
+        const brand = (design && design.brand) || docBrandOf(doc);
         const ranked = design && Array.isArray(design.ranked) ? design.ranked : [];
         const byId = new Map(ranked.map((r) => [r.id, r]));
         const asked = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -3359,11 +4340,11 @@ async function docHomeCards(req, res) {
         const names = [];
         for (const id of ids) {
             try {
-                const c = await docThumb(userId, doc, id, pver);
+                const c = await docThumb(userId, doc, id, pver, brand);
                 const meta = TEMPLATES.find((t) => t.id === id) || {};
                 const r = byId.get(id);
                 cards.push({
-                    id, name: meta.name || id, accent: meta.accent || '#4F8DFF', ats: meta.ats || null, image: c.image,
+                    id, name: meta.name || id, accent: (brand && brand.accent) || meta.accent || '#4F8DFF', ats: meta.ats || null, image: c.image,
                     fit: r ? r.score : null, reason: r && r.reason ? r.reason : null,
                 });
                 names.push(c.name);
@@ -3383,9 +4364,10 @@ async function docHomeCards(req, res) {
  * Right after a paid document is stored: render its top designs into the doc thumb cache, so the
  * carousel that opens on it shows pages rather than skeletons. Bounded (`budgetMs`) — a slow chromium
  * must not hold the build's answer; whatever is still rendering then finishes into the cache on its own.
+ * `brand` is the one the build stored on the design — the key home-cards will compute from the row.
  * Never throws: the document is already stored and paid for.
  */
-async function prerenderDocThumbs(userId, docId, payload, design, count, budgetMs) {
+async function prerenderDocThumbs(userId, docId, payload, design, brand, count, budgetMs) {
     try {
         // The key needs the row's own updated_at — exactly what home-cards will read back.
         const row = await dbConfig.get('SELECT updated_at FROM user_employer_documents WHERE id = $1 AND user_id = $2', [docId, userId]);
@@ -3397,7 +4379,7 @@ async function prerenderDocThumbs(userId, docId, payload, design, count, budgetM
             const pver = await photoVersion(userId);
             const names = [];
             for (const id of ids) {
-                try { names.push((await docThumb(userId, doc, id, pver)).name); }
+                try { names.push((await docThumb(userId, doc, id, pver, brand)).name); }
                 catch (e) { console.warn('[resumeBuilder] doc thumb pre-render failed for', id, e.message); }
             }
             pruneDocThumbs(userId, names);
@@ -3443,6 +4425,9 @@ async function buildResumePdfForRegion(userId, region, mode) {
 module.exports = {
     previewFile, readPreviewCache, writePreviewCache, generateAI, generationGate, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt,   // buildParsePrompt exported for tests only
     // The employer-doc lane: the fingerprint /api/employer-docs/current labels staleness with, and the
-    // prompt + placeholder guard (exported for tests).
-    currentResumeFingerprint, buildEmployerDocPrompt, findPlaceholders, stripPlaceholders,
+    // prompt + placeholder guard + the sameness measure (exported for tests).
+    currentResumeFingerprint, buildEmployerDocPrompt, findPlaceholders, stripPlaceholders, tokenJaccard,
+    // The design every read of a stored employer document shows (/api/employer-docs/current and GET /:id use it too),
+    // and the brand it renders in (employerDocsRoutes attaches it on the paths that do not re-rank).
+    rerankStoredDesign, rerankStoredResumeDesign, docBrandOf, withSharedBrand, brandKeyOf,
 };

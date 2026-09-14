@@ -1429,6 +1429,110 @@ async function lookupBrandColor(companyName, websiteUrl) {
     return null;
 }
 
+// ── The employer's brand, as a letter renders it ─────────────────────────────────────────────────
+// A Home employer letter (employerLetterController) is written FOR one employer, and since 2026-09-15 it
+// LOOKS like it too: every letter design's accent is recoloured to the employer's own colour and, when
+// the employer's font is a Google font, set in that font (coverLetterRenderer / coverLetterTemplates
+// opts.brandColor + opts.brandFont, docxBuilder opts.brand). The brand comes from employerResearch
+// (brandExtract's deterministic read of the website first, the researcher's guess second) and is STORED
+// on the document as design.brand so every render of that letter — the Home cards, the picker's cards,
+// the PDF, the Word file — draws the same thing without asking the research again.
+// ⚠️ ONE ANSWER FOR ONE LETTER. The thumbnail must be the file they would download, so the cards and the
+// docId downloads read the brand through letterBrandOf and nothing else.
+const BRAND_HEX_RE = /^#[0-9a-f]{6}$/i;
+const brandHexOf = (v) => (typeof v === 'string' && BRAND_HEX_RE.test(v.trim()) ? v.trim().toLowerCase() : null);
+/** { family, google } from any font spelling: the Brand's { family, google }, or a bare family name (not google). */
+function brandFontOf(v) {
+    if (!v) return null;
+    if (typeof v === 'string') { const f = v.replace(/\s+/g, ' ').trim().slice(0, 80); return f ? { family: f, google: false } : null; }
+    if (typeof v !== 'object') return null;
+    const f = typeof v.family === 'string' ? v.family.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+    return f ? { family: f, google: v.google === true } : null;
+}
+/** A { accent, font } pair, or null when it says nothing — never an object with two nulls. */
+function brandPairOf(accent, font) {
+    const a = brandHexOf(accent);
+    const f = brandFontOf(font);
+    return a || f ? { accent: a, font: f } : null;
+}
+
+/**
+ * researchBrandOf(research) → { accent: '#hex'|null, font: { family, google }|null } | null
+ * The effective brand of a research result: employerResearch.brandOf when the module exports it (contract 2:
+ * brand.primary over the researcher's brandColor, brand.font over its fontName), else the same precedence
+ * computed here — so a research module from before the brand slice, or a cached row without `brand`, still
+ * yields the researcher's colour and font. Never throws; null when nothing is known.
+ */
+function researchBrandOf(research) {
+    if (!research || typeof research !== 'object') return null;
+    try {
+        const mod = require('../services/employerResearch');
+        if (typeof mod.brandOf === 'function') {
+            const b = mod.brandOf(research);
+            const pair = b && typeof b === 'object' ? brandPairOf(b.accent, b.font) : null;
+            if (pair) return pair;
+        }
+    } catch (e) { console.warn('[coverLetter] employerResearch.brandOf unavailable:', e.message); }
+    const b = research.brand && typeof research.brand === 'object' ? research.brand : null;
+    return brandPairOf(
+        (b && b.primary) || research.brandColor,
+        (b && b.font) || research.fontName,
+    );
+}
+
+/**
+ * letterBrandOf(doc) → the brand a saved letter renders with, or null.
+ * The stored design.brand first (what the build decided — designFit.normaliseDesign drops keys it does not
+ * know, so it is read off the RAW stored design, never a repaired copy); else the stored research, for a
+ * letter saved before brands were stored on the design; else the payload's own brandColor / fontName
+ * (the researcher's values the build copied there). Same precedence on every render of that letter.
+ */
+function letterBrandOf(doc) {
+    if (!doc || typeof doc !== 'object') return null;
+    let design = doc.design;
+    if (typeof design === 'string') { try { design = JSON.parse(design); } catch { design = null; } }
+    if (design && typeof design === 'object' && design.brand && typeof design.brand === 'object') {
+        const pair = brandPairOf(design.brand.accent, design.brand.font);
+        if (pair) return pair;
+    }
+    let research = doc.research;
+    if (typeof research === 'string') { try { research = JSON.parse(research); } catch { research = null; } }
+    const fromResearch = researchBrandOf(research);
+    if (fromResearch) return fromResearch;
+    const p = doc.payload && typeof doc.payload === 'object' ? doc.payload : {};
+    return brandPairOf(p.brandColor, p.fontName);
+}
+
+/**
+ * withSharedLetterBrand(doc) → the same doc, with the shared employer row's brand laid over its research
+ * when the letter has NO brand of its own (2026-09-15). A build whose website read missed its deadline
+ * stored design.brand = null over a research snapshot without a brand, and that letter stayed unbranded
+ * for good — even after patchBrand had written the employer's colour and font to employer_research_cache
+ * for everyone. When letterBrandOf answers null (no design.brand, nothing on the research, nothing in the
+ * payload) and the snapshot names its domain, employerResearch.cachedBrandFor reads the row — ONE
+ * read-only SELECT: never the researcher, never the website, never a write, so a render can bill nobody —
+ * and its brand becomes research.brand, exactly where researchBrandOf → brandOf reads a brand the build
+ * had. Every later letterBrandOf on this object (the cards' hash, the PDF, the Word file) sees it; the row
+ * is never written back. Only a letter WITH a research snapshot (the one with a domain of record). Never
+ * throws; any failure leaves the letter as it was. The resume lane's withSharedBrand is the same rule.
+ */
+async function withSharedLetterBrand(doc) {
+    try {
+        if (!doc || typeof doc !== 'object' || letterBrandOf(doc)) return doc;
+        let research = doc.research;
+        if (typeof research === 'string') { try { research = JSON.parse(research); } catch { research = null; } }
+        research = research && typeof research === 'object' && !Array.isArray(research) ? research : null;
+        const domain = research && typeof research.domain === 'string' ? research.domain.trim() : '';
+        if (!domain) return doc;
+        const mod = require('../services/employerResearch');
+        if (typeof mod.cachedBrandFor !== 'function') return doc;
+        const brand = await mod.cachedBrandFor(domain);
+        if (!brand || !researchBrandOf({ ...research, brand })) return doc;
+        doc.research = { ...research, brand };
+    } catch (e) { console.warn('[coverLetter] shared brand unreadable — the letter renders unbranded:', e.message); }
+    return doc;
+}
+
 // POST /api/cover-letter/preview-templates  — free previews; FORMATTING ONLY (no AI).
 // All regions render the same content in their visual template; Generic = branded original.
 async function previewCoverLetterTemplates(req, res) {
@@ -1512,7 +1616,8 @@ async function employerLetterDocFor(userId, req) {
     try {
         const doc = await require('../services/employerDocs').getById(userId, raw, req, { kind: 'cover_letter' });
         const html = doc && doc.payload && doc.payload.coverLetterHtml;
-        return typeof html === 'string' && html.trim() ? doc : LETTER_DOC_GONE;
+        // A brand-less letter meets the shared row's brand here (withSharedLetterBrand), before savedLetterInput reads it.
+        return typeof html === 'string' && html.trim() ? withSharedLetterBrand(doc) : LETTER_DOC_GONE;
     } catch (e) {
         console.warn('[coverLetter] saved letter lookup failed:', e.message);
         return LETTER_DOC_GONE;
@@ -1522,18 +1627,23 @@ async function employerLetterDocFor(userId, req) {
 /**
  * What to render from a saved letter. `mode` is the caller's when it sent one, else the design's
  * (the resume doc lane's rule), else the renderer's own default.
+ * brandColor / brandFont are the letter's brand (letterBrandOf — the stored design.brand, then the research,
+ * then the payload's own colour): the same pair the employer-cards thumbnails were rendered with, so the
+ * file matches the card. `brand` is the pair itself, for the Word builder.
  */
 function savedLetterInput(doc, body) {
     const p = doc.payload || {};
     const asked = body && typeof body.mode === 'string' ? body.mode.trim() : '';
     const designMode = doc.design && (doc.design.mode === 'a4' || doc.design.mode === 'onepage') ? doc.design.mode : '';
-    const hex = typeof p.brandColor === 'string' && /^#[0-9a-f]{6}$/i.test(p.brandColor.trim()) ? p.brandColor.trim() : null;
+    const brand = letterBrandOf(doc);
     return {
         mode: asked || designMode || undefined,
         coverLetterHtml: p.coverLetterHtml,
         companyName: p.companyName || doc.employer_name || '',
         companyAddress: p.companyAddress || '',
-        brandColor: hex,
+        brandColor: (brand && brand.accent) || null,
+        brandFont: (brand && brand.font) || null,
+        brand,
         websiteUrl: undefined,
     };
 }
@@ -1549,7 +1659,7 @@ async function generateCoverLetterTemplatePdf(req, res) {
     const doc = await employerLetterDocFor(userId, req);
     if (doc === LETTER_DOC_GONE) return res.status(410).json(LETTER_GONE_BODY);
     const { template } = req.body || {};
-    const { mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = doc ? savedLetterInput(doc, req.body) : (req.body || {});
+    const { mode, coverLetterHtml, companyName, companyAddress, brandColor, brandFont, websiteUrl } = doc ? savedLetterInput(doc, req.body) : (req.body || {});
     // The employer a PASS attaches to is not necessarily the name printed on the letter. The
     // resume screen knows the company as the Home target's `target.company`; this screen knows it
     // as the AI's `employer_name` (or the recipient's website when the AI found no name at all).
@@ -1575,12 +1685,17 @@ async function generateCoverLetterTemplatePdf(req, res) {
             // Exact original branded letter — produced by the original PDFKit generator.
             const user  = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
             const brand = brandColor || await lookupBrandColor(companyName, websiteUrl);
-            const result = await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, null);
+            // A saved letter's Google font is set by the PDFKit generator too (resolveFontPaths downloads it, and
+            // falls back to Lato on its own); a font that is not on Google Fonts stays null, as before.
+            const richFont = doc && brandFont && brandFont.google ? brandFont.family : null;
+            const result = await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont);
             fileName = result.fileName;
         } else {
             const sender = await buildCLSender(userId);
             const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
-            const pdf = await clRenderer.renderPdf(tplId, data, { mode });
+            // Doc mode renders the saved letter in its employer's brand (the same opts the cards used); the
+            // classic lane's body carries no brand and renders exactly as it always has.
+            const pdf = await clRenderer.renderPdf(tplId, data, doc ? { mode, brandColor, brandFont } : { mode });
             const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
             fileName = `Cover_Letter_${safeCo}_${Date.now()}.pdf`;
             const tempDir = path.join(__dirname, '../../temp');
@@ -1611,7 +1726,7 @@ async function generateCoverLetterTemplateDocx(req, res) {
     const doc = await employerLetterDocFor(userId, req);
     if (doc === LETTER_DOC_GONE) return res.status(410).json(LETTER_GONE_BODY);
     const { template } = req.body || {};
-    const { mode, coverLetterHtml, companyName, companyAddress } = doc ? savedLetterInput(doc, req.body) : (req.body || {});
+    const { mode, coverLetterHtml, companyName, companyAddress, brand } = doc ? savedLetterInput(doc, req.body) : (req.body || {});
     // The employer a PASS attaches to is not necessarily the name printed on the letter. The
     // resume screen knows the company as the Home target's `target.company`; this screen knows it
     // as the AI's `employer_name` (or the recipient's website when the AI found no name at all).
@@ -1634,7 +1749,9 @@ async function generateCoverLetterTemplateDocx(req, res) {
         const photo = await loadCLPhotoDataUri(userId).catch(() => null);
 
         const { buildCoverLetterDocx } = require('../utils/docxBuilder');
-        const docxBuffer = await buildCoverLetterDocx(data, { template: tplId, photo });
+        // Doc mode: the employer's brand ({ accent, font }) for the layout accent and the document font —
+        // the same pair the PDF and the cards render with. The classic lane sends none, as before.
+        const docxBuffer = await buildCoverLetterDocx(data, doc && brand ? { template: tplId, photo, brand } : { template: tplId, photo });
 
         const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
         const fileName = `Cover_Letter_${safeCo}_${Date.now()}.docx`;
@@ -1720,6 +1837,13 @@ module.exports = {
     buildCLSender,
     loadCLPhotoDataUri,
     lookupBrandColor,
+    // The one reading of an employer letter's brand (see letterBrandOf): the build stores what
+    // researchBrandOf says on design.brand, and every render of that letter reads it back through
+    // letterBrandOf — cards and downloads cannot disagree.
+    researchBrandOf,
+    letterBrandOf,
+    // The row's brand for a letter that has none (read-only) — employerLetterController's cards load through it too.
+    withSharedLetterBrand,
     // The shared per-(user, kind) usage lock, for a lane that has none of its own (aiHubController's Job Hub
     // letter) — so it serialises against every other lane's key instead of inventing a second spelling.
     withUsageLock,

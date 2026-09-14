@@ -436,6 +436,59 @@ async function canConsumeMany(userId, kind, count, req) {
   return { allowed: false, via: null, reason: 'quota_exhausted', message, ...(blocked ? { blocked } : {}) };
 }
 
+// ── the confirm sheet's numbers (display — NEVER a gate) ──────────────────────────────────────
+/**
+ * What is left of ONE kind in the pool that would pay for it — the line Home's confirm sheet shows BEFORE
+ * anything is spent ("You have 2 of 3 free resume generations left", "12 of 15 left this month on Plus").
+ *   → { kind, pool: 'free'|'plan'|null, planLabel, remaining, allowance, used, oneTime }   (null for an unknown kind)
+ *   planLabel names a PAID plan ("Plus") and is null on the Free tier — the sheet says "free", never "on Free plan".
+ *
+ * ⚠️ THE SAME NUMBERS canConsumeMany ENFORCES, CLAUSE FOR CLAUSE. A sheet that says "1 left" while the gate
+ * refuses (or "0 left" while it would allow) is the app quoting one allowance and billing another. So:
+ *   • the plan is the ENVIRONMENT-SCOPED activeSubscription — a Sandbox plan is not a production pool;
+ *   • a plan counts 'plan' rows since period_start, against plan[field] + quota_grants in that window
+ *     (allowanceIn), and a subscriber is NEVER shown the free allowance — their usage is the plan's.
+ *     A plan key the catalogue does not know pays for nothing there, so it shows allowance 0 here;
+ *   • no plan → the Free row through ensureTrial, the SAME lazy first-use bookkeeping canConsumeMany (and
+ *     every status read) already does, counted from freeWindowStart with source 'trial' — one-time, so
+ *     `oneTime` is true and nothing here may ever read as "this month";
+ *   • a device whose one free allowance another account holds ('device_trial_used'), or a Free row that could
+ *     not be written ('trial_unavailable') → pool null, remaining 0, and `blocked` says which. Not "0 of 3
+ *     left": that account never had the 3 (see canConsumeMany's device message). oneTime stays true — it is
+ *     still the Free tier, and waiting refills nothing, so the sheet must not suggest it will.
+ * `remaining` clamps at 0: usage over a cut allowance (see PLANS) is not a negative balance.
+ * ⚠️ If canConsumeMany's lanes change, this must change with it.
+ * ⚠️ DISPLAY ONLY. Nothing may decide covered / via / a charge from this — the gates and the builds ask
+ * canConsumeMany themselves, at the moment they need the answer. A read that fails THROWS, like every
+ * entitlement read: the caller shows no count, never a guessed one.
+ */
+async function usageFor(userId, kind, req) {
+  const field = KIND_QUOTA_FIELD[kind];
+  if (!field) return null;
+  const deviceId = req ? deviceIdOf(req) : null;
+  const sub = await activeSubscription(userId, requestEnvironment(req || {}));
+  if (sub) {
+    const plan = planByKey(sub.plan_key);
+    const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
+    if (!plan) {
+      return { kind, pool: 'plan', planLabel: sub.plan_key || null, remaining: 0, allowance: 0, used, oneTime: false };
+    }
+    const allowance = await allowanceIn(userId, kind, plan[field], sub.period_start);
+    return { kind, pool: 'plan', planLabel: plan.label, remaining: Math.max(0, allowance - used), allowance, used, oneTime: false };
+  }
+  const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
+  if (!trial || trial.blocked) {
+    return {
+      kind, pool: null, planLabel: null, remaining: 0, allowance: 0, used: 0, oneTime: true,
+      blocked: (trial && trial.blocked) || 'trial_unavailable',
+    };
+  }
+  const winStart = freeWindowStart(trial.started_at);
+  const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
+  const allowance = await allowanceIn(userId, kind, FREE[field], winStart);
+  return { kind, pool: 'free', planLabel: null, remaining: Math.max(0, allowance - used), allowance, used, oneTime: true };
+}
+
 // ── the deduction — call ONLY after the work succeeded ────────────────────────────────────────
 // Picks the pool in the same priority order as the gate (plan → free) and writes the ledger row, with
 // details for the Usage screen. Never throws, and never touches a credit balance.
@@ -735,6 +788,8 @@ async function storeSubscriptionFor(userId, environment = PRODUCTION) {
 module.exports = {
   PLANS, TRIAL, FREE, FREE_CUTOVER,
   reportDevice, ensureTrial, getStatus, canConsumeMany, consumeOnSuccess, getUsage,
+  // The confirm sheet's "N of M left" — the gate's numbers, for display only (see usageFor).
+  usageFor,
   adminSetSubscription, storeSetSubscription, storeSubscriptionFor, deviceIdOf, ipHashOf,
   // exported for the lifecycle nudges (which must know what a user has LEFT before offering more)
   activeSubscription, usedSince, bonusSince, allowanceIn, planByKey, KIND_QUOTA_FIELD,

@@ -5,7 +5,8 @@
 // The user's words: adding an employer must NOT walk them off to the Jobs page — the card lands at
 // the start of the row and the document starts building behind a loader. Three calls make that:
 //   trackEmployer    → save the employer. FREE, and it never starts a job search.
-//   checkBuildGate   → would a build be covered? A DRY RUN on the server; nothing is consumed.
+//   checkBuildGate   → would a build be covered, by what, and how much is left? A DRY RUN on the
+//                      server; nothing is consumed, reserved or bound.
 //   buildForEmployer → the async generate lane, polled, with real stage ticks for the overlay.
 //
 // Both kinds land in the per-employer DOC store (user_employer_documents), never in user_resumes:
@@ -14,12 +15,21 @@
 // version when the user switches chips.
 //
 // ⚠️ THE STANDING RULE THIS FILE EXISTS TO KEEP: never regenerate and charge silently. An explicit
-// Add is intent to build, so the caller may auto-start ONLY when checkBuildGate says covered (plan,
-// free allowance, a download pass, or a cached build). Anything else — legacy credits, exhausted
-// quota, or a gate we could not read at all — is "ask first". That is why a failed gate is
-// `reason:'unknown'` and never something that looks like covered. And an auto-started build is sent
-// with coveredOnly, so even a gate that went stale between the check and the build cannot fall
-// through to credits on the server.
+// Add, Tailor, Write or Refresh is intent to build, but it is not yet consent to SPEND (the product
+// owner, 2026-09-14): the caller may start a build on its own ONLY on a cached build, which is free.
+// Covered by the plan, the free allowance or a download pass is SHOWN first — Home's confirm sheet
+// reads `usage` and `pass` off the gate ("2 of 3 free resume generations left") — and nothing starts
+// until the user taps Continue there. Anything else — legacy credits, exhausted quota, or a gate we
+// could not read at all — is "ask first". That is why a failed gate is `reason:'unknown'` and never
+// something that looks like covered. And a confirmed build is sent with coveredOnly, so even a gate
+// that went stale between the check and the build cannot fall through to credits on the server.
+//
+// ⚠️ coveredOnly ALONE NEVER SAID *WHO* PAYS (contract C2). "Plan, free allowance, pass or cache" was one
+// permission, so a Continue the user gave to "1 of 3 free left" also let the server spend a one-time pass
+// they had bought for another employer. Every confirmed build now also sends `expectVia` — the payer named
+// on the sheet they answered — and the server refuses with 409 (payer_changed, or cache_miss for a promised
+// cache that is not there) BEFORE binding or charging anything. Both come back as their own BuildResult
+// reasons: nothing was spent, so the caller asks again with what is true now instead of showing a failure.
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE } from '../config';
@@ -32,11 +42,52 @@ export type TrackedEmployer = {
   logoColor: [string, string]; logoInitial: string;
 };
 
+/**
+ * The allowance a build would use, as the gate counted it (contract 3) — what Home's confirm sheet says:
+ * "You have 2 of 3 free resume generations left", "12 of 15 left this month on Plus". `remaining` is
+ * BEFORE this build. `pool` names the allowance the count is about — 'free' is one time for the life of
+ * the account (`oneTime`), 'plan' is this billing month's — and is null when the server named none.
+ * ⚠️ DISPLAY ONLY. Nothing here decides whether a build is covered or what pays: `covered` and `via` do,
+ * and the server asks again at the moment of payment under coveredOnly.
+ */
+export type GateUsage = {
+  kind: DocKind;
+  pool: 'free' | 'plan' | null;
+  planLabel: string | null;
+  remaining: number;
+  allowance: number;
+  used: number;
+  oneTime: boolean;
+};
+
+/**
+ * The one-time download pass as the gate saw it — read-only on the server; a dry run never binds one.
+ * `available` = a pass that could pay for this build; `forThisEmployer` = one already belongs to this
+ * employer. ⚠️ DISPLAY ONLY, like GateUsage: via 'pass' is what says a pass pays.
+ */
+export type GatePass = { available: boolean; forThisEmployer: boolean };
+
+/**
+ * `usage` and `pass` ride on any answer the server sent them with, and are ABSENT — never guessed — when
+ * it did not: an older server, a cache hit (which needs no sheet), or a gate we could not read at all.
+ */
 export type BuildGate =
-  | { covered: true; via: 'plan' | 'free' | 'pass' | 'cache' }
-  | { covered: false; via: 'credits'; credits: number }
-  | { covered: false; via: null; reason: 'quota_exhausted' | 'regen_limit' }
-  | { covered: false; via: null; reason: 'unknown' };
+  | { covered: true; via: 'plan' | 'free' | 'pass' | 'cache'; usage?: GateUsage; pass?: GatePass }
+  | { covered: false; via: 'credits'; credits: number; usage?: GateUsage; pass?: GatePass }
+  | { covered: false; via: null; reason: 'quota_exhausted' | 'regen_limit'; usage?: GateUsage; pass?: GatePass }
+  | { covered: false; via: null; reason: 'unknown'; usage?: GateUsage; pass?: GatePass };
+
+/**
+ * The payer the user confirmed on the sheet, sent with the build (contract C2). ⚠️ IT IS A LIMIT, NOT A
+ * CHOICE: the server still decides what pays, and refuses (409) when that is not this — it can never make
+ * the server spend something it would not have. 'cache' means "the gate promised this document is already
+ * built, and free"; a miss is refused rather than quietly turned into a paid build.
+ */
+export type ExpectVia = 'plan' | 'free' | 'pass' | 'cache';
+
+/** Only the four real payers; anything else is "no expectation" (the older, coveredOnly-only behaviour). */
+const expectViaOf = (v: any): ExpectVia | undefined =>
+  (v === 'plan' || v === 'free' || v === 'pass' || v === 'cache' ? v : undefined);
 
 /** The posting fields the gate fingerprints — the same ones generate-ai receives. */
 export type GateJob = { title?: string; url?: string; description?: string; website?: string };
@@ -59,11 +110,19 @@ export type BuildStage = { stage: string; label: string; pct: number };
 /**
  * 'pending' = our polling deadline passed while the job may still finish (and charge). It is NOT a
  * failure and must never be offered as a rebuild — the document it paid for can still land.
+ * 'payer_changed' / 'cache_miss' = the server refused this build's `expectVia` BEFORE binding or charging
+ * anything (contract C2): what would really pay is not what the user confirmed, or the cache the gate
+ * promised is not there. ⚠️ NEITHER IS A FAILURE AND NEITHER MAY BE RESENT AS IT WAS — nothing was spent,
+ * reserved or stored, and the honest answer is to read the gate again and ask about what is true now.
  * `docId` = the user_employer_documents row the build produced (or found, on a cache hit); null only
  * from a legacy lane that answered with resumeData and no doc.
  */
 export type BuildResult = { ok: true; cached: boolean; docId: number | null }
-  | { ok: false; reason: 'quota_exhausted' | 'regen_limit' | 'no_resume' | 'network' | 'failed' | 'pending'; message: string };
+  | {
+    ok: false;
+    reason: 'quota_exhausted' | 'regen_limit' | 'no_resume' | 'network' | 'failed' | 'pending' | 'payer_changed' | 'cache_miss';
+    message: string;
+  };
 
 /** What a running (or remembered) build is for — enough for Home to find its chip, nothing more. */
 export type InflightMeta = { key: string; kind: DocKind; company: string; employerId: string | null; jobUrl: string; startedAt: number };
@@ -144,6 +203,24 @@ async function token(): Promise<string | undefined> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * x-store-env for every request here — the gate, both build lanes and the polls (contract C3).
+ *
+ * ⚠️ WITHOUT IT A TESTFLIGHT PASS CAN NEVER START THE BUILD IT WAS BOUGHT FOR. TestFlight StoreKit is
+ * always Sandbox, so a pass bought from Home's sheet is written in Sandbox — and a gate or a build that
+ * names no environment is read as Production, where that pass does not exist. The user pays and the sheet
+ * goes on saying nothing is left.
+ * ⚠️ Read lazily and guarded, the way the device header is read elsewhere: a header must never be the
+ * reason a request does not go out, and a build that could not ask is Production — the server's own
+ * default. (storeEnv also patches global fetch, but that reads a value which may still be loading;
+ * storeEnvHeader awaits it, so the first request after a cold start carries the right environment too.)
+ * Like the device, it is the PHONE's and not the session's, so it is never part of a flight's ctx.
+ */
+async function storeEnvHeaders(): Promise<Record<string, string>> {
+  try { return await (require('./storeEnv') as typeof import('./storeEnv')).storeEnvHeader(); }
+  catch { return {}; }
+}
+
+/**
  * One request. `null` means we never got an answer (no token, dropped connection, timeout) — which
  * callers must keep distinct from any answer the server actually gave.
  * ⚠️ API_BASE is read HERE, per call: it is a live binding the admin environment switch reassigns.
@@ -163,8 +240,8 @@ async function call(path: string, init: { method?: 'GET' | 'POST'; body?: any; m
       // just-created account had no device for the server's one-free-allowance-per-device check (see
       // deviceHeaders). The device is not part of ctx — it is the phone's, not the session's.
       headers: init.body !== undefined
-        ? { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json', ...(await deviceHeaders()) }
-        : { Authorization: `Bearer ${t}`, ...(await deviceHeaders()) },
+        ? { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json', ...(await deviceHeaders()), ...(await storeEnvHeaders()) }
+        : { Authorization: `Bearer ${t}`, ...(await deviceHeaders()), ...(await storeEnvHeaders()) },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal: ctl.signal,
     });
@@ -259,10 +336,54 @@ function extraFields(x: { employerId?: string | null; country?: string | null })
 export const gateJobFor = (i: { website?: string; jobUrl?: string; postingUrl?: string; jobText?: string; jobTitle?: string }): GateJob =>
   jobFields({ title: i.jobTitle, url: i.postingUrl || i.jobUrl, description: i.jobText, website: i.website });
 
+/** A whole, non-negative count exactly as the server sent it — or null. Never coerced from a string. */
+const countOf = (v: any): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null);
+
+/**
+ * The gate's `usage`, or undefined. ⚠️ All three counts must be real counts and the kind must be THIS
+ * build's (a count of cover letters is not a count of resume generations); anything else is dropped
+ * whole rather than half-shown.
+ */
+function usageOf(v: any, kind: DocKind): GateUsage | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const remaining = countOf(v.remaining);
+  const allowance = countOf(v.allowance);
+  const used = countOf(v.used);
+  if (remaining === null || allowance === null || used === null) return undefined;
+  if (v.kind != null && v.kind !== kind) return undefined;
+  const label = typeof v.planLabel === 'string' ? v.planLabel.trim() : '';
+  return {
+    kind,
+    pool: v.pool === 'free' || v.pool === 'plan' ? v.pool : null,
+    planLabel: label ? label.slice(0, 40) : null,
+    remaining, allowance, used,
+    oneTime: v.oneTime === true,
+  };
+}
+
+/** The gate's `pass`, or undefined: both flags must be real booleans. */
+function passOf(v: any): GatePass | undefined {
+  if (!v || typeof v !== 'object' || typeof v.available !== 'boolean' || typeof v.forThisEmployer !== 'boolean') return undefined;
+  return { available: v.available, forThisEmployer: v.forThisEmployer };
+}
+
+/** Only the extras that parsed — an absent key, never `usage: undefined`. */
+function gateExtras(j: any, kind: DocKind): { usage?: GateUsage; pass?: GatePass } {
+  const out: { usage?: GateUsage; pass?: GatePass } = {};
+  const usage = usageOf(j && j.usage, kind);
+  if (usage) out.usage = usage;
+  const pass = passOf(j && j.pass);
+  if (pass) out.pass = pass;
+  return out;
+}
+
 /**
  * ⚠️ Mapped STRICTLY. Anything that is not exactly one of the contract's shapes — a 500, a timeout,
  * `covered:true` with via 'credits', credits missing — is `unknown`, which the caller treats as
  * "ask first". A loose mapping here is precisely how a silent charge would get back in.
+ * `usage` / `pass` are mapped just as strictly but ON THEIR OWN: a malformed one is dropped (the sheet
+ * then says less), never repaired into numbers the server did not send, and never able to change the
+ * answer they ride on.
  * The resume gate is asked about the DOC lane (saveTo:'employer_doc') — the lane buildForEmployer
  * really uses, whose fingerprint differs from the builder's; the letter gate has its own endpoint.
  */
@@ -285,14 +406,15 @@ export async function checkBuildGate(
     });
   if (!r || !r.ok) return unread;
   const j = r.json;
+  const extras = gateExtras(j, kind);
   if (j.covered === true && (j.via === 'plan' || j.via === 'free' || j.via === 'pass' || j.via === 'cache')) {
-    return { covered: true, via: j.via };
+    return { covered: true, via: j.via, ...extras };
   }
   if (j.covered === false && j.via === 'credits' && typeof j.credits === 'number' && isFinite(j.credits) && j.credits >= 0) {
-    return { covered: false, via: 'credits', credits: j.credits };
+    return { covered: false, via: 'credits', credits: j.credits, ...extras };
   }
   if (j.covered === false && j.via == null && (j.reason === 'quota_exhausted' || j.reason === 'regen_limit')) {
-    return { covered: false, via: null, reason: j.reason };
+    return { covered: false, via: null, reason: j.reason, ...extras };
   }
   return unread;
 }
@@ -335,6 +457,12 @@ type Inflight = {
   /** Enough to send the SAME build again. ⚠️ No resume text or contact details: those are refetched. */
   target: BuildTarget;
   coveredOnly: boolean;
+  /**
+   * The payer the user confirmed for THIS build (contract C2). ⚠️ Kept with the record because a resend of a
+   * lost POST must go out under the consent given then and nothing wider — absent on records written before
+   * expectVia existed, which resend as they always did (coveredOnly alone).
+   */
+  expectVia?: ExpectVia;
 };
 /** `gone` = nothing to show the recovering screen; `joiner` is what a same-target tap is told instead. */
 type Outcome = BuildResult | { gone: true; joiner?: BuildResult };
@@ -454,6 +582,7 @@ function parseRecord(j: any): Inflight | null {
     country: str(t.country),
   };
   const jobKey = typeof j.jobKey === 'string' ? j.jobKey : jobKeyOf(target);
+  const expectVia = expectViaOf(j.expectVia);
   return {
     key: str(j.key) || kind + '|' + companyKey(j.company) + '|' + jobKey,
     kind, clientBuildId: j.clientBuildId, company: j.company,
@@ -462,6 +591,8 @@ function parseRecord(j: any): Inflight | null {
     startedAt: j.startedAt, jobId: j.jobId, target,
     // ⚠️ Anything but an explicit false is "covered only": a mangled entry must never widen consent.
     coveredOnly: j.coveredOnly !== false,
+    // A mangled payer is dropped, never guessed: no expectation is the narrower, older behaviour.
+    ...(expectVia ? { expectVia } : {}),
   };
 }
 
@@ -659,8 +790,11 @@ export function activeBuildCount(): number {
   return n;
 }
 
-const FAIL_REASONS = ['quota_exhausted', 'regen_limit', 'no_resume'] as const;
-const failReason = (r: any): 'quota_exhausted' | 'regen_limit' | 'no_resume' | 'failed' =>
+// ⚠️ 'payer_changed' and 'cache_miss' are here too because the async lane answers through a FAILED JOB: the
+// handler's 409 is stored as the job's reason, so a refusal that spent nothing must be readable from both
+// the POST's own status and the job that carried it.
+const FAIL_REASONS = ['quota_exhausted', 'regen_limit', 'no_resume', 'payer_changed', 'cache_miss'] as const;
+const failReason = (r: any): 'quota_exhausted' | 'regen_limit' | 'no_resume' | 'payer_changed' | 'cache_miss' | 'failed' =>
   (FAIL_REASONS as readonly string[]).includes(r) ? r : 'failed';
 
 /**
@@ -742,8 +876,9 @@ async function pollJob(
  * COVER LETTER — no client-side resume text at all: the server writes from the base resume and that
  * employer's tailored resume doc, and says 'no_resume' itself when there is none.
  */
-async function prepareBuild(i: BuildTarget, kind: DocKind, clientBuildId: string, coveredOnly: boolean, ctx: Session):
-  Promise<{ body: Record<string, any> } | { fail: BuildResult }> {
+async function prepareBuild(
+  i: BuildTarget, kind: DocKind, clientBuildId: string, coveredOnly: boolean, ctx: Session, expectVia?: ExpectVia,
+): Promise<{ body: Record<string, any> } | { fail: BuildResult }> {
   const ex = extraFields(i);
   // ⚠️ docJobUrl is the doc's IDENTITY ('' = the employer's own doc); job.url (via gateJobFor) is the
   // posting text to scrape and fingerprint, which may be a pasted link on an employer-level doc. Sent
@@ -757,6 +892,8 @@ async function prepareBuild(i: BuildTarget, kind: DocKind, clientBuildId: string
         clientBuildId,
         // ⚠️ true = the server must refuse (402) rather than fall through to legacy credits.
         coveredOnly,
+        // ⚠️ WHO THE USER AGREED WOULD PAY (C2). Absent = no expectation, and the server behaves as before.
+        ...(expectVia ? { expectVia } : {}),
         employer: i.company,
         ...ex,
         docJobUrl,
@@ -789,6 +926,8 @@ async function prepareBuild(i: BuildTarget, kind: DocKind, clientBuildId: string
       clientBuildId,
       // ⚠️ true = the server must refuse (402) rather than fall through to legacy credits.
       coveredOnly,
+      // ⚠️ WHO THE USER AGREED WOULD PAY (C2). Absent = no expectation, and the server behaves as before.
+      ...(expectVia ? { expectVia } : {}),
       // ⚠️ The DOC lane: the result is stored per employer and NEVER written over the user's resume row.
       // The gate is asked with the same saveTo, so its 'cache' answer fingerprints this exact build.
       saveTo: 'employer_doc',
@@ -824,6 +963,20 @@ async function sendBuild(kind: DocKind, body: Record<string, any>, ctx: Session)
       },
     };
   }
+  // ⚠️ 409 = REFUSED BEFORE ANYTHING WAS BOUND, CHARGED OR STORED (contract C2): the payer the server would
+  // really use is not the one the user confirmed (payer_changed), or the cache the gate promised is not there
+  // (cache_miss). Reported as itself so the caller asks again — never as a failure whose Try again would
+  // resend the same, now wrong, expectation.
+  if (r.status === 409 && (s.reason === 'payer_changed' || s.reason === 'cache_miss')) {
+    return {
+      result: {
+        ok: false, reason: s.reason,
+        message: s.error || (s.reason === 'cache_miss'
+          ? `Your saved ${noun} is not there any more, so nothing was started.`
+          : `What pays for this ${noun} changed, so nothing was started.`),
+      },
+    };
+  }
   if (!r.ok) return { result: { ok: false, reason: failReason(s.reason), message: s.error || `We could not start ${verbOf(kind)} your ${noun}.` } };
   // ⚠️ asJob runs SYNCHRONOUSLY when it cannot create a job row, and then this IS the finished
   // document rather than a job id. Handle both or that fallback looks like a failure.
@@ -833,7 +986,7 @@ async function sendBuild(kind: DocKind, body: Record<string, any>, ctx: Session)
   return { result: { ok: false, reason: 'failed', message: `We could not start ${verbOf(kind)} your ${noun}.` } };
 }
 
-async function runBuild(i: BuildTarget, f: Flight, coveredOnly: boolean): Promise<Outcome> {
+async function runBuild(i: BuildTarget, f: Flight, coveredOnly: boolean, expectVia?: ExpectVia): Promise<Outcome> {
   const emit = (s: BuildStage) => emitTo(f, s);
   const kind = f.kind;
   // ⚠️ Whose build this is, fixed ONCE (see Flight.ctx): every request below uses this token, and every
@@ -890,12 +1043,13 @@ async function runBuild(i: BuildTarget, f: Flight, coveredOnly: boolean): Promis
   if (mine + others > MAX_PARALLEL_BUILDS) return TOO_MANY;
 
   emit({ stage: 'reading', label: 'Reading your resume', pct: 3 });
-  const prep = await prepareBuild(i, kind, clientBuildId, coveredOnly, ctx);
+  const prep = await prepareBuild(i, kind, clientBuildId, coveredOnly, ctx, expectVia);
   if ('fail' in prep) return prep.fail;
 
   const entry: Inflight = {
     key: f.key, kind, clientBuildId, company: i.company, employerId: f.employerId, jobKey: f.jobKey,
     jobUrl: f.jobUrl, startedAt, jobId: null, target: i, coveredOnly,
+    ...(expectVia ? { expectVia } : {}),
   };
   // ⚠️ Written BEFORE the POST: if the app dies mid-request, this is the only record that a paid
   // build may exist, and the only way a later attempt reuses its id. Refused on an account switch,
@@ -934,7 +1088,8 @@ async function runBuild(i: BuildTarget, f: Flight, coveredOnly: boolean): Promis
  * chip's retry — a build the user was told had failed, or whose chip they removed, stays unsent.
  */
 async function recoverLost(saved: Inflight, f: Flight, ctx: Session): Promise<Outcome> {
-  const prep = await prepareBuild(saved.target, saved.kind, saved.clientBuildId, saved.coveredOnly, ctx);
+  // ⚠️ The SAME expectation the user agreed to when it was first sent — a resend may never widen it.
+  const prep = await prepareBuild(saved.target, saved.kind, saved.clientBuildId, saved.coveredOnly, ctx, saved.expectVia);
   if ('fail' in prep) return { gone: true, joiner: prep.fail };
   if (!(await stillSignedIn(ctx))) return { gone: true, joiner: SWITCHED(saved.kind) };
   const sent = await sendBuild(saved.kind, prep.body, ctx);
@@ -952,10 +1107,13 @@ async function recoverLost(saved: Inflight, f: Flight, ctx: Session): Promise<Ou
  * Build the resume or cover letter for one employer, or one posting at it.
  * `coveredOnly` (default true): the server may spend only plan, free allowance, pass or cache, and
  * refuses with 'quota_exhausted' otherwise. Pass false ONLY when the user chose to build although the plan could not be read (no credit dialog exists any more).
+ * `expectVia` (contract C2): WHICH of those the user confirmed. The server refuses with 409 —
+ * 'payer_changed', or 'cache_miss' for a promised cache that is not there — before binding or charging
+ * anything, so a Continue given to the free allowance can never spend a one-time pass instead.
  * `kind` (default 'resume').
  */
 export async function buildForEmployer(
-  i: BuildTarget & { coveredOnly?: boolean; kind?: DocKind },
+  i: BuildTarget & { coveredOnly?: boolean; kind?: DocKind; expectVia?: ExpectVia },
   onStage: (s: BuildStage) => void,
 ): Promise<BuildResult> {
   const kind: DocKind = i.kind === 'cover_letter' ? 'cover_letter' : 'resume';
@@ -987,7 +1145,7 @@ export async function buildForEmployer(
     jobKey: jobKeyOf(target), startedAt: Date.now(),
   }, onStage);
   flights.set(key, f);
-  f.promise = runBuild(target, f, i.coveredOnly !== false)
+  f.promise = runBuild(target, f, i.coveredOnly !== false, expectViaOf(i.expectVia))
     .catch((): Outcome => ({ ok: false, reason: 'failed', message: `We could not finish ${verbOf(kind)} your ${nounOf(kind)}. Please try again.` }))
     .finally(() => { if (flights.get(key) === f) flights.delete(key); });
   return asResult(await f.promise);

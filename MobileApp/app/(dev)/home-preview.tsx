@@ -22,19 +22,37 @@
 // start a build: this harness has no account, and a build needs one.
 //
 // ⚠️ A LETTER PAGE HAS BOTH DOORS NOW, AND A LIBRARY CARD OPENS A PAGE (2026-09-13). A zoomed cover letter
-// offers Customize and View PDF like a resume, and a card under "Downloaded" opens the same zoom instead of
+// offers Customize and View PDF like a resume, and a card under "Your library" opens the same zoom instead of
 // downloading — so the library fixtures cover every way a card resolves (EmployerHome.openHistoryItem):
 //   • a saved document whose page the deck on screen already has — the Airbus "Executive Professional"
-//     row (the Airbus chip leads, and that design tops its ranking, so the deck's first wave renders it);
-//   • a saved document whose page is not in hand, filled from `docCards` — the Azure Airbus rows, and
-//     Eneco's, whose document is not the one on screen at all;
-//   • nothing saved — the Siemens and Zalando resume rows open the base resume in that design. Siemens'
-//     Bold Banner is one of the five base pages the `cards` fixture has; Zalando's design is not, and since
-//     the harness never renders a page, it opens on a blank sheet (the app fetches that one page);
-//   • a letter with a saved letter — both Airbus letter rows (one locked: looking is free, the padlock is
+//     card (the Airbus chip leads, and that design tops its ranking, so the deck's first wave renders it);
+//   • a saved document whose page is not in hand, filled from `docCards` — Eneco's locked card, whose
+//     document is not the one on screen at all, and the Azure Airbus card behind "See all";
+//   • nothing saved — the ASML resume card opens the base resume in that design (Bold Banner is one of
+//     the five base pages the `cards` fixture has);
+//   • a letter with a saved letter — the Airbus letter cards (one locked: looking is free, the padlock is
 //     about downloading), and the Airbus chip's own letter deck in Letter mode;
-//   • a letter with NOTHING to preview — the Siemens letter row falls back to getting the file, which
+//   • a letter with NOTHING to preview — the Siemens letter card falls back to getting the file, which
 //     signed out is a "Preview only" alert, as are the letter's Customize and View PDF.
+//
+// ⚠️ THE LIBRARY IS A SHELF OF PAPER CARDS, TWO TO A LINE (2026-09-15), and its picture comes per card from
+// EmployerHome.imageFor — the employer's own page when it is in hand, the base page in that design for a
+// resume, nothing for a letter (the drawn letter page). So the resume-mode fixture is FIVE MIXED CARDS: four
+// resumes (one locked, one downloaded twice, three employers so three ribbon colours) plus ONE COVER LETTER
+// card, so both kinds of paper — a rendered page and the drawn letter — sit side by side in one grid and can
+// be judged together, and "See all 5" is on screen behind the four the collapsed shelf shows. The server
+// never mixes kinds in one list; the harness does, on purpose, and the card decides by its own `kind`.
+//
+// ⚠️ THE TAILOR HINT AND THE CONFIRM SHEET (2026-09-14). ?hint=1 leads the chip row with iwell B.V., which has
+// nothing saved in either kind, so the first paint is the base resume with the "Scroll down to tailor…" pill
+// over it (and, in Letter mode, "…write your cover letter…"). The `confirm` loader answers what the sheet
+// would say for a chip, so Tailor / Write / Refresh OPEN it in every state worth looking at:
+//   resume — iwell: NONE LEFT on the free allowance (the $0.99 once + See plans sheet) · Airbus Team Lead:
+//            12 of 15 left this month on Plus · Eneco's Refresh: 2 of 3 free left;
+//   letter — iwell: covered by the one-time pass for iwell · Airbus Team Lead: 2 of 3 free left ·
+//            Eneco: none left this month on Plus.
+// Every button on that sheet is a close or a "Preview only" alert: nothing here builds or buys.
+// ?empty=1 empties the library, so the "Nothing downloaded yet" card can be checked at any width/text size.
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -44,6 +62,7 @@ import { E } from '../../components/employer-home/theme';
 import { LETTER_DESIGNS } from '../../services/employerHomeService';
 import type { Target, HomeCard, DownloadHistoryItem } from '../../services/employerHomeService';
 import type { DocKind } from '../../services/homeAddEmployer';
+import type { useHomeBuilds } from '../../components/employer-home/useHomeBuilds';
 import type { DocMeta, DocLookup, DocCard, DocListItem } from '../../services/employerDocs';
 
 // ── Paper, drawn six ways, so the deck reads as genuinely different LAYOUTS and not one design
@@ -229,6 +248,9 @@ const DOCS: DocMeta[] = [
     createdAt: FIXTURE_AT, updatedAt: FIXTURE_AT, editedAt: null, stale: false,
     design: {
       v: 1, kind: 'resume', ranked: rankedResume(AIRBUS_FIT), mode: 'a4', brandColor: '#00205b',
+      // The employer's own colour and face, as brandExtract reads them off its website: the deck's
+      // skeletons and the shelf's placeholders tint with it, and the renderer recolours the design to it.
+      brand: { accent: '#00205b', font: { family: 'Inter', google: true } },
       tone: 'Conservative enterprise', region: 'eu',
       headline: 'Airbus screens senior engineers through a large ATS: a restrained two-column page reads best.',
     },
@@ -241,6 +263,8 @@ const DOCS: DocMeta[] = [
     createdAt: FIXTURE_AT, updatedAt: FIXTURE_AT, editedAt: null, stale: true,
     design: {
       v: 1, kind: 'resume', ranked: rankedResume(ENECO_FIT), mode: 'onepage', brandColor: '#e4003a',
+      // A brand with a colour but no web font: the renderer recolours and leaves the face alone.
+      brand: { accent: '#e4003a', font: null },
       tone: 'Hands-on engineering', region: 'eu',
       headline: 'A platform team reads the stack first — a tooling-led one-pager puts it at the top.',
     },
@@ -252,6 +276,7 @@ const DOCS: DocMeta[] = [
     createdAt: FIXTURE_AT, updatedAt: FIXTURE_AT, editedAt: null, stale: false,
     design: {
       v: 1, kind: 'cover_letter', mode: 'a4', brandColor: '#00205b', tone: 'Evidence first', region: 'eu',
+      brand: { accent: '#00205b', font: { family: 'Inter', google: true } },
       ranked: rankedLetter({
         technical: [92, 'Leads with the certified embedded work the posting asks for'],
         ats_pro: [88, 'Plain structure that survives an enterprise applicant system'],
@@ -308,27 +333,57 @@ const DOC_LOADERS = {
  */
 const HIDDEN = new Set<string>();
 
+/**
+ * ── WHAT THE CONFIRM SHEET SAYS, PER CHIP AND KIND ────────────────────────────────────────────────────────────
+ * The shape a real gate read hands the sheet (usage + pass); `mode` is 'empty' exactly when nothing covers the
+ * build. Keyed by the chip's jobId, so the two Airbus roles can answer differently.
+ */
+type Confirm = ReturnType<typeof useHomeBuilds>['confirm'];
+type Ask = { mode: Confirm['mode']; usage: Confirm['usage']; pass: Confirm['pass'] };
+const NO_PASS = { available: false, forThisEmployer: false };
+const ASKS: Record<DocKind, Record<string, Ask>> = {
+  resume: {
+    i1: { mode: 'empty', usage: { kind: 'resume', pool: 'free', planLabel: null, remaining: 0, allowance: 3, used: 3, oneTime: true }, pass: NO_PASS },
+    a2: { mode: 'confirm', usage: { kind: 'resume', pool: 'plan', planLabel: 'Plus', remaining: 12, allowance: 15, used: 3, oneTime: false }, pass: NO_PASS },
+    e1: { mode: 'confirm', usage: { kind: 'resume', pool: 'free', planLabel: null, remaining: 2, allowance: 3, used: 1, oneTime: true }, pass: NO_PASS },
+  },
+  cover_letter: {
+    i1: { mode: 'confirm', usage: { kind: 'cover_letter', pool: null, planLabel: null, remaining: 0, allowance: 3, used: 3, oneTime: true }, pass: { available: true, forThisEmployer: true } },
+    a2: { mode: 'confirm', usage: { kind: 'cover_letter', pool: 'free', planLabel: null, remaining: 2, allowance: 3, used: 1, oneTime: true }, pass: NO_PASS },
+    e1: { mode: 'empty', usage: { kind: 'cover_letter', pool: 'plan', planLabel: 'Plus', remaining: 0, allowance: 25, used: 25, oneTime: false }, pass: NO_PASS },
+  },
+};
+
 export default function HomePreview() {
 // `?sample=1` is the brand-new account: stand-in pages and nothing saved yet.
-const { sample: sampleParam } = useLocalSearchParams<{ sample?: string }>();
+const { sample: sampleParam, hint: hintParam, empty: emptyParam } = useLocalSearchParams<{ sample?: string; hint?: string; empty?: string }>();
 const showSample = sampleParam === '1' || sampleParam === 'true';
+// `?hint=1`: a chip with nothing saved leads, so the Tailor hint is on the first paint.
+const leadUntailored = hintParam === '1' || hintParam === 'true';
+// `?empty=1`: nothing downloaded yet — the library's empty card.
+const emptyLibrary = emptyParam === '1' || emptyParam === 'true';
 const DAY = 86400000;
 // Fixed offsets from a fixed epoch: a fixture that used Date.now() would render differently on
 // every run and make a visual diff of this screen worthless.
 const T0 = Date.parse('2026-09-09T10:00:00Z');
-// ⚠️ THREE DIFFERENT COLOUR PAIRS IN THE TOP THREE, DELIBERATELY. gradFor hashes the company name
-// into one of seven pairs, so real companies collide often — Airbus, Zalando and Siemens all land on
-// the same amber. A fixture that shows one colour three times cannot tell you whether the wash is
-// working, which is the whole reason this harness exists. The locked row is kept inside the visible
-// three for the same reason: the padlock is the state most worth looking at.
+// ⚠️ THREE DIFFERENT COLOUR PAIRS IN THE VISIBLE FOUR, DELIBERATELY. gradFor hashes the company name
+// into one of seven pairs, so real companies collide often — Airbus, Zalando and Siemens ALL land on
+// the same amber, which is why the base-page card is ASML (purple) and the locked card is Eneco's (teal).
+// A fixture that shows one colour four times cannot tell you whether the ribbon and the wash are working,
+// which is the whole reason this harness exists. The locked card is kept inside the visible four for the
+// same reason: the padlock is the state most worth looking at — and so are the letter card (the drawn
+// letter page next to a rendered resume page), the "×2" and the one WORD file.
 const RESUME_HISTORY: DownloadHistoryItem[] = [
-  { id: 6, kind: 'resume', employer: 'Siemens', templateId: 'banner', templateName: 'Bold Banner', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 5, kind: 'resume', employer: 'Zalando SE', templateId: 'minimal', templateName: 'Modern Minimal', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 30 * 60000).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 1, kind: 'resume', employer: 'Airbus', templateId: 'azure', templateName: 'Azure Sidebar', format: 'pdf', mode: 'a4', times: 2, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  // Eneco has a saved (stale) resume that is not the chip on screen, so its card's page comes from docCards.
-  { id: 4, kind: 'resume', employer: 'Eneco', templateId: 'mono', templateName: 'Tech Mono', format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 5 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 3, kind: 'resume', employer: 'Airbus', templateId: 'exec_pro', templateName: 'Executive Professional', format: 'pdf', mode: 'onepage', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
-  { id: 2, kind: 'resume', employer: 'Airbus', templateId: 'azure', templateName: 'Azure Sidebar', format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+  // Nothing saved for ASML: the base resume in that design (Bold Banner is one of the five base pages).
+  { id: 6, kind: 'resume', employer: 'ASML', templateId: 'banner', templateName: 'Bold Banner', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0).toISOString(), ownsEmployer: true, unlocked: true },
+  { id: 3, kind: 'resume', employer: 'Airbus', templateId: 'exec_pro', templateName: 'Executive Professional', format: 'pdf', mode: 'onepage', times: 2, downloadedAt: new Date(T0 - 2 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  // ⚠️ A LETTER IN THE RESUME LIST — harness only (see the header): the drawn letter page beside a real one.
+  { id: 9, kind: 'cover_letter', employer: 'Airbus', templateId: 'technical', templateName: 'Technical Specialist', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 3 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
+  // Eneco has a saved (stale) resume that is not the chip on screen, so its card's page comes from docCards —
+  // and it is the LOCKED one: looking is free, the padlock is about downloading it again.
+  { id: 4, kind: 'resume', employer: 'Eneco', templateId: 'mono', templateName: 'Tech Mono', format: 'docx', mode: '', times: 1, downloadedAt: new Date(T0 - 40 * DAY).toISOString(), ownsEmployer: false, unlocked: false },
+  // Behind "See all 5".
+  { id: 2, kind: 'resume', employer: 'Airbus', templateId: 'azure', templateName: 'Azure Sidebar', format: 'pdf', mode: 'a4', times: 1, downloadedAt: new Date(T0 - 9 * DAY).toISOString(), ownsEmployer: true, unlocked: true },
 ];
 // Siemens has no saved letter (nothing to preview: the file fallback); both Airbus rows open letter 201.
 const LETTER_HISTORY: DownloadHistoryItem[] = [
@@ -347,7 +402,9 @@ const LETTER_HISTORY: DownloadHistoryItem[] = [
           onOpenMenu={() => {}}
           onOpenNotifications={() => {}}
           loaders={{
-            targets: async () => TARGETS.filter((t) => !HIDDEN.has(t.key)),
+            targets: async () => (leadUntailored
+              ? [...TARGETS.filter((t) => t.jobId === 'i1'), ...TARGETS.filter((t) => t.jobId !== 'i1')]
+              : TARGETS).filter((t) => !HIDDEN.has(t.key)),
             // `sample: true` mirrors an account that has not uploaded a resume yet — the state a
             // brand-new user actually lands in. It is behind ?sample=1 now: a sample account has no
             // saved documents, so by default the harness shows the account that DOES have them.
@@ -361,7 +418,7 @@ const LETTER_HISTORY: DownloadHistoryItem[] = [
             // One locked row on purpose: the padlock is the state most worth looking at.
             history: async (kind) => ({
               unlimited: false,
-              items: (kind === 'cover_letter' ? LETTER_HISTORY : RESUME_HISTORY) as DownloadHistoryItem[],
+              items: emptyLibrary ? [] : (kind === 'cover_letter' ? LETTER_HISTORY : RESUME_HISTORY) as DownloadHistoryItem[],
             }),
             // The account this was built against: everything done. That is the state where the
             // wizard entry used to disappear entirely — and where the CTA now reads "Customize your
@@ -374,6 +431,8 @@ const LETTER_HISTORY: DownloadHistoryItem[] = [
             // The X (untrack an employer / hide a posting) and Undo (track again / un-hide), locally.
             remove: async (t) => { HIDDEN.add(t.key); return true; },
             unhide: async (t) => { HIDDEN.delete(t.key); return true; },
+            // What the confirm sheet says for this chip — opens it; nothing on it can build or buy here.
+            confirm: async (kind, t) => ASKS[kind][String(t.jobId || '')] || null,
           }}
         />
       </View>

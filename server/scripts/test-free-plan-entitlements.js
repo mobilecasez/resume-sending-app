@@ -333,6 +333,48 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     ok('no live copy promising days or "to your trial"', !/to your trial|more day|trial just got longer|5 free cover letters|every 30 days/.test(src));
   }
 
+  console.log('── ⚠️ usageFor (Home\'s confirm sheet): THE SAME NUMBERS canConsumeMany ENFORCES, and never a write ──');
+  {
+    // A sheet that says "1 left" while the gate refuses (or "0 left" while it would allow) is the app quoting one
+    // allowance and billing another. Every case asks both, with the same request, and compares.
+    const same = async (label, uid, kind, r, extra) => {
+      const ledgerBefore = db.ledger.length;
+      const u = await ent.usageFor(uid, kind, r);
+      const g = await ent.canConsumeMany(uid, kind, 1, r);
+      const gRemaining = g.allowed ? g.remaining : 0;
+      ok(`${label}: remaining ${u && u.remaining} === the gate's (${gRemaining}), pool matches via`,
+        !!u && u.kind === kind && u.remaining === gRemaining && (g.allowed ? u.pool === g.via : true)
+        && (g.allowed === (u.remaining >= 1)) && db.ledger.length === ledgerBefore && (!extra || extra(u, g)), { u, g });
+      return u;
+    };
+    // a brand-new free user on an unclaimed device (usageFor first: it must not change what the gate then says)
+    const u70 = await same('new free user', 70, 'resume', req('dev-CCCCCCCC'),
+      (u) => u.pool === 'free' && u.allowance === 3 && u.used === 0 && u.oneTime === true && u.planLabel === null);
+    ok('…the Free row usageFor opened is the one the gate counts (one row, device claimed once)', db.trials.has(70) && db.trialDevices.get('dev-CCCCCCCC').first_user_id === 70, u70);
+    seedUse(70, 'resume', 'trial', '2026-09-14T12:30:00Z', 1);   // after the row usageFor opened (db.now)
+    await same('free user, 1 used', 70, 'resume', req('dev-CCCCCCCC'), (u) => u.remaining === 2 && u.used === 1 && u.allowance === 3);
+    await same('pre-cutover usage does not count', 20, 'cover_letter', req(), (u) => u.used === 0 && u.remaining === 3);
+    await same('free, exhausted after a post-cutover bonus (3 + 1, 4 used)', 30, 'resume', req(), (u) => u.pool === 'free' && u.remaining === 0 && u.allowance === 4 && u.used === 4);
+    // plans: the plan's count and label, environment-scoped exactly like the gate
+    seedSub(71, 'plus', '2026-09-10T00:00:00Z');
+    seedUse(71, 'resume', 'plan', '2026-09-11T00:00:00Z', 3);
+    await same('Plus, 3 of 15 used', 71, 'resume', req(), (u) => u.pool === 'plan' && u.planLabel === 'Plus' && u.allowance === 15 && u.used === 3 && u.remaining === 12 && u.oneTime === false);
+    await same('Plus letters untouched', 71, 'cover_letter', req(), (u) => u.remaining === 25 && u.allowance === 25);
+    await same('Starter over a cut allowance clamps at 0 (never negative)', 40, 'cover_letter', req(), (u) => u.pool === 'plan' && u.remaining === 0 && u.used === 20 && u.allowance === 10);
+    const beforeRows = db.trials.size;
+    await same('⚠️ a subscriber is never shown the Free allowance', 71, 'resume', req('dev-DDDDDDDD'), (u) => u.pool === 'plan');
+    ok('…and asking for one opened no Free row', db.trials.size === beforeRows);
+    // the device another account holds: not "0 of 3" — that account never had them
+    const b = await same('device already used by another account', 50, 'resume', req('dev-AAAAAAAA'),
+      (u, g) => u.pool === null && u.allowance === 0 && u.blocked === 'device_trial_used' && g.blocked === 'device_trial_used' && u.oneTime === true);
+    ok('…and no Free row was created for it', !db.trials.has(50), b);
+    ok('an unknown kind → null', (await ent.usageFor(70, 'poster', req())) === null);
+    const src = fs.readFileSync(path.join(ROOT, 'server/services/entitlements.js'), 'utf8');
+    const body = src.slice(src.indexOf('async function usageFor'), src.indexOf('// ── the deduction'));
+    ok('⚠️ usageFor is read-only: no INSERT into the ledger, no consume, exported for the gates',
+      body.length > 200 && !/INSERT INTO usage_ledger|consumeOnSuccess\(/.test(body) && typeof ent.usageFor === 'function');
+  }
+
   console.log('── source: the credit lane is really gone ──');
   {
     const src = fs.readFileSync(path.join(ROOT, 'server/services/entitlements.js'), 'utf8');

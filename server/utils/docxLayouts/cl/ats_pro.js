@@ -5,7 +5,9 @@
 //
 // Contract: module.exports = function build(data, opts) -> { children, margin }
 //   data = { sender:{name,title,email,phone,location}, company:{name,address}, bodyHtml }
-//   opts = { accent }   accent: hex (with/without '#'); falls back to #1f2937
+//   opts = { accent, branded? }   accent: hex (with/without '#'); falls back to #1f2937
+//          branded: the accent is an EMPLOYER's brand — the style's accent re-hued to it by docxBuilder,
+//          never the raw brand hex → the rule is painted in it
 'use strict';
 
 const H = require('../../docxHelpers');
@@ -69,11 +71,15 @@ module.exports = function build(data, opts) {
   }
 
   // Thin dark rule under the header (PDF: 1.5px solid #111827). Use DARK to match the
-  // PDF exactly; the accent (default #1f2937) is its near-twin and used for emphasis.
+  // PDF exactly; the accent (default #1f2937) is its near-twin and used for emphasis —
+  // except for an employer BRAND (opts.branded): the PDF re-hues this rule to the brand's
+  // HUE at the rule's own darkness, and the accent docxBuilder hands us IS that re-hued
+  // colour (never the raw brand hex — a pastel would vanish on white). The name stays ink.
+  const ruleColor = opts.branded ? accent : DARK;
   out.push(new Paragraph({
     alignment: AlignmentType.LEFT,
     spacing: { after: 0 },
-    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: DARK, space: 4 } },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: ruleColor, space: 4 } },
     children: [run('', { size: 2 })],
   }));
 

@@ -13,9 +13,14 @@
  *                       sidebar would stop early. We therefore render the sidebar
  *                       templates with a TRANSPARENT background and composite the
  *                       gradient band behind every page with pdf-lib (reliable).
+ *
+ * opts.brand = { accent, font } (an employer document's design.brand) flows through to
+ * renderResumeHtml, which re-hues the design to the employer's colour and sets its font;
+ * the A4 band composited here and the accent reported beside each preview come from
+ * brandedTemplate so they match that recoloured HTML. No brand → exactly the old output.
  */
 
-const { renderResumeHtml, TEMPLATES } = require('./resumeTemplates');
+const { renderResumeHtml, TEMPLATES, brandedTemplate } = require('./resumeTemplates');
 
 const LAUNCH_ARGS = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
 const A4_W = 794;   // 210mm @ 96dpi
@@ -83,33 +88,56 @@ const PREVIEW_ARGS = ['--single-process', '--no-zygote', '--disable-gpu'];
 // simply the first render and eats the whole cold start. One shared browser, closed after 90s of
 // quiet, turns request 2..n into just newPage().
 let warmBrowser = null;
+let warmPage = null;
 let warmTimer = null;
-let warmLaunching = null;
-// ⚠️ --single-process chromium CRASHES after ~4-5 consecutive setContent+screenshot cycles in
-// one session (reproduced deterministically with a 6-template loop; 1-3 are always fine). The
-// warm browser therefore RECYCLES itself after every 3 rendered pages — a relaunch costs a few
-// hundred ms, a mid-batch crash costs the whole request.
+// ⚠️ SINGLE-PROCESS CHROMIUM EXITS WHEN A PAGE CLOSES — and cannot hold a second page either.
+// This file used to open a page per template and close it: the next newPage() then met "Target
+// page, context or browser has been closed". Prod logs, 2026-09-14: `previewTemplates error:
+// browser.newPage: Target page, context or browser has been closed` — the user's first "View PDF"
+// failed and a retry worked, because warmPreviews() (fired by the catalogue request) had already
+// opened and CLOSED its font-priming page, killing the warm browser before the first real render.
+// So the warm browser now owns ONE routed page for its whole life; every render swaps content into
+// it, and a recycle closes page and browser together, never the page alone (the letter renderer
+// was fixed the same way and verified in prod: 3 uncached designs in one call, 3 s).
+// Renders share that page, so they are SERIALISED through warmLock — two requests may not interleave
+// setContent/screenshot on one page.
+let warmChain = Promise.resolve();
+function withWarmLock(fn) {
+  const run = warmChain.then(fn, fn);
+  warmChain = run.catch(() => {});
+  return run;
+}
+// ⚠️ --single-process chromium also degrades after ~4-5 consecutive setContent+screenshot cycles in
+// one session (reproduced with a 6-template loop), so the warm browser still RECYCLES after every
+// WARM_PAGE_LIMIT rendered pages — a relaunch costs a few hundred ms, a mid-batch crash the request.
 let warmPages = 0;
 const WARM_PAGE_LIMIT = 3;
+async function resetWarm() {
+  const b = warmBrowser;
+  warmBrowser = null; warmPage = null; warmPages = 0;
+  if (b) await b.close().catch(() => {});
+}
 function armWarmIdle() {
   if (warmTimer) clearTimeout(warmTimer);
-  warmTimer = setTimeout(() => {
-    const b = warmBrowser; warmBrowser = null;
-    if (b) b.close().catch(() => {});
-  }, 90_000);
+  // Through the lock: an idle close can never land in the middle of a render.
+  warmTimer = setTimeout(() => { withWarmLock(resetWarm); }, 90_000);
   if (warmTimer.unref) warmTimer.unref();
 }
-async function getWarmBrowser() {
-  if (warmBrowser && warmBrowser.isConnected() && warmPages < WARM_PAGE_LIMIT) { armWarmIdle(); return warmBrowser; }
-  const old = warmBrowser;
-  warmBrowser = null;
-  if (old) old.close().catch(() => {});
-  if (!warmLaunching) {
-    warmLaunching = launchBrowser(PREVIEW_ARGS)
-      .then((b) => { warmBrowser = b; warmPages = 0; warmLaunching = null; armWarmIdle(); return b; })
-      .catch((e) => { warmLaunching = null; throw e; });
+/** The warm page. ONLY call inside withWarmLock. */
+async function getWarmPage() {
+  if (warmBrowser && warmBrowser.isConnected() && warmPage && !warmPage.isClosed()
+      && warmPages < WARM_PAGE_LIMIT) { armWarmIdle(); return warmPage; }
+  await resetWarm();
+  const browser = await launchBrowser(PREVIEW_ARGS);
+  try {
+    warmPage = await newRoutedPage(browser);
+  } catch (e) {
+    await browser.close().catch(() => {});
+    throw e;
   }
-  return warmLaunching;
+  warmBrowser = browser; warmPages = 0;
+  armWarmIdle();
+  return warmPage;
 }
 
 // ── In-memory Google-Fonts cache ──────────────────────────────────────────────
@@ -143,11 +171,19 @@ async function routeRequests(page) {
   });
 }
 
-async function preparePage(browser, html) {
+async function newRoutedPage(browser) {
   const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H }, javaScriptEnabled: false });
   // Installed BEFORE the content exists, so not even the first subresource escapes it. A route call
   // on a page that is already closing rejects — that is not a render failure.
   await routeRequests(page).catch(() => {});
+  return page;
+}
+
+async function preparePage(browser, html) {
+  return loadHtml(await newRoutedPage(browser), html);
+}
+
+async function loadHtml(page, html) {
   // Render must NOT hang on slow/unreachable external web fonts (Google Fonts) —
   // a frequent failure on Railway, where 'networkidle' never settles within the
   // timeout and the whole preview throws "unable to load". Use 'load'; if even
@@ -224,9 +260,11 @@ async function renderPdf(templateId, resumeData, opts = {}) {
     if (mode === 'a4') {
       const pdfBuf = await page.pdf({ printBackground: true, preferCSSPageSize: true });
       // The registry entry carries the band (variants carry a RECOLORED one); the local BANDS
-      // table stays only as a fallback for the two base ids.
+      // table stays only as a fallback for the two base ids. A branded document carries the band
+      // re-hued to the employer's colour from the FAMILY's palette — the same shift the HTML got —
+      // and brandedTemplate hands back the template's own band when the brand has no colour.
       const tpl = TEMPLATES.find((t) => t.id === templateId);
-      const band = (tpl && tpl.band) || BANDS[templateId];
+      const band = (tpl && (opts.brand ? brandedTemplate(tpl, opts.brand).band : tpl.band)) || BANDS[templateId];
       return band ? await compositeBand(pdfBuf, band) : pdfBuf;
     }
     // One continuous page sized exactly to the content.
@@ -247,53 +285,52 @@ async function renderPdf(templateId, resumeData, opts = {}) {
 // One-page render; a full-page screenshot captures the CSS sidebar band. Returns
 // { id, name, accent, image, width, height } so the app can size to the real aspect.
 async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
-  // Per-TEMPLATE render with per-template recovery: getWarmBrowser() hands back a recycled
-  // browser every WARM_PAGE_LIMIT pages (see above), and a crashed render resets the browser and
-  // retries just that one template — a batch never redoes finished work or inherits a session
-  // that is already at the crash threshold.
-  const renderOne = async (tpl) => {
-    const browser = await getWarmBrowser();
+  // Per-TEMPLATE render with per-template recovery, each one on the warm page under the lock (see
+  // above). A failed render resets the warm browser and retries just that template; a template that
+  // fails twice is left OUT of the result (callers already treat a missing id as "could not render")
+  // instead of throwing away the designs this batch already finished.
+  const renderOne = (tpl) => withWarmLock(async () => {
+    const page = await getWarmPage();
     const html = renderResumeHtml(tpl.id, resumeData, { ...opts, mode: 'onepage' });
-    const page = await preparePage(browser, html);
-    try {
-      const h = await sheetHeight(page);
-      await page.setViewportSize({ width: A4_W, height: h });
-      // ⚠️ Single-process chromium can screenshot BEFORE the resized region repaints, capturing
-      // stale texture from the previous render (a blue band from another template appeared at the
-      // bottom of a preview). This used to be two rAFs inside the page — ⚠️ with javaScriptEnabled
-      // :false rAF callbacks NEVER run (measured: the evaluate never settles, and it cannot reject,
-      // so it would hang every preview forever). A throwaway 8×8 capture forces the compositor to
-      // produce a frame at the NEW size — same guarantee, no page script, ~5ms instead of 2 frames.
-      await page.screenshot({ type: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 8, height: 8 } }).catch(() => {});
-      const shot = await page.screenshot({
-        type: 'jpeg',
-        quality: 82,
-        clip: { x: 0, y: 0, width: A4_W, height: h },
-      });
-      warmPages += 1;
-      return {
-        id: tpl.id,
-        name: tpl.name,
-        accent: tpl.accent,
-        ats: tpl.ats || null,
-        image: `data:image/jpeg;base64,${shot.toString('base64')}`,
-        width: A4_W,
-        height: h,
-      };
-    } finally {
-      await page.close().catch(() => {});
-    }
-  };
+    await page.setViewportSize({ width: A4_W, height: A4_H });
+    await loadHtml(page, html);
+    const h = await sheetHeight(page);
+    await page.setViewportSize({ width: A4_W, height: h });
+    // ⚠️ The page is REUSED, so a capture right after the resize can come back with the previous
+    // design's texture. A throwaway 8×8 capture forces the compositor to produce a frame at the NEW
+    // size first — no page script needed (JS is off, so an in-page animation-frame callback never fires).
+    await page.screenshot({ type: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 8, height: 8 } }).catch(() => {});
+    const shot = await page.screenshot({
+      type: 'jpeg',
+      quality: 82,
+      clip: { x: 0, y: 0, width: A4_W, height: h },
+    });
+    warmPages += 1;
+    return {
+      id: tpl.id,
+      name: tpl.name,
+      // The accent the image actually shows: the employer's re-hue of it for a branded document.
+      accent: opts.brand ? brandedTemplate(tpl, opts.brand).accent : tpl.accent,
+      ats: tpl.ats || null,
+      image: `data:image/jpeg;base64,${shot.toString('base64')}`,
+      width: A4_W,
+      height: h,
+    };
+  });
   const results = [];
   for (const tpl of templates) {
     try {
       results.push(await renderOne(tpl));
-    } catch (e) {
-      const b = warmBrowser; warmBrowser = null;
-      if (b) await b.close().catch(() => {});
-      results.push(await renderOne(tpl));   // one clean retry, fresh browser, this template only
+    } catch (first) {
+      await withWarmLock(resetWarm);
+      try {
+        results.push(await renderOne(tpl));   // one clean retry, fresh browser, this template only
+      } catch (e) {
+        console.warn(`[resumeRenderer] preview "${tpl.id}" failed twice:`, String((e && e.message) || e).split('\n')[0]);
+      }
     }
   }
+  if (!results.length && templates.length) throw new Error('No preview could be rendered');
   return results;
 }
 
@@ -306,23 +343,20 @@ async function warmPreviews() {
   if (warmingUp) return;
   warmingUp = true;
   try {
-    const browser = await getWarmBrowser();
-    if (!fontCache.size) {
-      // Prime the font cache with the same <head> every template ships.
-      // Same fences as a real render (see preparePage): no page script, one route, bound on Node.
-      const page = await browser.newPage({ viewport: { width: 200, height: 100 }, javaScriptEnabled: false });
-      try {
-        await routeRequests(page);
-        await page.setContent(
-          `<html><head><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet"></head>` +
-          `<body style="font-family:'Poppins','Lato',sans-serif">warm</body></html>`,
-          { waitUntil: 'load', timeout: 10000 }).catch(() => {});
-        let timer = null;
-        const settled = page.evaluate(() => (document.fonts ? document.fonts.ready.then(() => true) : true)).catch(() => false);
-        await Promise.race([settled, new Promise((r) => { timer = setTimeout(r, 3000); })]);
-        clearTimeout(timer);
-      } finally { await page.close().catch(() => {}); }
-    }
+    await withWarmLock(async () => {
+      const page = await getWarmPage();
+      if (fontCache.size) return;
+      // Prime the font cache with the same <head> every template ships — on the WARM page, which
+      // stays open (closing any page is what used to kill the warm browser before the first render).
+      await page.setContent(
+        `<html><head><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet"></head>` +
+        `<body style="font-family:'Poppins','Lato',sans-serif">warm</body></html>`,
+        { waitUntil: 'load', timeout: 10000 }).catch(() => {});
+      let timer = null;
+      const settled = page.evaluate(() => (document.fonts ? document.fonts.ready.then(() => true) : true)).catch(() => false);
+      await Promise.race([settled, new Promise((r) => { timer = setTimeout(r, 3000); })]);
+      clearTimeout(timer);
+    });
   } catch { /* cold path still works; this is purely a head start */ }
   finally { warmingUp = false; }
 }

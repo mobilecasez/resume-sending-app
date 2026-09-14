@@ -3,8 +3,11 @@
 // analytics, and runs the hook inside a tiny fake React hooks runtime under a fake clock.
 //   node MobileApp/scripts/test-home-builds.js
 //
-// ⚠️ WHY: this hook decides when money is spent. A build starts only from an explicit request; a covered
-// gate starts it with coveredOnly:true; an unreadable gate asks first (and its Build tap is the only consent
+// ⚠️ WHY: this hook decides when money is spent. A build starts only from an explicit request; ⚠️ SINCE 2026-09-14 a
+// covered gate (plan / free / pass) no longer starts it: the confirm sheet (GenerateConfirmSheet) asks first, and only
+// its Continue sends the build, coveredOnly:true — a cache hit (free) is the one answer that starts without a question;
+// nothing left opens the EMPTY sheet, whose Generate once buys the one-time pass for THIS employer
+// (buyDownloadPass(company)), reads the gate again and builds only on via 'pass' (or a free cache hit); an unreadable gate asks first (and its Build tap is the only consent
 // coveredOnly:false ever gets); a gate that still says 'credits' asks in plan words and is built coveredOnly:true
 // (no credits lane exists for generation since 2026-09-13); a quota refusal builds nothing; a recovered build lands exactly once;
 // and nothing of one account survives into the next.
@@ -124,6 +127,9 @@ function jobKeyOf(i) {
   const title = String(i.jobTitle || '').trim().toLowerCase(); return title ? 'n:' + title : '';
 }
 let svc, alerts, tracked, haptics;
+// The one-time pass purchase (services/downloadPassService.buyDownloadPass): every call recorded with the employer it
+// was bought for; buyImpl decides the store's answer. plans = how many times the sheet's See plans reached the screen.
+let buys = []; let buyImpl = async () => ({ ok: true, employerUnlocked: true }); let plans = 0;
 function makeSvc() {
   const s = {
     MAX_PARALLEL_BUILDS: 3, account: 'u:1', flights: new Map(),
@@ -167,6 +173,7 @@ Module._load = function (request, parent, isMain) {
   if (request === 'expo-haptics') return { notificationAsync: async () => { haptics++; }, NotificationFeedbackType: { Success: 'success' } };
   if (request === '../../services/homeAddEmployer') return svc;
   if (request === '../../services/homeBuilds') return require(STORE);
+  if (request === '../../services/downloadPassService') return { buyDownloadPass: (employer) => { buys.push(employer); return buyImpl(employer); } };
   if (request === '../../services/analytics') return { track: async (e, p) => { tracked.push([e, p]); } };
   return origLoad.apply(this, arguments);
 };
@@ -178,7 +185,7 @@ const ok = (name, cond, extra) => { if (cond) pass++; else { fail++; console.log
 async function fresh(o = {}) {
   delete require.cache[HOOK]; delete require.cache[STORE];
   for (const id of timers.keys()) timers.delete(id);
-  svc = makeSvc(); alerts = []; tracked = []; haptics = 0;
+  svc = makeSvc(); alerts = []; tracked = []; haptics = 0; buys = []; plans = 0; buyImpl = async () => ({ ok: true, employerUnlocked: true });
   if (o.svc) o.svc(svc);
   const mod = require(HOOK);
   const store = require(STORE);
@@ -189,7 +196,7 @@ async function fresh(o = {}) {
     rkFor: (meta) => (meta.key in env.rk ? env.rk[meta.key] : null),
     onLanded: (job, docId, cached, watched) => landed.push({ job, docId, cached, watched }),
     onNotice: (text, action) => notices.push({ text, action }),
-    onSeePlans: () => {},
+    onSeePlans: () => { plans++; },
   };
   const c = mount(() => mod.useHomeBuilds(opts));
   await flush();
@@ -198,8 +205,33 @@ async function fresh(o = {}) {
 const JOB = (over = {}) => ({ kind: 'resume', rk: 'emp_1', company: 'Amazon', website: 'https://amazon.jobs', employerId: '11111111-1111-1111-1111-111111111111', country: 'India', jobUrl: '', jobText: '', jobTitle: '', ...over });
 const rec = (store, key) => store.getBuilds()[key] || null;
 
+/**
+ * ⚠️ THE MODAL GAP (useHomeBuilds MODAL_GAP_MS): the sheet and BuildingOverlay are two Modals, and whichever comes
+ * second waits this long after the first went away (iOS refuses a second presentation silently). Pinned here: a
+ * shorter gap is the invisible-question bug again.
+ */
+const GAP = 380;
+/** Answer the confirm sheet with Continue once it is up. `label` also asserts it WAS up, in confirm mode. */
+async function tapContinue(c, label) {
+  await advance(GAP);
+  const v = c.r.confirm;
+  if (label) ok(label, v.visible && v.mode === 'confirm', { visible: v.visible, mode: v.mode, company: v.company });
+  v.onContinue();
+  await flush();
+}
+/** Three builds running, each started the only way a plan build now starts: its own sheet, its own Continue. */
+async function startThree(c) {
+  for (let n = 1; n <= 3; n++) {
+    c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
+    await advance(0);
+    await tapContinue(c);
+  }
+}
+
 (async () => {
-  console.log('── 1. covered + watched: runs coveredOnly, lands docId, overlay done, record clears ──');
+  // ⚠️ RETARGETED 2026-09-14: a covered gate used to start the build at once. Now the confirm sheet asks first, and
+  // the build (and its overlay, after the Modal gap) starts only on Continue.
+  console.log('── 1. covered + watched: the sheet asks first; Continue runs coveredOnly, lands docId, overlay done, record clears ──');
   {
     const { c, store, landed, notices } = await fresh();
     c.r.request(JOB(), { explicit: true });
@@ -207,8 +239,17 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     await advance(0);
     ok('gate asked once for the doc lane shape', svc.calls.gate.length === 1 && svc.calls.gate[0].kind === 'resume'
       && svc.calls.gate[0].extra.employerId === JOB().employerId && svc.calls.gate[0].job.website === 'https://amazon.jobs');
-    ok('build started coveredOnly:true', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true && svc.calls.build[0].country === 'India');
-    ok('record is building', rec(store, 'resume|emp_1')?.phase === 'building');
+    ok('⚠️ a covered gate does NOT auto-start: nothing built, the confirm sheet asks', svc.calls.build.length === 0
+      && c.r.confirm.visible && c.r.confirm.mode === 'confirm' && c.r.confirm.company === 'Amazon' && c.r.confirm.kind === 'resume', c.r.confirm);
+    ok('…the record still says checking, and no overlay covers the sheet', rec(store, 'resume|emp_1')?.phase === 'checking' && !c.r.overlay.visible);
+    await advance(5000);
+    ok('⚠️ …and waiting builds nothing either', svc.calls.build.length === 0 && c.r.confirm.visible);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('Continue → build started coveredOnly:true', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true && svc.calls.build[0].country === 'India');
+    ok('record is building, sheet closed', rec(store, 'resume|emp_1')?.phase === 'building' && !c.r.confirm.visible);
+    ok('the overlay is held back for the Modal gap', !c.r.overlay.visible);
+    await advance(GAP);
     ok('overlay visible and bound', c.r.overlay.visible && c.r.overlay.key === 'resume|emp_1' && c.r.overlay.kind === 'resume');
     const key = svc.calls.build[0].key;
     svc.stage(key, { stage: 'writing', label: 'Rewriting your resume for Amazon', pct: 38 });
@@ -304,27 +345,40 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     ok('record building', rec(store, 'resume|emp_1')?.phase === 'building');
   }
 
-  console.log('── 5. quota: overlay error, no build, cleared once seen ──');
+  // ⚠️ RETARGETED 2026-09-14: quota_exhausted used to be an overlay refusal. It is now the EMPTY confirm sheet (Generate
+  // once / See plans — see C5..C10, C16); regen_limit (the builder's one free rebuild) is still the overlay refusal.
+  console.log('── 5. quota: the EMPTY sheet, no build, nothing bought; regen_limit stays the overlay refusal ──');
   {
     const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: false, via: null, reason: 'quota_exhausted' }); } });
     c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
-    ok('error record', rec(store, 'resume|emp_1')?.phase === 'error' && rec(store, 'resume|emp_1')?.error?.reason === 'quota_exhausted');
-    ok('overlay error visible even with showOverlay:false', c.r.overlay.visible && c.r.overlay.error?.reason === 'quota_exhausted' && !c.r.overlay.canRetry);
-    ok('no build', svc.calls.build.length === 0);
+    ok('the empty sheet asks, even with showOverlay:false', c.r.confirm.visible && c.r.confirm.mode === 'empty' && c.r.confirm.company === 'Amazon', c.r.confirm);
+    ok('no error record, no overlay: nothing refused yet, nothing started', rec(store, 'resume|emp_1')?.phase === 'checking' && !c.r.overlay.visible);
+    ok('no build, nothing bought', svc.calls.build.length === 0 && buys.length === 0);
+    c.r.confirm.onCancel();
+    await flush();
+    ok('Cancel clears the record and closes the sheet', !rec(store, 'resume|emp_1') && !c.r.confirm.visible && buys.length === 0);
+  }
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: false, via: null, reason: 'regen_limit' }); } });
+    c.r.request(JOB(), { explicit: true, showOverlay: false });
+    await advance(0);
+    ok('regen_limit: error record', rec(store, 'resume|emp_1')?.phase === 'error' && rec(store, 'resume|emp_1')?.error?.reason === 'regen_limit');
+    ok('…overlay error visible even with showOverlay:false, no sheet', c.r.overlay.visible && c.r.overlay.error?.reason === 'regen_limit' && !c.r.overlay.canRetry && !c.r.confirm.visible);
+    ok('…no build', svc.calls.build.length === 0);
     c.r.dismissOverlay();
     await flush();
-    ok('refusal record clears on dismiss', !rec(store, 'resume|emp_1'));
+    ok('…refusal record clears on dismiss', !rec(store, 'resume|emp_1'));
   }
 
-  console.log('── 6. capacity: 4th waits, re-gated when a slot frees ──');
+  console.log('── 6. capacity: a Continued 4th waits, re-gated when a slot frees, starts on the pool it was confirmed for ──');
   {
     const { c, store, notices } = await fresh();
-    for (let n = 1; n <= 3; n++) c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await startThree(c);
     ok('three running', svc.flights.size === 3);
     c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c, 'the 4th is asked on the sheet even with three running');
     ok('4th queued, not built', rec(store, 'resume|emp_4')?.phase === 'queued' && svc.calls.build.length === 3);
     ok('queue notice', notices.some((x) => /Three builds are already running — we’ll start Co4/.test(x.text)));
     const gates = svc.calls.gate.length;
@@ -335,6 +389,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     await advance(0);
     ok('re-gated on drain', svc.calls.gate.length === gates + 1);
     ok('4th started coveredOnly', svc.calls.build.length === 4 && svc.calls.build[3].company === 'Co4' && svc.calls.build[3].coveredOnly === true);
+    ok('…on its earlier Continue: no second question', !c.r.confirm.visible);
     ok('4th building', rec(store, 'resume|emp_4')?.phase === 'building');
   }
 
@@ -343,8 +398,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
   console.log('── 7. capacity + consent: an unread gate\'s go-ahead carries to a still-unread gate; a credits answer never rides one ──');
   {
     const { c, store } = await fresh();
-    for (let n = 1; n <= 3; n++) c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await startThree(c);
     svc.gateImpl = () => new Promise(() => {});                      // unreadable
     c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
     await advance(9000);
@@ -385,6 +439,8 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     resolveNamed(JOB({ rk: 'WRONG', kind: 'cover_letter', company: 'Amazon', website: 'https://amazon.jobs' }));
     await advance(1000);
     ok('gate saw the stored website', svc.calls.gate[0]?.job.website === 'https://amazon.jobs' && svc.calls.gate[0]?.employer === 'Amazon');
+    ok('the sheet names the stored name, nothing built before Continue', c.r.confirm.company === 'Amazon' && svc.calls.build.length === 0, c.r.confirm.company);
+    await tapContinue(c);
     ok('built under the request kind + rk, stored name', svc.calls.build[0]?.kind === 'resume' && rec(store, 'resume|p2')?.company === 'Amazon' && !rec(store, 'cover_letter|WRONG'));
     ok('not before the hold', true);
   }
@@ -394,18 +450,21 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const { c } = await fresh();
     c.r.request(JOB(), { explicit: true, holdMs: 950 });
     await advance(900);
-    ok('nothing sent during the hold', svc.calls.build.length === 0);
+    ok('nothing sent (and nothing asked) during the hold', svc.calls.build.length === 0 && !c.r.confirm.visible);
     await advance(100);
-    ok('sent after the hold', svc.calls.build.length === 1);
+    ok('after the hold the sheet asks — still nothing sent', c.r.confirm.visible && svc.calls.build.length === 0);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('sent on Continue', svc.calls.build.length === 1);
   }
 
   console.log('── 9. retarget reaches a queued copy (refused website) ──');
   {
     const { c } = await fresh();
-    for (let n = 1; n <= 3; n++) c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await startThree(c);
     c.r.request(JOB({ rk: 'emp_4', company: 'Co4', website: 'https://boards.greenhouse.io/co4' }), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     c.r.retarget('resume', 'emp_4', { website: '' });
     svc.finish(svc.calls.build[0].key, { ok: true, cached: false, docId: 1 });
     await advance(0);
@@ -423,16 +482,19 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     release();
     await advance(400);
     ok('gate read twice', svc.calls.gate.length === 2 && svc.calls.gate[1].job.website === undefined);
+    ok('⚠️ the stale "cache" answer started nothing: the re-read says plan, so the sheet asks', svc.calls.build.length === 0 && c.r.confirm.visible);
+    c.r.confirm.onContinue();
+    await flush();
     ok('built with the retargeted job', svc.calls.build[0]?.website === '');
   }
 
   console.log('── 9c. retarget during a DRAIN gate read → read again (stableGate is the only guard there) ──');
   {
     const { c } = await fresh();
-    for (let n = 1; n <= 3; n++) c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await startThree(c);
     c.r.request(JOB({ rk: 'emp_4', company: 'Co4', website: 'https://boards.greenhouse.io/co4' }), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     let release;
     let held = true;
     svc.gateImpl = (a) => {
@@ -478,6 +540,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const { c, store, notices, landed } = await fresh();
     c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     const key = svc.calls.build[0].key;
     svc.stage(key, { stage: 'writing', label: 'Rewriting', pct: 38 });
     svc.finish(key, { ok: false, reason: 'pending', message: 'This is taking longer than usual.' });
@@ -523,6 +586,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const f = await fresh();
     f.c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(f.c);
     const key = svc.calls.build[0].key;
     // unmount Home, remount (Dashboard round trip); recovery joins the in-process flight
     f.c.unmount();
@@ -550,10 +614,10 @@ const rec = (store, key) => store.getBuilds()[key] || null;
   console.log('── 14. account switch: the line is wiped before anything goes out ──');
   {
     const { c, store } = await fresh();
-    for (let n = 1; n <= 3; n++) c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await startThree(c);
     c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     ok('queued', rec(store, 'resume|emp_4')?.phase === 'queued');
     const gates = svc.calls.gate.length;
     svc.account = 'u:2';
@@ -569,13 +633,14 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const { c, store, notices } = await fresh();
     c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     const key = svc.calls.build[0].key;
     svc.finish(key, { ok: false, reason: 'network', message: 'We could not reach the server. Please try again.' });
     await flush();
     ok('error record', rec(store, 'resume|emp_1')?.phase === 'error');
     ok('See why notice', notices.some((n) => n.text === 'Your Amazon resume didn’t finish — tap its card to see why' && n.action?.label === 'See why'));
     c.r.openOverlayFor('resume', 'emp_1');
-    await flush();
+    await advance(GAP);
     ok('overlay shows the error, retryable', c.r.overlay.visible && c.r.overlay.error?.reason === 'network' && c.r.overlay.canRetry);
     // held by the service → recovery, no gate
     svc.peekImpl = async () => [{ key, kind: 'resume', company: 'Amazon', employerId: JOB().employerId, jobUrl: '', startedAt: now }];
@@ -594,18 +659,25 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     ok('landed', rec(store, 'resume|emp_1')?.phase === 'done' && rec(store, 'resume|emp_1')?.docId === 31);
   }
 
-  console.log('── 15b. retry with nothing held goes back through the gate ──');
+  // ⚠️ RETARGETED 2026-09-14: Try again used to rebuild on the re-read covered gate at once. A new build is a new spend,
+  // so it is asked on the sheet like any other — the failed one charged nothing (the lanes give back what they took).
+  console.log('── 15b. retry with nothing held goes back through the gate, and the sheet, before a second build ──');
   {
     const { c, store } = await fresh();
     c.r.request(JOB(), { explicit: true });
     await advance(0);
+    await tapContinue(c);
+    await advance(GAP);
     svc.finish(svc.calls.build[0].key, { ok: false, reason: 'failed', message: 'boom' });
     await flush();
     ok('watched error, retryable', c.r.overlay.visible && c.r.overlay.canRetry);
     c.r.retryOverlay();
     await advance(0);
-    ok('re-gated and rebuilt', svc.calls.gate.length === 2 && svc.calls.build.length === 2 && rec(store, 'resume|emp_1')?.phase === 'building');
-    ok('overlay still up on it', c.r.overlay.visible && !c.r.overlay.error);
+    ok('re-gated, but no second build yet: the overlay steps aside for the question', svc.calls.gate.length === 2 && svc.calls.build.length === 1 && !c.r.overlay.visible);
+    await tapContinue(c, '⚠️ …the sheet asks before the rebuild');
+    ok('rebuilt on Continue', svc.calls.build.length === 2 && svc.calls.build[1].coveredOnly === true && rec(store, 'resume|emp_1')?.phase === 'building');
+    await advance(GAP);
+    ok('overlay back up on it', c.r.overlay.visible && !c.r.overlay.error);
   }
 
   console.log('── 15c. not retryable reasons ──');
@@ -613,6 +685,8 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const { c } = await fresh();
     c.r.request(JOB(), { explicit: true });
     await advance(0);
+    await tapContinue(c);
+    await advance(GAP);
     svc.finish(svc.calls.build[0].key, { ok: false, reason: 'no_resume', message: 'Upload your resume first' });
     await flush();
     ok('no_resume is not retryable', c.r.overlay.visible && c.r.overlay.error?.reason === 'no_resume' && !c.r.overlay.canRetry);
@@ -627,18 +701,20 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const { c, store } = await fresh({ svc: (s) => { s.buildForEmployer = (i, onStage) => { s.calls.build.push(i); return Promise.resolve(TOO_MANY); }; } });
     c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     ok('queued, not error', rec(store, 'resume|emp_1')?.phase === 'queued');
   }
 
-  console.log('── 17. same chip again while building: opens the overlay, no second build ──');
+  console.log('── 17. same chip again while building: opens the overlay, no second build, no second question ──');
   {
     const { c } = await fresh();
     c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     c.r.request(JOB(), { explicit: true });
     await advance(1000);
     ok('one build', svc.calls.build.length === 1 && svc.calls.gate.length === 1);
-    ok('overlay opened on it', c.r.overlay.visible && c.r.overlay.key === 'resume|emp_1');
+    ok('overlay opened on it', c.r.overlay.visible && c.r.overlay.key === 'resume|emp_1' && !c.r.confirm.visible);
   }
 
   console.log('── 18. forget mid-build: nothing of it lands afterwards ──');
@@ -646,6 +722,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const { c, mod, store, landed, notices } = await fresh();
     c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     const key = svc.calls.build[0].key;
     mod.forgetHomeBuilds();
     await flush();
@@ -666,19 +743,22 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     await flush();
     release();
     await advance(10);
-    ok('build started', svc.calls.build.length === 1 && rec(store, 'resume|emp_1')?.phase === 'building');
+    ok('the covered answer starts nothing on its own', svc.calls.build.length === 0 && c.r.overlay.visible === false);
+    await tapContinue(c, 'the sheet asks, once the closed overlay\'s Modal gap has passed');
+    ok('build started on Continue', svc.calls.build.length === 1 && rec(store, 'resume|emp_1')?.phase === 'building');
+    await advance(GAP);
     ok('overlay NOT re-raised', c.r.overlay.visible === false);
   }
 
   console.log('── 20. queued shown to the overlay as "nothing has started" ──');
   {
     const { c } = await fresh();
-    for (let n = 1; n <= 3; n++) c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await startThree(c);
     c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     c.r.openOverlayFor('resume', 'emp_4');
-    await flush();
+    await advance(GAP);
     ok('overlay stage is checking', c.r.overlay.visible && c.r.overlay.stage?.stage === 'checking' && c.r.overlay.done === false && !c.r.overlay.error);
     await advance(10 * 60 * 1000 + 1);
     svc.finish(svc.calls.build[0].key, { ok: true, cached: false, docId: 1 });
@@ -700,18 +780,21 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     ok('still nothing built', svc.calls.build.length === 0);
   }
 
-  console.log('── 22. no Home mounted: a covered queued build may start, a question is never asked ──');
+  // ⚠️ RETARGETED 2026-09-14: the old title said a covered queued build may start with no Home. Since the sheet, one
+  // nobody said Continue to never starts unseen (C22); this one HAD its Continue — for the plan — so a credits answer
+  // on the re-read is still a question, and with nobody on Home it keeps its place.
+  console.log('── 22. no Home mounted: a question is never asked, and a Continue for the plan never covers a credits answer ──');
   {
     const f = await fresh();
-    for (let n = 1; n <= 3; n++) f.c.r.request(JOB({ rk: 'emp_' + n, company: 'Co' + n }), { explicit: true, showOverlay: false });
-    await advance(0);
+    await startThree(f.c);
     f.c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(f.c);
     f.c.unmount();
     svc.gateImpl = async () => ({ covered: false, via: 'credits', credits: 2 });
     svc.finish(svc.calls.build[0].key, { ok: true, cached: false, docId: 1 });
     await advance(0);
-    ok('no dialog with nobody on Home', alerts.length === 0 && svc.calls.build.length === 3);
+    ok('no dialog (and no sheet) with nobody on Home', alerts.length === 0 && svc.calls.build.length === 3);
     ok('still waiting', f.store.getBuilds()['resume|emp_4']?.phase === 'queued');
   }
 
@@ -727,6 +810,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     // Another chip fails, is held by the service, and the user taps Try again on IT: only its key travels.
     c.r.request(JOB({ rk: 'emp_9', company: 'Nordex' }), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     const key9 = svc.calls.build[0].key;
     svc.finish(key9, { ok: false, reason: 'network', message: 'no answer' });
     await flush();
@@ -738,7 +822,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     };
     const before = svc.calls.recover;
     c.r.openOverlayFor('resume', 'emp_9');
-    await flush();
+    await advance(GAP);
     c.r.retryOverlay();
     await flush(20);
     const opts = svc.calls.recoverOpts[svc.calls.recoverOpts.length - 1];
@@ -770,6 +854,7 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     const { c } = await fresh();
     c.r.request(JOB(), { explicit: true, showOverlay: false });
     await advance(0);
+    await tapContinue(c);
     const key = svc.calls.build[0].key;
     c.r.cancelQueued('resume', 'emp_1');
     await flush();
@@ -792,6 +877,676 @@ const rec = (store, key) => store.getBuilds()[key] || null;
     release();
     await advance(1000);
     ok('the removal still goes through', !threw && !rec(store, 'resume|emp_1') && svc.calls.build.length === 0);
+  }
+
+  /* ── the confirm sheet (asks D and E) ── */
+  const USAGE_PLAN = { kind: 'resume', pool: 'plan', planLabel: 'Plus', remaining: 12, allowance: 15, used: 3, oneTime: false };
+  const USAGE_FREE = { kind: 'resume', pool: 'free', planLabel: null, remaining: 2, allowance: 3, used: 1, oneTime: true };
+  const USAGE_FREE0 = { kind: 'resume', pool: 'free', planLabel: null, remaining: 0, allowance: 3, used: 3, oneTime: true };
+  const PLAN = { covered: true, via: 'plan', usage: USAGE_PLAN, pass: { available: false, forThisEmployer: false } };
+  const FREE = { covered: true, via: 'free', usage: USAGE_FREE, pass: { available: true, forThisEmployer: false } };
+  const QUOTA = { covered: false, via: null, reason: 'quota_exhausted', usage: USAGE_FREE0, pass: { available: false, forThisEmployer: false } };
+  const PASS = { covered: true, via: 'pass', usage: USAGE_FREE0, pass: { available: true, forThisEmployer: true } };
+  const CACHE = { covered: true, via: 'cache' };
+
+  console.log('── C1. covered plan: the sheet asks, nothing builds until Continue ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('no build before Continue', svc.calls.build.length === 0);
+    ok('sheet visible, confirm, plan usage', c.r.confirm.visible && c.r.confirm.mode === 'confirm' && c.r.confirm.usage?.remaining === 12 && c.r.confirm.pass === null && c.r.confirm.company === 'Amazon' && c.r.confirm.kind === 'resume', c.r.confirm);
+    ok('record is still checking', rec(store, 'resume|emp_1')?.phase === 'checking');
+    ok('no overlay while the sheet asks', c.r.overlay.visible === false);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('Continue → one build coveredOnly:true', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true);
+    ok('sheet closed', c.r.confirm.visible === false);
+    ok('overlay held back for the modal gap', c.r.overlay.visible === false && c.r.overlay.key === 'resume|emp_1');
+    await advance(380);
+    ok('overlay up after the gap', c.r.overlay.visible === true && c.r.overlay.key === 'resume|emp_1');
+    c.r.confirm.onContinue();
+    await flush();
+    ok('double Continue builds once', svc.calls.build.length === 1);
+  }
+
+  console.log('── C2. Cancel: nothing starts, the record goes, the next Add asks again ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => FREE; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('free usage shown, server pass not shown for a free answer', c.r.confirm.usage?.pool === 'free' && c.r.confirm.pass === null, c.r.confirm);
+    c.r.confirm.onCancel();
+    await flush();
+    ok('no build, record cleared, sheet closed', svc.calls.build.length === 0 && !rec(store, 'resume|emp_1') && !c.r.confirm.visible);
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('asked again after the gap', !c.r.confirm.visible);
+    await advance(380);
+    ok('…visible once the gap has passed', c.r.confirm.visible && svc.calls.build.length === 0);
+  }
+
+  console.log('── C3. cache hit: no sheet, builds at once ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => CACHE; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('built at once, no sheet', svc.calls.build.length === 1 && !c.r.confirm.visible && c.r.overlay.visible);
+  }
+
+  console.log('── C4. pass answer: confirm with the pass, no count ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => PASS; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('pass shown', c.r.confirm.visible && c.r.confirm.pass?.available === true && c.r.confirm.pass?.forThisEmployer === true && c.r.confirm.usage === null, c.r.confirm);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('built coveredOnly', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true);
+  }
+
+  // ⚠️ THE BUY-ONCE PATH (ask E): buyDownloadPass(company) → re-read the gate → run ONLY on via 'pass' (or a free cache hit).
+  // A gate that still refuses (C8), or now says plan/free (C9, C10), starts nothing: nobody said Continue to THAT.
+  console.log('── C5. quota: the empty sheet; Generate once buys, reads the gate, builds with the pass ──');
+  {
+    let n = 0;
+    const { c, store, notices } = await fresh({ svc: (s) => { s.gateImpl = async () => (n++ < 2 ? QUOTA : PASS); } });
+    c.r.request(JOB(), { explicit: true, showOverlay: false });
+    await advance(0);
+    ok('empty sheet, usage the one that ran out, no pass', c.r.confirm.visible && c.r.confirm.mode === 'empty' && c.r.confirm.usage?.remaining === 0 && c.r.confirm.pass === null, c.r.confirm);
+    ok('no refusal record: still checking', rec(store, 'resume|emp_1')?.phase === 'checking');
+    let release; buyImpl = () => new Promise((r) => { release = r; });
+    c.r.confirm.onBuyOnce();
+    await flush();
+    ok('busy while buying', c.r.confirm.busy === true && buys.length === 1 && buys[0] === 'Amazon', { busy: c.r.confirm.busy, buys });
+    c.r.confirm.onCancel();
+    c.r.confirm.onBuyOnce();
+    await flush();
+    ok('cancel and a second buy are ignored while busy', c.r.confirm.visible && buys.length === 1);
+    const gatesAtPurchase = svc.calls.gate.length;
+    ok('⚠️ nothing built while the store sheet is out', svc.calls.build.length === 0);
+    release({ ok: true, employerUnlocked: true });
+    await advance(0);
+    ok('⚠️ the gate is read AGAIN after the purchase (never "bought, so build")', svc.calls.gate.length > gatesAtPurchase, svc.calls.gate.length - gatesAtPurchase);
+    ok('built with the pass, coveredOnly:true', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true, svc.calls.build.length);
+    ok('…for THIS employer only: bought once, for Amazon', buys.length === 1 && buys[0] === 'Amazon', buys);
+    ok('sheet closed', !c.r.confirm.visible);
+    ok('no notice', notices.length === 0);
+  }
+
+  console.log('── C6. purchase cancelled: not an error, nothing built ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => QUOTA; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    buyImpl = async () => ({ ok: false, cancelled: true });
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    ok('still up, not busy, no error, nothing built', c.r.confirm.visible && !c.r.confirm.busy && c.r.confirm.error === null && svc.calls.build.length === 0, c.r.confirm);
+  }
+
+  console.log('── C7. purchase failed: the store words, one quiet read, nothing built; button stays Generate once ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => QUOTA; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    buyImpl = async () => ({ ok: false, message: 'This is not on sale yet. Please try again shortly.' });
+    const gates = svc.calls.gate.length;
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    ok('error shown, not busy, no build', c.r.confirm.error === 'This is not on sale yet. Please try again shortly.' && !c.r.confirm.busy && svc.calls.build.length === 0, c.r.confirm);
+    ok('pre-check + one quiet read', svc.calls.gate.length === gates + 2, svc.calls.gate.length - gates);
+    ok('pass not claimed', c.r.confirm.pass === null && c.r.confirm.mode === 'empty');
+  }
+
+  console.log('── C8. bought but the gate still refuses: paidNotReady, and the next tap buys NOTHING ──');
+  {
+    let pay = false;
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => (pay ? PASS : QUOTA); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    c.r.confirm.onBuyOnce();
+    await advance(10000);
+    ok('paidNotReady, pass.available', /payment went through/.test(String(c.r.confirm.error)) && c.r.confirm.pass?.available === true && !c.r.confirm.busy && svc.calls.build.length === 0, c.r.confirm);
+    ok('bought once', buys.length === 1);
+    pay = true;
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    ok('second tap: no second purchase, builds with the pass', buys.length === 1 && svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true, { buys: buys.length, builds: svc.calls.build.length });
+  }
+
+  // ⚠️ CONTRACT C1 (2026-09-15): the store said yes and the server has not shown the pass yet. buyDownloadPass answers
+  // ok:false + paid:true (charged) or pending:true (Ask-to-Buy: charged when it clears). Both are BOUGHT to this sheet: the
+  // button becomes "Use my one-time pass", a second tap re-reads the gate and buys NOTHING. It used to re-enable
+  // "Generate once" on ok:false, which is how one need was paid for twice.
+  console.log('── C8b. paid but not visible yet: bought, "applying" words, the next tap buys NOTHING and builds once the pass shows ──');
+  {
+    let pay = false;
+    const { c, notices } = await fresh({ svc: (s) => { s.gateImpl = async () => (pay ? PASS : QUOTA); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    buyImpl = async () => ({ ok: false, paid: true, message: 'Payment went through — we are still applying it. It will be ready in a moment.' });
+    c.r.confirm.onBuyOnce();
+    await advance(10000);
+    ok('⚠️ the sheet is BOUGHT: pass.available (the button is "Use my one-time pass"), payment applying, not busy, nothing built',
+      c.r.confirm.visible && c.r.confirm.pass?.available === true && c.r.confirm.pass?.forThisEmployer === false && c.r.confirm.payment === 'applying' && !c.r.confirm.busy && svc.calls.build.length === 0, c.r.confirm);
+    ok('…its words say the money moved and the pass is being applied — never "that didn\'t go through"',
+      /payment went through/i.test(String(c.r.confirm.error)) && /applying your one-time pass/.test(String(c.r.confirm.error)) && /won’t be charged twice/.test(String(c.r.confirm.error)), c.r.confirm.error);
+    ok('bought once, for Amazon', buys.length === 1 && buys[0] === 'Amazon', buys);
+    const gates = svc.calls.gate.length;
+    c.r.confirm.onBuyOnce();
+    await advance(10000);
+    ok('⚠️ a second tap buys NOTHING: it only re-reads the gate, and the sheet still says applying',
+      buys.length === 1 && svc.calls.gate.length > gates && svc.calls.build.length === 0 && c.r.confirm.visible && c.r.confirm.payment === 'applying', { buys: buys.length, gates: svc.calls.gate.length - gates });
+    pay = true;
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    ok('…and once the pass shows, the same button builds with it — coveredOnly, expectVia pass, still ONE purchase',
+      buys.length === 1 && svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true && svc.calls.build[0].expectVia === 'pass' && !c.r.confirm.visible, { buys: buys.length, build: svc.calls.build[0] });
+    ok('no notice while the sheet held the question', notices.length === 0, notices);
+    ok('analytics: the purchase was recorded as settling', tracked.some(([e, p]) => e === 'home_build_pass_bought' && p.settling === 'applying'), tracked.filter(([e]) => e === 'home_build_pass_bought'));
+  }
+
+  console.log('── C8c. pending (Ask-to-Buy): bought, "approval" words that never claim a charge; Cancel keeps it; no second Buy ──');
+  {
+    const { c, notices } = await fresh({ svc: (s) => { s.gateImpl = async () => QUOTA; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    buyImpl = async () => ({ ok: false, pending: true, message: 'Your payment is still being confirmed.' });
+    c.r.confirm.onBuyOnce();
+    await advance(10000);
+    ok('⚠️ bought, payment approval, pass.available, nothing built', c.r.confirm.visible && c.r.confirm.pass?.available === true && c.r.confirm.payment === 'approval' && !c.r.confirm.busy && svc.calls.build.length === 0, c.r.confirm);
+    ok('…its words: waiting to be approved, NOTHING charged yet — never "went through"',
+      /waiting to be approved/.test(String(c.r.confirm.error)) && /nothing has been charged/.test(String(c.r.confirm.error)) && !/went through/.test(String(c.r.confirm.error)), c.r.confirm.error);
+    c.r.confirm.onBuyOnce();
+    await advance(10000);
+    ok('⚠️ a second tap buys nothing', buys.length === 1 && svc.calls.build.length === 0, buys);
+    c.r.confirm.onCancel();
+    await flush();
+    ok('Cancel: the question goes, the notice says the approval is pending and the pass covers the next employer, nothing built',
+      !c.r.confirm.visible && notices.some((x) => /waiting to be approved/.test(x.text) && /covers the next employer/.test(x.text)) && svc.calls.build.length === 0, notices);
+  }
+
+  console.log('── C8d. the purchase THROWS: not bought — nothing built, no pass claimed, Generate once stays ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => QUOTA; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    buyImpl = async () => { throw new Error('store exploded'); };
+    c.r.confirm.onBuyOnce();
+    await advance(10000);
+    ok('not bought: an error, no pass, no build', c.r.confirm.visible && c.r.confirm.pass === null && c.r.confirm.payment === null && !!c.r.confirm.error && !c.r.confirm.busy && svc.calls.build.length === 0, c.r.confirm);
+  }
+
+  console.log('── C9. pre-check finds it covered by the plan: no purchase, the Continue question ──');
+  {
+    let n = 0;
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => (n++ === 0 ? QUOTA : PLAN); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    ok('no purchase, confirm mode, covered note', buys.length === 0 && c.r.confirm.mode === 'confirm' && /already covered/.test(String(c.r.confirm.error)) && svc.calls.build.length === 0, c.r.confirm);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('Continue builds', svc.calls.build.length === 1);
+  }
+
+  console.log('── C10. bought, then the gate says plan: confirm with the saved note; Cancel tells the pass is kept ──');
+  {
+    let n = 0;
+    const { c, notices } = await fresh({ svc: (s) => { s.gateImpl = async () => (n++ < 1 ? QUOTA : (n <= 2 ? QUOTA : PLAN)); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    ok('confirm with saved note', buys.length === 1 && c.r.confirm.mode === 'confirm' && /pass is saved/.test(String(c.r.confirm.error)), { buys: buys.length, confirm: c.r.confirm });
+    c.r.confirm.onCancel();
+    await flush();
+    ok('notice: pass saved, no build', notices.some((x) => /pass is saved/.test(x.text)) && svc.calls.build.length === 0);
+  }
+
+  console.log('── C10b. bought, then the gate says free: the Continue question, never an auto-spend of the free allowance ──');
+  {
+    let n = 0;
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => (n++ < 2 ? QUOTA : FREE); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    ok('confirm mode on the free pool, nothing built', buys.length === 1 && c.r.confirm.mode === 'confirm' && c.r.confirm.usage?.pool === 'free' && svc.calls.build.length === 0, c.r.confirm);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('only Continue builds it, coveredOnly', svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === true);
+  }
+
+  console.log('── C10c. a covered answer with a count for ANOTHER pool, or none left, shows no number ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: true, via: 'plan', usage: USAGE_FREE, pass: { available: false, forThisEmployer: false } }); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('a plan answer never shows the free count', c.r.confirm.visible && c.r.confirm.usage === null, c.r.confirm.usage);
+  }
+
+  console.log('── C11. capacity: Continue then a slot → starts on the same pool without asking; a changed pool asks again ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    for (let k = 1; k <= 3; k++) {
+      c.r.request(JOB({ rk: 'emp_' + k, company: 'Co' + k }), { explicit: true, showOverlay: false });
+      await advance(0);
+      await advance(400);
+      c.r.confirm.onContinue();
+      await flush();
+    }
+    ok('three running', svc.flights.size === 3, svc.flights.size);
+    c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
+    await advance(400);
+    ok('sheet asks for the 4th even with three running', c.r.confirm.visible && c.r.confirm.company === 'Co4');
+    c.r.confirm.onContinue();
+    await flush();
+    ok('queued with its Continue', rec(store, 'resume|emp_4')?.phase === 'queued' && svc.calls.build.length === 3);
+    svc.finish(svc.calls.build[0].key, { ok: true, cached: false, docId: 1 });
+    await advance(0);
+    ok('drained on the same pool, no second question', svc.calls.build.length === 4 && svc.calls.build[3].company === 'Co4' && !c.r.confirm.visible);
+    // now a 5th with Continue while full, and the pool changes
+    c.r.request(JOB({ rk: 'emp_5', company: 'Co5' }), { explicit: true, showOverlay: false });
+    await advance(400);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('5th queued', rec(store, 'resume|emp_5')?.phase === 'queued');
+    svc.gateImpl = async () => FREE;
+    svc.finish(svc.calls.build[1].key, { ok: true, cached: false, docId: 2 });
+    await advance(0);
+    await advance(400);
+    ok('pool changed → asked again, not started', svc.calls.build.length === 4 && c.r.confirm.visible && c.r.confirm.company === 'Co5' && c.r.confirm.usage?.pool === 'free', c.r.confirm);
+  }
+
+  console.log('── C12. one question at a time: a second request waits for the first sheet ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB({ rk: 'a', company: 'A' }), { explicit: true, showOverlay: false });
+    await advance(0);
+    c.r.request(JOB({ rk: 'b', company: 'B' }), { explicit: true, showOverlay: false });
+    await advance(0);
+    ok('A asks, B parked', c.r.confirm.company === 'A' && rec(store, 'resume|b')?.phase === 'queued');
+    c.r.confirm.onCancel();
+    await advance(0);
+    ok('B not visible during the gap', !c.r.confirm.visible || c.r.confirm.company !== 'B');
+    await advance(400);
+    ok('B asked after the gap', c.r.confirm.visible && c.r.confirm.company === 'B' && svc.calls.build.length === 0, c.r.confirm);
+  }
+
+  console.log('── C13. slow gate: checking overlay, then the sheet only after the gap ──');
+  {
+    let release;
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = () => new Promise((r) => { release = () => r(PLAN); }); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(301);
+    ok('checking overlay', c.r.overlay.visible && c.r.overlay.stage?.stage === 'checking');
+    release();
+    await advance(0);
+    ok('overlay hidden, sheet not yet', !c.r.overlay.visible && !c.r.confirm.visible);
+    await advance(380);
+    ok('sheet after the gap', c.r.confirm.visible);
+    c.r.confirm.onContinue();
+    await flush();
+    await advance(0);
+    ok('overlay held back', !c.r.overlay.visible);
+    await advance(380);
+    ok('overlay after the gap', c.r.overlay.visible && svc.calls.build.length === 1);
+  }
+
+  console.log('── C14. chip removed while the sheet asks: it closes, nothing built ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    const cont = c.r.confirm.onContinue;
+    c.r.cancelQueued('resume', 'emp_1');
+    await flush();
+    ok('sheet closed, record gone', !c.r.confirm.visible && !rec(store, 'resume|emp_1'));
+    cont();
+    await flush();
+    ok('a late Continue builds nothing', svc.calls.build.length === 0);
+  }
+
+  console.log('── C15. chip removed while buying: no build, pass saved notice ──');
+  {
+    let n = 0;
+    const { c, notices } = await fresh({ svc: (s) => { s.gateImpl = async () => (n++ === 0 ? QUOTA : (n === 2 ? QUOTA : PASS)); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    let release; buyImpl = () => new Promise((r) => { release = r; });
+    c.r.confirm.onBuyOnce();
+    await advance(0);
+    c.r.cancelQueued('resume', 'emp_1');
+    await flush();
+    ok('sheet stays while the purchase is out', c.r.confirm.visible && c.r.confirm.busy);
+    release({ ok: true, employerUnlocked: true });
+    await advance(5000);
+    ok('no build, sheet closed, saved notice', svc.calls.build.length === 0 && !c.r.confirm.visible && notices.some((x) => /pass is saved/.test(x.text)), { builds: svc.calls.build.length, v: c.r.confirm.visible, notices });
+  }
+
+  console.log('── C16. See plans: closes, clears, calls the screen once ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => QUOTA; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    c.r.confirm.onSeePlans();
+    c.r.confirm.onSeePlans();
+    await flush();
+    ok('plans once, record gone, nothing built', plans === 1 && !rec(store, 'resume|emp_1') && svc.calls.build.length === 0 && !c.r.confirm.visible);
+  }
+
+  console.log('── C17. forget while the sheet asks: gone ──');
+  {
+    const { c, mod } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    const cont = c.r.confirm.onContinue;
+    mod.forgetHomeBuilds();
+    await flush();
+    cont();
+    await flush();
+    ok('closed, nothing built', !c.r.confirm.visible && svc.calls.build.length === 0);
+  }
+
+  console.log('── C18. unmount while the sheet asks: withdrawn, slot free ──');
+  {
+    const f = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    f.c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('asking', f.c.r.confirm.visible);
+    f.c.unmount();
+    await flush();
+    ok('record withdrawn', !rec(f.store, 'resume|emp_1'));
+    const c2 = mount(() => f.mod.useHomeBuilds({ alive: () => true, rkFor: () => null, onLanded: () => {}, onNotice: () => {}, onSeePlans: () => {} }));
+    await flush();
+    ok('new Home sees no stale question', !c2.r.confirm.visible);
+    c2.r.request(JOB({ rk: 'x', company: 'X' }), { explicit: true });
+    await advance(400);
+    ok('a new question can be asked', c2.r.confirm.visible && c2.r.confirm.company === 'X', c2.r.confirm);
+    c2.unmount();
+  }
+
+  // ⚠️ CONTRACT C2 (2026-09-15): every build the sheet starts names the payer the user was shown (expectVia), so the server
+  // can refuse — 409, nothing bound or charged — a build it would now pay for some OTHER way. The unread gate's Build
+  // (coveredOnly:false) names nothing: it promised the server nothing to hold it to.
+  console.log('── C2a. what each send tells the server to expect ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    await tapContinue(c);
+    ok('Continue on the plan → expectVia plan, coveredOnly', svc.calls.build[0]?.expectVia === 'plan' && svc.calls.build[0]?.coveredOnly === true, svc.calls.build[0]);
+  }
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => FREE; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    await tapContinue(c);
+    ok('Continue on the free allowance → expectVia free', svc.calls.build[0]?.expectVia === 'free', svc.calls.build[0]);
+  }
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => CACHE; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('a cache hit (the one build that starts without a question) → expectVia cache', svc.calls.build.length === 1 && svc.calls.build[0].expectVia === 'cache' && svc.calls.build[0].coveredOnly === true, svc.calls.build[0]);
+  }
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: false, via: null, reason: 'unknown' }); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    alerts[0].buttons.find((b) => b.text === 'Build').onPress();
+    await advance(0);
+    ok('⚠️ the unread-gate dialog\'s Build → coveredOnly:false and NO expectVia (nothing was named, so nothing is promised)',
+      svc.calls.build.length === 1 && svc.calls.build[0].coveredOnly === false && svc.calls.build[0].expectVia === undefined, svc.calls.build[0]);
+  }
+
+  console.log('── C2b. 409 payer_changed: not an ending — nothing was charged, so the gate is read again and the sheet asks again ──');
+  {
+    let n = 0;
+    const { c, store, notices } = await fresh({ svc: (s) => { s.gateImpl = async () => (n++ === 0 ? PLAN : FREE); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    await tapContinue(c);
+    await advance(GAP);
+    ok('building on the plan', rec(store, 'resume|emp_1')?.phase === 'building' && svc.calls.build[0].expectVia === 'plan');
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'payer_changed', message: 'What pays for this resume changed after you confirmed it. Check it and confirm again.' });
+    await advance(GAP);
+    ok('⚠️ no error record and no "didn’t finish" notice: the record is back to checking',
+      rec(store, 'resume|emp_1')?.phase === 'checking' && !notices.some((x) => /didn’t finish/.test(x.text)), { rec: rec(store, 'resume|emp_1'), notices });
+    ok('⚠️ the gate was read AGAIN, and nothing was re-sent on the old expectation', svc.calls.gate.length === 2 && svc.calls.build.length === 1, { gates: svc.calls.gate.length, builds: svc.calls.build.length });
+    ok('…the sheet is back with the NEW payer and says why it is asking again',
+      c.r.confirm.visible && c.r.confirm.mode === 'confirm' && c.r.confirm.usage?.pool === 'free' && /What pays for this changed, so nothing was charged/.test(String(c.r.confirm.error)), c.r.confirm);
+    ok('…and the overlay stepped aside for the question', !c.r.overlay.visible);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('Continue builds again, now naming the free allowance', svc.calls.build.length === 2 && svc.calls.build[1].expectVia === 'free' && svc.calls.build[1].coveredOnly === true, svc.calls.build[1]);
+    ok('analytics: a regate, never a failure', tracked.some(([e, p]) => e === 'home_build_regate' && p.reason === 'payer_changed') && !tracked.some(([e]) => e === 'home_build_fail'), tracked.map(([e]) => e));
+  }
+
+  console.log('── C2c. 409 cache_miss: the promised free copy is gone — the gate is re-read, and a second "cache" answer is no longer believed ──');
+  {
+    // The re-read says the plan would pay now: the sheet, with the cache-miss note.
+    let n = 0;
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => (n++ === 0 ? CACHE : PLAN); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('the cache hit started at once, expectVia cache', svc.calls.build.length === 1 && svc.calls.build[0].expectVia === 'cache');
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'cache_miss', message: 'Your saved resume for this employer has changed.' });
+    await advance(GAP);
+    ok('⚠️ the gate was re-read and the sheet asks about the plan — nothing was re-sent',
+      svc.calls.gate.length === 2 && svc.calls.build.length === 1 && c.r.confirm.visible && c.r.confirm.mode === 'confirm' && c.r.confirm.usage?.pool === 'plan', { gates: svc.calls.gate.length, builds: svc.calls.build.length, confirm: c.r.confirm });
+    ok('…with the cache-miss note', /saved copy wasn’t there any more, so nothing was charged/.test(String(c.r.confirm.error)), c.r.confirm.error);
+    ok('no error record', rec(store, 'resume|emp_1')?.phase !== 'error', rec(store, 'resume|emp_1'));
+  }
+  {
+    // ⚠️ BELIEVED TWICE IT IS A LOOP WITH NO TAP IN IT: a cache answer starts a build on its own, so the same wrong promise
+    // would start, be refused, and start again. A second 'cache' for that chip is treated as an UNREAD gate: it asks
+    // (the dialog), and only a Build tap sends anything — coveredOnly:false, naming no payer.
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => CACHE; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'cache_miss', message: 'gone' });
+    await advance(GAP);
+    ok('⚠️ the re-read said "cache" AGAIN: no build started, no sheet — the unread-gate dialog asks instead',
+      svc.calls.gate.length === 2 && svc.calls.build.length === 1 && !c.r.confirm.visible && alerts.length === 1, { gates: svc.calls.gate.length, builds: svc.calls.build.length, alerts: alerts.length });
+    alerts[0].buttons.find((b) => b.text === 'Build').onPress();
+    await advance(0);
+    ok('…and only its Build sends — coveredOnly:false, no expectVia', svc.calls.build.length === 2 && svc.calls.build[1].coveredOnly === false && svc.calls.build[1].expectVia === undefined, svc.calls.build[1]);
+  }
+
+  console.log('── C2d. 409 with no Home to ask: the record says it was not started and nothing was charged; nothing is re-read or re-sent ──');
+  {
+    const { c, store, env } = await fresh();
+    c.r.request(JOB(), { explicit: true, showOverlay: false });
+    await advance(0);
+    await tapContinue(c);
+    await advance(GAP);
+    env.alive = false;
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'payer_changed', message: 'changed' });
+    await advance(GAP);
+    const r = rec(store, 'resume|emp_1');
+    ok('⚠️ an error record whose words say nothing was charged, reason failed (so Try again goes through the gate)',
+      r?.phase === 'error' && r.error?.reason === 'failed' && /nothing was charged/.test(String(r.error?.message)) && /Start it again from its card/.test(String(r.error?.message)), r);
+    ok('…no gate re-read (nobody to ask) and no second build', svc.calls.gate.length === 1 && svc.calls.build.length === 1, { gates: svc.calls.gate.length, builds: svc.calls.build.length });
+  }
+
+  console.log('── C19. unread gate still the Alert; credits still covered-only ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: false, via: null, reason: 'unknown' }); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('Alert, no sheet', alerts.length === 1 && !c.r.confirm.visible);
+  }
+
+  console.log('── C20. retarget while the sheet asks: the sheet names, and Continue builds, the latest job ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB({ website: 'https://boards.greenhouse.io/amazon' }), { explicit: true });
+    await advance(0);
+    c.r.retarget('resume', 'emp_1', { website: '', company: 'Amazon EU' });
+    await flush();
+    ok('sheet company follows', c.r.confirm.company === 'Amazon EU');
+    c.r.confirm.onContinue();
+    await flush();
+    ok('built the retargeted job', svc.calls.build[0]?.website === '' && svc.calls.build[0]?.company === 'Amazon EU');
+  }
+
+  console.log('── C21. openOverlayFor is ignored while a question is up ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB({ rk: 'a', company: 'A' }), { explicit: true, showOverlay: false });
+    await advance(0);
+    c.r.openOverlayFor('resume', 'a');
+    await flush();
+    ok('no overlay over the sheet', !c.r.overlay.visible && c.r.confirm.visible);
+  }
+
+  console.log('── C22. queued without a Continue and no Home: never starts unseen; with Home: asks ──');
+  {
+    const f = await fresh({ svc: (s) => { s.gateImpl = async () => CACHE; } });
+    for (let k = 1; k <= 3; k++) f.c.r.request(JOB({ rk: 'emp_' + k, company: 'Co' + k }), { explicit: true, showOverlay: false });
+    await advance(0);
+    ok('three cache builds', svc.flights.size === 3);
+    f.c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
+    await advance(0);
+    ok('4th queued (cache, capacity)', rec(f.store, 'resume|emp_4')?.phase === 'queued');
+    f.c.unmount();
+    svc.gateImpl = async () => PLAN;
+    svc.finish(svc.calls.build[0].key, { ok: true, cached: true, docId: 1 });
+    await advance(0);
+    ok('no Home: not started', svc.calls.build.length === 3 && rec(f.store, 'resume|emp_4')?.phase === 'queued');
+    const c2 = mount(() => f.mod.useHomeBuilds({ alive: () => true, rkFor: () => null, onLanded: () => {}, onNotice: () => {}, onSeePlans: () => {} }));
+    await advance(0);
+    ok('with Home: the sheet asks, still not started', c2.r.confirm.visible && c2.r.confirm.company === 'Co4' && svc.calls.build.length === 3, c2.r.confirm);
+    c2.r.confirm.onContinue();
+    await flush();
+    ok('Continue starts it', svc.calls.build.length === 4 && svc.calls.build[3].coveredOnly === true);
+    c2.unmount();
+  }
+
+  console.log('── C23. Try again on a failed build: the sheet, not a silent second build ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => PLAN; } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    c.r.confirm.onContinue();
+    await advance(400);
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'failed', message: 'boom' });
+    await flush();
+    ok('error overlay, retryable', c.r.overlay.visible && c.r.overlay.canRetry);
+    c.r.retryOverlay();
+    await advance(0);
+    ok('no second build yet, overlay down', svc.calls.build.length === 1 && !c.r.overlay.visible);
+    await advance(400);
+    ok('the sheet asks', c.r.confirm.visible);
+    c.r.confirm.onContinue();
+    await flush();
+    ok('rebuilt after Continue', svc.calls.build.length === 2);
+  }
+
+  console.log('── C24. letters: kind flows through ──');
+  {
+    const { c } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: true, via: 'free', usage: { ...USAGE_FREE, kind: 'cover_letter' } }); } });
+    c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true });
+    await advance(0);
+    ok('letter sheet', c.r.confirm.visible && c.r.confirm.kind === 'cover_letter');
+    c.r.confirm.onContinue();
+    await flush();
+    ok('letter built', svc.calls.build[0]?.kind === 'cover_letter' && svc.calls.build[0]?.coveredOnly === true);
+  }
+
+  console.log('── C25. no runBuild(…, false,) came from the sheet paths ──');
+  {
+    const code = require('fs').readFileSync(APP + '/components/employer-home/useHomeBuilds.ts', 'utf8');
+    const falses = code.match(/runBuild\((?:[^()]|\([^()]*\))*?, false,/g) || [];
+    ok('exactly the two unread-gate sends', falses.length === 2, falses);
+  }
+
+
+  console.log('── C26. queued, nothing left, no Home: keeps its place; the new Home gets the EMPTY sheet ──');
+  {
+    const f = await fresh({ svc: (s) => { s.gateImpl = async () => CACHE; } });
+    for (let k = 1; k <= 3; k++) f.c.r.request(JOB({ rk: 'emp_' + k, company: 'Co' + k }), { explicit: true, showOverlay: false });
+    await advance(0);
+    f.c.r.request(JOB({ rk: 'emp_4', company: 'Co4' }), { explicit: true, showOverlay: false });
+    await advance(0);
+    f.c.unmount();
+    svc.gateImpl = async () => QUOTA;
+    svc.finish(svc.calls.build[0].key, { ok: true, cached: true, docId: 1 });
+    await advance(0);
+    ok('no Home: still queued, not refused', f.store.getBuilds()['resume|emp_4']?.phase === 'queued');
+    const c2 = mount(() => f.mod.useHomeBuilds({ alive: () => true, rkFor: () => null, onLanded: () => {}, onNotice: () => {}, onSeePlans: () => {} }));
+    await advance(0);
+    ok('the empty sheet asks on the new Home', c2.r.confirm.visible && c2.r.confirm.mode === 'empty' && c2.r.confirm.company === 'Co4', c2.r.confirm);
+    c2.unmount();
+  }
+
+  console.log('── C27. regen_limit is still the plans refusal (no sheet) ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: false, via: null, reason: 'regen_limit' }); } });
+    c.r.request(JOB(), { explicit: true });
+    await advance(0);
+    ok('overlay refusal, no sheet', !c.r.confirm.visible && c.r.overlay.visible && c.r.overlay.error?.reason === 'regen_limit' && rec(store, 'resume|emp_1')?.phase === 'error');
+  }
+
+  console.log('── C28. the confirm view never names credits ──');
+  {
+    const code = require('fs').readFileSync(APP + '/components/employer-home/GenerateConfirmSheet.tsx', 'utf8');
+    const lits = [...code.replace(/\/\/[^\n]*/g, '').matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g)].map((m) => m[0]);
+    ok('no credit wording in the sheet', lits.length > 20 && !lits.some((l) => /credit/i.test(l)), lits.filter((l) => /credit/i.test(l)));
+    ok('no useNativeDriver:false in the sheet', !/useNativeDriver:\s*false/.test(code));
+    ok('header', /^\/\/ AI Hub — new feature\. Safe to delete/.test(code));
+  }
+
+  console.log('── G. checkBuildGate (services/homeAddEmployer.ts): usage + pass parsed STRICTLY, never able to change the answer ──');
+  {
+    // The REAL service, transpiled, against a stubbed fetch: what the sheet is told comes from here. A loose mapping
+    // is how a silent charge gets back in (the answer), and how the sheet would quote numbers the server never sent.
+    const GATE_SVC = transpile(path.join(APP, 'services/homeAddEmployer.ts'), 'homeAddEmployer.ts');
+    const sent = [];
+    let answer = { status: 200, json: {} };
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => { sent.push({ url, body: init && init.body ? JSON.parse(init.body) : null }); return { status: answer.status, ok: answer.status < 400, json: async () => answer.json }; };
+    const prevLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+      if (request === 'expo-secure-store') return { getItemAsync: async () => JSON.stringify({ token: 'T', id: 1 }), setItemAsync: async () => {}, deleteItemAsync: async () => {} };
+      if (request === '@react-native-async-storage/async-storage') return { default: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} } };
+      if (request === '../config') return { API_BASE: 'https://api.test' };
+      if (request === './employerHomeService') return { gradFor: () => ['#000', '#111'], cleanJobUrl: (u) => u, deviceHeaders: async () => ({}) };
+      return prevLoad.apply(this, arguments);
+    };
+    try {
+      delete require.cache[GATE_SVC];
+      const G = require(GATE_SVC);
+      const ask = async (json, kind = 'resume', status = 200) => { answer = { status, json }; const p = G.checkBuildGate('Acme', { website: 'https://acme.com' }, kind, { employerId: 'e1' }); await flush(); return p; };
+      const U = { kind: 'resume', pool: 'plan', planLabel: 'Plus', remaining: 12, allowance: 15, used: 3, oneTime: false };
+      let g = await ask({ covered: true, via: 'plan', usage: U, pass: { available: false, forThisEmployer: false } });
+      ok('a covered plan answer carries usage and pass as sent', g.covered === true && g.via === 'plan' && JSON.stringify(g.usage) === JSON.stringify(U)
+        && JSON.stringify(g.pass) === JSON.stringify({ available: false, forThisEmployer: false }), g);
+      ok('…asked on the resume DOC lane', /\/resume-builder\/generation-gate$/.test(sent[sent.length - 1].url) && sent[sent.length - 1].body.saveTo === 'employer_doc');
+      g = await ask({ covered: true, via: 'cache', credits: null, reason: null, usage: null, pass: null });
+      ok('a cache hit with null extras → no usage / pass keys at all (absent, never undefined-valued)', g.via === 'cache' && !('usage' in g) && !('pass' in g), g);
+      g = await ask({ covered: false, via: null, reason: 'quota_exhausted', usage: { ...U, pool: 'free', planLabel: null, remaining: 0, allowance: 3, used: 3, oneTime: true }, pass: { available: false, forThisEmployer: true } });
+      ok('quota_exhausted keeps its reason and carries both', g.reason === 'quota_exhausted' && g.usage.remaining === 0 && g.usage.oneTime === true && g.pass.forThisEmployer === true, g);
+      g = await ask({ covered: true, via: 'free', usage: { ...U, remaining: '2' }, pass: { available: 'yes', forThisEmployer: false } });
+      ok('⚠️ a count sent as a string, or a flag that is not a boolean, is DROPPED — the answer still stands', g.covered === true && g.via === 'free' && !('usage' in g) && !('pass' in g), g);
+      g = await ask({ covered: true, via: 'plan', usage: { ...U, kind: 'cover_letter' } });
+      ok('⚠️ a count for the OTHER kind of document is dropped', g.via === 'plan' && !('usage' in g), g);
+      g = await ask({ covered: true, via: 'plan', usage: { ...U, remaining: -1 } });
+      ok('…and so is a negative count', !('usage' in g), g);
+      g = await ask({ covered: true, via: 'credits', usage: U });
+      ok('⚠️ extras never rescue a malformed answer: covered + credits is still UNKNOWN (ask first)', g.covered === false && g.reason === 'unknown' && !('usage' in g), g);
+      g = await ask({ covered: true, via: 'plan', usage: U }, 'resume', 500);
+      ok('a 500 is unknown, whatever it carries', g.reason === 'unknown' && !('usage' in g), g);
+      g = await ask({ covered: true, via: 'pass', usage: { ...U, kind: 'cover_letter', pool: 'free' }, pass: { available: true, forThisEmployer: true } }, 'cover_letter');
+      ok('the letter gate: its own endpoint, its own kind', /\/cover-letter\/employer-gate$/.test(sent[sent.length - 1].url) && g.via === 'pass' && g.usage && g.usage.kind === 'cover_letter' && g.pass.available === true, g);
+    } finally {
+      Module._load = prevLoad;
+      global.fetch = realFetch;
+    }
   }
 
   console.log(`\nhome builds: ${pass} passed, ${fail} failed`);

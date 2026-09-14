@@ -327,6 +327,482 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   }
   ok('⚠️ the shared researcher is not modified by this round (the letter lane still uses it)', !/key_contacts[\s\S]{0,40}delete/.test(R('ai-employer-researcher.js')) && typeof require(path.join(ROOT, 'ai-employer-researcher.js')).researchEmployer === 'function');
 
+  console.log('── ⚠️ ASK C (2026-09-14): hiring CONVENTIONS — sanitised before they are cached or prompted ──');
+  {
+    ok('⚠️ RESEARCH_REV stays r1 and FP_VERSION stays v1 — the conventions round must not turn every paid document stale',
+      er.RESEARCH_REV === 'r1' && docs.FP_VERSION === 'v1');
+    const c = er.sanitiseConventions({
+      hq_country: 'Remote', role_country: 'Deutschland', employer_type: 'Government agency', sector: 'Contact Hans Muster for details',
+      ats_vendor: 'in-house', tone: 'formal',
+      cv: {
+        photo: 'yes, expected', length: '1-2 pages', personal_details: 'not expected', date_format: 'MM/YYYY', format: 'Lebenslauf',
+        notes: ['Email hr@acme.com to apply now please', 'short', 'A'.repeat(300) + ' tail', 'Contact Jane Doe for questions about roles',
+          'CVs in Germany are usually tabular with dates first.', 'CVs in Germany are usually tabular with dates first.',
+          'note three is long enough', 'note four is long enough', 'note five is long enough', 'note six is long enough'],
+      },
+      sources: ['http://insecure.example/x', 'https://ok.example/a#frag', 'https://user:pw@ok.example/', 'javascript:alert(1)',
+        'https://vertexaisearch.cloud.google.com/redirect/x', 'https://a.example', 'https://b.example', 'https://c.example', 'https://d.example'],
+    });
+    const TYPES = ['public_sector', 'enterprise', 'sme', 'startup', 'agency', 'ngo', 'academia', 'other', null];
+    ok('the contract shape, every enum from its closed list', c && TYPES.includes(c.employerType)
+      && ['expected', 'optional', 'avoid', null].includes(c.cv.photo) && ['one_page', 'two_pages', 'flexible', null].includes(c.cv.length)
+      && ['include', 'avoid', null].includes(c.cv.personalDetails) && ['tabular', 'narrative', 'europass', 'ats_plain', null].includes(c.cv.format)
+      && JSON.stringify(Object.keys(c).sort()) === JSON.stringify(['atsVendor', 'cv', 'employerType', 'hqCountry', 'roleCountry', 'sector', 'sources', 'tone'])
+      && JSON.stringify(Object.keys(c.cv).sort()) === JSON.stringify(['dateFormat', 'format', 'length', 'notes', 'personalDetails', 'photo']), c);
+    ok('synonyms map to the enum ("Government agency" → public_sector, "not expected" → avoid, "Lebenslauf" → tabular)',
+      c.employerType === 'public_sector' && c.cv.photo === 'expected' && c.cv.personalDetails === 'avoid' && c.cv.format === 'tabular' && c.cv.dateFormat === 'MM/YYYY', c);
+    ok('⚠️ …and a PR agency is still an agency, a recruiter is an agency', er.sanitiseConventions({ employer_type: 'Public relations agency' }).employerType === 'agency'
+      && er.sanitiseConventions({ employer_type: 'Recruitment agency' }).employerType === 'agency');
+    ok('countries only when real ("Remote" → null, "Deutschland" → Germany)', c.hqCountry === null && c.roleCountry === 'Germany', [c.hqCountry, c.roleCountry]);
+    ok('⚠️ person- and contact-shaped text never survives (sector naming a person, an "in-house" ATS)', c.sector === null && c.atsVendor === null, [c.sector, c.atsVendor]);
+    ok('⚠️ notes: ≤ 5, each ≤ 160 chars, no email / named person / too-short / duplicate',
+      c.cv.notes.length === 5 && c.cv.notes.every((n) => n.length <= 160 && n.length >= 12) && !c.cv.notes.some((n) => /@|Jane Doe/.test(n))
+      && new Set(c.cv.notes.map((n) => n.toLowerCase())).size === c.cv.notes.length, c.cv.notes);
+    ok('⚠️ sources: ≤ 5, https only, no credentials, no fragment, no Google redirect',
+      c.sources.length === 5 && c.sources.every((u) => /^https:\/\//.test(u) && !/@|#|vertexaisearch|javascript/.test(u)) && c.sources[0] === 'https://ok.example/a', c.sources);
+    const g = er.sanitiseConventions({ employer_type: 'startup', sources: ['https://evil.example/x', 'https://grounded.example/p'] },
+      { groundedHosts: new Set(['grounded.example', 'other-grounded.example']), domain: 'acme.com' });
+    ok('⚠️ with grounding: only hosts the search really returned, plus the grounded ones it did not list',
+      JSON.stringify(g.sources) === JSON.stringify(['https://grounded.example/p', 'https://other-grounded.example/']), g.sources);
+    ok('sources alone are not knowledge → null; garbage → null', er.sanitiseConventions({ sources: ['https://a.example'] }) === null
+      && er.sanitiseConventions(null) === null && er.sanitiseConventions([1, 2]) === null && er.sanitiseConventions('x') === null);
+    ok('a cached research row keeps its conventions through sanitiseResearch', (er.sanitiseResearch({ industry: 'Retail', conventions: { employer_type: 'sme' } }, 'x.com') || {}).conventions?.employerType === 'sme');
+
+    console.log('── conventionsPromptBlock: facts + "never invent", resume vs letter ──');
+    const full = { hqCountry: 'Switzerland', employerType: 'sme', sector: 'Precision engineering', atsVendor: 'Workday', tone: 'formal',
+      cv: { photo: 'expected', length: 'two_pages', personalDetails: 'include', dateFormat: 'MM.YYYY', format: 'tabular', notes: ['Swiss CVs list dates first for every role.', 'Write to hr@acme.ch for a call'] } };
+    const rb = er.conventionsPromptBlock(full, 'Acme AG');
+    const lb = er.conventionsPromptBlock(full, 'Acme AG', { forLetter: true });
+    ok("'' for null, and '' for countries alone (nothing to act on)", er.conventionsPromptBlock(null, 'Acme') === ''
+      && er.conventionsPromptBlock({ hqCountry: 'Germany', roleCountry: 'Germany' }, 'Acme') === '');
+    ok('⚠️ resume block: headed as research, CV conventions stated, and conventions never invent a candidate fact',
+      rb.startsWith('=== HOW Acme AG HIRES (web research — may be incomplete or wrong) ===') && /CV conventions: /.test(rb)
+      && /never change what is true about the candidate/.test(rb) && /NEVER invent anything to satisfy a convention/.test(rb)
+      && /Never mention Acme AG, these conventions or this research anywhere in the resume/.test(rb) && rb.endsWith('=== END OF HIRING CONVENTIONS ==='), rb);
+    ok('⚠️ letter block: no CV habits (photo, length, personal details belong to the resume), still never invents',
+      /=== HOW Acme AG HIRES/.test(lb) && !/CV conventions: /.test(lb) && /never mention them in the letter/.test(lb) && /Never state or imply a fact/.test(lb), lb);
+    ok('⚠️ a contact-shaped note is never prompted', !/hr@acme\.ch/.test(rb + lb) && /Swiss CVs list dates first/.test(rb));
+
+    console.log('── regionForConventions / regionFromCountry: every country, one chain ──');
+    ok('the chain: the caller\'s country → research roleCountry → website ccTLD → research hqCountry → region word → generic',
+      er.regionForConventions({ hqCountry: 'Germany', roleCountry: 'Austria' }, { country: 'India', website: 'https://x.co.uk' }) === 'india'
+      && er.regionForConventions({ hqCountry: 'Germany', roleCountry: 'Austria' }, { website: 'https://x.co.uk' }) === 'dach'
+      && er.regionForConventions({ hqCountry: 'Germany' }, { website: 'https://x.co.uk' }) === 'uk_au'
+      && er.regionForConventions({ hqCountry: 'Germany' }, { website: 'https://x.com' }) === 'dach'
+      && er.regionForConventions(null, { country: 'Europe' }) === 'eu'
+      && er.regionForConventions(null, {}) === 'generic' && er.regionForConventions('garbage', { country: 42 }) === 'generic');
+    const RC = require(path.join(ROOT, 'server/utils/regionFromCountry.js'));
+    const want = {
+      Morocco: 'eu', Tunisia: 'eu', Algeria: 'eu', 'United Arab Emirates': 'eu', 'Saudi Arabia': 'eu', Qatar: 'eu',
+      Nigeria: 'uk_au', Ghana: 'uk_au', Kenya: 'uk_au', 'South Africa': 'uk_au', Brazil: 'eu', Mexico: 'eu', Argentina: 'eu',
+      Switzerland: 'dach', Austria: 'dach', Germany: 'dach', India: 'india', Singapore: 'sg', Japan: 'sg', Canada: 'us_ca',
+      'United States': 'us_ca', Australia: 'uk_au', 'Casablanca, Morocco': 'eu', Remote: 'generic',
+    };
+    const wrong = Object.entries(want).filter(([k, v]) => fit.regionFor({ country: k }) !== v || RC.regionFromCountry(k) !== v);
+    ok('the contract\'s mappings (Maghreb → eu, Gulf → eu, West/East/South Africa → uk_au, LatAm → eu, …)', wrong.length === 0, wrong.map(([k, v]) => [k, v, fit.regionFor({ country: k })]));
+    const gulf = RC.cvDefaultsFor(RC.placeFor({ country: 'Qatar' }));
+    ok('…and the Gulf is a photo + personal-details profile inside eu', gulf && gulf.photo === 'expected' && gulf.personalDetails === 'include', gulf);
+    ok('⚠️ THE PROD BUG: a .ma host and a .com.gh host are no longer "generic"',
+      fit.regionFor({ website: 'https://anapec.ma' }) === 'eu' && fit.regionFor({ website: 'https://jobberman.com.gh' }) === 'uk_au');
+    ok('regionFromTld falls back through conventions.hqCountry (a German enterprise on .com); a vanity .io is no country',
+      RC.regionFromTld('https://siemens-energy.com', { hqCountry: 'Germany' }) === 'dach' && fit.regionFor({ website: 'https://acme.io' }) === 'generic'
+      && RC.regionFromTld('https://siemens-energy.com') === 'generic');
+
+    console.log('── ⚠️ the ranking now differs BY EMPLOYER (the prod bug: every employer got exec_pro first) ──');
+    const T = require(path.join(ROOT, 'server/utils/resumeTemplates.js'));
+    const famOf = (id) => (T.TEMPLATES.find((t) => t.id === id) || {}).family;
+    const conv = (o) => ({ roleCountry: o.hqCountry, sources: [], tone: null, sector: null, atsVendor: null, ...o, cv: { dateFormat: null, notes: [], ...o.cv } });
+    const S = {
+      swissSme: { website: 'https://acme-ag.ch', industry: 'Precision engineering', companySize: '51-200 employees',
+        conventions: conv({ hqCountry: 'Switzerland', employerType: 'sme', sector: 'Precision engineering', tone: 'formal', cv: { photo: 'expected', length: 'two_pages', personalDetails: 'include', format: 'tabular' } }) },
+      moroccanAgency: { website: 'https://anapec.ma', industry: 'Government agency',
+        conventions: conv({ hqCountry: 'Morocco', employerType: 'public_sector', sector: 'Public employment services', tone: 'formal', cv: { photo: 'optional', length: 'one_page', personalDetails: 'include', format: 'narrative' } }) },
+      ghanaianSite: { website: 'https://jobberman.com.gh', industry: 'Recruitment job site',
+        conventions: conv({ hqCountry: 'Ghana', employerType: 'agency', sector: 'Online job board / recruitment', cv: { photo: 'avoid', length: 'two_pages', personalDetails: null, format: 'narrative' } }) },
+      usStartup: { website: 'https://acme.io', industry: 'Software', companySize: '11-50 employees',
+        conventions: conv({ hqCountry: 'United States', employerType: 'startup', sector: 'SaaS', atsVendor: 'Ashby', tone: 'casual', cv: { photo: 'avoid', length: 'one_page', personalDetails: 'avoid', format: 'ats_plain' } }) },
+      germanEnterpriseDotCom: { website: 'https://siemens-energy.com', industry: 'Energy', companySize: '10,001+ employees',
+        conventions: conv({ hqCountry: 'Germany', employerType: 'enterprise', sector: 'Energy technology', atsVendor: 'SAP SuccessFactors', tone: 'formal', cv: { photo: 'optional', length: 'two_pages', personalDetails: 'include', format: 'tabular' } }) },
+      londonStudio: { website: 'https://pentagram.co.uk', industry: 'Graphic design studio', companySize: '51-200 employees',
+        conventions: conv({ hqCountry: 'United Kingdom', employerType: 'agency', sector: 'Design studio', tone: 'creative', cv: { photo: 'avoid', length: 'two_pages', personalDetails: 'avoid', format: 'narrative' } }) },
+    };
+    const EXEC_BIAS = { exec_pro: { score: 80, reason: 'Senior look' }, executive: { score: 72 }, mono: { score: 60 } };
+    const rank = (s, o = {}) => fit.rankResumeDesigns({ website: s.website, conventions: s.conventions, employerType: s.conventions.employerType,
+      industry: s.industry, companySize: s.companySize || null, seniorityYears: 2, ...o });
+    const top = {};
+    for (const [k, s] of Object.entries(S)) {
+      const d = rank(s);
+      top[k] = { region: d.region, fam: famOf(d.ranked[0].id), senior: famOf(rank(s, { seniorityYears: 20 }).ranked[0].id), biased: famOf(rank(s, { seniorityYears: 20, aiFamilyScores: EXEC_BIAS }).ranked[0].id), d };
+      ok(`${k}: every id once, sorted (invariants)`, invariant(d, RIDS, 'resume') === null, invariant(d, RIDS, 'resume'));
+    }
+    const view = Object.fromEntries(Object.entries(top).map(([k, v]) => [k, [v.region, v.fam, v.senior, v.biased]]));
+    ok('regions: Swiss dach, Moroccan eu, Ghanaian uk_au, US us_ca, German-on-.com dach (hqCountry), London uk_au',
+      top.swissSme.region === 'dach' && top.moroccanAgency.region === 'eu' && top.ghanaianSite.region === 'uk_au' && top.usStartup.region === 'us_ca'
+      && top.germanEnterpriseDotCom.region === 'dach' && top.londonStudio.region === 'uk_au', view);
+    ok('a Swiss SME and a German enterprise on .com lead with the tabular German CV', top.swissSme.fam === 'germany' && top.germanEnterpriseDotCom.fam === 'germany', view);
+    ok('a US startup leads with a startup / engineering single column, never exec_pro', ['startup', 'mono'].includes(top.usStartup.fam), view);
+    ok('a London design studio leads with a visual layout', ['banner', 'rightrail', 'timeline'].includes(top.londonStudio.fam), view);
+    ok('a Moroccan public agency leads with a formal, plain family; a Ghanaian job site with an ATS-first single column',
+      ['ats', 'exec_pro', 'elegant'].includes(top.moroccanAgency.fam) && ['ats', 'exec_pro'].includes(top.ghanaianSite.fam), view);
+    const distinct = new Set(Object.values(top).map((v) => v.fam));
+    ok('⚠️ six employers no longer share one top family (≥ 4 different leaders)', distinct.size >= 4, [...distinct]);
+    ok('⚠️ seniority is a minor factor: 2 vs 20 years never changes the leader for the Swiss, German, London or US employer',
+      ['swissSme', 'germanEnterpriseDotCom', 'londonStudio', 'usStartup'].every((k) => top[k].fam === top[k].senior), view);
+    ok('⚠️ an exec_pro-biased model + a 20-year career still does not move the Swiss, London or US leader',
+      ['swissSme', 'londonStudio'].every((k) => top[k].biased === top[k].fam) && top.usStartup.biased !== 'exec_pro' && new Set(Object.values(top).map((v) => v.biased)).size >= 4, view);
+    ok('the design says why, in the employer\'s terms: conventionsSummary (≤ 120) names the country, the reason names it too',
+      top.swissSme.d.conventionsSummary && top.swissSme.d.conventionsSummary.length <= 120 && /Switzerland/.test(top.swissSme.d.conventionsSummary)
+      && /Switzerland/.test(top.swissSme.d.ranked[0].reason), [top.swissSme.d.conventionsSummary, top.swissSme.d.ranked[0].reason]);
+    const L = (s) => fit.rankLetterDesigns({ website: s.website, conventions: s.conventions, employerType: s.conventions.employerType, industry: s.industry });
+    ok('letters too: the German-speaking employers lead with the German letter, the others never do',
+      L(S.swissSme).ranked[0].id === 'german' && L(S.germanEnterpriseDotCom).ranked[0].id === 'german'
+      && ['usStartup', 'londonStudio', 'ghanaianSite', 'moroccanAgency'].every((k) => L(S[k]).ranked[0].id !== 'german')
+      && invariant(L(S.moroccanAgency), LIDS, 'cover_letter') === null);
+
+    console.log('── rerankDesign: a stored design re-ranked for FREE (no AI), and normaliseDesign keeps what that needs ──');
+    const prodLike = fit.rankResumeDesigns({ aiFamilyScores: EXEC_BIAS, region: 'generic', seniorityYears: 20, mode: 'a4' });
+    ok('(the prod-like stored design leads with an exec family)', ['exec_pro', 'executive'].includes(famOf(prodLike.ranked[0].id)), prodLike.ranked.slice(0, 3));
+    const stored = JSON.parse(JSON.stringify(prodLike));
+    const rr = fit.rerankDesign(stored, { conventions: S.swissSme.conventions, website: S.swissSme.website, seniorityYears: 20, kind: 'resume',
+      companySize: S.swissSme.companySize, industry: S.swissSme.industry, employerType: 'sme' });
+    ok('⚠️ with Swiss conventions the stored exec design re-ranks to the German CV, region dach, invariants intact',
+      famOf(rr.ranked[0].id) === 'germany' && rr.region === 'dach' && invariant(rr, RIDS, 'resume') === null, rr.ranked.slice(0, 3));
+    ok('…the stored aiFamilies stand in for the model (kept), the input is never mutated, and it is deterministic',
+      rr.aiFamilies && rr.aiFamilies.exec_pro && JSON.stringify(stored) === JSON.stringify(prodLike)
+      && JSON.stringify(fit.rerankDesign(stored, { conventions: S.swissSme.conventions, website: S.swissSme.website, seniorityYears: 20, kind: 'resume', companySize: S.swissSme.companySize, industry: S.swissSme.industry, employerType: 'sme' })) === JSON.stringify(rr));
+    ok('…a headline about a design that no longer leads is not kept', rr.headline !== prodLike.headline || famOf(rr.ranked[0].id) === famOf(prodLike.ranked[0].id), [rr.headline, prodLike.headline]);
+    const lStored = fit.rankLetterDesigns({ region: 'generic', seniorityYears: 20 });
+    const lr = fit.rerankDesign(lStored, { kind: 'cover_letter', conventions: S.germanEnterpriseDotCom.conventions, website: S.germanEnterpriseDotCom.website });
+    ok('a stored letter design re-ranks to the German letter for the German enterprise', lr.ranked[0].id === 'german' && invariant(lr, LIDS, 'cover_letter') === null, lr.ranked.slice(0, 3));
+    const nd = fit.normaliseDesign({ ...prodLike, aiFamilies: { exec_pro: { score: 140, reason: 'x' }, not_a_family: { score: 50 } }, conventionsSummary: 'y'.repeat(300) }, 'resume');
+    ok('normaliseDesign keeps aiFamilies (clamped, catalogue families only) and conventionsSummary (≤ 120)',
+      nd.aiFamilies && nd.aiFamilies.exec_pro && nd.aiFamilies.exec_pro.score <= 100 && !('not_a_family' in nd.aiFamilies)
+      && typeof nd.conventionsSummary === 'string' && nd.conventionsSummary.length <= 120, { ai: nd.aiFamilies, len: nd.conventionsSummary && nd.conventionsSummary.length });
+
+    console.log('── ⚠️ getEmployerResearch: the conventions call in flight — base on time, conventions later, ONE call per domain ──');
+    {
+      const researcher = require(path.join(ROOT, 'ai-employer-researcher.js'));
+      const realRE = researcher.researchEmployer;
+      const realRC = er.researchConventions;
+      const realRB = er.researchBrand, realGF = er.googleFontCheck;
+      // ⚠️ NO NETWORK: the website read (employerResearch.researchBrand → brandExtract) and the Google Fonts check are stubbed —
+      // unstubbed, every fake domain here cost a real NXDOMAIN lookup (~1 s), and a resolver that hijacks NXDOMAIN could feed a page.
+      er.researchBrand = async () => null; er.googleFontCheck = async () => false;
+      reset();
+      // ⚠️ KEEP THE PROCESS ALIVE: employerResearch unref()s every timer it sets (a server must not be held open by a
+      // research wait), so with the conventions call parked on a promise nothing else would keep node running — the
+      // script would exit 0 in the middle of this block, silently skipping everything after it.
+      const keepAlive = setInterval(() => {}, 1000);
+      let rcCalls = 0, reCalls = 0, releaseConv = null;
+      researcher.researchEmployer = async () => { reCalls++; return { employer_name: 'Flight Co', industry: 'Logistics' }; };
+      er.researchConventions = () => { rcCalls++; return new Promise((r) => { releaseConv = () => r({ answered: true, conventions: er.sanitiseConventions({ employer_type: 'sme', hq_country: 'Austria' }) }); }); };
+      try {
+        const r1 = await er.getEmployerResearch({ website: 'https://flight-co-test.com', name: 'My Typed Name' }, { timeoutMs: 60 });
+        ok('⚠️ a caller whose timeout fires first still gets the base research (conventions null), not null',
+          r1 && r1.industry === 'Logistics' && r1.conventions === null, r1);
+        const r2 = await er.getEmployerResearch({ website: 'https://www.flight-co-test.com/jobs' }, { timeoutMs: 30 });
+        ok('⚠️ a concurrent caller joins the same flight: ONE researcher call, ONE conventions call', r2 && r2.industry === 'Logistics' && reCalls === 1 && rcCalls === 1, { reCalls, rcCalls });
+        releaseConv();
+        await new Promise((r) => setTimeout(r, 30));
+        const writes = db.log.filter((e) => /^INSERT INTO employer_research_cache/.test(e.sql));
+        const patchW = writes.find((e) => /DO UPDATE SET research = employer_research_cache\.research \|\| EXCLUDED\.research$/.test(e.sql));
+        ok('⚠️ the late conventions answer persists itself, MERGED into the row (||), without touching fetched_at',
+          !!patchW && JSON.parse(patchW.params[1]).conventions && JSON.parse(patchW.params[1]).conventions.employerType === 'sme', writes.map((w) => w.sql.slice(-80)));
+        ok('…the base write merges too (|| and a fresh fetched_at) and carries the answered conventions',
+          writes.some((e) => /research = employer_research_cache\.research \|\| EXCLUDED\.research, fetched_at = NOW\(\)$/.test(e.sql)), writes.map((w) => w.sql.slice(-80)));
+        ok('⚠️ the requester\'s typed name never reaches the shared cache', writes.length >= 2 && !writes.some((e) => /My Typed Name/.test(String(e.params[1]))));
+        ok('…and no second conventions call was made for it', rcCalls === 1);
+
+        reset(); rcCalls = 0; reCalls = 0;
+        db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: { domain: 'old-row-test.com', employerName: 'Old Row', industry: 'Retail' }, fetched_at: new Date() } : null);
+        er.researchConventions = async () => { rcCalls++; return { answered: true, conventions: er.sanitiseConventions({ employer_type: 'enterprise' }) }; };
+        const r3 = await er.getEmployerResearch({ website: 'https://old-row-test.com' }, { timeoutMs: 2000 });
+        ok('⚠️ an old cache row without conventions gets them on read: no researcher call, ONE conventions call',
+          r3 && r3.industry === 'Retail' && r3.conventions && r3.conventions.employerType === 'enterprise' && reCalls === 0 && rcCalls === 1, { r3, reCalls, rcCalls });
+        const w3 = db.log.filter((e) => /^INSERT INTO employer_research_cache/.test(e.sql));
+        ok('…merged into that row with its fetched_at unchanged (no base write)', w3.length === 1 && !/fetched_at = NOW\(\)$/.test(w3[0].sql), w3.map((w) => w.sql.slice(-80)));
+        ok('getEmployerResearch accepts a country and never lets it into the flight', /void country;/.test(strip(R('server/services/employerResearch.js'))));
+      } finally {
+        clearInterval(keepAlive);
+        researcher.researchEmployer = realRE;
+        er.researchConventions = realRC;
+        er.researchBrand = realRB; er.googleFontCheck = realGF;
+        reset();
+      }
+    }
+
+    console.log('── ⚠️ conventions (2026-09-15): an EMPTY answer is remembered, the grounded call has room to answer, unverifiable sources are none ──');
+    {
+      const researcher = require(path.join(ROOT, 'ai-employer-researcher.js'));
+      const realRE = researcher.researchEmployer;
+      const realRC = er.researchConventions;
+      const realRB = er.researchBrand, realGF = er.googleFontCheck;
+      // ⚠️ NO NETWORK: the website read (employerResearch.researchBrand → brandExtract) and the Google Fonts check are stubbed —
+      // unstubbed, every fake domain here cost a real NXDOMAIN lookup (~1 s), and a resolver that hijacks NXDOMAIN could feed a page.
+      er.researchBrand = async () => null; er.googleFontCheck = async () => false;
+      const keepAlive = setInterval(() => {}, 1000);   // see above: every timer in employerResearch is unref()'d
+      let rcCalls = 0, reCalls = 0;
+      researcher.researchEmployer = async () => { reCalls++; return { employer_name: 'Empty Co', industry: 'Logistics' }; };
+      try {
+        // ⚠️ A ROW THAT IS ONLY "CHECKED, NOTHING FOUND" IS STILL A ROW. It sanitises to null (no fact at all), and readCache
+        // used to answer null for it = "never checked" — so the grounded (PAID) conventions call repeated on EVERY build
+        // for that domain, for the whole TTL.
+        reset();
+        db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: { conventions: null, conventionsAt: new Date().toISOString() }, fetched_at: new Date() } : null);
+        const rc = await er._internals.readCache('empty-conv-test.com');
+        ok('⚠️ readCache: a checked-but-empty row reads as { research:null, hasBase:false, conventionsChecked:true }, not null',
+          JSON.stringify(rc) === JSON.stringify({ research: null, hasBase: false, conventionsChecked: true }), rc);
+        er.researchConventions = async () => { rcCalls++; return { answered: true, conventions: null }; };
+        const r1 = await er.getEmployerResearch({ website: 'https://empty-conv-test.com' }, { timeoutMs: 2000 });
+        ok('⚠️ …so a build for that domain researches the BASE (one researcher call) and makes NO grounded conventions call',
+          reCalls === 1 && rcCalls === 0 && r1 && r1.industry === 'Logistics' && r1.conventions === null, { reCalls, rcCalls, r1 });
+        // A stale check (past the TTL) is no check at all: the conventions are asked again.
+        reset(); rcCalls = 0; reCalls = 0;
+        const stale = new Date(Date.now() - 45 * 24 * 3600 * 1000).toISOString();
+        db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: { conventions: null, conventionsAt: stale }, fetched_at: new Date() } : null);
+        ok('a stale "checked" stamp is no row at all', (await er._internals.readCache('stale-conv-test.com')) === null);
+        await er.getEmployerResearch({ website: 'https://stale-conv-test.com' }, { timeoutMs: 2000 });
+        ok('…and that domain asks for its conventions again (one call)', rcCalls === 1, rcCalls);
+        // ⚠️ IN MEMORY TOO: with no row to read back (no DB, a failed write) an empty answer must still stop the repeat.
+        reset(); rcCalls = 0; reCalls = 0;
+        db.answer = () => null;
+        await er.getEmployerResearch({ website: 'https://nodb-conv-test.com' }, { timeoutMs: 2000 });
+        await er.getEmployerResearch({ website: 'https://nodb-conv-test.com' }, { timeoutMs: 2000 });
+        ok('⚠️ two builds, no cache row, an EMPTY answer: ONE grounded call, not two (the empty answer is remembered in memory)', rcCalls === 1, rcCalls);
+        ok('⚠️ …by the failure memory on the conventions key (a source rule, so a refactor cannot drop it silently)',
+          /if \(!answer\.conventions\) rememberFailure\(conventionsKey\(domain\)\);/.test(strip(R('server/services/employerResearch.js'))));
+
+        // The REAL researchConventions against a fake SDK: the request it makes, and what it keeps from the answer.
+        const genaiPath = require.resolve('@google/generative-ai', { paths: [ROOT] });
+        const hadGenai = require.cache[genaiPath];
+        const seen = [];
+        let reply = null;
+        require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, exports: {
+          GoogleGenerativeAI: class { getGenerativeModel(cfg) { const e = { cfg }; seen.push(e); return { generateContent: async (req, opts) => { e.req = req; e.opts = opts; return reply; } }; } },
+        } };
+        try {
+          const CONV = JSON.stringify({ employer_type: 'sme', hq_country: 'Austria', sources: ['https://acme-src-test.com/careers', 'https://elsewhere.test/cv-tips'] });
+          reply = { response: { text: () => CONV, candidates: [{ groundingMetadata: {} }] } };
+          let a = await realRC('acme-src-test.com', 'Acme');
+          const cfg = (seen[0] && seen[0].cfg && seen[0].cfg.generationConfig) || {};
+          // ⚠️ gemini-2.5-flash THINKS out of the same budget: at 4096 the thoughts ate it all and the JSON arrived cut off —
+          // a paid call that taught us nothing. The ceiling is doubled and the thinking is capped BELOW it.
+          ok('⚠️ the grounded call has room to answer: maxOutputTokens ≥ 8192, thinkingBudget a positive integer below it',
+            cfg.maxOutputTokens >= 8192 && cfg.thinkingConfig && Number.isInteger(cfg.thinkingConfig.thinkingBudget) && cfg.thinkingConfig.thinkingBudget > 0 && cfg.thinkingConfig.thinkingBudget < cfg.maxOutputTokens, cfg);
+          ok('…it is a Google Search grounded call with a hard timeout', seen[0] && JSON.stringify(seen[0].req.tools) === JSON.stringify([{ googleSearch: {} }]) && seen[0].opts && seen[0].opts.timeout > 0, seen[0] && seen[0].req && seen[0].req.tools);
+          ok('⚠️ grounding metadata with NO chunks → answered, and sources: [] (nothing verifiable is stored as a source)',
+            a.answered === true && a.conventions && Array.isArray(a.conventions.sources) && a.conventions.sources.length === 0 && a.conventions.employerType === 'sme', a);
+          reply = { response: { text: () => CONV, candidates: 'not-an-array' } };
+          a = await realRC('acme-src-test.com', 'Acme');
+          ok('…a changed metadata shape is the same: sources [] and never a throw', a.answered === true && a.conventions && a.conventions.sources.length === 0, a);
+          reply = { response: { text: () => CONV, candidates: [{ groundingMetadata: { groundingChunks: [{ web: { uri: 'https://vertexaisearch.cloud.google.com/x', title: 'acme-src-test.com' } }] } }] } };
+          a = await realRC('acme-src-test.com', 'Acme');
+          ok('…while a grounded host keeps the source on that host, and drops the one the search never touched',
+            a.answered === true && JSON.stringify(a.conventions.sources) === JSON.stringify(['https://acme-src-test.com/careers']), a.conventions && a.conventions.sources);
+          reply = { response: { text: () => 'I could not find anything.', candidates: [] } };
+          a = await realRC('acme-src-test.com', 'Acme');
+          ok('prose is not an answer (never cached as checked)', a.answered === false && /no JSON/.test(a.why), a);
+        } finally {
+          if (hadGenai) require.cache[genaiPath] = hadGenai; else delete require.cache[genaiPath];
+        }
+      } finally {
+        clearInterval(keepAlive);
+        researcher.researchEmployer = realRE;
+        er.researchConventions = realRC;
+        er.researchBrand = realRB; er.googleFontCheck = realGF;
+        reset();
+      }
+    }
+  }
+
+  console.log('── ⚠️ the BRAND (2026-09-15): the flight\'s THIRD stage — never gates a build, cached as research.brand + brandAt on a 30-day clock ──');
+  {
+    // Contract 1/2: the employer's website colour + font (brandExtract) ride beside the researcher and the conventions,
+    // bounded on their own clock; the full flight never waits for them; the caller's copy gets whatever settled in its
+    // time; ONLY a found brand is written (its own labelled patch, merged with ||, fetched_at untouched); a null is
+    // remembered in memory for an hour; the researcher's fontName is folded in as brand.font when the website named no
+    // font. brandOf(research) is what every renderer paints with. No network, no AI: every call is stubbed and counted.
+    const researcher = require(path.join(ROOT, 'ai-employer-researcher.js'));
+    const realRE = researcher.researchEmployer, realRB = er.researchBrand, realRC = er.researchConventions, realGF = er.googleFontCheck;
+    const keepAlive = setInterval(() => {}, 1000);   // every timer in employerResearch is unref()'d — see the flight block above
+    const brandWrites = () => db.log.filter((e) => /\/\* brand \*\/$/.test(e.sql));
+    const BRAND = { primary: '#e30613', secondary: '#00857c', font: { family: 'Space Grotesk', google: true }, from: { primary: 'theme-color', font: 'body' }, fetchedAt: new Date().toISOString() };
+    let reCalls = 0, rbCalls = 0, gfCalls = 0, brandDelay = 50, brandAnswer = BRAND;
+    researcher.researchEmployer = async () => { reCalls++; return { employer_name: 'Brand Co', industry: 'Logistics', font_name: 'Inter' }; };
+    er.researchConventions = async () => ({ answered: true, conventions: er.sanitiseConventions({ employer_type: 'sme' }) });
+    er.researchBrand = () => { rbCalls++; return new Promise((r) => setTimeout(() => r(brandAnswer), brandDelay)); };
+    er.googleFontCheck = async (f) => { gfCalls++; return f === 'Inter'; };
+    const again = () => { er._reset(); reset(); reCalls = 0; rbCalls = 0; gfCalls = 0; };
+    try {
+      // 1. the first build for a new employer
+      again();
+      const r1 = await er.getEmployerResearch({ website: 'https://brand-co-test.com', name: 'Typed' }, { timeoutMs: 2000 });
+      ok('the brand is in the caller\'s copy (website primary + font) beside the conventions; brandAt is stripped',
+        r1 && r1.brand && r1.brand.primary === '#e30613' && r1.brand.font.family === 'Space Grotesk' && r1.conventions && r1.conventions.employerType === 'sme' && !('brandAt' in r1), r1);
+      ok('brandOf → the website accent and the website font', JSON.stringify(er.brandOf(r1)) === JSON.stringify({ accent: '#e30613', font: { family: 'Space Grotesk', google: true } }), er.brandOf(r1));
+      ok('the researcher\'s fontName stays beside it (Inter) and no Google check was needed', r1.fontName === 'Inter' && gfCalls === 0, { fontName: r1.fontName, gfCalls });
+      ok('ONE researcher call, ONE website read', reCalls === 1 && rbCalls === 1, { reCalls, rbCalls });
+      const writes = db.log.filter((e) => /^INSERT INTO employer_research_cache/.test(e.sql));
+      const brandW = brandWrites()[0];
+      ok('⚠️ the brand patch is its own labelled statement (merge ||, no fetched_at) carrying brand + brandAt',
+        !!brandW && !/fetched_at = NOW\(\)/.test(brandW.sql.slice(-80)) && JSON.parse(brandW.params[1]).brand.primary === '#e30613' && !!JSON.parse(brandW.params[1]).brandAt, writes.map((w) => w.sql.slice(-70)));
+      const convW = writes.find((e) => /DO UPDATE SET research = employer_research_cache\.research \|\| EXCLUDED\.research$/.test(e.sql));
+      ok('the conventions patch still matches its pinned tail exactly (the label keeps the two apart)', !!convW && !!JSON.parse(convW.params[1]).conventions, writes.map((w) => w.sql.slice(-70)));
+      const baseW = writes.find((e) => /fetched_at = NOW\(\)$/.test(e.sql));
+      ok('⚠️ the base write carries no brand key at all (a brand: null must never blank the patched one)', !!baseW && !('brand' in JSON.parse(baseW.params[1])) && !('brandAt' in JSON.parse(baseW.params[1])), baseW && baseW.params[1]);
+      ok('the requester\'s typed name never reaches a write', !writes.some((e) => /Typed/.test(String(e.params[1]))));
+      ok('publicResearch handed out a COPY of the brand, not the flight\'s object', r1.brand !== BRAND && JSON.stringify(r1.brand) === JSON.stringify(er.sanitiseBrand(BRAND)));
+
+      // 2. a cached row that already carries a fresh brand
+      again();
+      const row = { domain: 'cached-brand-test.com', employerName: 'Cached', industry: 'Retail', fontName: 'Inter', brand: BRAND, brandAt: new Date().toISOString(), conventions: { employerType: 'sme' }, conventionsAt: new Date().toISOString() };
+      db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: row, fetched_at: new Date() } : null);
+      const r2 = await er.getEmployerResearch({ website: 'https://cached-brand-test.com' }, { timeoutMs: 2000 });
+      ok('served as-is: brand in, NO website read, NO researcher, NO write', r2 && r2.brand && r2.brand.primary === '#e30613' && rbCalls === 0 && reCalls === 0 && db.log.filter((e) => /^INSERT/.test(e.sql)).length === 0, { rbCalls, reCalls, r2 });
+
+      // 3. a brand past its own 30-day clock
+      again();
+      const stale = new Date(Date.now() - 45 * 24 * 3600 * 1000).toISOString();
+      db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: { ...row, domain: 'stale-brand-test.com', brandAt: stale }, fetched_at: new Date() } : null);
+      const r3 = await er.getEmployerResearch({ website: 'https://stale-brand-test.com' }, { timeoutMs: 2000 });
+      ok('read again (one website read, re-patched) while the base facts stay cached (no researcher)', r3 && r3.brand && r3.brand.primary === '#e30613' && rbCalls === 1 && reCalls === 0 && brandWrites().length === 1, { rbCalls, reCalls, writes: brandWrites().length });
+
+      // 4. the website gives nothing
+      again();
+      brandAnswer = null;
+      const r4 = await er.getEmployerResearch({ website: 'https://no-brand-test.com' }, { timeoutMs: 2000 });
+      ok('NO brand write; the researcher\'s Inter becomes brand.font through the Google check (from.font "researcher")',
+        brandWrites().length === 0 && r4 && r4.brand && r4.brand.primary === null && r4.brand.font.family === 'Inter' && r4.brand.font.google === true && r4.brand.from.font === 'researcher' && gfCalls === 1, { writes: brandWrites().length, brand: r4 && r4.brand, gfCalls });
+      ok('brandOf → no accent (the researcher gave no colour), Inter as a Google font', JSON.stringify(er.brandOf(r4)) === JSON.stringify({ accent: null, font: { family: 'Inter', google: true } }), er.brandOf(r4));
+      const r4b = await er.getEmployerResearch({ website: 'https://no-brand-test.com' }, { timeoutMs: 2000 });
+      ok('a second build within the hour makes NO second website read (the failure memory) and still folds the font', rbCalls === 1 && r4b && r4b.brand && r4b.brand.font.family === 'Inter', { rbCalls });
+
+      // 5. a slow website read never gates the build
+      again();
+      brandAnswer = BRAND; brandDelay = 900;
+      const t0 = Date.now();
+      const r5 = await er.getEmployerResearch({ website: 'https://slow-brand-test.com' }, { timeoutMs: 300 });
+      const dt = Date.now() - t0;
+      ok('⚠️ a caller whose time is up leaves at ~300 ms with base + conventions and no website brand', r5 && r5.industry === 'Logistics' && r5.conventions && (!r5.brand || r5.brand.primary === null) && dt >= 250 && dt < 700, { dt, brand: r5 && r5.brand });
+      ok('…the base write did NOT wait for the website read', db.log.some((e) => /fetched_at = NOW\(\)$/.test(e.sql)), db.log.map((e) => e.sql.slice(-60)));
+      ok('…and no brand write yet', brandWrites().length === 0);
+      await new Promise((r) => setTimeout(r, 1100));
+      ok('…the read finished on its own and persisted the brand (one labelled write, one read)', brandWrites().length === 1 && rbCalls === 1, { writes: brandWrites().length, rbCalls });
+      brandDelay = 50;
+
+      // 6. readCache shapes
+      db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: { conventions: null, conventionsAt: new Date().toISOString() }, fetched_at: new Date() } : null);
+      ok('the checked-but-empty row still reads EXACTLY { research:null, hasBase:false, conventionsChecked:true }', JSON.stringify(await er._internals.readCache('empty-x.com')) === JSON.stringify({ research: null, hasBase: false, conventionsChecked: true }));
+      db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: { brand: BRAND, brandAt: new Date().toISOString() }, fetched_at: new Date() } : null);
+      const rc = await er._internals.readCache('brand-only.com');
+      ok('a brand-only row is a row: the brand in research, hasBase false (the researcher still runs), conventions unchecked', rc && rc.research && rc.research.brand.primary === '#e30613' && rc.hasBase === false && rc.conventionsChecked === false, rc);
+
+      // 7. sanitising and brandOf
+      const s1 = er.sanitiseBrand({ primary: '#ABCDEF', secondary: '#abcdef', font: { family: 'Inter; x', google: 'yes' }, from: { primary: 'made-up', font: 'body' }, fetchedAt: 'garbage' });
+      ok('sanitiseBrand: hex lower-cased, a secondary equal to the primary dropped, a family with junk rejected, a made-up provenance nulled, a bad stamp replaced',
+        er.sanitiseBrand('x') === null && er.sanitiseBrand({ primary: 'red' }) === null && s1.primary === '#abcdef' && s1.secondary === null && s1.font === null && s1.from.primary === null && s1.from.font === null && Number.isFinite(Date.parse(s1.fetchedAt)), s1);
+      ok('sanitiseBrand: a font alone is a brand; google is a strict boolean', JSON.stringify(er.sanitiseBrand({ font: { family: 'Inter', google: 1 }, from: { font: 'google-link' } }).font) === JSON.stringify({ family: 'Inter', google: false }));
+      ok('brandOf: null-safe; the researcher\'s invented defaults never leak; the researcher\'s real colour stands in',
+        JSON.stringify(er.brandOf(null)) === JSON.stringify({ accent: null, font: null }) && er.brandOf({ brandColor: '#262633', fontName: 'Lato' }).accent === null && er.brandOf({ brandColor: '#262633', fontName: 'Lato' }).font === null && er.brandOf({ brandColor: '#1a73e8' }).accent === '#1a73e8');
+      ok('researchPromptBlock: the effective colour rides along after real facts, never alone',
+        /Brand colour: #e30613/.test(er.researchPromptBlock(r1, 'Brand Co')) && er.researchPromptBlock({ domain: 'x.com', brandColor: '#1a73e8' }, 'X') === '');
+
+      // 8. the switch
+      again();
+      process.env.EMPLOYER_BRAND_EXTRACT = 'off';
+      const r8 = await er.getEmployerResearch({ website: 'https://switched-off-test.com' }, { timeoutMs: 2000 });
+      ok('EMPLOYER_BRAND_EXTRACT=off: no website read; the research is otherwise unchanged', rbCalls === 0 && r8 && r8.industry === 'Logistics', { rbCalls, r8 });
+      delete process.env.EMPLOYER_BRAND_EXTRACT;
+
+      // 9. the money line: no revision moved, no AI call added (the website read is a deterministic fetch)
+      const erC = strip(R('server/services/employerResearch.js'));
+      ok('⚠️ RESEARCH_REV stays r1 with the brand round (a bump re-bills every saved document)', er.RESEARCH_REV === 'r1' && /const RESEARCH_REV = 'r1';/.test(erC));
+      ok('brandExtract is deterministic (no Gemini / generative-ai import)', !/generative-ai|GoogleGenerativeAI|callGemini/.test(strip(R('server/services/brandExtract.js'))));
+      const erRaw = R('server/services/employerResearch.js');   // the label IS a comment — strip() would remove it
+      ok('the brand patch never touches fetched_at and is labelled apart from the conventions patch',
+        /EXCLUDED\.research \/\* brand \*\/`/.test(erRaw) && !/\|\| EXCLUDED\.research \/\* brand \*\/, fetched_at/.test(erRaw));
+    } finally {
+      clearInterval(keepAlive);
+      researcher.researchEmployer = realRE; er.researchBrand = realRB; er.researchConventions = realRC; er.googleFontCheck = realGF;
+      er._reset(); reset();
+    }
+  }
+
+  console.log('── ⚠️ a STORED document\'s brand is a function of the ROW; a brand-less one catches up with the shared row READ-ONLY (2026-09-15) ──');
+  {
+    // Two defects. (1) employerResearch.brandOf consulted brandExtract.googleFontKnown — a per-process 24 h memory —
+    // for a research snapshot's bare fontName, so a document stored before design.brand existed rendered in Lato after
+    // a deploy, in Montserrat once ANY user's build had checked that family (a new brandKeyOf → every thumb and
+    // preview re-rendered), and in Lato again a day later. (2) a build whose website read missed its deadline stored
+    // design.brand = null over a brand-less snapshot and never gained the employer's colour, even after patchBrand
+    // had written it to employer_research_cache for everyone. Now: brandOf reads only the row; withSharedBrand lays
+    // the shared row's brand over such a document with ONE read-only SELECT (never the researcher, never the
+    // website, never a write — a render can bill nobody).
+    const RBX = require(path.join(ROOT, 'server/controllers/resumeBuilderController.js'));
+    const BX = require(path.join(ROOT, 'server/services/brandExtract.js'));
+    const oldDoc = { id: 1, design: JSON.stringify({ ranked: [], mode: 'a4' }), research: { domain: 'mont-brand-test.com', industry: 'Design', fontName: 'Montserrat', brandColor: '#123456' } };
+    const before = RBX.docBrandOf(oldDoc), keyBefore = RBX.brandKeyOf(before);
+    ok('cold process: a pre-brand snapshot\'s bare researcher fontName is google:false, its colour the accent',
+      JSON.stringify(before) === JSON.stringify({ accent: '#123456', font: { family: 'Montserrat', google: false } }), before);
+    const realKnown = BX.googleFontKnown;
+    BX.googleFontKnown = (f) => (String(f).toLowerCase() === 'montserrat' ? true : realKnown(f));
+    try {
+      const fresh = await er._internals.withResearcherFont({ domain: 'mont-brand-test.com', fontName: 'Montserrat' }, 5000);
+      ok('(the memory IS live, and withResearcherFont is its ONE consumer: a fresh build\'s research gets brand.font google:true from it)', !!fresh && !!fresh.brand && fresh.brand.font.google === true && fresh.brand.from.font === 'researcher', fresh && fresh.brand);
+      const after = RBX.docBrandOf(oldDoc);
+      ok('⚠️ the stored document\'s brand is byte-identical after the memory learned Montserrat', JSON.stringify(after) === JSON.stringify(before), { before, after });
+      ok('⚠️ …and so is its cache key (no thumb or preview re-render on a deploy)', RBX.brandKeyOf(after) === keyBefore && keyBefore !== 'plain', { keyBefore, keyAfter: RBX.brandKeyOf(after) });
+      ok('brandOf ignores the memory for a bare fontName, and honours the verified answer the build wrote on brand.font', er.brandOf({ fontName: 'Montserrat' }).font.google === false && er.brandOf(fresh).font.google === true);
+    } finally { BX.googleFontKnown = realKnown; }
+    const erC = strip(R('server/services/employerResearch.js'));
+    const brandOfSrc = (erC.match(/function brandOf\(research\) \{[\s\S]*?\n\}/) || [''])[0];
+    ok('the source: brandOf never reads googleFontKnown (withResearcherFont alone does)', brandOfSrc.length > 100 && !/googleFontKnown/.test(brandOfSrc) && (erC.match(/googleFontKnown/g) || []).length === 1);
+
+    reset();
+    const rows = new Map();
+    db.answer = (q, params) => (/^SELECT research FROM employer_research_cache WHERE domain = \?$/.test(q) && rows.has(params[0]) ? { research: JSON.stringify(rows.get(params[0])) } : null);
+    const writes = () => db.log.filter((e) => /^(INSERT|UPDATE|DELETE)/i.test(e.sql)).length;
+    const nullDoc = () => ({ id: 3, design: { ranked: [{ id: 'modern' }], mode: 'a4', brand: null }, research: { domain: 'acme-brand-test.com', industry: 'Widgets', employerName: 'Acme' }, payload: { personal_info: { full_name: 'A' } } });
+    ok('before the row has a brand: docBrandOf null (design.brand null, a snapshot without brand / colour / font)', RBX.docBrandOf(nullDoc()) === null);
+    let d = await RBX.withSharedBrand(nullDoc());
+    ok('withSharedBrand with no row: one SELECT, still null, the snapshot untouched', db.log.length === 1 && RBX.docBrandOf(d) === null && !('brand' in d.research), db.log.map((e) => e.sql));
+    const ROW_BRAND = { primary: '#e30613', secondary: '#00857c', font: { family: 'Space Grotesk', google: true }, from: { primary: 'theme-color', font: 'body' }, fetchedAt: new Date().toISOString() };
+    rows.set('acme-brand-test.com', { domain: 'acme-brand-test.com', industry: 'Widgets', brand: ROW_BRAND, brandAt: new Date().toISOString() });
+    db.log.length = 0;
+    d = await RBX.withSharedBrand(nullDoc());
+    const got = RBX.docBrandOf(d);
+    ok('⚠️ after patchBrand wrote the row: docBrandOf = the row\'s brand, laid over research.brand (the same doc object back)',
+      JSON.stringify(got) === JSON.stringify({ accent: '#e30613', font: { family: 'Space Grotesk', google: true } }) && JSON.stringify(d.research.brand) === JSON.stringify(ROW_BRAND) && d.research.domain === 'acme-brand-test.com', { got, research: d.research });
+    ok('…the design\'s ranking sees it too (rerankStoredResumeDesign attaches design.brand) and brandKeyOf is no longer "plain"',
+      (() => { const r = RBX.rerankStoredResumeDesign(d); return (!r || JSON.stringify(r.brand) === JSON.stringify(got)) && RBX.brandKeyOf(got) !== 'plain'; })());
+    ok('⚠️ exactly ONE read-only SELECT on the domain, ZERO inserts / updates / deletes',
+      db.log.length === 1 && /^SELECT research FROM employer_research_cache WHERE domain = \?$/.test(db.log[0].sql) && db.log[0].params[0] === 'acme-brand-test.com' && writes() === 0, db.log.map((e) => e.sql));
+    db.log.length = 0;
+    const own = await RBX.withSharedBrand({ ...nullDoc(), design: { ranked: [], brand: { accent: '#111111', font: null } } });
+    ok('a document WITH its own brand never asks the row', db.log.length === 0 && RBX.docBrandOf(own).accent === '#111111');
+    const noResearch = await RBX.withSharedBrand({ id: 5, design: { brand: null }, research: null, payload: {} });
+    ok('a document with no research snapshot is left alone (no domain of record; no SQL)', db.log.length === 0 && noResearch.research === null);
+    const fromResearch = await RBX.withSharedBrand({ ...nullDoc(), research: { domain: 'acme-brand-test.com', brandColor: '#0e7490', fontName: 'Inter' } });
+    ok('a snapshot that already carries the researcher\'s colour is a brand of its own: no SQL, that colour', db.log.length === 0 && RBX.docBrandOf(fromResearch).accent === '#0e7490');
+    rows.set('stale-brand-test.com', { domain: 'stale-brand-test.com', brand: ROW_BRAND, brandAt: new Date(Date.now() - 40 * 864e5).toISOString() });
+    ok('cachedBrandFor: a brand past its OWN 30-day clock (brandAt, not fetched_at) is null', (await er.cachedBrandFor('stale-brand-test.com')) === null);
+    db.log.length = 0;
+    ok('cachedBrandFor: a non-domain asks nothing', (await er.cachedBrandFor('not a domain')) === null && (await er.cachedBrandFor(null)) === null && db.log.length === 0);
+    const viaUrl = await er.cachedBrandFor('https://www.ACME-brand-test.com/jobs');
+    ok('cachedBrandFor normalises the domain (scheme, www., case, a path) to the row\'s key', !!viaUrl && viaUrl.primary === '#e30613' && db.log[db.log.length - 1].params[0] === 'acme-brand-test.com', { viaUrl, key: db.log[db.log.length - 1] && db.log[db.log.length - 1].params });
+    ok('cachedBrandFor: the whole sanitised Brand comes back (primary, secondary, font, from, fetchedAt)', (() => { const b = rows.get('acme-brand-test.com').brand; return !!b && b.secondary === '#00857c' && b.font.google === true; })() && JSON.stringify(Object.keys((await er.cachedBrandFor('acme-brand-test.com')) || {}).sort()) === JSON.stringify(['fetchedAt', 'font', 'from', 'primary', 'secondary']));
+    db.throwOn = /^SELECT research FROM employer_research_cache/;
+    ok('cachedBrandFor degrades to null on a DB error', (await er.cachedBrandFor('acme-brand-test.com')) === null);
+    const errDoc = await RBX.withSharedBrand(nullDoc());
+    ok('…and withSharedBrand leaves the document untouched then (never throws)', RBX.docBrandOf(errDoc) === null && !('brand' in errDoc.research));
+    reset();
+    const rbC = strip(R('server/controllers/resumeBuilderController.js'));
+    ok('⚠️ loadResumeDoc — the ONE loader every docId render path uses — lays the shared brand on (withSharedBrand), before any cache key',
+      /withSharedBrand\(doc\)/.test((rbC.match(/async function loadResumeDoc\([\s\S]*?\n\}/) || [''])[0]) && /withSharedBrand,/.test(rbC));
+    ok('withSharedBrand reads through employerResearch.cachedBrandFor and never the researcher / the website / a write',
+      (() => { const b = (rbC.match(/async function withSharedBrand\(doc\) \{[\s\S]*?\n\}/) || [''])[0]; return b.length > 100 && /cachedBrandFor\(domain\)/.test(b) && !/getEmployerResearch|researchBrand|brandCallFor|INSERT|UPDATE/.test(b); })());
+  }
+
   console.log('── findPlaceholders: brackets are never stored ──');
   const RB = require(path.join(ROOT, 'server/controllers/resumeBuilderController.js'));
   const found = RB.findPlaceholders({ summary: 'Cut costs by [X%].', experience: [{ highlights: ['Built [Insert Key Functionality] for payments', 'Grew revenue XX%', 'Led 12 engineers', 'Shipped Next.js [React Native]'] }] });
@@ -559,6 +1035,11 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   const edrC = strip(R('server/routes/employerDocsRoutes.js'));
   ok('⚠️ the routes never generate or charge', !/generate|consumeOnSuccess|claimGeneration|canConsumeMany|put\(\{/.test(edrC.replace(/docs\.updatePayload/g, '')));
   ok('mounted next to /api/resume-builder', /app\.use\('\/api\/employer-docs', require\('\.\/server\/routes\/employerDocsRoutes'\)\)/.test(R('server.js')));
+  // Contract 4/6 (2026-09-15): every read answers design.brand — through the controller's docBrandOf (ONE answer with
+  // home-cards, the gallery and the downloads), with a shape-checked stored-design fallback when the controller cannot load.
+  ok('⚠️ /current and GET /:id attach design.brand through resumeBuilderController.docBrandOf, on the repaired AND the rule-only paths',
+    /require\('\.\.\/controllers\/resumeBuilderController'\)\.docBrandOf/.test(edrC) && /const brand = brandFor\(doc\);/.test(edrC)
+    && /return \{ \.\.\.repaired, brand \};/.test(edrC) && (edrC.match(/\}\), brand \};/g) || []).length >= 2, (edrC.match(/\}\), brand \};/g) || []).length);
   const handler = (m, p) => layers.find((x) => x.m === m && x.p === p).s[1];
   const mkRes = () => { const r = { statusCode: 200, body: null }; r.status = (c) => { r.statusCode = c; return r; }; r.json = (b) => { r.body = b; return r; }; return r; };
   const callRoute = async (m, p, req) => { const res = mkRes(); await handler(m, p)({ user: { id: 7 }, headers: {}, query: {}, params: {}, body: {}, ...req }, res); return res; };
@@ -618,6 +1099,58 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     ok('⚠️ a pre-046 row falls back to the client\'s fields, postingUrl before the identity jobUrl',
       hashed && hashed.url === 'https://amazon.jobs/en/jobs/1' && hashed.title === 'Backend Engineer' && r.body.doc.stale === true && r.body.doc.jobInput === null,
       { hashed, jobInput: r.body.doc.jobInput });
+    RBC.currentResumeFingerprint = realFp;
+    Object.assign(docs, realDocs);
+  }
+
+  // ⚠️ A STORED DESIGN IS RE-RANKED ON READ (rerankStoredDesign → designFit.rerankDesign), and that NEVER TOUCHES
+  // `stale`. A document built when every employer got exec_pro first gets the employer-first order for free — never a
+  // paid Refresh just to fix an ordering — and a better order is not a changed document.
+  {
+    const RBC = require(path.join(ROOT, 'server/controllers/resumeBuilderController.js'));
+    const T = require(path.join(ROOT, 'server/utils/resumeTemplates.js'));
+    const famOf = (id) => (T.TEMPLATES.find((t) => t.id === id) || {}).family;
+    const realFp = RBC.currentResumeFingerprint;
+    let fpNow = 'fp-X';
+    RBC.currentResumeFingerprint = async () => fpNow;
+    const swiss = { hqCountry: 'Switzerland', roleCountry: 'Switzerland', employerType: 'sme', sector: 'Precision engineering', atsVendor: null, tone: 'formal',
+      cv: { photo: 'expected', length: 'two_pages', personalDetails: 'include', dateFormat: null, format: 'tabular', notes: [] }, sources: [] };
+    const storedDesign = fit.rankResumeDesigns({ aiFamilyScores: { exec_pro: { score: 80 }, executive: { score: 72 } }, region: 'generic', seniorityYears: 20, mode: 'a4' });
+    const row = {
+      id: 31, kind: 'resume', employer_name: 'Acme AG', employer_id: null, job_url: '', job_title: '', created_at: new Date(), updated_at: new Date(), edited_at: null,
+      input_fingerprint: 'fp-X', job_input: { title: '', url: '', description: '', website: 'https://acme-ag.ch' },
+      payload: { personal_info: { title: 'Engineer' }, experience: [{ role: 'Lead', company: 'X', start_date: 'January 2005', end_date: 'Present' }] },
+      research: { domain: 'acme-ag.ch', employerName: 'Acme AG', industry: 'Precision engineering', companySize: '51-200 employees', conventions: swiss },
+      design: JSON.parse(JSON.stringify(storedDesign)),
+    };
+    const before = JSON.stringify(row.design);
+    docs.currentFor = async () => row;
+    docs.getById = async () => row;
+    r = await callRoute('post', '/current', { body: { kind: 'resume', employer: 'Acme AG', jobUrl: '' } });
+    const cur = r.body && r.body.doc;
+    ok('(the stored design is the prod-like exec order)', ['exec_pro', 'executive'].includes(famOf(storedDesign.ranked[0].id)));
+    ok('⚠️ /current shows the stored design RE-RANKED for the employer (Swiss conventions → the German CV)',
+      r.statusCode === 200 && cur && cur.design && famOf(cur.design.ranked[0].id) === 'germany' && cur.design.ranked.length === RIDS.length, cur && cur.design && cur.design.ranked.slice(0, 3));
+    ok('⚠️ …and stale is still the fingerprint\'s answer alone (false), with the build\'s page mode kept', cur && cur.stale === false && cur.design.mode === 'a4', cur && { stale: cur.stale, mode: cur.design.mode });
+    ok('⚠️ …nothing is written back: the row\'s design is untouched, no UPDATE went out',
+      JSON.stringify(row.design) === before && !db.log.some((e) => /^UPDATE user_employer_documents SET design/.test(e.sql)));
+    ok('…it is the controller\'s one answer (home-cards ?doc= reads the same)', JSON.stringify(cur.design) === JSON.stringify(RBC.rerankStoredResumeDesign(row)));
+    fpNow = 'fp-Y';
+    r = await callRoute('post', '/current', { body: { kind: 'resume', employer: 'Acme AG', jobUrl: '', country: 'United States', website: 'https://acme.com' } });
+    ok('⚠️ a changed input is stale — and the re-rank does not decide that either way', r.body.doc.stale === true, r.body.doc.stale);
+    ok('⚠️ the order comes from the ROW, never the client\'s country/website (one document, one order on every screen)',
+      JSON.stringify(r.body.doc.design) === JSON.stringify(cur.design));
+    r = await callRoute('get', '/:id', { params: { id: '31' } });
+    ok('GET /:id gives the same re-ranked design', r.statusCode === 200 && JSON.stringify(r.body.doc.design) === JSON.stringify(cur.design));
+    const realRerank = fit.rerankDesign;
+    fit.rerankDesign = () => { throw new Error('boom'); };
+    fpNow = 'fp-X';
+    r = await callRoute('post', '/current', { body: { kind: 'resume', employer: 'Acme AG', jobUrl: '' } });
+    ok('a re-rank that throws → the stored design stands (repaired), never a failed /current',
+      r.statusCode === 200 && r.body.doc.design && r.body.doc.design.ranked[0].id === storedDesign.ranked[0].id && r.body.doc.stale === false, r.body);
+    fit.rerankDesign = realRerank;
+    const edrSrc = strip(R('server/routes/employerDocsRoutes.js'));
+    ok('the routes\' staleFor never reads the design', fnBody(edrSrc, 'staleFor').length > 200 && !/design|rerank/i.test(fnBody(edrSrc, 'staleFor')));
     RBC.currentResumeFingerprint = realFp;
     Object.assign(docs, realDocs);
   }

@@ -102,12 +102,91 @@ async function staleFor(userId, kind, doc, b, req) {
 const TECH_ROLE_RE = /\b(engineer|engineering|developer|software|devops|sre|data|machine learning|ml|ai|scientist|architect|programmer|technical|it|security|cloud|backend|frontend|full[- ]?stack|qa|firmware|embedded)\b/i;
 
 /**
- * The document's design, repaired against today's catalogue — or, for a row built before designs
- * were stored, a RULE-ONLY ranking computed now.
+ * The years of experience a LETTER's design is ranked with. A letter payload has no work history. ⚠️ Seniority
+ * must still come from somewhere real: designFit reads a missing number as 0 years, which would push the GRADUATE
+ * letter to the top for a director. This employer's own tailored resume is one indexed row away; the user's
+ * experience is the same whichever employer it was tailored for. 0 when there is none (or the read fails).
+ */
+async function letterSeniorityOf(fit, userId, doc, req) {
+  try {
+    const resumeDoc = await docs.currentFor(userId, 'resume',
+      { employer: doc.employer_name, employerId: doc.employer_id, jobUrl: doc.job_url }, req);
+    if (resumeDoc && resumeDoc.payload) return fit.seniorityYearsOf(resumeDoc.payload);
+  } catch { /* no resume doc: ranked without seniority */ }
+  return 0;
+}
+
+/** A letter's "technical role" signal: its job title and the position the letter names. */
+const letterRoleIsTechnical = (doc) => TECH_ROLE_RE.test(
+  [doc.job_title, doc.payload && typeof doc.payload === 'object' ? doc.payload.position : null].filter((v) => typeof v === 'string').join(' '));
+
+/**
+ * A researched document's design RE-RANKED on read, or null (a row without research, or the re-rank unavailable).
+ *
+ * ⚠️ ONE IMPLEMENTATION, IN THE CONTROLLER (resumeBuilderController.rerankStoredDesign), because home-cards ?doc=
+ * reads a resume document's design from the very same answer (its preferred card, fit and reason, and a download's
+ * default mode). A second copy here would drift, and one document would show two orders. Its inputs come from the
+ * row alone — the build's region, the stored research and payload — never from the client's country/website, for
+ * the same reason; a letter adds only what its payload cannot say (seniority, a technical role), read here.
+ * Required lazily, like the fingerprints: a controller that fails to load costs the re-rank, never the document.
+ */
+async function rerankedDesignOf(fit, userId, kind, doc, req) {
+  if (!doc || !doc.research || typeof doc.research !== 'object' || Array.isArray(doc.research)) return null;
+  // A stored design with no rerankDesign to put it through stands as it is — so skip the letter's seniority read.
+  if (doc.design && typeof fit.rerankDesign !== 'function') return null;
+  try {
+    const fn = require('../controllers/resumeBuilderController').rerankStoredDesign;
+    if (typeof fn !== 'function') return null;
+    const opts = kind === 'cover_letter'
+      ? { kind, seniorityYears: await letterSeniorityOf(fit, userId, doc, req), isTechnicalRole: letterRoleIsTechnical(doc) }
+      : { kind: 'resume' };
+    const d = fn(doc, opts);
+    return d && typeof d === 'object' && Array.isArray(d.ranked) && d.ranked.length ? d : null;
+  } catch (e) {
+    if (e && e.code !== 'MODULE_NOT_FOUND') console.warn(`[employerDocs] design re-rank (${kind}) unavailable:`, e.message);
+    return null;
+  }
+}
+
+/**
+ * The brand a document RENDERS in — design.brand = { accent, font } | null, what the phone tints its skeletons and
+ * placeholders with while the branded pages load. ONE answer, the controller's (resumeBuilderController.docBrandOf:
+ * the design's stored brand, else the research's), because home-cards ?doc=, the gallery and the downloads draw the
+ * pages with that very answer — a second reading here would tint for a colour the pages never arrive in. The
+ * re-rank path already carries it (rerankStoredDesign attaches it); this is for the two paths that do not. When
+ * the controller cannot load, the stored design's own `brand` (shape-checked) is the only thing safe to promise.
+ */
+function brandFor(doc) {
+  try {
+    const fn = require('../controllers/resumeBuilderController').docBrandOf;
+    if (typeof fn === 'function') return fn(doc) || null;
+  } catch (e) {
+    if (e && e.code !== 'MODULE_NOT_FOUND') console.warn('[employerDocs] brand unavailable:', e.message);
+  }
+  const d = doc && doc.design && typeof doc.design === 'object' && !Array.isArray(doc.design) ? doc.design : null;
+  const b = d && d.brand && typeof d.brand === 'object' && !Array.isArray(d.brand) ? d.brand : null;
+  if (!b) return null;
+  const accent = typeof b.accent === 'string' && /^#[0-9a-f]{6}$/i.test(b.accent.trim()) ? b.accent.trim().toLowerCase() : null;
+  const font = b.font && typeof b.font === 'object' && typeof b.font.family === 'string' && b.font.family.trim()
+    ? { family: b.font.family.trim().slice(0, 80), google: b.font.google === true } : null;
+  return accent || font ? { accent, font } : null;
+}
+
+/**
+ * The document's design:
+ *   • a document that carries research (with or without its hiring conventions) → its design RE-RANKED against
+ *     today's employer-first rules (rerankedDesignOf). A document built before those rules gets the better order
+ *     now, for free — no AI, nothing stored, and never a paid Refresh just to fix an ordering. The phone's deck
+ *     draws its order and fit % from this design (the card endpoints only supply the page images);
+ *   • otherwise its stored design, repaired against today's catalogue;
+ *   • or, for a row built before designs were stored, a RULE-ONLY ranking computed now.
+ * Every path answers with `brand` (brandFor) — the colour and font the pages are drawn in — and the rule-only
+ * ranking orders the variants by that accent first, so the order and the colour agree.
  *
  * ⚠️ COMPUTED, NEVER STORED. Writing a computed ranking back would freeze a guess into the row and
  * make it indistinguishable from the AI-scored design the build writes. designFit is required lazily:
  * if it is missing or throws, the client gets design:null and shows the catalogue order.
+ * ⚠️ NONE OF THIS TOUCHES `stale` (staleFor): a better order is not a changed document.
  */
 async function designFor(userId, kind, doc, ctx, req) {
   let fit;
@@ -115,9 +194,13 @@ async function designFor(userId, kind, doc, ctx, req) {
     console.warn('[employerDocs] designFit unavailable:', e.message);
     return null;
   }
+  const reranked = await rerankedDesignOf(fit, userId, kind, doc, req);
+  if (reranked) return reranked;
+  const brand = brandFor(doc);
   try {
+    // normaliseDesign keeps only the fields it knows — the brand rides on after.
     const repaired = typeof fit.normaliseDesign === 'function' ? fit.normaliseDesign(doc.design, kind) : null;
-    if (repaired) return repaired;
+    if (repaired) return { ...repaired, brand };
   } catch (e) { console.warn('[employerDocs] normaliseDesign failed:', e.message); }
 
   try {
@@ -126,30 +209,20 @@ async function designFor(userId, kind, doc, ctx, req) {
     const region = fit.regionFor({ country: strOrNull(ctx.country), website: strOrNull(ctx.website) });
     const industry = strOrNull(research.industry);
     const companySize = strOrNull(research.companySize);
+    const accent = brand && brand.accent ? brand.accent : null;
     if (kind === 'resume') {
-      return fit.rankResumeDesigns({
+      return { ...fit.rankResumeDesigns({
         aiFamilyScores: null, region,
-        brandColor: strOrNull(research.brandColor),
+        brandColor: accent || strOrNull(research.brandColor),
         companySize, industry,
         seniorityYears: fit.seniorityYearsOf(payload),
-      });
+      }), brand };
     }
-    // A letter payload has no work history. ⚠️ Seniority must still come from somewhere real:
-    // designFit reads a missing number as 0 years, which would push the GRADUATE letter to the top
-    // for a director. This employer's own tailored resume is one indexed row away; the user's
-    // experience is the same whichever employer it was tailored for.
-    let seniorityYears = 0;
-    try {
-      const resumeDoc = await docs.currentFor(userId, 'resume',
-        { employer: doc.employer_name, employerId: doc.employer_id, jobUrl: doc.job_url }, req);
-      if (resumeDoc && resumeDoc.payload) seniorityYears = fit.seniorityYearsOf(resumeDoc.payload);
-    } catch { /* no resume doc: rule-only ranking without seniority */ }
-    const role = [doc.job_title, payload.position].filter((v) => typeof v === 'string').join(' ');
-    return fit.rankLetterDesigns({
-      region, seniorityYears, industry, companySize,
-      isTechnicalRole: TECH_ROLE_RE.test(role),
-      brandColor: strOrNull(payload.brandColor) || strOrNull(research.brandColor),
-    });
+    return { ...fit.rankLetterDesigns({
+      region, seniorityYears: await letterSeniorityOf(fit, userId, doc, req), industry, companySize,
+      isTechnicalRole: letterRoleIsTechnical(doc),
+      brandColor: strOrNull(payload.brandColor) || accent || strOrNull(research.brandColor),
+    }), brand };
   } catch (e) {
     console.warn(`[employerDocs] rule-only design (${kind}) failed:`, e.message);
     return null;
@@ -158,6 +231,8 @@ async function designFor(userId, kind, doc, ctx, req) {
 
 /**
  * DocMeta — the shape both Home and the builder screens read. No research, ever (it is internal context).
+ * `design` carries `brand` = { accent, font } | null (designFor): the look the document's pages are rendered
+ * in, so the phone can tint for it — never the research it was read from.
  * jobInput is the job the document was built for ({ title, url, description, website }, or null on a row
  * from before Migration 046 stored it): a Refresh rebuilds against THAT posting, not whatever the phone's
  * evicting listing cache still holds. It is the user's own pasted listing, so it is theirs to read.
@@ -204,6 +279,27 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * ⚠️ THE PHONE MUST SEE THE SAME BRAND THE PAGES ARRIVE IN. A document built while the employer's website read
+ * missed its deadline carries design.brand = null and a research snapshot with no brand; the render lanes
+ * (loadResumeDoc / employerLetterDocFor) lay the SHARED employer row's brand over it (one read-only SELECT,
+ * never an AI call), so its cards, PDF and Word file render branded. These two routes used to answer the raw
+ * row, so the deck skeletons and the library tinted with the catalogue colour under branded pages. Same lay-over
+ * here; a controller that cannot load leaves the document as it is.
+ */
+async function withSharedBrandFor(doc, kind) {
+  try {
+    const mod = kind === 'cover_letter'
+      ? require('../controllers/coverLetterController')
+      : require('../controllers/resumeBuilderController');
+    const fn = kind === 'cover_letter' ? mod.withSharedLetterBrand : mod.withSharedBrand;
+    if (typeof fn === 'function') return (await fn(doc)) || doc;
+  } catch (e) {
+    if (e && e.code !== 'MODULE_NOT_FOUND') console.warn('[employerDocs] shared brand unavailable:', e.message);
+  }
+  return doc;
+}
+
 // POST /api/employer-docs/current — the document for one chip, or null. ⚠️ null starts NOTHING.
 // Body: { kind, employer, employerId?, jobUrl, postingUrl?, jobTitle?, jobText?, website?, country? }.
 // ⚠️ jobUrl is the doc's IDENTITY ('' = the employer itself) and is the only URL the lookup uses;
@@ -213,12 +309,13 @@ router.post('/current', authenticateToken, async (req, res) => {
   const kind = kindOf(b.kind);
   if (!kind) return res.status(400).json({ success: false, reason: 'bad_kind' });
   try {
-    const doc = await docs.currentFor(req.user.id, kind, {
+    const found = await docs.currentFor(req.user.id, kind, {
       employer: typeof b.employer === 'string' ? b.employer : '',
       employerId: typeof b.employerId === 'string' ? b.employerId : null,
       jobUrl: typeof b.jobUrl === 'string' ? b.jobUrl : '',
     }, req);
-    if (!doc) return res.json({ success: true, doc: null });
+    if (!found) return res.json({ success: true, doc: null });
+    const doc = await withSharedBrandFor(found, kind);
     const [stale, design] = await Promise.all([
       staleFor(req.user.id, kind, doc, b, req),
       designFor(req.user.id, kind, doc, { country: b.country, website: b.website }, req),
@@ -233,9 +330,10 @@ router.post('/current', authenticateToken, async (req, res) => {
 // GET /api/employer-docs/:id — one document with its payload (the builder preview / letter download).
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const doc = await docs.getById(req.user.id, req.params.id, req);
-    if (!doc) return res.status(404).json({ success: false, reason: 'gone' });
-    const kind = kindOf(doc.kind);
+    const found = await docs.getById(req.user.id, req.params.id, req);
+    if (!found) return res.status(404).json({ success: false, reason: 'gone' });
+    const kind = kindOf(found.kind);
+    const doc = kind ? await withSharedBrandFor(found, kind) : found;
     const design = kind
       ? await designFor(req.user.id, kind, doc, { country: req.query.country, website: req.query.website }, req)
       : null;

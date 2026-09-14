@@ -7,9 +7,12 @@
  * column, so no background compositing is needed.
  *   onepage — one continuous page sized to the content.
  *   a4      — real A4 pages (20mm top/bottom margins via @page).
+ * opts.brandColor / opts.brandFont (an employer letter's brand) flow through to the templates,
+ * which re-hue every design's accent and set the font; the accent reported beside each card
+ * image is that re-hued one (brandedLetterAccent). No brand → exactly the old output.
  */
 
-const { renderCoverLetterHtml, TEMPLATES } = require('./coverLetterTemplates');
+const { renderCoverLetterHtml, TEMPLATES, brandedLetterAccent } = require('./coverLetterTemplates');
 
 const LAUNCH_ARGS = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
 const A4_W = 794;   // 210mm @ 96dpi
@@ -153,7 +156,7 @@ async function renderPreviews(data, opts = {}, templates = TEMPLATES) {
     // needed — JS is off, so an in-page requestAnimationFrame would never fire).
     await page.screenshot({ type: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 8, height: 8 } }).catch(() => {});
     const shot = await page.screenshot({ type: 'jpeg', quality: 82, clip: { x: 0, y: 0, width: A4_W, height: h } });
-    return { id: tpl.id, name: tpl.name, accent: tpl.accent,
+    return { id: tpl.id, name: tpl.name, accent: brandedLetterAccent(tpl, opts.brandColor),
       image: `data:image/jpeg;base64,${shot.toString('base64')}`, width: A4_W, height: h };
   };
   try {

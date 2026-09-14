@@ -9,15 +9,33 @@
 // ⚠️ WE NEVER GRANT ANYTHING FROM THE CLIENT. The app hands the store's receipt to the server and
 // re-reads the state; it never decides for itself that a purchase succeeded. A client that could
 // unlock a download is a client that can be made to unlock one for free.
+//
+// ⚠️ BUT "NOT GRANTED YET" IS NOT "NOT PAID" (contract C1). A store transaction that COMPLETED and a
+// server that has not shown the pass yet is money already taken — every failure this file returns after
+// the store said yes carries `paid: true`, and a deferred/Ask-to-Buy one carries `pending: true`. A
+// caller that offers a second Buy on either of those sells the same need twice.
+//
+// ⚠️ EVERY READ IS BOUNDED. fetchDownloadState aborts at STATE_READ_MS and waitForPass gives its whole
+// poll WAIT_FOR_PASS_MS: a stalled network used to leave the screen that is waiting for a pass locked
+// for minutes on fetches with no deadline of their own.
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../config';
 import {
   fetchOneTimeProducts, purchaseOneTime, finishOneTime, isStoreBillingAvailable, getOwnedSubscriptions,
 } from './storeBilling';
-import { rememberStoreEnv } from './storeEnv';
+import { rememberStoreEnv, storeEnvHeader } from './storeEnv';
 
 export const PASS_SKU = 'com.cvapplyr.mobile.download.single';
+
+/** How long ONE state read may take. Past it the read is aborted and fails closed, like any other failure. */
+const STATE_READ_MS = 8000;
+/**
+ * How long the whole post-purchase poll may take. ⚠️ It bounds the WAIT, not the purchase: past it the answer
+ * is "paid, not visible yet" (paid:true), which every caller already has to handle — never a second sale.
+ * Comfortably longer than the poll's own sleeps, so a healthy network always finishes its reads.
+ */
+const WAIT_FOR_PASS_MS = 30000;
 
 export type DownloadState = {
   /** True once plan downloads are metered. While false, a plan means unlimited. */
@@ -51,9 +69,18 @@ export async function fetchDownloadState(employer?: string | null, forceEnv?: 'S
   if (!t) return LOCKED;
   try {
     const q = employer ? `?employer=${encodeURIComponent(employer)}` : '';
-    const headers: Record<string, string> = { Authorization: `Bearer ${t}` };
+    // The environment is named on the request itself rather than left to storeEnv's fetch patch, which
+    // reads a value that may still be loading (storeEnvHeader awaits it). `forceEnv` is the Sandbox probe
+    // below and always wins.
+    const headers: Record<string, string> = { Authorization: `Bearer ${t}`, ...(await storeEnvHeader()) };
     if (forceEnv) headers['x-store-env'] = forceEnv;
-    const r = await fetch(`${API_BASE}/downloads/state${q}`, { headers });
+    // ⚠️ BOUNDED. Without a deadline a stalled connection holds this read for as long as the OS allows,
+    // and the sheet waiting on waitForPass stays locked behind it.
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), STATE_READ_MS);
+    let r: Response;
+    try { r = await fetch(`${API_BASE}/downloads/state${q}`, { headers, signal: ctl.signal }); }
+    finally { clearTimeout(timer); }
     if (!r.ok) return LOCKED;
     const j = await r.json();
     return {
@@ -75,9 +102,18 @@ export async function fetchPassPrice(): Promise<string | null> {
   return products.length ? products[0].displayPrice : null;
 }
 
+/**
+ * ⚠️ `ok: false` DOES NOT MEAN "NOT CHARGED" (contract C1).
+ *   paid      — the store transaction COMPLETED: the user has been charged, and only the server's record of
+ *               it is missing (a verification we could not finish, a pass that has not surfaced yet).
+ *   pending   — deferred / Ask-to-Buy: nothing charged yet, but approving it later charges them.
+ *   cancelled — they backed out of the store sheet. Never paid, never pending.
+ * A caller must never offer another purchase while `paid` or `pending`: it may only re-read the state
+ * (fetchDownloadState) until the pass appears.
+ */
 export type BuyResult =
   | { ok: true; employerUnlocked: boolean }
-  | { ok: false; cancelled?: boolean; pending?: boolean; message?: string };
+  | { ok: false; cancelled?: boolean; pending?: boolean; paid?: boolean; message?: string };
 
 /**
  * Buy one pass.
@@ -97,6 +133,11 @@ export async function buyDownloadPass(employer?: string | null): Promise<BuyResu
   if (await recoverStrandedPasses()) {
     const s = await waitForPass(employer);
     if (s) return { ok: true, employerUnlocked: s.ownsEmployer || s.passes > 0 };
+    // ⚠️ A RECOVERED PASS IS A PAID PASS. recoverStrandedPasses() returning true means the store's own
+    // receipt verified and the SERVER GRANTED it — only our read of it has not come back (the poll is
+    // bounded, so a stalled network lands here). Falling through to purchaseOneTime here opened the
+    // store sheet for a SECOND pass. Say "paid, not visible yet" instead; the caller may only re-read.
+    return { ok: false, paid: true, message: 'Your payment went through — we are still applying your one-time pass. Please try again in a moment; you won’t be charged twice.' };
   }
 
   const priced = await fetchOneTimeProducts([PASS_SKU]);
@@ -111,25 +152,33 @@ export async function buyDownloadPass(employer?: string | null): Promise<BuyResu
   }
   if (outcome.status === 'failed') return { ok: false, message: outcome.message };
 
-  // Android: we hold the receipt, so verify it and only then finish (finishing IS the Play
-  // acknowledgement, and an unacknowledged purchase is auto-refunded after three days).
-  if (!outcome.settledElsewhere && outcome.purchase) {
-    const p: any = outcome.purchase;
-    const purchaseToken = p.purchaseToken || p.purchaseTokenAndroid || p.transactionReceipt;
-    const verified = await verifyGooglePass(purchaseToken);
-    if (!verified.ok) {
-      // ⚠️ Do NOT finish. Unfinished, the purchase is replayed on the next launch and can still be
-      // honoured; finished, it is gone and the user has paid for nothing.
-      return { ok: false, message: verified.message || 'We could not confirm the purchase yet. It will be applied automatically.' };
+  // ⚠️ FROM HERE THE STORE HAS CHARGED THEM. Every way out of this block says so (paid: true), including
+  // one that throws: a caller told "that didn't go through" would sell the same pass again.
+  try {
+    // Android: we hold the receipt, so verify it and only then finish (finishing IS the Play
+    // acknowledgement, and an unacknowledged purchase is auto-refunded after three days).
+    if (!outcome.settledElsewhere && outcome.purchase) {
+      const p: any = outcome.purchase;
+      const purchaseToken = p.purchaseToken || p.purchaseTokenAndroid || p.transactionReceipt;
+      const verified = await verifyGooglePass(purchaseToken);
+      if (!verified.ok) {
+        // ⚠️ Do NOT finish. Unfinished, the purchase is replayed on the next launch and can still be
+        // honoured; finished, it is gone and the user has paid for nothing.
+        return { ok: false, paid: true, message: verified.message || 'We could not confirm the purchase yet. It will be applied automatically.' };
+      }
+      await finishOneTime(outcome.purchase);
     }
-    await finishOneTime(outcome.purchase);
-  }
 
-  const state = await waitForPass(employer);
-  if (!state) {
-    return { ok: false, message: 'Payment went through — we are still applying it. Please try the download again in a moment.' };
+    const state = await waitForPass(employer);
+    if (!state) {
+      return { ok: false, paid: true, message: 'Payment went through — we are still applying it. It will be ready in a moment.' };
+    }
+    return { ok: true, employerUnlocked: state.ownsEmployer || state.passes > 0 };
+  } catch {
+    // Whatever broke after the store said yes, the charge stands — and the sentence is about the money, not
+    // about the exception (a raw "Network request failed" reads like the purchase never happened).
+    return { ok: false, paid: true, message: 'Payment went through — we are still applying it. It will be ready in a moment.' };
   }
-  return { ok: true, employerUnlocked: state.ownsEmployer || state.passes > 0 };
 }
 
 /**
@@ -181,7 +230,10 @@ async function verifyGooglePass(purchaseToken?: string): Promise<{ ok: boolean; 
 
 /** The pass is written by the SERVER, so poll for it rather than assuming the purchase landed. */
 async function waitForPass(employer?: string | null): Promise<DownloadState | null> {
-  for (let i = 0; i < 8; i++) {
+  // ⚠️ Each read is bounded by fetchDownloadState AND the poll as a whole by WAIT_FOR_PASS_MS: eight reads
+  // that each sat at their own deadline was over a minute of a locked screen on a stalled network.
+  const until = Date.now() + WAIT_FOR_PASS_MS;
+  for (let i = 0; i < 8 && Date.now() < until; i++) {
     const s = await fetchDownloadState(employer);
     if (s.passes > 0 || s.ownsEmployer) return s;
     await new Promise((r) => setTimeout(r, i < 3 ? 700 : 1500));

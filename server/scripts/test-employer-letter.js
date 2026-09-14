@@ -50,7 +50,7 @@ stub('db-config.js', { get: dbGet, query: async (s, p) => { const r = await dbGe
 
 /** The usage_ledger row consumeOnSuccess reports writing — the row a refused build must delete again. */
 const LEDGER_ID = 90210;
-const ent = { quota: { allowed: true, via: 'plan', remaining: 5 }, quotaSeq: null, used: { via: 'plan' }, consumed: [], gateCalls: 0, sub: { plan_key: 'plus' }, legacyEntitlements: false };
+const ent = { usageCalls: [], usageThrows: false, quota: { allowed: true, via: 'plan', remaining: 5 }, quotaSeq: null, used: { via: 'plan' }, consumed: [], gateCalls: 0, sub: { plan_key: 'plus' }, legacyEntitlements: false };
 stub('server/services/entitlements.js', {
   canConsumeMany: async () => { ent.gateCalls++; return ent.quotaSeq && ent.quotaSeq.length ? ent.quotaSeq.shift() : ent.quota; },
   // ⚠️ THE REAL SHAPE (contract 1): { via, charge, ledgerId }. `charge` is chargeCredits' OWN answer for
@@ -68,6 +68,12 @@ stub('server/services/entitlements.js', {
     return { via: used.via, charge, ledgerId };
   },
   activeSubscription: async () => ent.sub,
+  // usageFor (contract 3): the confirm sheet's count. ent.usageCalls records the kind asked; ent.usageThrows breaks it.
+  usageFor: async (u, kind) => {
+    ent.usageCalls.push(kind);
+    if (ent.usageThrows) throw new Error('ledger unreadable');
+    return { kind, pool: 'free', planLabel: null, remaining: 2, allowance: 3, used: 1, oneTime: true };
+  },
 });
 
 // the AI
@@ -122,7 +128,9 @@ docs.currentFor = async (userId, kind) => (kind === 'resume' ? resumeDocs.doc : 
 
 const research = require(path.join(ROOT, 'server/services/employerResearch.js'));
 const researchCalls = [];
-research.getEmployerResearch = async (a) => { researchCalls.push(a); return { domain: 'acme.test', employerName: 'Acme', industry: 'Fintech payments', companySize: '10,001+ employees', mission: 'Move money safely', technologies: ['Kafka'], clients: [], recentActivity: [], brandColor: '#1a73e8', fontName: 'Inter', fetchedAt: new Date().toISOString() }; };
+// researchConv: the hiring conventions the research carries for the next builds (null = none known).
+let researchConv = null;
+research.getEmployerResearch = async (a) => { researchCalls.push(a); return { conventions: researchConv, ...{ domain: 'acme.test', employerName: 'Acme', industry: 'Fintech payments', companySize: '10,001+ employees', mission: 'Move money safely', technologies: ['Kafka'], clients: [], recentActivity: [], brandColor: '#1a73e8', fontName: 'Inter', fetchedAt: new Date().toISOString() } }; };
 const scorer = require(path.join(ROOT, 'server/services/resumeScorer.js'));
 const narr = { value: { text: 'Current title: Senior Backend Engineer\n\nEXPERIENCE\nSenior Backend Engineer at Payly | Jan 2016 – Present\n- Built the ledger service', source: 'builder' }, throwIt: null };
 scorer.narrativeFor = async () => { if (narr.throwIt) throw narr.throwIt; return narr.value; };
@@ -131,6 +139,9 @@ const D = require(path.join(ROOT, 'server/services/downloads.js'));
 const passSpy = { cover: false, coverCalls: [], claim: { charged: false }, claimCalls: [] };
 D.passCoversGeneration = async (...a) => { passSpy.coverCalls.push(a); return passSpy.cover; };
 D.claimGeneration = async (...a) => { passSpy.claimCalls.push(a); return passSpy.claim; };
+// passStateFor (contract 3): READ-ONLY pass state for the sheet. Spied so the gate's kind and its answer are visible.
+const passState = { calls: [], answer: { available: false, forThisEmployer: false } };
+D.passStateFor = async (...a) => { passState.calls.push(a); return passState.answer; };
 const dlSpy = { can: [], claim: [] };
 const realCan = D.canDownload, realClaim = D.claimDownload;
 D.canDownload = async (u, o, r) => { dlSpy.can.push(o && o.employer); return realCan(u, o, r); };
@@ -143,7 +154,7 @@ const routes = require(path.join(ROOT, 'server/routes/coverLetterRoutes.js'));
 function mkRes() { const r = { statusCode: 200, body: null }; r.status = (c) => { r.statusCode = c; return r; }; r.json = (b) => { r.body = b; return r; }; return r; }
 const mkReq = (userId, body, extra = {}) => ({ user: { id: userId }, body, query: {}, headers: {}, ...extra });
 const call = async (fn, userId, body, extra) => { const res = mkRes(); await fn(mkReq(userId, body, extra), res); return res; };
-const reset = () => { ai.queue = []; ai.calls = []; ent.consumed = []; ent.gateCalls = 0; ent.quota = { allowed: true, via: 'plan', remaining: 5 }; ent.quotaSeq = null; ent.used = { via: 'plan' }; ent.legacyEntitlements = false; passSpy.cover = false; passSpy.coverCalls = []; passSpy.claim = { charged: false }; passSpy.claimCalls = []; store.puts = []; store.failPut = false; researchCalls.length = 0; stages.length = 0; narr.throwIt = null; world.metaThrow = null; world.creditHistory = { n: 0, cost: 0 }; world.ledgerCredits = { n: 0 }; world.refunds = []; rendered.previews = []; resumeDocs.doc = null; rbFp.value = null; };
+const reset = () => { ent.usageCalls = []; ent.usageThrows = false; passState.calls = []; passState.answer = { available: false, forThisEmployer: false }; researchConv = null; ai.queue = []; ai.calls = []; ent.consumed = []; ent.gateCalls = 0; ent.quota = { allowed: true, via: 'plan', remaining: 5 }; ent.quotaSeq = null; ent.used = { via: 'plan' }; ent.legacyEntitlements = false; passSpy.cover = false; passSpy.coverCalls = []; passSpy.claim = { charged: false }; passSpy.claimCalls = []; store.puts = []; store.failPut = false; researchCalls.length = 0; stages.length = 0; narr.throwIt = null; world.metaThrow = null; world.creditHistory = { n: 0, cost: 0 }; world.ledgerCredits = { n: 0 }; world.refunds = []; rendered.previews = []; resumeDocs.doc = null; rbFp.value = null; };
 const JOB = { company: 'Acme', title: '', url: '', description: '', website: 'acme.test' };
 const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employerId: '0f8fad5b-d9cb-469f-a165-70867728950e', country: 'United States', job: { ...JOB }, ...over });
 
@@ -227,7 +238,9 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   const cur = await EL.currentLetterFingerprint(7, { job: { company: 'Acme', website: 'acme.test' }, country: 'United States', env: mkReq(7, {}) });
   ok('currentLetterFingerprint equals the stored fingerprint', cur === buildFp, { cur, buildFp });
   const curOtherCountry = await EL.currentLetterFingerprint(7, { job: { company: 'Acme', website: 'acme.test', title: undefined }, country: 'Germany', env: 'Production' });
-  ok('country does not move it (letter text is region-neutral)', curOtherCountry === buildFp);
+  // RENAMED 2026-09-14 (letter-v2): the country and the conventions DO set the letter's tone and length now — they are
+  // just never hashed, so a change of tone is never a billed Refresh.
+  ok('⚠️ country is not a fingerprint input (it shapes tone, and a tone change must never bill a Refresh)', curOtherCountry === buildFp);
   const curTitle = await EL.currentLetterFingerprint(7, { job: { company: 'Acme', website: 'acme.test', title: 'Staff Engineer' }, env: 'Production' });
   ok('a posting title moves it', curTitle !== buildFp);
   const curSandbox = await EL.currentLetterFingerprint(7, { job: { website: 'acme.test' }, env: 'Sandbox' });
@@ -236,14 +249,111 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('unreadable → null, never a throw', (await EL.currentLetterFingerprint(7, { job: JOB, env: 'Production' })) === null);
   narr.throwIt = null;
 
+  console.log('── ⚠️ contract C2: `expectVia` — the payer the user CONFIRMED, refused with 409 before anything binds or charges ──');
+  {
+    // Home's sheet names a payer; the build the user confirms sends it back. A letter this lane would now pay for some
+    // OTHER way is refused with 409 payer_changed — nothing bound, charged or stored — and one confirmed as a free cache
+    // hit that misses is 409 cache_miss before every gate. No expectVia = the lane decides alone, as in every scenario above.
+    const stripC2 = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const dbExports = require.cache[require.resolve(path.join(ROOT, 'db-config.js'))].exports;
+    const origGetC2 = dbExports.get;
+    const c2 = (title, over = {}) => buildBody({ job: { ...JOB, title }, ...over });
+    reset();
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 cache role', { expectVia: 'cache' }));
+    ok('confirmed as a saved letter that is not there → 409 cache_miss', r.statusCode === 409 && r.body.reason === 'cache_miss' && r.body.success === false && !r.body.docId, r.body);
+    ok('⚠️ …before every gate: no quota read, no reservation, no research, no AI, nothing stored',
+      ent.gateCalls === 0 && passSpy.coverCalls.length === 0 && researchCalls.length === 0 && ai.calls.length === 0 && store.puts.length === 0 && ent.consumed.length === 0);
+
+    reset(); ent.quota = { allowed: true, via: 'free', remaining: 2 };
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 plan-vs-free role', { expectVia: 'plan' }));
+    ok('confirmed as the plan while the FREE allowance would pay → 409 payer_changed', r.statusCode === 409 && r.body.reason === 'payer_changed' && r.body.success === false, r.body);
+    ok('⚠️ …after the quota read and before the reservation: passCoversGeneration never called, no research, no AI, no charge',
+      ent.gateCalls === 1 && passSpy.coverCalls.length === 0 && researchCalls.length === 0 && ai.calls.length === 0 && ent.consumed.length === 0 && store.puts.length === 0, { gates: ent.gateCalls, cover: passSpy.coverCalls.length });
+
+    reset();
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 unreadable role', { expectVia: { via: 'plan' } }));
+    ok('⚠️ a payer word we cannot read is a confirmation we cannot honour → 409 payer_changed, never a charge on a guess',
+      r.statusCode === 409 && r.body.reason === 'payer_changed' && ai.calls.length === 0 && ent.consumed.length === 0, r.body);
+
+    reset(); ent.quota = { allowed: false, via: null, message: 'no quota' };
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 pass-gone role', { expectVia: 'pass' }));
+    ok('confirmed as the pass, and no pass would pay → 409 payer_changed (not 402), BEFORE the reservation',
+      r.statusCode === 409 && r.body.reason === 'payer_changed' && passSpy.coverCalls.length === 0 && ai.calls.length === 0, r.body);
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 plan-gone role', { expectVia: 'plan' }));
+    ok('confirmed as the plan, and the plan is gone → 409 payer_changed, not the 402 an unconfirmed build gets', r.statusCode === 409 && r.body.reason === 'payer_changed' && store.puts.length === 0, r.body);
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 plan-gone role'));
+    ok('…while the SAME build with no expectVia is the plain 402 it always was', r.statusCode === 402 && r.body.reason === 'quota_exhausted', r.body);
+
+    // 'pass' confirmed and a takeable pass really is there (the read-only twin sees it): the reservation runs and pays.
+    dbExports.get = async (sql, params) => {
+      const q = norm(sql); world.sql.push(q);
+      if (/letter_generated_at IS NULL AND \(bound_at IS NULL OR employer_key = \$3\)/.test(q)) return { id: 5 };
+      return origGetC2(sql, params);
+    };
+    reset(); ent.quota = { allowed: false, via: null, message: 'no quota' }; passSpy.cover = true; passSpy.claim = { charged: true, passId: 5 };
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 pass-pays role', { expectVia: 'pass' }));
+    ok('confirmed as the pass, with a takeable pass → 200, stored, claimed on the pass, the plan NOT consumed',
+      r.statusCode === 200 && store.puts.length === 1 && passSpy.coverCalls.length === 1 && passSpy.coverCalls[0][4].boundOnly === false && passSpy.claimCalls.length === 1 && ent.consumed.length === 0, { status: r.statusCode, body: r.body });
+    dbExports.get = origGetC2;
+
+    reset();
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 plan-pays role', { expectVia: 'plan' }));
+    ok('confirmed as the plan, and the plan pays → 200, one AI call, one plan consumption, stored', r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1, r.body);
+    reset();
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 plan-pays role', { expectVia: 'cache' }));
+    ok('…and confirmed as a saved letter that IS there → the free hit, as always', r.statusCode === 200 && r.body.cached === true && ent.gateCalls === 0 && ai.calls.length === 0, r.body);
+
+    // ⚠️ AT THE MOMENT OF PAYMENT: the gate said plan; the re-check says the FREE allowance would pay now.
+    reset(); ent.quotaSeq = [{ allowed: true, via: 'plan', remaining: 1 }, { allowed: true, via: 'trial', remaining: 2 }];
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 plan-ended role', { expectVia: 'plan' }));
+    ok('⚠️ the plan ended mid-write and the FREE allowance would pay → 409 payer_changed after the AI, nothing consumed, nothing stored',
+      r.statusCode === 409 && r.body.reason === 'payer_changed' && ai.calls.length === 1 && ent.consumed.length === 0 && store.puts.length === 0, { status: r.statusCode, body: r.body, gates: ent.gateCalls });
+
+    // ⚠️ ON WHAT ACTUALLY PAID: consumeOnSuccess picked the free pool where the plan was confirmed → given back, refused.
+    reset(); ent.used = { via: 'trial' };
+    const sqlC2 = world.sql.length;
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 trial-paid role', { expectVia: 'plan' }));
+    ok('⚠️ consumeOnSuccess paid from the free pool where the plan was confirmed → 409 payer_changed, the usage row given back by its own id, nothing stored',
+      r.statusCode === 409 && r.body.reason === 'payer_changed' && ent.consumed.length === 1 && store.puts.length === 0
+      && world.sql.slice(sqlC2).includes('RUN DELETE FROM usage_ledger WHERE id = $1 AND user_id = $2'), { status: r.statusCode, body: r.body });
+    reset(); ent.used = { via: 'trial' };
+    r = await call(EL.buildEmployerLetter, 7, c2('C2 trial-paid role'));
+    ok('…the same build with NO expectVia is stored on the free pool (an older app keeps today\'s behaviour)', r.statusCode === 200 && r.body.cached === false && store.puts.length === 1, r.body);
+    reset();
+    {
+      const src = stripC2(fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8'));
+      const iWould = src.indexOf('passWouldCoverLetter(userId, company, req, { boundOnly })');
+      const iBind = src.indexOf(".passCoversGeneration(userId, 'cover_letter', company, req, { boundOnly })");
+      ok('⚠️ the confirmed payer is compared BEFORE passCoversGeneration (the reservation that BINDS), and both refusals are frozen 409s',
+        iWould > 0 && iBind > iWould && /const PAYER_CHANGED = Object\.freeze\(\{\s*status: 409/.test(src) && /const CACHE_MISS = Object\.freeze\(\{\s*status: 409/.test(src), { iWould, iBind });
+      ok('…one vocabulary, read through downloads (expectedPayerOf / quotaPayerOf / payerWordOf) — never the raw strings',
+        /const expectVia = downloads\.expectedPayerOf\(body\);/.test(src) && /downloads\.quotaPayerOf\(now\) !== expectVia/.test(src) && /downloads\.namesPayer\(via\) && downloads\.payerWordOf\(via\) !== expectVia/.test(src));
+      // ⚠️ THE MONEY CONSTANT: a bump re-bills every saved letter (the fingerprint carries it). The 2026-09-14 round bumped it
+      // to letter-v2 for a tone change that is not a fingerprint input; it is back, and it stays.
+      ok('⚠️ LETTER_REV stays letter-v1 — a bump re-bills every saved letter', /const LETTER_REV = 'letter-v1';/.test(src));
+    }
+  }
+
   console.log('── gate ──');
   reset();
   r = await call(EL.employerLetterGate, 7, { employer: 'Acme', employerId: 'x', country: 'United States', job: { website: 'acme.test' } });
   ok('the stored letter → covered via cache', r.body.covered === true && r.body.via === 'cache' && r.body.credits === null && r.body.reason === null, r.body);
   ok('⚠️ …without asking the quota', ent.gateCalls === 0);
+  ok('⚠️ a cache hit carries usage:null, pass:null and reads neither (no sheet on a free path)',
+    r.body.usage === null && r.body.pass === null && ent.usageCalls.length === 0 && passState.calls.length === 0, r.body);
   reset();
   r = await call(EL.employerLetterGate, 7, { employer: 'Acme', job: { website: 'acme.test', title: 'Staff Engineer' } });
   ok('plan covers → via plan', r.body.covered === true && r.body.via === 'plan', r.body);
+  ok('⚠️ a non-cache answer carries usage (usageFor for the COVER LETTER) and pass { available, forThisEmployer }',
+    r.body.usage && r.body.usage.kind === 'cover_letter' && r.body.usage.remaining === 2 && JSON.stringify(ent.usageCalls) === JSON.stringify(['cover_letter'])
+    && JSON.stringify(r.body.pass) === JSON.stringify({ available: false, forThisEmployer: false }), r.body);
+  ok('⚠️ …the pass state is asked for the cover_letter kind (never the resume\'s unused generation), for this employer',
+    passState.calls.length === 1 && passState.calls[0][1] === 'Acme' && passState.calls[0][3] && passState.calls[0][3].kind === 'cover_letter', passState.calls);
+  ok('…and never through passCoversGeneration (a reservation)', passSpy.coverCalls.every((c) => c[4] && c[4].boundOnly === true), passSpy.coverCalls);
+  reset(); ent.usageThrows = true; passState.answer = { available: true, forThisEmployer: true, extra: 'dropped' };
+  r = await call(EL.employerLetterGate, 7, { employer: 'Acme', job: { website: 'acme.test', title: 'Staff Engineer' } });
+  ok('an unreadable count → usage:null, the gate unchanged; pass trimmed to its two fields',
+    r.statusCode === 200 && r.body.via === 'plan' && r.body.usage === null && JSON.stringify(r.body.pass) === JSON.stringify({ available: true, forThisEmployer: true }), r.body);
   reset(); ent.quota = { allowed: true, via: 'free', remaining: 2 };
   r = await call(EL.employerLetterGate, 7, { employer: 'Beta', job: {} });
   ok('free covers → via free', r.body.covered === true && r.body.via === 'free', r.body);
@@ -440,6 +550,27 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Omega', job: { company: 'Omega', website: 'omega.test' } }));
   ok('"(open application)" never reaches position/subject', store.puts[0].payload.position === 'Backend Engineer' && !/open application/i.test(store.puts[0].payload.subject), store.puts[0].payload);
 
+  console.log('── ⚠️ conventions shape the letter\'s tone and length — never its facts, never its price ──');
+  {
+    reset();
+    researchConv = { hqCountry: 'Germany', roleCountry: 'Germany', employerType: 'startup', sector: 'Fintech', atsVendor: 'Personio', tone: 'direct',
+      cv: { photo: 'expected', length: 'two_pages', personalDetails: 'include', dateFormat: 'MM/YYYY', format: 'tabular', notes: ['Berlin startups read short, direct letters.'] }, sources: [] };
+    r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Conv GmbH', country: '', job: { ...JOB, company: 'Conv GmbH', website: 'conv.test' } }), { __jobId: 'job-conv' });
+    const pc = String((ai.calls[0] || {}).prompt || '');
+    ok('200, ONE AI call, ONE consume', r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1, { status: r.statusCode, ai: ai.calls.length, consumed: ent.consumed.length });
+    ok('the letter prompt carries the conventions block, letter version (no CV habits)',
+      /=== HOW Conv GmbH HIRES/.test(pc) && /Personio/.test(pc) && /never mention them in the letter/.test(pc) && !/CV conventions: /.test(pc), pc.slice(pc.indexOf('=== HOW'), pc.indexOf('=== HOW') + 400));
+    ok('…a startup\'s shorter band (230-320 words) and the German-speaking register', /230-320/.test(pc) && /German-speaking employers expect a formal, structured letter/.test(pc));
+    ok('⚠️ …and the absolute rule: conventions never add facts', /never (add|state|imply)[^.]*fact/i.test(pc));
+    const putC = store.puts[store.puts.length - 1] || {};
+    ok('region from the research (Germany → dach) when the chip names no country', putC.design && putC.design.region === 'dach', putC.design && putC.design.region);
+    ok('the stored letter design keeps conventionsSummary (≤120) and the aiFamilies key', putC.design && 'aiFamilies' in putC.design
+      && typeof putC.design.conventionsSummary === 'string' && putC.design.conventionsSummary.length <= 120, putC.design && { ai: putC.design.aiFamilies, s: putC.design.conventionsSummary });
+    const style = EL.letterStyleFor(null, 'generic');
+    ok('no conventions + generic region → v1\'s 300-450 words, no extra notes', style && /300-450/.test(JSON.stringify(style)) && (!style.notes || style.notes.length === 0), style);
+    researchConv = null;
+  }
+
   console.log('── cards ──');
   reset();
   const letterDoc = store.rows.find((x) => x.kind === 'cover_letter' && x.employer_name === 'Acme');
@@ -485,6 +616,139 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('no docId → the classic lane, unchanged (html from the body)', r.statusCode === 200 && rendered.pdfArgs.data.bodyHtml === '<p>Classic</p>' && !('docId' in hist[hist.length - 1].payload), hist[hist.length - 1]);
   r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'ats_pro', companyName: 'Classic Co' });
   ok('classic lane without html is still 400', r.statusCode === 400);
+
+  console.log('── ⚠️ THE EMPLOYER\'S BRAND ON A LETTER (2026-09-15): design.brand stored, in EVERY doc-mode render, the sector-led opening ──');
+  {
+    // Contracts 4 (letter side) + 5 (letters): the website's colour and font (research.brand, contract 1) beat the
+    // researcher's brandColor/fontName; the effective pair is stored as design.brand and reaches employer-cards (hashed into
+    // the thumb key for EVERY design, so a changed brand is never served in yesterday's colour), generate-template-pdf/docx
+    // with a docId, and the generic PDFKit path; the classic lanes stay byte-for-byte as they were; paragraph 1 opens with
+    // the candidate's fit for the employer's sector. The money guards (gate, C2, consume, store-only-when-charged) are the
+    // scenarios above — nothing here spends differently.
+    const realGER = research.getEmployerResearch;
+    ent.sub = { plan_key: 'plus' };
+    // 1. the two readings
+    const rb = CL.researchBrandOf({ brandColor: '#1a73e8', fontName: 'Inter', brand: { primary: '#ff0000', font: { family: 'Poppins', google: true } } });
+    ok('researchBrandOf: brand.primary / brand.font beat the researcher\'s colour and font', rb && rb.accent === '#ff0000' && rb.font.family === 'Poppins' && rb.font.google === true, rb);
+    const rb2 = CL.researchBrandOf({ brandColor: '#1A73E8', fontName: 'Inter' });
+    ok('researchBrandOf: the researcher\'s pair stands in (lower-cased; a font never seen on Google Fonts is not google)', rb2 && rb2.accent === '#1a73e8' && rb2.font.family === 'Inter' && rb2.font.google === false, rb2);
+    ok('researchBrandOf: nothing usable → null, null-safe', CL.researchBrandOf({ industry: 'x' }) === null && CL.researchBrandOf(null) === null);
+    const lb = CL.letterBrandOf({ design: { brand: { accent: '#00ff00', font: null } }, research: { brandColor: '#1a73e8' }, payload: { brandColor: '#123456' } });
+    ok('letterBrandOf: the stored design.brand first', lb && lb.accent === '#00ff00' && lb.font === null, lb);
+    const lb2 = CL.letterBrandOf({ design: JSON.stringify({ ranked: [] }), research: JSON.stringify({ brandColor: '#1a73e8', fontName: 'Inter' }), payload: { brandColor: '#123456' } });
+    ok('letterBrandOf: the stored research next (string columns parsed)', lb2 && lb2.accent === '#1a73e8' && lb2.font.family === 'Inter', lb2);
+    const lb3 = CL.letterBrandOf({ design: null, research: null, payload: { brandColor: '#123456', fontName: 'Lato' } });
+    ok('letterBrandOf: the payload last; nothing → null', lb3 && lb3.accent === '#123456' && lb3.font.family === 'Lato' && CL.letterBrandOf({ payload: {} }) === null, lb3);
+    // 2. the prompt and the style (contract 5)
+    const pSec = EL.buildEmployerLetterPrompt({ company: 'Acme', website: '', job: { title: '', url: '', description: '', website: '' }, material: { baseText: 'x', uploadText: '' }, tailored: null, researchBlock: '', conventionsBlock: '', style: EL.letterStyleFor(null, 'generic'), sector: 'Fintech payments' });
+    ok('prompt: paragraph 1\'s FIRST sentence states the fit for the sector, never a sentence that could open a letter to anyone',
+      /FIRST sentence states the candidate's fit for Fintech payments/.test(pSec) && /never a sentence that could open a letter to any employer/.test(pSec));
+    const pNo = EL.buildEmployerLetterPrompt({ company: 'Acme', website: '', job: { title: '', url: '', description: '', website: '' }, material: { baseText: 'x', uploadText: '' }, tailored: null, researchBlock: '', conventionsBlock: '', style: EL.letterStyleFor(null, 'generic') });
+    ok('prompt: no sector → the factual opener, still employer-specific', /One factual opening sentence/.test(pNo) && !/FIRST sentence states/.test(pNo));
+    const st = EL.letterStyleFor({ employerType: 'startup', tone: 'direct' }, 'generic');
+    ok('style: the conventions\' tone folded as a note, the startup band kept; no conventions → no notes', st.words === '230-320' && st.notes.some((n) => /"direct"/.test(n)) && EL.letterStyleFor(null, 'generic').notes.length === 0, st);
+    // 3. the build stores design.brand from the research (the website's brand wins)
+    reset();
+    research.getEmployerResearch = async (a) => { researchCalls.push(a); return { conventions: { sector: 'Fintech', employerType: 'enterprise' }, domain: 'acme.test', employerName: 'Acme', industry: 'Fintech payments', companySize: '10,001+', mission: 'Move money', technologies: ['Kafka'], clients: [], recentActivity: [], brandColor: '#1a73e8', fontName: 'Inter', brand: { primary: '#c0392b', secondary: null, font: { family: 'Poppins', google: true }, from: {}, fetchedAt: new Date().toISOString() }, fetchedAt: new Date().toISOString() }; };
+    // Its own employer: an Acme build here would be the free cache hit the scenarios above already stored.
+    r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Brandwerk', job: { ...JOB, company: 'Brandwerk', website: 'brandwerk.test' } }), { __jobId: 'job-brand' });
+    const putB = store.puts[0];
+    ok('build 200, ONE AI call, ONE consume', r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1, r.body);
+    ok('⚠️ design.brand stored = { accent, font } from the research (the website\'s #c0392b / Poppins, not the researcher\'s #1a73e8 / Inter)',
+      putB && putB.design && putB.design.brand && putB.design.brand.accent === '#c0392b' && putB.design.brand.font.family === 'Poppins' && putB.design.brand.font.google === true, putB && putB.design && putB.design.brand);
+    ok('the payload keeps its exact keys, brandColor/fontName now the EFFECTIVE pair',
+      JSON.stringify(Object.keys(putB.payload).sort()) === JSON.stringify(['brandColor', 'companyAddress', 'companyName', 'coverLetterHtml', 'fontName', 'hiringManager', 'locations', 'position', 'subject'].sort()) && putB.payload.brandColor === '#c0392b' && putB.payload.fontName === 'Poppins', putB.payload && Object.keys(putB.payload));
+    ok('the prompt opened for the conventions\' sector', /fit for Fintech:/.test(ai.calls[0].prompt));
+    ok('the pre-rendered thumbs were painted with brandColor + brandFont', rendered.previews.length === 1 && rendered.previews[0].opts.brandColor === '#c0392b' && rendered.previews[0].opts.brandFont.family === 'Poppins', rendered.previews[0] && rendered.previews[0].opts);
+    // 4. cards: the same brand is a cache hit; a changed brand re-renders in the new colour
+    const bdoc = store.rows.find((x) => x.id === r.body.docId);
+    rendered.previews = [];
+    res = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(bdoc.id), ids: bdoc.design.ranked[0].id } }), res);
+    ok('cards: a cache hit for the pre-rendered top design', res.statusCode === 200 && rendered.previews.length === 0 && res.body.cards.length === 1, res.body);
+    bdoc.design = { ...bdoc.design, brand: { accent: '#111111', font: null } };
+    rendered.previews = []; res = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(bdoc.id), ids: bdoc.design.ranked[0].id } }), res);
+    ok('⚠️ cards: a changed brand misses the thumb cache and renders in the new colour (the brand is in the key for EVERY design)',
+      rendered.previews.length === 1 && rendered.previews[0].opts.brandColor === '#111111' && rendered.previews[0].opts.brandFont === null, rendered.previews[0] && rendered.previews[0].opts);
+    bdoc.design = { ...bdoc.design, brand: { accent: '#c0392b', font: { family: 'Poppins', google: true } } };
+    ok('/current re-attaches the brand to the re-ranked design', (() => { const d = EL.designOfLetterDoc ? EL.designOfLetterDoc(bdoc) : null; return !EL.designOfLetterDoc || (d && d.brand && d.brand.accent === '#c0392b'); })());
+    // 5. downloads by docId carry the brand; the classic lanes do not
+    rendered.pdf = 0; rendered.docx = 0; rendered.rich = 0;
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'ats_pro', docId: bdoc.id });
+    ok('pdf docId: renderPdf gets brandColor + brandFont beside the mode', r.statusCode === 200 && rendered.pdfArgs.opts.brandColor === '#c0392b' && rendered.pdfArgs.opts.brandFont.family === 'Poppins' && rendered.pdfArgs.opts.mode === 'a4', rendered.pdfArgs && rendered.pdfArgs.opts);
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bdoc.id });
+    ok('pdf docId generic: the brand colour and the Google font family reach the PDFKit generator', r.statusCode === 200 && rendered.richArgs[4] === '#c0392b' && rendered.richArgs[5] === 'Poppins', rendered.richArgs && rendered.richArgs.slice(4));
+    r = await call(CL.generateCoverLetterTemplateDocx, 7, { template: 'german', docId: bdoc.id });
+    ok('docx docId: buildCoverLetterDocx gets opts.brand = { accent, font }', r.statusCode === 200 && rendered.docxArgs.opts.brand.accent === '#c0392b' && rendered.docxArgs.opts.brand.font.family === 'Poppins' && rendered.docxArgs.opts.template === 'german', rendered.docxArgs && rendered.docxArgs.opts);
+    ok('docx history brandColor = the effective accent', hist[hist.length - 1].payload.brandColor === '#c0392b', hist[hist.length - 1].payload.brandColor);
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'ats_pro', coverLetterHtml: '<p>Classic</p>', companyName: 'Classic Co' });
+    ok('⚠️ the classic pdf lane: opts stay { mode } only', r.statusCode === 200 && JSON.stringify(Object.keys(rendered.pdfArgs.opts)) === JSON.stringify(['mode']), rendered.pdfArgs.opts);
+    r = await call(CL.generateCoverLetterTemplateDocx, 7, { template: 'german', coverLetterHtml: '<p>Classic</p>', companyName: 'Classic Co' });
+    ok('⚠️ the classic docx lane: no brand key', r.statusCode === 200 && !('brand' in rendered.docxArgs.opts), rendered.docxArgs.opts);
+    // 6. a letter stored before design.brand existed renders from its research
+    const oldRow = { ...bdoc, id: 9901, design: { ...bdoc.design }, research: { brandColor: '#0e7490', fontName: 'Inter' } };
+    delete oldRow.design.brand; store.rows.push(oldRow);
+    rendered.previews = []; res = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: '9901', ids: 'technical' } }), res);
+    ok('an older row: the research\'s colour and font are used', rendered.previews.length === 1 && rendered.previews[0].opts.brandColor === '#0e7490' && rendered.previews[0].opts.brandFont.family === 'Inter', rendered.previews[0] && rendered.previews[0].opts);
+    research.getEmployerResearch = realGER;
+    // 6b. ⚠️ (2026-09-15) letterBrandOf is a function of the ROW: brandOf used to consult brandExtract's per-process font
+    // memory for a bare researcher fontName, so the same stored letter changed brand (and thumb key) after a deploy.
+    {
+      const BX = require(path.join(ROOT, 'server/services/brandExtract.js'));
+      const oldLetter = { id: 2, design: { ranked: [] }, research: { domain: 'mont-letter-test.com', fontName: 'Montserrat', brandColor: '#123456' }, payload: { coverLetterHtml: '<p>x</p>' } };
+      const lBefore = CL.letterBrandOf(oldLetter);
+      ok('cold process: the bare researcher fontName is google:false', !!lBefore && lBefore.font.family === 'Montserrat' && lBefore.font.google === false && lBefore.accent === '#123456', lBefore);
+      const realKnown = BX.googleFontKnown;
+      BX.googleFontKnown = (f) => (String(f).toLowerCase() === 'montserrat' ? true : realKnown(f));
+      try {
+        const fresh = await research._internals.withResearcherFont({ domain: 'mont-letter-test.com', fontName: 'Montserrat' }, 5000);
+        ok('(the memory is live: a fresh build writes google:true onto brand.font)', !!fresh && !!fresh.brand && fresh.brand.font.google === true);
+        ok('⚠️ the stored letter\'s brand is byte-identical after the memory learned the family', JSON.stringify(CL.letterBrandOf(oldLetter)) === JSON.stringify(lBefore), CL.letterBrandOf(oldLetter));
+        ok('…while a research carrying the verified answer reads google:true', CL.researchBrandOf(fresh).font.google === true);
+      } finally { BX.googleFontKnown = realKnown; }
+    }
+    // 6c. ⚠️ a letter with NO brand of its own catches up with the shared row, read-only (withSharedLetterBrand)
+    {
+      const ROW_BRAND = { primary: '#e30613', secondary: '#00857c', font: { family: 'Space Grotesk', google: true }, from: { primary: 'theme-color', font: 'body' }, fetchedAt: new Date().toISOString() };
+      const asked = [];
+      const realCBF = research.cachedBrandFor;
+      research.cachedBrandFor = async (domain) => { asked.push(domain); return domain === 'acme-letter-test.com' ? ROW_BRAND : null; };
+      try {
+        const nullLetter = () => ({ id: 4, design: { ranked: [], brand: null }, research: { domain: 'acme-letter-test.com', industry: 'Widgets' }, payload: { coverLetterHtml: '<p>x</p>' } });
+        ok('before: letterBrandOf null (design.brand null, nothing on the research, nothing in the payload)', CL.letterBrandOf(nullLetter()) === null);
+        const l = await CL.withSharedLetterBrand(nullLetter());
+        const lg = CL.letterBrandOf(l);
+        ok('⚠️ withSharedLetterBrand: the row\'s brand becomes research.brand — letterBrandOf = its accent + font; ONE read of the snapshot\'s domain',
+          JSON.stringify(lg) === JSON.stringify({ accent: '#e30613', font: { family: 'Space Grotesk', google: true } }) && asked.length === 1 && asked[0] === 'acme-letter-test.com', { lg, asked });
+        asked.length = 0;
+        const own = await CL.withSharedLetterBrand({ ...nullLetter(), design: { ranked: [], brand: { accent: '#111111', font: null } } });
+        ok('a letter WITH its own brand never asks the row', asked.length === 0 && CL.letterBrandOf(own).accent === '#111111');
+        const payloadBrand = await CL.withSharedLetterBrand({ ...nullLetter(), payload: { coverLetterHtml: '<p>x</p>', brandColor: '#123456' } });
+        ok('a payload brandColor is a brand of its own: no read', asked.length === 0 && CL.letterBrandOf(payloadBrand).accent === '#123456');
+        const noResearch = await CL.withSharedLetterBrand({ id: 5, design: { brand: null }, research: null, payload: { coverLetterHtml: '<p>x</p>' } });
+        ok('no research snapshot → left alone (no domain of record), no read', asked.length === 0 && noResearch.research === null);
+        const strRow = await CL.withSharedLetterBrand({ ...nullLetter(), research: JSON.stringify({ domain: 'acme-letter-test.com' }) });
+        ok('a stringified research column is parsed, and the brand laid over the parsed object', asked.length === 1 && CL.letterBrandOf(strRow) !== null && strRow.research.brand === ROW_BRAND);
+        research.cachedBrandFor = async () => { throw new Error('boom'); };
+        const errL = await CL.withSharedLetterBrand(nullLetter());
+        ok('a failing read leaves the letter untouched (never throws)', CL.letterBrandOf(errL) === null);
+      } finally { research.cachedBrandFor = realCBF; }
+    }
+    // 7. the source rules behind it
+    const stripL = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const elC = stripL(fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8'));
+    ok('⚠️ the thumb key hashes the brand pair for every design, and the cards render with it',
+      /const brandHash = sha\(JSON\.stringify\(\{ accent: accent \|\| null, font: brandFont \}\)\)\.slice\(0, 16\);/.test(elC)
+      && /clRenderer\.renderPreviews\(data, \{ photo, brandColor: accent, brandFont \}, missing\)/.test(elC));
+    ok('⚠️ LETTER_REV stays letter-v1 through the brand round (a bump re-bills every saved letter)', /const LETTER_REV = 'letter-v1';/.test(elC) && !/LETTER_REV = 'letter-v2'/.test(elC));
+    ok('the brand readings live in the core controller (docId downloads never depend on the feature file)',
+      typeof CL.researchBrandOf === 'function' && typeof CL.letterBrandOf === 'function' && typeof CL.withSharedLetterBrand === 'function');
+    const clC = stripL(fsSync.readFileSync(path.join(ROOT, 'server/controllers/coverLetterController.js'), 'utf8'));
+    ok('⚠️ employerLetterDocFor (docId PDF / DOCX) lays the shared brand on before savedLetterInput reads it; the read is cachedBrandFor and nothing that bills or writes',
+      /withSharedLetterBrand\(doc\) : LETTER_DOC_GONE/.test(clC)
+      && (() => { const b = (clC.match(/async function withSharedLetterBrand\(doc\) \{[\s\S]*?\n\}/) || [''])[0]; return b.length > 100 && /cachedBrandFor\(domain\)/.test(b) && !/getEmployerResearch|researchBrand\(|brandCallFor|INSERT|UPDATE/.test(b); })());   // researchBrandOf is the READER; researchBrand( is the website call
+    ok('⚠️ the feature file adopts it at BOTH of its loads (the post-build thumb prerender and employerLetterCards) — before letterCardsFor hashes the brand, so a thumb is the file the download would produce',
+      (elC.match(/await withSharedLetterBrand\((cl|clMod\(\)), await employerDocs(Mod\(\))?\.getById\(/g) || []).length === 2 && /async function withSharedLetterBrand\(cl, doc\)/.test(elC));
+  }
 
   console.log('── helpers ──');
   ok('findLetterPlaceholders', JSON.stringify(EL.findLetterPlaceholders('by [X%] and [Insert metric] for {Company Name} XX% $X and N years [Next.js stays]')) === JSON.stringify(['[X%]', '[Insert metric]', '{Company Name}', 'XX%', '$X', 'N years']), EL.findLetterPlaceholders('by [X%] and [Insert metric] for {Company Name} XX% $X and N years [Next.js stays]'));

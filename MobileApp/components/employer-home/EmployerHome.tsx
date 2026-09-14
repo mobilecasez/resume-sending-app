@@ -35,13 +35,26 @@
 // refilled); when that is used up the answer is the plans screen. So nothing on this screen names a
 // credit price — not the gate hint, not the overlay.
 //
+// ⚠️ NOTHING IS SPENT BEFORE A SHEET SAYS WHAT IT SPENDS (2026-09-14). Tailor, Write, Refresh and the Add
+// auto-build open GenerateConfirmSheet first — what tailoring does, how many generations are left (or that the
+// one-time pass covers this employer), Continue / Cancel — and with none left the same sheet offers the $0.99
+// one-time pass for THIS employer or the plans. Its state is useHomeBuilds' (K.confirm); a cache hit skips it.
+//
+// THE TAILOR HINT. A chip with nothing tailored shows the base resume, and its Tailor button sits under a page
+// taller than the first screen. TailorHint lays a pill over the page's lower half that names the button and
+// scrolls to it on a tap — it never starts a build. It shows only while that button is below the fold, and
+// leaves for good (per chip and kind) once the user has scrolled the button into view.
+//
 // BUILDS RUN IN THE BACKGROUND, PER EMPLOYER (services/homeBuilds holds their live state): the chip
 // shows its progress, the carousel writes the pages with a live % and a tap reopens the overlay.
 //
-// THE LIBRARY OPENS, IT NEVER DOWNLOADS. A card under "Downloaded" grows into the same zoomed page a
+// THE LIBRARY OPENS, IT NEVER DOWNLOADS. A card under "Your library" grows into the same zoomed page a
 // hero page does (PaperZoom), with the same two doors for a resume AND a cover letter — Customize and
 // View PDF — through the same functions the hero uses; the download happens from View PDF, exactly as
-// from the hero (openHistoryItem).
+// from the hero (openHistoryItem). The library is a shelf of paper cards (DownloadHistory): each shows
+// the page it is a download of, and the page comes from what this screen ALREADY HOLDS (imageFor) —
+// the employer's own document page from the image cache the deck fills and a small warm tops up for the
+// front of the shelf (warmDocImages, a READ), else the base page in that design, else a drawn page.
 //
 // ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): one driver per view tree, no mixing.
 // This file and its children (MeshStage, PaperCarousel, EmployerChip) use useNativeDriver:true ONLY,
@@ -49,8 +62,9 @@
 // ⚠️ A TICKING PERCENTAGE NEVER LIVES HERE: it is React state inside a small memo component (the chip's
 // build line, the carousel's read-out). This screen subscribes to a build's PHASE only, so a stage
 // tick re-renders a chip, never the whole of Home. The overlays it shares a screen with (JourneyCoach,
-// ResumeScoreModal, BuildingOverlay, PaperZoom) are separate trees mounted as siblings, which the rule
-// allows.
+// ResumeScoreModal, BuildingOverlay, GenerateConfirmSheet, PaperZoom) are separate trees mounted as siblings,
+// which the rule allows. TailorHint is INSIDE the scroll view, so it is native-driver only, and its scroll
+// fade is the scroll view's own native value.
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Animated, Easing,
@@ -69,13 +83,16 @@ import { API_BASE } from '../../config';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { E, SERIF, sweepWords } from './theme';
 import MeshStage from './MeshStage';
-import PaperCarousel, { PaperCard } from './PaperCarousel';
+import PaperCarousel, { PaperCard, cardWidthFor } from './PaperCarousel';
+import { AFFORDANCE } from './PaperSkeleton';
 import PaperZoom, { OriginRect } from './PaperZoom';
 import AddEmployerSheet, { type EmployerPick } from './AddEmployerSheet';
 import BuildingOverlay from './BuildingOverlay';
+import GenerateConfirmSheet from './GenerateConfirmSheet';
+import TailorHint, { TAILOR_HINT_H, TAILOR_HINT_REACH } from './TailorHint';
 import EmployerChip from './EmployerChip';
 import { useHomeBuilds, forgetHomeBuilds, type HomeBuildJob } from './useHomeBuilds';
-import { useDocList, useTargetDoc, useDocDeck, type DocLoaders } from './useTargetDoc';
+import { useDocList, useTargetDoc, useDocDeck, cachedDocImage, warmDocImages, type DocLoaders } from './useTargetDoc';
 import {
   fetchTargets, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS,
   fetchDownloadHistory, cachedDownloadHistory, redownload, gradFor, savePendingListing,
@@ -127,6 +144,30 @@ const NOTICE_WAIT_MS = 20000;
 const LANDED_WAIT_MS = 15000;
 /** At most this many chips' saved documents are read ahead of a tap, per list answer. */
 const PREWARM_MAX = 6;
+/**
+ * The bottom of the viewport that does not count as "on screen" for the Tailor hint: the floating tab bar
+ * over Home's foot (the page's own `tail` leaves it 108pt) less the part a button can peek out from under.
+ */
+const FOLD_ALLOW = 96;
+/** How far the page scrolls before the hint has faded out of the way (native, from scrollY). */
+const HINT_FADE_PX = 140;
+/**
+ * The centred page's geometry inside the slot, mirrored from PaperCarousel so the Tailor hint can keep off the
+ * page's zoom button: the pager's contentContainerStyle paddingTop (10) and its A4 ratio (424/300, the
+ * renderer's). The WIDTH is not mirrored — it is cardWidthFor itself, fed the slot's measured width, which is
+ * the carousel's own container width (the slot is a plain full-width View).
+ */
+const DECK_PAD_TOP = 10;
+const DECK_PAGE_RATIO = 424 / 300;
+/** Visible air between the hint's reach (halo / hitSlop / motion) and the zoom button's top edge. */
+const HINT_ZOOM_GAP = 8;
+/** The Tailor button's own height (s.tailorBtn) — "in view" means the whole button, not its hint line. */
+const TAILOR_BTN_H = 50;
+
+/** What the confirm sheet takes — the hook's own shape, so this file cannot drift from it. */
+type ConfirmView = ReturnType<typeof useHomeBuilds>['confirm'];
+/** A harness-only answer for the confirm sheet (loaders.confirm): the parts a real gate read would supply. */
+type PreviewAsk = { mode: ConfirmView['mode']; usage: ConfirmView['usage']; pass: ConfirmView['pass'] };
 
 /** The letter designs as pages with no pixels — what a letter deck shows while it is being written. */
 const LETTER_SLOTS: PaperCard[] = LETTER_DESIGNS.map((d) => ({ id: d.id, name: d.name, accent: d.accent, image: null }));
@@ -160,6 +201,12 @@ type Zoom =
  * cache (forgetAccountCache): otherwise it holds the previous account's pages.
  */
 const LIB_PAGES_MAX = 12;
+/**
+ * How many library cards, from the front of the shelf, have their employer's own page warmed once the saved
+ * list is in hand (the four on screen and the next line behind "See all"). ⚠️ Small on purpose: every page
+ * is one render on the serial renderer, and this runs on the app's front door.
+ */
+const LIB_WARM = 8;
 const libPages = new Map<string, { image: string; fit: number | null; reason: string | null }>();
 const libPageKey = (kind: DocKind, d: { docId: number; updatedAt: string }, design: string) =>
   `${kind}|${d.docId}|${d.updatedAt}|${design}`;
@@ -522,6 +569,13 @@ export default function EmployerHome({
     remove?: (t: Target) => Promise<boolean>;
     /** The server side of Undo, and of a re-add restoring a hidden posting (track again / un-hide); true = back. */
     unhide?: (t: Target) => Promise<boolean>;
+    /**
+     * HARNESS ONLY: what the confirm sheet says for a chip's Tailor / Write / Refresh, so both of its states
+     * (counts left, and none left) can be looked at signed-out. ⚠️ It never reaches useHomeBuilds: every button
+     * on a sheet opened this way is a "Preview only" alert or a close — nothing is built or bought. null = the
+     * old "Preview only" alert.
+     */
+    confirm?: (kind: DocKind, t: Target) => Promise<PreviewAsk | null>;
   };
 }) {
   // The dark stage runs edge to edge under the status bar (HomeScreen drops its top safe-area
@@ -566,6 +620,29 @@ export default function EmployerHome({
   // The library's empty state points back UP at the carousel rather than pushing a route: the
   // designs are 800pt straight up on this same screen.
   const scrollRef = useRef<any>(null);
+  /**
+   * ── WHERE THE TAILOR BUTTON IS, FOR THE HINT ──
+   * Content-space positions from onLayout, never measureInWindow: the chain from the scroll content to the
+   * paper is MeshStage's paddingTop (headerH) → the page and hero views (both at 0) → the paper block
+   * (paperY) → its first child, the carousel or the letter panel (slot) / the Tailor button's box (tailor).
+   * ⚠️ scrollTop is only where the page came to REST (drag end, momentum end): reading every scroll frame on
+   * JS would undo the native driver this screen is built on. Between rests the hint fades on the native value.
+   */
+  const scrollTop = useRef(0);
+  const [paperY, setPaperY] = useState(0);
+  const [slotY, setSlotY] = useState(0);
+  const [slotH, setSlotH] = useState(0);
+  const [slotW, setSlotW] = useState(0);
+  // The Tailor hint's MEASURED height (TailorHint onHeight); the constant only until the first layout.
+  const [hintH, setHintH] = useState(TAILOR_HINT_H);
+  const [tailorY, setTailorY] = useState(0);
+  const [tailorH, setTailorH] = useState(0);
+  // Chip + kind signatures whose button the user has already scrolled to (or reached by tapping the hint).
+  const [hintSeen, setHintSeen] = useState<Record<string, true>>({});
+  // The hint's geometry as of the last render, for the scroll-rest handler (which is not re-created per render).
+  const hintGeo = useRef<{ sig: string; ctaBottom: number; foldY: number } | null>(null);
+  // HARNESS ONLY (loaders.confirm): the confirm sheet as the preview opens it. The real one is K.confirm.
+  const [previewAsk, setPreviewAsk] = useState<(PreviewAsk & { kind: DocKind; company: string }) | null>(null);
   const [targets, setTargets] = useState<Target[]>([]);
   const [empIdx, setEmpIdx] = useState(0);
   const [cards, setCards] = useState<HomeCard[]>([]);
@@ -834,9 +911,10 @@ export default function EmployerHome({
     return (hit && hit.image) || shots[templateId] || null;
   }, [cards, shots]);
 
-  /** The design's accent, from the catalogue already in hand. Never a fetch. */
+  /** The design's accent, from the catalogue already in hand — or a letter format's own. Never a fetch. */
   const accentFor = useCallback((templateId: string): string => {
-    const hit = slots.find((c) => c.id === templateId) || cards.find((c) => c.id === templateId);
+    const hit = slots.find((c) => c.id === templateId) || cards.find((c) => c.id === templateId)
+      || LETTER_DESIGNS.find((d) => d.id === templateId);
     return (hit && hit.accent) || E.blue;
   }, [slots, cards]);
 
@@ -876,9 +954,93 @@ export default function EmployerHome({
   const { list: docList } = useDocList(kind, listToken, docLoaders);
   const docListRef = useRef(docList);
   docListRef.current = docList;
+
+  /* ── the library's pages ── */
+
+  // Bumped when a warm lands: `imageFor` reads the module image cache at render, so the shelf needs a
+  // render to see what the warm put there.
+  const [libImgVer, setLibImgVer] = useState(0);
+
+  /**
+   * The page for a library card, from what is ALREADY IN HAND — never a fetch (see DownloadHistory's header).
+   * A card of the kind on screen belongs to that employer's saved document (savedDocFor, the same pick
+   * openHistoryItem makes): its page in that design from the document image cache the deck fills and the
+   * warm below tops up, else a page the library kept from a previous open. Failing those, a resume shows the
+   * BASE page in that design (thumbFor — the same stand-in the card's zoom opens on) and a letter shows
+   * nothing: a letter's only picture is a saved letter's own page, so the drawn letter is the honest fallback.
+   * ⚠️ Decided per card by ITS kind, not by the mode: the server never mixes kinds in one list, but the
+   * harness does, and a letter card must never borrow a resume page.
+   */
+  const imageFor = useCallback((it: DownloadHistoryItem): string | null | undefined => {
+    const k: DocKind = it.kind === 'cover_letter' ? 'cover_letter' : 'resume';
+    const who = String(it.employer || '').trim();
+    const saved = k === kind && docList && who ? savedDocFor(docList, who) : null;
+    if (saved && it.templateId) {
+      const own = cachedDocImage(k, saved.docId, saved.updatedAt, it.templateId)
+        || libPages.get(libPageKey(k, saved, it.templateId))?.image || null;
+      if (own) return own;
+    }
+    return k === 'resume' ? thumbFor(it.templateId) : null;
+    // libImgVer: the module image cache was filled by a warm since the last render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, docList, thumbFor, libImgVer]);
+
+  /**
+   * Fill the front of the shelf. Once the saved list is in hand, the first LIB_WARM cards whose employer has a
+   * saved document of the kind on screen, and whose page is not cached yet, are asked for through
+   * warmDocImages — grouped by document, one document at a time, behind the same single-flight the deck's
+   * own waves use, so the serial renderer never sees two waves. A READ of pages that exist, never a build.
+   * ⚠️ In the harness the pages come from its docCards fixtures (opts.cards, the same injected reader the
+   * deck uses — a harness that supplied none answers null), so the warm never reaches the network signed out.
+   */
+  useEffect(() => {
+    if (!docList || !history.length) return;
+    const k = kind;
+    const cards = docLoadersRef.current?.cards;
+    const byDoc = new Map<string, { docId: number; updatedAt: string; ids: string[] }>();
+    for (const it of history.slice(0, LIB_WARM)) {
+      const who = String(it.employer || '').trim();
+      if (it.kind !== k || !it.templateId || !who) continue;
+      const saved = savedDocFor(docList, who);
+      if (!saved || cachedDocImage(k, saved.docId, saved.updatedAt, it.templateId)) continue;
+      const key = `${saved.docId}|${saved.updatedAt}`;
+      const e = byDoc.get(key) || { docId: saved.docId, updatedAt: saved.updatedAt, ids: [] };
+      if (!e.ids.includes(it.templateId)) e.ids.push(it.templateId);
+      byDoc.set(key, e);
+    }
+    if (!byDoc.size) return;
+    let cancelled = false;
+    (async () => {
+      for (const e of byDoc.values()) {
+        if (cancelled) return;
+        try { await warmDocImages(k, e.docId, e.updatedAt, e.ids, { cards }); } catch { /* the drawn page stays */ }
+        if (!cancelled && alive.current) setLibImgVer((v) => v + 1);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [docList, history, kind]);
   const { doc, state: docState, reload: reloadDoc } = useTargetDoc(kind, target || null, { refreshToken: docToken, loaders: docLoaders });
   const docRef = useRef(doc);
   docRef.current = doc;
+
+  /**
+   * The tint a library card's drawn page (and its zoomed card) wears when its saved document is THE ONE ON
+   * SCREEN: the employer's brand accent — every page of that document was recoloured to design.brand.accent,
+   * and the deck above tints its own skeletons with it (useDocDeck) — so the shelf and the hero cannot show the
+   * same document in two colours: a catalogue-blue card under a brand-red deck promised one page and delivered
+   * another. Any other document answers null and keeps the catalogue accent: its brand is not in hand, and a
+   * null/absent brand means "rendered in the design's own colours" (employerDocs.Design.brand), never a guess.
+   * Reads `doc` itself, not docRef: the shelf must re-tint when the document on screen changes, not only when
+   * the saved list does.
+   */
+  const brandAccentFor = useCallback((it: DownloadHistoryItem): string | null => {
+    const k: DocKind = it.kind === 'cover_letter' ? 'cover_letter' : 'resume';
+    const who = String(it.employer || '').trim();
+    if (!doc || k !== kind || !docList || !who) return null;
+    const saved = savedDocFor(docList, who);
+    if (!saved || saved.docId !== doc.docId) return null;
+    return doc.design?.brand?.accent || null;
+  }, [doc, kind, docList]);
   const { deck: docDeck, gone: docGone } = useDocDeck(
     kind, doc, kind === 'cover_letter' ? LETTER_DESIGNS : slots, cardIdx, { loaders: docLoaders, enabled: !!doc },
   );
@@ -1264,7 +1426,21 @@ export default function EmployerHome({
   const requestBuild = (why: 'tailor' | 'write' | 'refresh') => {
     const t = targetsRef.current[empIdxRef.current];
     if (!t) return;
-    if (loaders) { Alert.alert('Preview only', 'Building a document needs a signed-in account.'); return; }
+    if (loaders) {
+      // The harness can OPEN the confirm sheet (loaders.confirm) so it can be looked at — never build.
+      const ask = loaders.confirm;
+      const k = kindRef.current;
+      if (!ask) { Alert.alert('Preview only', 'Building a document needs a signed-in account.'); return; }
+      Promise.resolve()
+        .then(() => ask(k, t))
+        .then((v) => {
+          if (!alive.current) return;
+          if (v) setPreviewAsk({ ...v, kind: k, company: t.company });
+          else Alert.alert('Preview only', 'Building a document needs a signed-in account.');
+        })
+        .catch(() => {});
+      return;
+    }
     // ⚠️ A REFRESH REBUILDS THE DOCUMENT'S OWN JOB, NOT THIS DEVICE'S LISTING CACHE (see refreshJobFor):
     // the pasted listing lives in a store that evicts, and a refresh spelled from an evicted one rebuilt
     // the resume WITHOUT the posting — then saved that poorer input as the document's.
@@ -1895,7 +2071,8 @@ export default function EmployerHome({
       return;
     }
     const saved = who ? savedDocFor(list, who) : null;
-    const accent = accentFor(item.templateId);
+    // The catalogue accent — replaced by the employer's brand below when the document on screen is this one.
+    let accent = accentFor(item.templateId);
 
     if (!saved) {
       if (k === 'cover_letter') {
@@ -1918,15 +2095,24 @@ export default function EmployerHome({
     }
 
     const zd: ZoomDoc = { docId: saved.docId, kind: k, employer: saved.employer || who };
-    // A page already in hand: the deck on screen when it IS this document, else one the library kept.
-    const onDeck = docRef.current && docRef.current.docId === saved.docId
-      ? docDeckRef.current.find((c) => c.id === item.templateId) || null
-      : null;
+    // A page already in hand, in the order the card itself was painted from (imageFor): the deck on screen
+    // when it IS this document, then the document image cache the deck fills and the shelf warm tops up,
+    // then a page the library kept from an earlier open. ⚠️ The cache is consulted HERE, not only in imageFor:
+    // a warmed card that skipped it opened on a blank page and asked the serial renderer for the very page
+    // it was already wearing — one extra chromium render per tap, on the front door.
+    const onScreen = docRef.current && docRef.current.docId === saved.docId ? docRef.current : null;
+    const onDeck = onScreen ? docDeckRef.current.find((c) => c.id === item.templateId) || null : null;
     const kept = libPages.get(libPageKey(k, saved, item.templateId)) || null;
-    const image = (onDeck && onDeck.image) || (kept && kept.image) || null;
+    const image = (onDeck && onDeck.image)
+      || cachedDocImage(k, saved.docId, saved.updatedAt, item.templateId)
+      || (kept && kept.image) || null;
     const fit = onDeck && onDeck.fit != null ? onDeck.fit
       : kept && kept.fit != null ? kept.fit
         : saved.topId === item.templateId ? saved.topScore : null;
+    // The document on screen was recoloured to the employer's brand, and its deck tints with it (brandAccentFor
+    // for the shelf's own card): the zoomed card wears the same, so it never changes colour on the way open.
+    const brand = onScreen ? onScreen.design?.brand?.accent : null;
+    if (brand) accent = brand;
     libOpen.current = n;
     setZoom({
       src: 'library', n, rect: origin, kind: k, doc: zd, employer: zd.employer, sample: false,
@@ -2060,6 +2246,76 @@ export default function EmployerHome({
   const focus = pageH ? Math.max(0.18, Math.min(0.82, (headerH + heroH) / stageH)) : 0.75;
   const gridRows = Math.ceil(stageH / 30) + 2;
 
+  /**
+   * ── THE TAILOR HINT: whether, where, and what a tap does ──
+   * Only for the chip's ONE action — the resume's Tailor button under the base deck, or the letter panel's
+   * Write button — exactly when that action is what is drawn (wantsAction, not being added, not building, no
+   * document). ⚠️ AND ONLY WHILE THE BUTTON IS BELOW THE FOLD: a button already on screen needs no pointer,
+   * and one the user has scrolled to once (hintSeen) is found — the hint does not come back to nag.
+   */
+  const actionShown = !!target && wantsAction && !(selRk && adding[selRk]);
+  const hintKind: DocKind | null = !actionShown || loading ? null
+    : mode === 'resume' ? (shown && !noResume ? 'resume' : null)
+      : (!shown ? 'cover_letter' : null);
+  const hintSig = hintKind && selRk ? `${hintKind}|${selRk}` : '';
+  const foldY = (rootH || 0) - FOLD_ALLOW;
+  const slotTop = headerH + paperY + slotY;
+  // The bottom of the button itself, in content space. The letter's Write button closes its panel (18pt of
+  // padding below it, and a one-line gate hint when there is one).
+  const ctaBottom = hintKind === 'resume'
+    ? (tailorH > 0 ? headerH + paperY + tailorY + TAILOR_BTN_H : 0)
+    : hintKind === 'cover_letter' && slotH > 0 ? slotTop + slotH - 18 - (hint ? 20 : 0) : 0;
+  const hintOn = !!hintSig && !hintSeen[hintSig] && rootH > 0 && slotH > 0 && ctaBottom > 0
+    && ctaBottom - scrollTop.current > foldY;
+  hintGeo.current = hintSig && ctaBottom > 0 ? { sig: hintSig, ctaBottom, foldY } : null;
+  // Over the LOWER part of the page, or just above the letter's button — and never under the fold itself, or
+  // on a short phone the pointer would be as hidden as the button.
+  // ⚠️ ITS BOTTOM STOPS ABOVE THE PAGE'S ZOOM BUTTON, FROM THE MEASURED HEIGHT (review, 2026-09-15). It was
+  // placed from slotH − 36 − 64 − 22: a 64pt GUESS measured up from under the dots. The real pill is 70-100pt
+  // (the phrase wraps on a narrow phone, text size grows it), so it hung onto the zoom button — which sits
+  // AFFORDANCE.inset in from the page's bottom-right and is horizontally under the pill at every width — and
+  // took its taps. Now: the page's zoom-button top (pager padding + page height − inset − size), less the
+  // pill's reach past its box (hitSlop/halo/pulse/overshoot) and a visible gap, less the MEASURED height.
+  //   320pt: card 192 → page 271 → button top 249 → pill (4 lines ≈ 86) top ≈ 145, over a page spanning 10-281.
+  //   430pt: card 252 → page 356 → button top 334 → pill (≈ 70-86) top ≈ 230-246, over a page spanning 10-366.
+  // Both land in the page's lower half, clear of the ribbon/fit pills at its head and the dots under it.
+  const deckPageH = Math.round(cardWidthFor(slotW) * DECK_PAGE_RATIO);
+  const zoomBtnTop = DECK_PAD_TOP + deckPageH - AFFORDANCE.inset - AFFORDANCE.size;
+  const hintTop = Math.max(8, Math.min(
+    hintKind === 'cover_letter'
+      ? slotH - 18 - 50 - 18 - TAILOR_HINT_REACH - hintH
+      : zoomBtnTop - HINT_ZOOM_GAP - TAILOR_HINT_REACH - hintH,
+    foldY - slotTop - hintH - 24,
+  ));
+  /** The pill reports its laid-out height; whole points, and no re-render for sub-point jitter. */
+  const onHintHeight = useStableFn((h: number) => {
+    const r = Math.ceil(h);
+    if (r > 0) setHintH((o) => (o === r ? o : r));
+  });
+  const hintFade = useMemo(
+    () => scrollY.interpolate({ inputRange: [0, HINT_FADE_PX], outputRange: [1, 0], extrapolate: 'clamp' }),
+    [scrollY],
+  );
+  /** The page came to rest: if the button is now in view, the hint for that chip has done its job. */
+  const onScrollRest = useStableFn((e: { nativeEvent: { contentOffset: { y: number } } }) => {
+    const y = e?.nativeEvent?.contentOffset?.y;
+    if (typeof y !== 'number') return;
+    scrollTop.current = y;
+    const g = hintGeo.current;
+    if (g && g.ctaBottom - y <= g.foldY) setHintSeen((m) => (m[g.sig] ? m : { ...m, [g.sig]: true }));
+  });
+  /** A tap on the hint: bring the button up into view. ⚠️ A scroll — it never calls requestBuild. */
+  const onHintPress = useStableFn(() => {
+    const g = hintGeo.current;
+    if (!g) return;
+    try { Haptics.selectionAsync(); } catch {}
+    track('home_tailor_hint_tap', { kind: kindRef.current });
+    const y = Math.max(0, g.ctaBottom - g.foldY + 28);
+    scrollRef.current?.scrollTo?.({ y, animated: true });
+    scrollTop.current = y;
+    setHintSeen((m) => (m[g.sig] ? m : { ...m, [g.sig]: true }));
+  });
+
   return (
     <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
       <Animated.ScrollView
@@ -2068,6 +2324,9 @@ export default function EmployerHome({
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
+        // Where the page RESTS, for the Tailor hint — two events per gesture, not one per frame.
+        onScrollEndDrag={onScrollRest}
+        onMomentumScrollEnd={onScrollRest}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={E.blue} progressViewOffset={headerH} />}
       >
       {/* ────────────────── ONE GRADIENT, THE WHOLE PAGE ────────────────── */}
@@ -2190,7 +2449,17 @@ export default function EmployerHome({
         </View>
 
         {/* the paper */}
-        <View style={{ paddingTop: 10 }}>
+        <View style={{ paddingTop: 10 }} onLayout={(e) => setPaperY(Math.round(e.nativeEvent.layout.y))}>
+          {/* The slot: whatever stands for the page (the deck, the letter panel, a loading state), measured so the
+              Tailor hint can sit over its lower half. ⚠️ A plain View — full width, no style — so the carousel's
+              own width measurement and the panel's margins are exactly what they were. */}
+          <View
+            onLayout={(e) => {
+              setSlotY(Math.round(e.nativeEvent.layout.y));
+              setSlotH(Math.round(e.nativeEvent.layout.height));
+              setSlotW(Math.round(e.nativeEvent.layout.width));
+            }}
+          >
           {mode === 'letter' && !shown ? (
             <LetterPanel
               company={target?.company}
@@ -2234,6 +2503,19 @@ export default function EmployerHome({
           ) : (
             <View style={s.paperLoading}><ActivityIndicator color="#fff" /></View>
           )}
+          {/* Keyed by chip + kind: another chip is another company, so the entrance plays again for it. */}
+          {hintOn && hintKind && !!target && (
+            <TailorHint
+              key={hintSig}
+              kind={hintKind}
+              company={target.company}
+              onPress={onHintPress}
+              fade={hintFade}
+              onHeight={onHintHeight}
+              style={{ top: hintTop }}
+            />
+          )}
+          </View>
 
           {/* caption */}
           {(mode === 'resume' || !!doc || selBuilding) && (
@@ -2282,12 +2564,20 @@ export default function EmployerHome({
               pays for a generation; a used-up allowance is the plans screen. */}
           {mode === 'resume' && !!target && !doc && !selBuilding && !noResumeYet && (
             wantsAction && !(selRk && adding[selRk]) ? (
-              <TailorAction
-                label={`Tailor my resume for ${target.company}`}
-                hint={hint ? hint.text : null}
-                warn={!!hint?.warn}
-                onPress={() => requestBuild('tailor')}
-              />
+              // Measured for the Tailor hint (where "in view" is), and nothing else.
+              <View
+                onLayout={(e) => {
+                  setTailorY(Math.round(e.nativeEvent.layout.y));
+                  setTailorH(Math.round(e.nativeEvent.layout.height));
+                }}
+              >
+                <TailorAction
+                  label={`Tailor my resume for ${target.company}`}
+                  hint={hint ? hint.text : null}
+                  warn={!!hint?.warn}
+                  onPress={() => requestBuild('tailor')}
+                />
+              </View>
             ) : docState === 'error' ? (
               <TouchableOpacity style={s.docPill} activeOpacity={0.8} onPress={reloadDoc} accessibilityRole="button" hitSlop={7}>
                 <Ionicons name="cloud-offline-outline" size={12} color="rgba(255,255,255,0.7)" />
@@ -2405,7 +2695,8 @@ export default function EmployerHome({
           What used to be here re-showed the SAME resume pages the carousel above was already
           showing — `image={cards[i % cards.length]?.image}` under a company badge — so scrolling
           revealed the same designs twice and said nothing new. This says what only they know:
-          what they have already paid for, and can have again.
+          what they have already paid for, and can have again — a shelf of paper cards, each
+          wearing the page it is a download of (imageFor: in hand or drawn, never fetched here).
           ⚠️ A card OPENS its page (openHistoryItem) — the hero's zoom, Customize and View PDF — and
           never downloads on the tap. */}
       <View style={s.library}>
@@ -2415,11 +2706,12 @@ export default function EmployerHome({
         loading={histLoading}
         expanded={histOpen}
         busyId={againId}
-        thumbFor={thumbFor}
+        imageFor={imageFor}
         accentFor={accentFor}
+        brandAccentFor={brandAccentFor}
         onOpen={openHistoryItem}
         onExpand={() => { try { Haptics.selectionAsync(); } catch {} setHistOpen(true); }}
-        onScrollToTop={() => scrollRef.current?.scrollTo?.({ y: 0, animated: true })}
+        onScrollToTop={() => { scrollTop.current = 0; scrollRef.current?.scrollTo?.({ y: 0, animated: true }); }}
         onMoreJobs={() => nav()?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } })}
       />
       </View>
@@ -2507,6 +2799,29 @@ export default function EmployerHome({
           : undefined}
         // Which allowance a refusal names when the server's sentence does not: a plan's month, or the free one.
         isPaid={isPaid}
+      />
+
+      {/* ⚠️ THE QUESTION BEFORE ANY SPEND (2026-09-14). Tailor, Write, Refresh and the Add auto-build all land
+          here first unless the document is already built (a cache hit is free and skips it): what tailoring
+          does, how many generations are left, Continue / Cancel — and with none left, the $0.99 one-time pass
+          for THIS employer or the plans. Its whole state is useHomeBuilds' (K.confirm); Continue is what starts
+          the build, and the overlay above takes over from there. A sibling, like the overlay: its own tree.
+          The harness's copy (previewAsk) can be opened and closed, and can do nothing else. */}
+      <GenerateConfirmSheet
+        {...(previewAsk ? {
+          visible: true,
+          mode: previewAsk.mode,
+          kind: previewAsk.kind,
+          company: previewAsk.company,
+          usage: previewAsk.usage,
+          pass: previewAsk.pass,
+          busy: false,
+          error: null,
+          onContinue: () => { setPreviewAsk(null); Alert.alert('Preview only', 'Building a document needs a signed-in account.'); },
+          onCancel: () => setPreviewAsk(null),
+          onBuyOnce: () => { setPreviewAsk(null); Alert.alert('Preview only', 'Buying the one-time pass needs a signed-in account.'); },
+          onSeePlans: () => { setPreviewAsk(null); nav()?.push?.('/(subscription)/plans'); },
+        } : K.confirm)}
       />
 
       {/* ⚠️ The SAME sheet a first download offers. A row goes locked when the plan that paid for it

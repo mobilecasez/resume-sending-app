@@ -10,13 +10,20 @@
 // like a hole where a design should be. What was here before was `imgEmpty`: a flat #EEF2F8
 // rectangle. That rectangle is what the user reported as "blank resume".
 //
+// ⚠️ THE ACCENT IS THE EMPLOYER'S WHEN THE DOCUMENT HAS ONE. useDocDeck hands a card
+// design.brand.accent (the colour the server read off the employer's website and recoloured every
+// page to) in place of the catalogue accent, so the band, the sidebar rail, the title line and the
+// headings below all tint like the page that is coming — an Airbus placeholder is navy, an Eneco
+// one is red, before a single pixel has been rendered. That is the whole of the "employer specific"
+// promise a placeholder can keep, so it is made VISIBLE, not hinted at in a 5pt dot.
+//
 // ⚠️ DELIBERATE SIBLING OF `Letterpress` IN DownloadHistory.tsx. Same idea — accent band, name
-// block, rule lines — at a different size and for a different reason: that one is a 50x70 chip
-// standing in for a page that will NEVER exist (a cover letter has no thumbnail endpoint anywhere
-// in this system), this one is a full A4 card standing in for a page that is about to arrive. The
-// duplication is on purpose. DownloadHistory is a screen section, not a library, and reaching into
-// a screen for one of its private components is how two screens lose the ability to change
-// independently. If you change the ink here, decide about the chip there — don't assume.
+// block, rule lines — at a different size and for a different reason: that one is a small chip
+// standing in for a page that may never exist (a letter has a thumbnail only once a saved employer
+// document has one rendered), this one is a full A4 card standing in for a page that is about to
+// arrive. The duplication is on purpose. DownloadHistory is a screen section, not a library, and
+// reaching into a screen for one of its private components is how two screens lose the ability to
+// change independently. If you change the ink here, decide about the chip there — don't assume.
 //
 // ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): PaperCarousel is a native-driver tree —
 // scrollX, every card transform and Glare are all useNativeDriver:true. The sweep below copies
@@ -232,6 +239,9 @@ export default function PaperSkeleton({ w, h, accent, name, detail, shimmer, fad
     return {
       inset,
       band: pt(8.5),
+      // The sidebar rail stops well short of the text column (half the inset), so no rule ever runs
+      // into it — it is a hint of a coloured margin, not a column the page has to lay out around.
+      rail: Math.max(3, Math.round(inset * 0.5)),
       hair: Math.max(2, Math.round(h * 0.009)),
       headH: Math.max(3, Math.round(h * 0.016)),
       nameH: Math.max(6, Math.round(h * 0.036)),
@@ -254,6 +264,12 @@ export default function PaperSkeleton({ w, h, accent, name, detail, shimmer, fad
 
   const label = (name || '').trim() || 'Your design';
   const headTint = tint(accent || '', 0.5);
+  // Where the accent goes, and how much of it, so a brand colour reads as THAT brand at a glance
+  // without turning the page into a colour swatch: a solid band, a faint sidebar rail, the title
+  // line at half strength, headings at half — the body copy stays ink so the paper still reads as
+  // a document and a white sweep still has something to brighten.
+  const railTint = tint(accent || '', 0.12);
+  const titleTint = tint(accent || '', 0.42);
   // 'idle' adds nothing: an unrendered slot that nobody is fetching is just this design, named.
   const note = state === 'loading' ? ', loading' : state === 'queued' ? ', queued' : state === 'writing' ? ', writing' : '';
 
@@ -267,8 +283,11 @@ export default function PaperSkeleton({ w, h, accent, name, detail, shimmer, fad
         start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
         style={[s.wash, { top: g.band, height: Math.round(g.band * 2.4) }]}
       />
+      {/* The sidebar rail: a coloured margin down the whole body, the second thing an employer's
+          colour shows up as on a real page after the head band. Static — a plain View, no driver. */}
+      <View style={[s.rail, { top: g.band, width: g.rail, backgroundColor: railTint }]} />
       <View style={[s.name, { left: g.inset, top: g.nameTop, width: g.nameW, height: g.nameH }]} />
-      <View style={[s.sub, { left: g.inset, top: g.subTop, width: g.subW, height: g.subH }]} />
+      <View style={[s.sub, { left: g.inset, top: g.subTop, width: g.subW, height: g.subH, backgroundColor: titleTint }]} />
 
       {detail && (
         <>
@@ -323,7 +342,9 @@ const s = StyleSheet.create({
   page: { backgroundColor: '#EDF1F8' },
   band: { position: 'absolute', left: 0, right: 0, top: 0 },
   wash: { position: 'absolute', left: 0, right: 0 },
+  rail: { position: 'absolute', left: 0, bottom: 0 },
   name: { position: 'absolute', borderRadius: 3, backgroundColor: 'rgba(11,15,34,0.22)' },
+  // The title line's colour is set per render (the accent at 0.42); this is the fallback ink.
   sub: { position: 'absolute', borderRadius: 2, backgroundColor: 'rgba(11,15,34,0.13)' },
   head: { position: 'absolute', borderRadius: 2 },
   rule: { position: 'absolute', borderRadius: 1.5, backgroundColor: 'rgba(11,15,34,0.10)' },

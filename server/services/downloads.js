@@ -322,6 +322,51 @@ async function claimDownload(userId, { employer = null } = {}, req) {
 }
 
 
+/* ── WHAT PAYS, IN ONE VOCABULARY (contract C2) ──────────────────────────────────────────────────
+ *
+ * A gate answers a build with a payer word — 'cache', 'plan', 'free' or 'pass' — Home's confirm sheet shows
+ * the user what that word means, and the build they then confirm sends the word back as `expectVia`. Both
+ * generation lanes (resumeBuilderController's employer-doc lane, employerLetterController) compare it with
+ * the payer their own order would really use and refuse — 409 payer_changed, nothing bound, nothing charged,
+ * nothing stored — rather than charge a payer nobody agreed to. The money rule this serves is the standing
+ * one: nothing is spent without the user's Continue, and the Continue was for ONE payer.
+ *
+ * ⚠️ ONE SPELLING, IN ONE PLACE. entitlements answers 'free' when it is ASKED (canConsumeMany) and 'trial'
+ * when it RECORDS (usage_ledger.source, whose spelling can never change — see consumeOnSuccess). Two words,
+ * one pool: a lane comparing the raw strings would refuse every confirmed free build as "the payer changed"
+ * the moment it was about to pay for it.
+ */
+
+/** The payer word an entitlements `via` names, or null when it names none ('none' = nothing left that may pay). */
+function payerWordOf(via) {
+  if (!via || via === 'none') return null;
+  return via === 'trial' ? 'free' : String(via);
+}
+
+/** The payer a canConsumeMany answer would use, or null when it would pay for nothing. */
+function quotaPayerOf(quota) {
+  return quota && quota.allowed ? payerWordOf(quota.via) : null;
+}
+
+/**
+ * Does this consumeOnSuccess `via` name a payer at all? 'error' (recording failed) and anything unrecognised
+ * do not: they mean "nothing confirmed paid", which is a failure for the lane to handle, never a changed payer.
+ */
+const PAYER_ANSWERS = new Set(['plan', 'trial', 'free', 'credits', 'none']);
+const namesPayer = (via) => PAYER_ANSWERS.has(via);
+
+/**
+ * The payer the user CONFIRMED on the sheet, read off a build body — or null when the body carries none (an
+ * older app, or a build no sheet asked about). null is "today's behaviour": the lane decides alone.
+ * ⚠️ A WORD WE CANNOT READ IS NOT "NO ANSWER". It is a confirmation we cannot honour, so it comes back as
+ * something no payer ever equals and the build is refused instead of charged on a guess.
+ */
+function expectedPayerOf(body) {
+  const v = body ? body.expectVia : null;
+  if (v === undefined || v === null || v === '') return null;
+  return typeof v === 'string' ? (v.trim().slice(0, 32) || null) : 'unreadable';
+}
+
 /* ── THE TWO AI CALLS A PASS INCLUDES ────────────────────────────────────────────────────────────
  *
  * The pass promise is everything needed to apply to ONE company: one AI resume, one AI cover
@@ -434,6 +479,58 @@ async function claimGeneration(userId, kind, employer, reqOrEnv) {
 }
 
 /**
+ * What a one-time pass means for this employer's AI <kind> generation — READ-ONLY, for the confirm sheet a
+ * gate answer carries ("Covered by your one-time pass for Acme — nothing more to pay", or "Covered by your
+ * one-time pass" when Continue would put an unspent one on this employer).
+ *   → { available, forThisEmployer }
+ *   available       — a pass could pay for this <kind> generation right now: the pass bound to this employer
+ *                     with that generation unused, or a TAKEABLE pass (unbound, or parked on '(none)') with
+ *                     it unused — exactly the rows passCoversGeneration would use or bind.
+ *   forThisEmployer — that pass is the one this employer ALREADY OWNS (boundPassFor: alias-aware, the read the
+ *                     real gate makes) AND it can still pay for this <kind>. Only then is "nothing more to
+ *                     pay" true.
+ *                     ⚠️ IT IS NOT "A PASS EXISTS FOR THIS EMPLOYER", WHICH IS WHAT IT USED TO MEAN. The
+ *                     sheet then said "Covered by your one-time pass for Acme — nothing more to pay" over a
+ *                     Continue that bound and spent a SECOND pass: Acme's own pass had already made its
+ *                     resume, so a takeable one paid for the generation. A pass that cannot pay for what is
+ *                     being asked does not cover it, whoever it belongs to.
+ * `kind` ('resume' | 'cover_letter') IS REQUIRED: the question is always about ONE generation, and the two are
+ * tracked separately (GEN_COLUMN). Without one — or with a kind this module does not know — nothing is
+ * covered: a sheet that cannot say which generation it is asking about must under-promise, never claim a pass
+ * pays. Both gates pass theirs.
+ *
+ * ⚠️ NEVER passCoversGeneration FROM A SHEET. With boundOnly false it is not a question but a RESERVATION —
+ * an UPDATE that binds the user's oldest unspent pass to this employer — so a user who merely LOOKED at a
+ * company would have spent the one company a pass buys. These are that function's reads, clause for clause,
+ * and nothing else; ⚠️ if its selection ever changes, this must change with it.
+ * ⚠️ DISPLAY ONLY. `covered` / `via` stay the gate's own answer; nothing may charge or bind on this.
+ * A nameless employer is never covered (an AI call is never spent namelessly — see passCoversGeneration) and
+ * an unreadable pass is not a pass: both answer false, and this never throws.
+ */
+async function passStateFor(userId, employer, reqOrEnv, { kind = null } = {}) {
+  const nothing = { available: false, forThisEmployer: false };
+  const col = GEN_COLUMN[kind];
+  if (!col || employerKeyOf(employer) === NONE) return nothing;
+  const env = envOf(reqOrEnv);
+  try {
+    const owned = await boundPassFor(userId, employer, env);
+    if (owned) {
+      const unused = await dbConfig.get(
+        `SELECT id FROM download_passes WHERE id = $1 AND ${col} IS NULL LIMIT 1`, [owned.id]);
+      if (unused) return { available: true, forThisEmployer: true };
+    }
+    // Their own pass cannot pay for this one, so whatever pays is a pass that is not theirs yet — Continue
+    // binds it to them, which is a real choice the sheet has to offer rather than call "nothing more to pay".
+    const takeable = await dbConfig.get(
+      `SELECT id FROM download_passes
+        WHERE user_id = $1 AND environment = $2 AND ${col} IS NULL
+          AND (bound_at IS NULL OR employer_key = $3)
+        LIMIT 1`, [userId, env, NONE]);
+    return takeable ? { available: true, forThisEmployer: false } : nothing;
+  } catch { return nothing; }   // fail closed, like every pass read
+}
+
+/**
  * Record a purchased pass. Idempotent on the STORE TRANSACTION, globally — a receipt replayed
  * against a second account collides on the unique index rather than minting a second pass.
  * Returns true when this call is the one that created it.
@@ -491,6 +588,7 @@ async function passOwnerOf({ store, environment, storeTxnId }) {
 module.exports = {
   METERED, PASS_PRODUCT_ID, NONE, employerKeyOf, aliasKeysOf, sameEmployer,
   downloadState, canDownload, claimDownload, grantPass, passOwnerOf,
-  passCoversGeneration, claimGeneration, envOf, resolveEmployer,
+  passCoversGeneration, claimGeneration, passStateFor, envOf, resolveEmployer,
   unboundPassCount, boundPassFor, boundPasses,
+  payerWordOf, quotaPayerOf, namesPayer, expectedPayerOf,
 };

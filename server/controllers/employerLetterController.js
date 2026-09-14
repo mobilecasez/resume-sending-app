@@ -5,7 +5,8 @@
 // twice for the same inputs. The resume twin is resumeBuilderController's doc lane (saveTo
 // 'employer_doc'); the money rules below mirror it clause for clause.
 //
-//   POST /api/cover-letter/employer-gate   → employerLetterGate    (dry run: reserves, binds, charges nothing)
+//   POST /api/cover-letter/employer-gate   → employerLetterGate    (dry run: reserves, binds, charges nothing;
+//                                                                     + usage/pass for the confirm sheet)
 //   POST /api/cover-letter/employer-build  → buildEmployerLetter   (asJob('cover_letter_employer'))
 //   GET  /api/cover-letter/employer-cards  → employerLetterCards   (thumbs of a stored letter, free)
 //   currentLetterFingerprint(userId, …)    → the stale label on /api/employer-docs/current
@@ -54,6 +55,20 @@ const LETTER_MODEL = 'gemini-2.5-flash';
  * Folded into the fingerprint next to employerResearch.RESEARCH_REV. Bump when THIS prompt changes
  * shape: the stored letters are still faithful to their inputs, but they answer different instructions.
  * (employerDocs.FP_VERSION would invalidate every resume too.)
+ *
+ * ⚠️ A BUMP RE-BILLS EVERY LETTER EVER STORED, so it is a money decision, not a version number. It moves
+ * every fingerprint at once: every saved letter reads as stale, and the next build for an employer the user
+ * already paid for is a full charge for a letter they have. It is worth that only when the stored letters
+ * would be WRONG — not when a new one would merely be better.
+ * ⚠️ WHICH IS WHY THE CONVENTIONS SLICE (2026-09-14) DID NOT BUMP IT. Hiring conventions set the register,
+ * the length band and the paragraph emphasis (letterStyleFor) — the same facts, addressed to the same
+ * employer, in a tone that suits them. A stored letter is still a true letter, so nobody is charged for
+ * ours having improved. Telling the two apart later needs no marker in the fingerprint either: a letter
+ * written with them has them in its stored `research.conventions`.
+ * ⚠️ NOR DID THE EMPLOYER-SPECIFIC SLICE (2026-09-15): the sector-led opening paragraph and the employer's
+ * register are the same rule (the same facts, said for this employer), and the brand (design.brand — the
+ * employer's colour and font on every design) is RENDERING, not writing: a stored letter without one reads
+ * its brand back from its research at render time (coverLetterController.letterBrandOf).
  */
 const LETTER_REV = 'letter-v1';
 
@@ -192,10 +207,12 @@ async function candidateMaterialFor(userId, env) {
  *     and a letter and resume built side by side would race each other into a paid Refresh. The build
  *     only reads a tailored resume whose own fingerprint is CURRENT (see tailoredResumeFor), so a
  *     pre-edit resume can never feed old facts into a new letter.
- *   • the research itself (only RESEARCH_REV): a 30-day cache refresh must not re-bill every letter.
- *   • `country`: the letter text is region-neutral (the proven ai-cover-letter-v2 rule — the design
- *     picker carries the regional format), so a chip that learns its country later must not make a
- *     finished letter stale. Country only reorders the design ranking, which costs nothing.
+ *   • the research itself (only RESEARCH_REV) — its `conventions` included: a 30-day cache refresh, or
+ *     conventions fetched onto an old cache row, must not re-bill every letter.
+ *   • `country`: since the conventions slice the country (through regionForConventions) and the conventions
+ *     set the letter's REGISTER, length band and structure (letterStyleFor) — never its facts. A chip that
+ *     learns its country later must still not make a finished letter stale or bill a Refresh for a change
+ *     of tone; the design ranking it also reorders costs nothing.
  *   • the candidate's name and contact details: the template prints them live from the profile.
  */
 function letterFingerprintOf(material, job) {
@@ -435,6 +452,39 @@ async function giveBackLetterCharge(userId, took, why) {
     }
 }
 
+/**
+ * contract C2 — the one answer for "what would pay for this letter is not what you confirmed".
+ *
+ * Home asks before it spends: the sheet names the payer ("Covered by your one-time pass for Acme", "2 of 3
+ * free cover letters left") and the build the user confirms sends that word back as `expectVia`. Between the
+ * two, a plan can lapse, a parallel build can take the last unit, another tap can spend the pass. Charging
+ * the payer that is left is charging for something nobody agreed to — so the build is refused instead.
+ * ⚠️ NOTHING BOUND, NOTHING CHARGED, NOTHING STORED on this path, ever. Whatever this build had already
+ * taken when it found out goes back first (giveBackLetterCharge).
+ * ⚠️ 409, NOT 402: this is not "you are out of allowance", it is "ask again". The app re-reads the gate and
+ * puts the sheet back up with what the letter would really cost now, instead of sending anyone to Plans.
+ */
+const PAYER_CHANGED = Object.freeze({
+    status: 409,
+    body: Object.freeze({
+        success: false, reason: 'payer_changed',
+        error: 'What pays for this cover letter changed after you confirmed it. Check it and confirm again.',
+    }),
+});
+
+/**
+ * contract C2 — the answer for a build confirmed as a FREE one ("it is already written") that no longer is:
+ * the résumé or the posting moved between the gate and the build, so writing it now would cost something the
+ * user was never asked about. Refused before every gate — no reservation, no AI, no charge.
+ */
+const CACHE_MISS = Object.freeze({
+    status: 409,
+    body: Object.freeze({
+        success: false, reason: 'cache_miss',
+        error: 'Your saved cover letter for this employer has changed. Check what writing it again would use, then confirm.',
+    }),
+});
+
 /** The one answer for "the plan stopped covering this letter while it was being written". */
 const LOST_COVER = Object.freeze({
     status: 402,
@@ -445,6 +495,121 @@ const LOST_COVER = Object.freeze({
 });
 
 // ── The letter itself ────────────────────────────────────────────────────────────────────────────
+
+/** research.conventions when it is a usable object, else null (an old cache row or an old research module). */
+const conventionsOf = (facts) => (facts && facts.conventions && typeof facts.conventions === 'object'
+    && !Array.isArray(facts.conventions) ? facts.conventions : null);
+
+/**
+ * employerResearch.conventionsPromptBlock, defensively: '' when there are no conventions, the export is
+ * missing (a research module from before the conventions slice) or it throws. The block carries its own
+ * guard rails (conventions shape format and emphasis, never the candidate's facts); the prompt repeats them.
+ */
+function conventionsBlockFor(research, conventions, company) {
+    if (!conventions || !research || typeof research.conventionsPromptBlock !== 'function') return '';
+    try { return String(research.conventionsPromptBlock(conventions, company, { forLetter: true }) || ''); }
+    catch (e) { console.warn('[employerLetter] conventions block unavailable:', e.message); return ''; }
+}
+
+/**
+ * The convention region: regionForConventions — the chip's own country first, then the research's role country,
+ * the website's TLD, the research's HQ country, a region word, 'generic' (regionFromCountry.resolveRegion's one
+ * chain) — designFit.regionFor for a research module that predates it. Never throws.
+ */
+function letterRegionFor(research, designFit, conventions, { country, website }) {
+    try {
+        if (research && typeof research.regionForConventions === 'function') {
+            const r = research.regionForConventions(conventions, { country, website });
+            if (typeof r === 'string' && r) return r;
+        }
+    } catch (e) { console.warn('[employerLetter] regionForConventions failed:', e.message); }
+    try { return designFit.regionFor({ country, website }); } catch { return 'generic'; }
+}
+
+const LETTER_REGISTER_DEFAULT = 'professional but human — someone who did their homework, not a template. Clear, direct, medium vocabulary; vary sentence length.';
+
+/**
+ * How THIS employer reads a cover letter: { words, register, notes[] } for the prompt's HOW TO WRITE IT.
+ *
+ * ⚠️ DETERMINISTIC, NOT A SECOND AI GUESS. The facts come from one grounded research call (conventions) and
+ * the region; this maps them onto the three things a letter can honestly change — register, length band,
+ * paragraph emphasis. The shape the templates depend on never moves: four paragraphs, no salutation, no
+ * sign-off, English (see buildEmployerLetterPrompt). The band never goes below ~230 words: parseLetterOutput
+ * refuses < 120 and the placeholder guard < 80, and a strip must not push a short letter under either.
+ * Employer type leads (the PO's ask: the employer, not the candidate's seniority, decides the format);
+ * the region adds its country's letter habit on top.
+ */
+function letterStyleFor(conventions, region) {
+    const c = conventions && typeof conventions === 'object' ? conventions : null;
+    let words = '300-450';
+    let register = LETTER_REGISTER_DEFAULT;
+    const notes = [];
+    switch (c && c.employerType) {
+        case 'public_sector':
+            words = '350-450';
+            register = 'formal and measured — complete sentences, no contractions, no casual phrasing, no sales language.';
+            notes.push('Public-sector hiring is criteria-led: in paragraphs 2 and 3 answer the requirements the posting states, in its own terms, one at a time — only with experience the candidate really has.');
+            break;
+        case 'academia':
+            words = '350-450';
+            register = 'formal and scholarly but readable — no contractions, no sales language.';
+            notes.push('Where the candidate\'s material shows research, teaching, publications or grants, those lead paragraphs 2 and 3; never add any it does not contain.');
+            break;
+        case 'enterprise':
+            words = '300-400';
+            register = 'professional and polished — confident and specific, no hyperbole.';
+            notes.push('Large employers screen fast: the strongest real match to the role opens paragraph 2.');
+            break;
+        case 'sme':
+            words = '280-380';
+            register = 'professional and personable — practical, showing breadth and hands-on ownership.';
+            break;
+        case 'startup':
+            words = '230-320';
+            register = 'direct and plain-spoken — short sentences, no corporate filler.';
+            notes.push('Lead with what the candidate shipped and owned; keep every paragraph short.');
+            break;
+        case 'agency':
+            words = '250-350';
+            register = 'crisp and outcome-led — client-facing polish, no filler.';
+            notes.push('Lead with delivered work and the results the candidate\'s material states.');
+            break;
+        case 'ngo':
+            words = '300-400';
+            register = 'warm but professional — sincere and concrete, no sales language.';
+            notes.push('Connect to the organisation\'s mission only through facts in the research above.');
+            break;
+        default: break;
+    }
+    switch (region) {
+        case 'dach':
+            notes.push('German-speaking employers expect a formal, structured letter: no contractions, no exclamation marks, no casual asides.');
+            break;
+        case 'eu':
+            notes.push('European motivation-letter habit: paragraph 1 opens with why this employer and this role before the candidate\'s background; keep the register formal, with no contractions.');
+            break;
+        case 'uk_au':
+            notes.push('Understated register: evidence over adjectives, no superlatives.');
+            break;
+        case 'us_ca':
+            notes.push('Achievement-led: name concrete results the candidate\'s material states early in paragraph 2.');
+            break;
+        case 'india':
+            notes.push('Respectful, professional register; skills and projects lead.');
+            break;
+        case 'sg':
+            notes.push('Concise corporate register; stay at the lower end of the length band.');
+            break;
+        default: break;
+    }
+    // The register the conventions observed in this employer's OWN hiring communication ("direct",
+    // "formal and institutional") — folded into the tone, never into the facts. Formality and length come
+    // from the employer type above; this only tunes the voice inside that band.
+    if (c && typeof c.tone === 'string' && c.tone.trim()) {
+        notes.push(`Match the register of the employer's own hiring communication — "${c.tone.trim().slice(0, 120)}" — within the tone above.`);
+    }
+    return { words, register, notes };
+}
 
 /**
  * The prompt. ⚠️ WHY NOT ai-cover-letter-v2.generateCoverLetter: its proven prompt researches the
@@ -457,7 +622,13 @@ const LOST_COVER = Object.freeze({
  * the posting and the candidate's material are the only facts it gets. No live search tool is attached.
  * ⚠️ Every input here must be in letterFingerprintOf, or be one of the documented exclusions there.
  */
-function buildEmployerLetterPrompt({ company, website, job, material, tailored, researchBlock, correction }) {
+function buildEmployerLetterPrompt({ company, website, job, material, tailored, researchBlock, conventionsBlock, style, sector, correction }) {
+    const st = style && typeof style === 'object' ? style : letterStyleFor(null, 'generic');
+    // The employer's sector (the conventions' sector, else the research's industry), so paragraph 1 opens
+    // with the candidate's fit for THAT field in the employer's own vocabulary — the difference between a
+    // letter written for this employer and one that could open a letter to anyone. '' = no sector known.
+    const sec = typeof sector === 'string' ? sector.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+    const styleNotes = Array.isArray(st.notes) && st.notes.length ? `\nFOR THIS EMPLOYER:\n${st.notes.map((n) => `- ${n}`).join('\n')}\n` : '';
     const posting = !!(job.title.trim() || job.description.trim());
     const tailoredJson = tailored ? (() => {
         // Contact details are the template's business, not the model's.
@@ -492,18 +663,20 @@ ${material.uploadText ? `--- Details parsed from their uploaded resume ---\n${ma
 Company: ${company}
 ${website ? `Website: ${website} (identifies the company only — it has not been opened)\n` : ''}
 ${researchBlock || noResearch}
-
+${conventionsBlock ? `\n${conventionsBlock}\n` : ''}
 ${roleBlock}
 
 === HOW TO WRITE IT ===
-Four paragraphs separated by one blank line, 300-450 words in total:
-1. Introduction and connection to ${company}. One factual opening sentence: the candidate's current or most recent title and, only when their material states or clearly dates it, their years of experience. Then two or three sentences on why ${company}: name something specific ONLY when the research above or the posting states it; otherwise speak to the field ${company} is plainly in, without specifics.
+Four paragraphs separated by one blank line, ${st.words || '300-450'} words in total:
+1. Introduction and connection to ${company}. ${sec
+        ? `The FIRST sentence states the candidate's fit for ${sec}: their current or most recent title, and the one or two real strengths from their material that matter most in ${sec}, said in the vocabulary ${company} uses (the technologies, products, mission or posting terms above — only ones the candidate genuinely has). Only when their material states or clearly dates it, their years of experience.`
+        : `One factual opening sentence: the candidate's current or most recent title and, only when their material states or clearly dates it, their years of experience.`} Then two or three sentences on why ${company}: name something specific ONLY when the research above or the posting states it; otherwise speak to the field ${company} is plainly in, without specifics. The opening must read as written for ${company}: never a sentence that could open a letter to any employer.
 2. Skills and domain match. Connect four to six of the candidate's real skills, tools or projects to what ${company} does or what the posting asks for — one concrete link each.
 3. Value. Two or three concrete things from the candidate's material (roles held, projects delivered, results they stated) and how they answer ${company}'s needs.
 4. Closing. Genuine interest in contributing to the team, then one direct thank-you sentence.
 
-TONE: professional but human — someone who did their homework, not a template. Clear, direct, medium vocabulary; vary sentence length.
-Never use: delve, testament, tapestry, leverage, synergy, spearhead, multifaceted, holistic, passion, passionate, thrilled, excited, eager, fascination, "deeply resonates", "drawn to", "proven track record", "I am writing to express", "I am confident that", "I believe I am", "ideal candidate", "innovative company", "leading firm", "dynamic environment".
+TONE: ${st.register || LETTER_REGISTER_DEFAULT}
+${styleNotes}Never use: delve, testament, tapestry, leverage, synergy, spearhead, multifaceted, holistic, passion, passionate, thrilled, excited, eager, fascination, "deeply resonates", "drawn to", "proven track record", "I am writing to express", "I am confident that", "I believe I am", "ideal candidate", "innovative company", "leading firm", "dynamic environment".
 
 BOLD with **double asterisks**: ${company}'s name, the candidate's role titles, their years of experience, and every named skill, tool, technology, product, project or client you mention (only ones that exist in the material, the research or the posting). About 10-20 bold items; never bold a whole sentence.
 
@@ -515,6 +688,7 @@ BOLD with **double asterisks**: ${company}'s name, the candidate's role titles, 
 - NO salutation ("Dear ...") and NO sign-off ("Sincerely", "Best regards", the candidate's name) inside cover_letter — the letter template adds both.
 - NO headings, bullet points or numbered lists inside cover_letter.
 - Internationally safe: never mention age, date of birth, marital status, religion, nationality, gender, a photo, family details or salary figures.
+- Hiring conventions (above) shape register, length, structure and emphasis ONLY — they never add a fact about the candidate or ${company}. CV conventions about photos, date of birth or personal details belong to the resume: never mention them in this letter.
 
 === OUTPUT — only this JSON object ===
 {
@@ -524,7 +698,7 @@ BOLD with **double asterisks**: ${company}'s name, the candidate's role titles, 
   "cover_letter": "PARAGRAPH 1\\n\\nPARAGRAPH 2\\n\\nPARAGRAPH 3\\n\\nPARAGRAPH 4"
 }
 
-OUTPUT LANGUAGE — ABSOLUTE: write the whole letter in plain professional English, even when the material, the research or the posting is in another language. Keep proper nouns (company, product, technology and place names) exactly as written.${correction ? `\n\n=== CORRECTION — YOUR PREVIOUS DRAFT WAS REJECTED ===\nIt contained placeholders: ${correction.join(', ')}. Write the whole letter again with NO placeholder, bracket or unknown-number marker anywhere. Where a number, name or detail is unknown, write the sentence without it.` : ''}`;
+OUTPUT LANGUAGE — ABSOLUTE: write the whole letter in plain professional English, even when the material, the research or the posting is in another language, or the employer's country usually writes letters in one. Keep proper nouns (company, product, technology and place names) exactly as written.${correction ? `\n\n=== CORRECTION — YOUR PREVIOUS DRAFT WAS REJECTED ===\nIt contained placeholders: ${correction.join(', ')}. Write the whole letter again with NO placeholder, bracket or unknown-number marker anywhere. Where a number, name or detail is unknown, write the sentence without it.` : ''}`;
 }
 
 /**
@@ -755,11 +929,13 @@ async function pruneLetterThumbs(userId) {
  * Cards for a stored letter: [{ id, name, accent, image, fit, reason }] in the order of `ids`.
  *
  * ⚠️ THE THUMB MUST BE THE FILE THEY WOULD DOWNLOAD. Same data as generate-template-pdf: the payload's
- * html/company/address, the live sender block (buildCLSender) and — for the branded design — the
- * profile photo and brand colour. So every one of those is in the cache key: the doc version (id +
- * updated_at, which a PUT edit moves), the sender block's hash (a renamed user must not keep their old
- * name on every card), and for 'standard' the photo version and resolved brand colour.
- * Renders only what is missing, in ONE browser batch. Unrenderable ids are simply absent.
+ * html/company/address, the live sender block (buildCLSender), the employer's brand (its colour recolours
+ * EVERY design's accent and its Google font sets the type — letterBrandOf, the same reading the downloads
+ * use) and — for the branded design — the profile photo. So every one of those is in the cache key: the
+ * doc version (id + updated_at, which a PUT edit moves), the sender block's hash (a renamed user must not
+ * keep their old name on every card), a hash of the brand pair (a letter whose brand changed — a design
+ * re-stored, a research row that learned its colour — must not keep the old tint), and for 'standard'
+ * the photo version. Renders only what is missing, in ONE browser batch. Unrenderable ids are simply absent.
  */
 async function letterCardsFor(userId, doc, ids, design) {
     const cl = clMod();
@@ -771,11 +947,17 @@ async function letterCardsFor(userId, doc, ids, design) {
     const branded = tpls.some((t) => t.generic);
     const companyName = p.companyName || doc.employer_name || '';
     const photoVer = branded ? await photoVersionOf(userId) : 'none';
-    const brand = branded ? (hexOrNull(p.brandColor) || hexOrNull(await cl.lookupBrandColor(companyName, '').catch(() => null))) : null;
+    const brand = letterBrandOfDoc(cl, doc);
+    // The generic design's colour, exactly as its PDF resolves it: the letter's brand, else the legacy
+    // employer_brand_profiles lookup by name (a letter from before research carried a colour).
+    const accent = (brand && brand.accent)
+        || (branded ? hexOrNull(await cl.lookupBrandColor(companyName, '').catch(() => null)) : null);
+    const brandFont = (brand && brand.font) || null;
+    const brandHash = sha(JSON.stringify({ accent: accent || null, font: brandFont })).slice(0, 16);
     const updatedMs = new Date(doc.updated_at || 0).getTime() || 0;
     const dir = thumbDirOf(userId);
-    const fileOf = (t) => path.join(dir, `cl_${sha(['cl', userId, doc.id, updatedMs, t.id, senderHash,
-        t.generic ? `${photoVer}|${brand || ''}` : '-'].join('|'))}.jpg`);
+    const fileOf = (t) => path.join(dir, `cl_${sha(['cl', userId, doc.id, updatedMs, t.id, senderHash, brandHash,
+        t.generic ? photoVer : '-'].join('|'))}.jpg`);
 
     const images = new Map();
     const missing = [];
@@ -792,7 +974,7 @@ async function letterCardsFor(userId, doc, ids, design) {
         try {
             const photo = missing.some((t) => t.generic) ? await cl.loadCLPhotoDataUri(userId) : null;
             const data = { sender, company: { name: companyName, address: p.companyAddress || '' }, bodyHtml: p.coverLetterHtml };
-            const rendered = await clRenderer.renderPreviews(data, { photo, brandColor: brand }, missing);
+            const rendered = await clRenderer.renderPreviews(data, { photo, brandColor: accent, brandFont }, missing);
             await fs.mkdir(dir, { recursive: true });
             for (const r of rendered || []) {
                 const t = missing.find((m) => m.id === r.id);
@@ -823,22 +1005,113 @@ async function letterCardsFor(userId, doc, ids, design) {
     });
 }
 
-/** A stored letter's design: the stored one repaired, else a rule-only ranking computed (not stored). */
+/**
+ * A stored letter's design: the stored one repaired, else a rule-only ranking computed (not stored).
+ * Either way it carries `brand` (letterBrandOf): normaliseDesign keeps only the keys it knows, so the
+ * stored design.brand is put back on the repaired copy — a card's tint must not depend on which path
+ * produced its design.
+ */
 async function designOfLetterDoc(userId, doc) {
     const fit = designFitMod();
+    const brand = letterBrandOfDoc(clMod(), doc);
     const repaired = fit.normaliseDesign(doc.design, 'cover_letter');
-    if (repaired) return repaired;
+    if (repaired) return withDesignBrand(repaired, brand);
     const research = doc.research && typeof doc.research === 'object' ? doc.research : {};
     const p = doc.payload || {};
     const resume = await builderResumeFor(userId);
-    return fit.rankLetterDesigns({
-        region: fit.regionFor({ country: null, website: research.domain || '' }),
+    const conventions = conventionsOf(research);
+    return withDesignBrand(fit.rankLetterDesigns({
+        region: letterRegionFor(researchMod(), fit, conventions, { country: null, website: research.domain || '' }),
         seniorityYears: resume ? fit.seniorityYearsOf(resume) : 0,
         industry: research.industry || null,
         companySize: research.companySize || null,
         isTechnicalRole: TECH_ROLE_RE.test([doc.job_title, p.position].filter(Boolean).join(' ')),
-        brandColor: hexOrNull(p.brandColor) || hexOrNull(research.brandColor),
-    });
+        brandColor: (brand && brand.accent) || hexOrNull(p.brandColor) || hexOrNull(research.brandColor),
+        conventions,
+        employerType: (conventions && conventions.employerType) || null,
+    }), brand);
+}
+
+// ── The employer's brand on the letter ───────────────────────────────────────────────────────────
+// { accent: '#hex'|null, font: { family, google }|null } | null. coverLetterController owns the reading
+// (researchBrandOf for a research result, letterBrandOf for a saved letter) because the DOWNLOADS live
+// there and the cards must render exactly what they download; this file only stores it (design.brand)
+// and passes it on. Both calls are defensive: a coverLetterController from before the brand slice, or a
+// throw, is "no brand" — the letter renders in the design's own colours, never fails.
+function brandOfResearch(cl, research) {
+    try { return cl && typeof cl.researchBrandOf === 'function' ? (cl.researchBrandOf(research) || null) : null; }
+    catch (e) { console.warn('[employerLetter] research brand unreadable:', e.message); return null; }
+}
+function letterBrandOfDoc(cl, doc) {
+    try { return cl && typeof cl.letterBrandOf === 'function' ? (cl.letterBrandOf(doc) || null) : null; }
+    catch (e) { console.warn('[employerLetter] letter brand unreadable:', e.message); return null; }
+}
+/**
+ * A loaded letter with the shared row's brand laid over its research when it has none of its own
+ * (coverLetterController.withSharedLetterBrand — one read-only SELECT, never a write, never a call that
+ * bills). Same defensive shape: an older coverLetterController, or a throw, hands the doc back untouched.
+ */
+async function withSharedLetterBrand(cl, doc) {
+    try { return cl && typeof cl.withSharedLetterBrand === 'function' ? ((await cl.withSharedLetterBrand(doc)) || doc) : doc; }
+    catch (e) { console.warn('[employerLetter] shared brand unreadable:', e.message); return doc; }
+}
+/** design.brand = the pair (or null) on a copy — a design that is not an object is left alone. */
+function withDesignBrand(design, brand) {
+    if (!design || typeof design !== 'object') return design;
+    return { ...design, brand: brand && typeof brand === 'object' ? { accent: brand.accent || null, font: brand.font || null } : null };
+}
+
+/**
+ * normaliseDesign keeps the fields it knows. A designFit whose normaliseDesign predates contract 2 would drop
+ * aiFamilies / conventionsSummary — the two fields that let a stored design be RE-RANKED later for free —
+ * so they are carried over from the raw ranking only when the normalised design has no such key at all
+ * (never over a value normaliseDesign chose), shape-checked, summary ≤ 120 chars.
+ */
+function withConventionFields(normalised, raw) {
+    if (!normalised || typeof normalised !== 'object' || !raw || typeof raw !== 'object') return normalised;
+    const out = { ...normalised };
+    const has = (k) => Object.prototype.hasOwnProperty.call(out, k);
+    if (!has('aiFamilies')) {
+        const a = raw.aiFamilies;
+        out.aiFamilies = a && typeof a === 'object' && !Array.isArray(a) ? a : null;
+    }
+    if (!has('conventionsSummary')) {
+        const c = typeof raw.conventionsSummary === 'string' ? raw.conventionsSummary.replace(/\s+/g, ' ').trim() : '';
+        out.conventionsSummary = c ? c.slice(0, 120) : null;
+    }
+    return out;
+}
+
+/**
+ * The confirm sheet's numbers (contract 3): { usage, pass } — both null-safe, both READ-ONLY.
+ *   usage: entitlements.usageFor(userId, 'cover_letter', req) as it answers, or null (a missing export, a throw).
+ *   pass:  downloads.passStateFor(userId, employer, req, { kind: 'cover_letter' }) → { available, forThisEmployer }. An entitlements /
+ *          downloads that predates it falls back to passWouldCoverLetter — the letter column's read-only twin
+ *          — for the same two questions. null when neither can answer.
+ * ⚠️ NEVER passCoversGeneration or claimGeneration here: this is the dry run, and those reserve / bind.
+ * ⚠️ These never decide `covered` or `via` — the sheet shows them; the build still asks every gate itself.
+ */
+async function usageAndPassFor(userId, employer, req) {
+    let usage = null;
+    let pass = null;
+    try {
+        if (typeof entitlements.usageFor === 'function') usage = (await entitlements.usageFor(userId, 'cover_letter', req)) || null;
+    } catch (e) { console.warn('[employerLetter] usage unreadable for the gate:', e.message); }
+    try {
+        if (typeof downloads.passStateFor === 'function') {
+            // { kind } makes `available` answer for THIS letter's generation — without it, a pass whose only unused
+            // generation is the resume would read as one that can pay for a cover letter.
+            const st = await downloads.passStateFor(userId, employer || '', req, { kind: 'cover_letter' });
+            pass = st && typeof st === 'object' ? { available: !!st.available, forThisEmployer: !!st.forThisEmployer } : null;
+        } else if (employer) {
+            const forThisEmployer = await passWouldCoverLetter(userId, employer, req, { boundOnly: true });
+            const available = forThisEmployer || await passWouldCoverLetter(userId, employer, req, { boundOnly: false });
+            pass = { available, forThisEmployer };
+        } else {
+            pass = { available: false, forThisEmployer: false };
+        }
+    } catch (e) { console.warn('[employerLetter] pass state unreadable for the gate:', e.message); pass = null; }
+    return { usage, pass };
 }
 
 /** Resolve within `ms`, else undefined. Never rejects, never keeps the process alive; the work runs on. */
@@ -852,7 +1125,13 @@ function within(promise, ms) {
 
 /**
  * POST /api/cover-letter/employer-gate   body { employer, employerId?, country?, job?: { title?, url?, description?, website? } }
- *   200 { covered, via: 'plan'|'free'|'pass'|'cache'|'credits'|null, credits: number|null, reason: 'quota_exhausted'|null }
+ *   200 { covered, via: 'plan'|'free'|'pass'|'cache'|'credits'|null, credits: number|null, reason: 'quota_exhausted'|null,
+ *         usage: { kind, pool, planLabel, remaining, allowance, used, oneTime } | null,
+ *         pass: { available, forThisEmployer } | null }
+ *
+ * usage / pass (contract 3) feed Home's confirm sheet ("2 of 3 free cover letters left", "Covered by your
+ * one-time pass for Acme", or the empty sheet's $0.99 offer) — see usageAndPassFor. A cache hit answers them
+ * null: the app runs a hit at once with no sheet, and the hit path stays one that touches no billing read.
  *
  * The question Home asks BEFORE it auto-starts a letter: "would something the user already has pay?"
  * An explicit tap is consent to use the plan, the free allowance or a pass — NOT to spend legacy credits,
@@ -870,7 +1149,8 @@ async function employerLetterGate(req, res) {
     const body = req.body || {};
     const employer = cleanEmployer(body.employer) || null;
     const job = jobFieldsOf(body.job);
-    const answer = (covered, via, credits, reason) => res.json({ covered, via, credits, reason });
+    let extras = { usage: null, pass: null };
+    const answer = (covered, via, credits, reason) => res.json({ covered, via, credits, reason, usage: extras.usage, pass: extras.pass });
     try {
         if (employer) {
             const env = downloads.envOf(req);
@@ -889,6 +1169,8 @@ async function employerLetterGate(req, res) {
         const quota = await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
         const quotaCovers = !!quota.allowed && (quota.via === 'plan' || quota.via === 'free');
         const viaPass = employer ? await passWouldCoverLetter(userId, employer, req, { boundOnly: quotaCovers }) : false;
+        // After canConsumeMany, so a usage read never runs ahead of the quota's own first-use bookkeeping.
+        extras = await usageAndPassFor(userId, employer, req);
         // The build spends the pass first whenever it covered — so the pass is what pays.
         if (viaPass) return answer(true, 'pass', null, null);
         if (!quota.allowed) return answer(false, null, null, 'quota_exhausted');
@@ -901,7 +1183,7 @@ async function employerLetterGate(req, res) {
         return answer(false, null, null, null);
     } catch (e) {
         console.warn('[employerLetter] employer-gate failed:', e.message);
-        return res.status(500).json({ covered: false, via: null, credits: null, reason: null, error: 'Could not check your plan.' });
+        return res.status(500).json({ covered: false, via: null, credits: null, reason: null, usage: null, pass: null, error: 'Could not check your plan.' });
     }
 }
 
@@ -917,10 +1199,11 @@ const FLIGHTS = new Map();
 
 /**
  * POST /api/cover-letter/employer-build   (asJob('cover_letter_employer'))
- *   body { __async, clientBuildId, coveredOnly, employer, employerId?, country?, docJobUrl?,
+ *   body { __async, clientBuildId, coveredOnly, expectVia?, employer, employerId?, country?, docJobUrl?,
  *          job: { company, title?, url?, description?, website? } }
  *   200 { success:true, cached, docId, tailoredFor }
  *   400 { reason:'no_resume' | 'invalid_employer' }   402 { reason:'quota_exhausted' }   500/504 { reason:'failed' }
+ *   409 { reason:'payer_changed' | 'cache_miss' }   (contract C2 — only for a build that sent `expectVia`)
  *
  * `job` is what the letter is WRITTEN against (the fingerprint, the prompt, the research host);
  * `docJobUrl` is the stored letter's IDENTITY — see where it is read below.
@@ -928,6 +1211,12 @@ const FLIGHTS = new Map();
  * Order (each step is load-bearing): no résumé → fingerprint → CACHE (free, returns before any gate) →
  * gates → coveredOnly refusal (before research, which is paid work) → research → AI letter →
  * placeholder guard → design ranking → CHARGE + STORE under the usage lock → thumbs.
+ *
+ * ⚠️ `expectVia` (contract C2), when the app sends it, is the payer the user CONFIRMED on Home's sheet. At
+ * every point where this lane is about to bind or charge, the payer it would really use is worked out first
+ * and compared with it — and a letter that would now be paid for some other way is refused with 409
+ * payer_changed (PAYER_CHANGED), having bound, charged and stored nothing. A build that sends no expectVia
+ * behaves exactly as it always has.
  */
 async function buildEmployerLetter(req, res) {
     const userId = req.user.id;
@@ -936,6 +1225,10 @@ async function buildEmployerLetter(req, res) {
     // Without it, a build whose last plan unit was spent in between would fall through to legacy credits
     // nobody agreed to. false is sent only after the user explicitly confirmed a credit charge.
     const coveredOnly = body.coveredOnly === true;
+    // ⚠️ contract C2 — WHAT THE USER CONFIRMED ON THE SHEET ('plan' | 'free' | 'pass' | 'cache'), or null when
+    // the body carries none (an older app): then this lane decides what pays alone, exactly as it always has.
+    // Every comparison against it happens BEFORE the thing it guards — see the gates and the charge below.
+    const expectVia = downloads.expectedPayerOf(body);
     const rawJob = body.job && typeof body.job === 'object' ? body.job : {};
     const company = cleanEmployer(rawJob.company) || cleanEmployer(body.employer);
     // '(none)' is the base résumé snapshot's scope, not an employer: a letter stored under it could never
@@ -989,6 +1282,13 @@ async function buildEmployerLetter(req, res) {
             console.log(`[employerLetter] cache hit for "${company}" (user ${userId}) — no AI call, nothing charged`);
             return res.json({ success: true, cached: true, docId: hit.id, tailoredFor: company });
         }
+        // ⚠️ CONFIRMED AS FREE, AND IT IS NOT (contract C2). The app starts a 'cache' build with no sheet at all,
+        // because a stored letter costs nothing — so a miss here would charge someone who was never asked.
+        // Before the flight join and every gate: nothing reserved, nothing written, nothing spent.
+        if (expectVia === 'cache') {
+            console.log(`[employerLetter] build for user ${userId} / "${company}" was confirmed as a saved letter, but the cache misses now — refused, nothing charged`);
+            return res.status(CACHE_MISS.status).json(CACHE_MISS.body);
+        }
 
         const flightKey = `${userId}|${env}|${downloads.employerKeyOf(company)}|${fp}`;
         for (let waits = 0; waits < 3 && FLIGHTS.has(flightKey); waits++) {
@@ -1023,9 +1323,33 @@ async function buildEmployerLetter(req, res) {
         // both ride one pass.
         const quota = await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
         const quotaCovers = !!quota.allowed && !(coveredOnly && quota.via === 'credits');
+        const boundOnly = quota.allowed && quotaCovers;
+        // ⚠️ C2 IS ASKED BEFORE passCoversGeneration, BECAUSE THAT CALL BINDS. With boundOnly false it is a
+        // RESERVATION — an UPDATE tying the oldest unspent pass to this employer. Refusing after it would leave
+        // the one company a pass buys spent on a build nobody agreed to pay for that way. passWouldCoverLetter
+        // is its read-only twin, clause for clause, so the comparison happens while nothing has moved.
+        if (expectVia !== null) {
+            const would = await passWouldCoverLetter(userId, company, req, { boundOnly });
+            const payer = would ? 'pass' : downloads.quotaPayerOf(quota);
+            if (payer !== expectVia) {
+                console.warn(`[employerLetter] build for user ${userId} / "${company}" was confirmed as '${expectVia}' but ${payer || 'nothing'} would pay now — refused, nothing bound or charged`);
+                return res.status(PAYER_CHANGED.status).json(PAYER_CHANGED.body);
+            }
+        }
         const viaPass = await downloads
-            .passCoversGeneration(userId, 'cover_letter', company, req, { boundOnly: quota.allowed && quotaCovers })
+            .passCoversGeneration(userId, 'cover_letter', company, req, { boundOnly })
             .catch(() => false);
+        // The gate's OWN answer, compared again — a mismatch here is a race, and never a binding this refusal
+        // would strand: the reservation lost one (then it bound nothing), or it found the employer's own pass
+        // a read a moment ago did not. It cannot be a pass it has just bound, because the only build that
+        // reaches that branch is one whose confirmed payer was already 'pass'.
+        if (expectVia !== null) {
+            const payer = viaPass ? 'pass' : downloads.quotaPayerOf(quota);
+            if (payer !== expectVia) {
+                console.warn(`[employerLetter] build for user ${userId} / "${company}": '${expectVia}' was confirmed, ${payer || 'nothing'} would pay at the gate — refused, nothing charged`);
+                return res.status(PAYER_CHANGED.status).json(PAYER_CHANGED.body);
+            }
+        }
         const gate = viaPass ? { allowed: true } : quota;
         if (!gate.allowed) {
             return res.status(402).json({ success: false, error: gate.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
@@ -1041,12 +1365,17 @@ async function buildEmployerLetter(req, res) {
         emit(req, 'cover_letter_generate', { forJob: !!(job.title || job.url), lane: 'employer_home' });
 
         // ── RESEARCH (optional grounding — never a dependency, never throws) ───────────────────────
+        // It carries `conventions` (how THIS employer hires, what its country / sector expects of a letter):
+        // one grounded call inside the same cached row. `country` is only a hint for that call — the chip's
+        // country is the role's location more often than the employer's HQ.
         const site = researchSiteFor(company, job);
         let facts = null;
         if (site) {
             await report('researching', `Researching ${company}`, 16);
-            facts = await research.getEmployerResearch({ website: site, name: company }).catch(() => null);
+            facts = await research.getEmployerResearch({ website: site, name: company, country: country || null }).catch(() => null);
         }
+        const conventions = conventionsOf(facts);
+        const region = letterRegionFor(research, designFit, conventions, { country, website: site });
 
         const [tailored, sender] = await Promise.all([
             tailoredResumeFor(userId, { company, employerId, job, docJobUrl }, req),
@@ -1059,6 +1388,10 @@ async function buildEmployerLetter(req, res) {
         const promptArgs = {
             company, website: site, job, material, tailored,
             researchBlock: research.researchPromptBlock(facts, company, { forLetter: true }),
+            conventionsBlock: conventionsBlockFor(research, conventions, company),
+            style: letterStyleFor(conventions, region),
+            sector: (conventions && typeof conventions.sector === 'string' && conventions.sector)
+                || (facts && typeof facts.industry === 'string' && facts.industry) || '',
         };
         const prompt = buildEmployerLetterPrompt(promptArgs);
         let out = null;
@@ -1106,7 +1439,10 @@ async function buildEmployerLetter(req, res) {
             ? (name ? `Application for ${position} — ${name}` : `Application for ${position}`)
             : (name ? `Application — ${name}` : 'Job application');
         // A named contact or an address survives only when the posting (or research) actually says it.
-        const evidence = plainOf([job.description, JSON.stringify(facts || {})].join(' '));
+        // ⚠️ Not the conventions: their notes describe the COUNTRY's hiring habits, and an address or a name
+        // matched there would be one this employer never published.
+        const { conventions: _conventions, ...employerFacts } = facts || {};
+        const evidence = plainOf([job.description, JSON.stringify(employerFacts)].join(' '));
         const to = String(out.to || '').replace(/\s+/g, ' ').trim();
         const hiringManager = to && to.length <= 80 && !/hiring|recruit|talent|manager|team|human resources|\bhr\b/i.test(to)
             && plainOf(to) && evidence.includes(plainOf(to)) ? to : 'Hiring Manager';
@@ -1114,7 +1450,12 @@ async function buildEmployerLetter(req, res) {
             .map((a) => String(a || '').replace(/\s+/g, ' ').trim())
             .filter((a) => a && a.length <= 200 && plainOf(a).length >= 8 && evidence.includes(plainOf(a)))
             .slice(0, 5);
-        const brandColor = hexOrNull(facts && facts.brandColor);
+        // The employer's brand — the website's own colour and font (brandExtract) over the researcher's guess
+        // (coverLetterController.researchBrandOf, contract 2's precedence). Stored on the design so every render
+        // of this letter draws it; the payload's brandColor / fontName keep their keys and carry the same
+        // effective values, for the generic (PDFKit) design and for a reader from before design.brand.
+        const brand = brandOfResearch(cl, facts);
+        const brandColor = (brand && brand.accent) || hexOrNull(facts && facts.brandColor);
         const payload = {
             coverLetterHtml: cl.formatCoverLetterWithHTML(escHtml(out.body), {}),
             subject,
@@ -1124,7 +1465,7 @@ async function buildEmployerLetter(req, res) {
             position,
             locations: addresses.map((address, i) => ({ address, city: '', country: '', isHeadquarters: i === 0 })),
             brandColor,
-            fontName: (facts && facts.fontName) || null,
+            fontName: (brand && brand.font && brand.font.family) || (facts && facts.fontName) || null,
         };
 
         await report('designing', 'Ranking letter designs', 86);
@@ -1134,14 +1475,20 @@ async function buildEmployerLetter(req, res) {
             let seniorityYears = builder ? designFit.seniorityYearsOf(builder) : 0;
             const parsedYears = Number(material.meta && material.meta.experience_years);
             if (!seniorityYears && Number.isFinite(parsedYears) && parsedYears > 0) seniorityYears = Math.min(60, parsedYears);
-            design = designFit.normaliseDesign(designFit.rankLetterDesigns({
-                region: designFit.regionFor({ country, website: site }),
+            // Employer-first (contract 2): the conventions and the employer type lead, seniority is a minor
+            // factor inside designFit. aiFamilies / conventionsSummary ride along so the stored design can be
+            // re-ranked later without AI.
+            const ranked = designFit.rankLetterDesigns({
+                region,
                 seniorityYears,
                 industry: (facts && facts.industry) || null,
                 companySize: (facts && facts.companySize) || null,
                 isTechnicalRole: TECH_ROLE_RE.test([position, job.title].join(' ')),
                 brandColor,
-            }), 'cover_letter');
+                conventions,
+                employerType: (conventions && conventions.employerType) || null,
+            });
+            design = withDesignBrand(withConventionFields(designFit.normaliseDesign(ranked, 'cover_letter'), ranked), brand);
         } catch (e) { console.warn('[employerLetter] design ranking failed (stored without one):', e.message); }
 
         // ── CHARGE, THEN STORE — one payment at a time per user (withUsageLock) ──────────────────────────
@@ -1181,12 +1528,28 @@ async function buildEmployerLetter(req, res) {
                     if (spentPass) took.passId = claimed.passId || null;
                 }
                 if (!spentPass) {
+                    // ⚠️ C2 AT THE MOMENT OF PAYMENT: the confirmed pass did not land (a racing tap for this same
+                    // employer won it), so what would pay now is the plan or the free allowance — a payer the user
+                    // never agreed to. Losing that race must not mean a free letter, and it must not mean a silent
+                    // one either: refused here, nothing charged, and the app asks again.
+                    if (expectVia === 'pass') {
+                        console.warn(`[employerLetter] build for user ${userId} / "${company}": the confirmed pass was spent elsewhere during the run — refused, nothing charged`);
+                        refusal = PAYER_CHANGED;
+                        return;
+                    }
                     // ⚠️ coveredOnly, re-asked at the moment of payment. The gate ran a minute ago and never
                     // reserves: the plan unit it saw may be gone, or the pass claim above lost a race. Then
                     // consumeOnSuccess would pick credits — the one lane this build must never use. Under the
                     // lock, a parallel letter's unit is already in the ledger when this reads it.
-                    if (coveredOnly) {
+                    // ⚠️ And with a payer confirmed (C2), the answer must still BE that payer: a plan that ended
+                    // mid-build leaves the free allowance paying for a letter the user confirmed against a plan.
+                    if (coveredOnly || expectVia !== null) {
                         const now = await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
+                        if (expectVia !== null && downloads.quotaPayerOf(now) !== expectVia) {
+                            console.warn(`[employerLetter] build for user ${userId} / "${company}": '${expectVia}' no longer pays for it (${downloads.quotaPayerOf(now) || 'nothing'} would) — refused, nothing charged`);
+                            refusal = PAYER_CHANGED;
+                            return;
+                        }
                         if (!now.allowed || now.via === 'credits') {
                             console.warn(`[employerLetter] coveredOnly build for user ${userId} lost its cover during the run — refused, nothing charged`);
                             refusal = LOST_COVER;
@@ -1207,6 +1570,18 @@ async function buildEmployerLetter(req, res) {
                         // is. Conservative — it can under-report a payment, never invent one (see creditMarksFor).
                         const d = await creditsDeductedSince(userId, marks);
                         if (d.paid) took.credits = { charged: true, cost: d.cost };
+                    }
+                    // ⚠️ C2, ON WHAT ACTUALLY PAID. consumeOnSuccess picks the pool itself, and in the sliver
+                    // between the re-check above and this call it can pick another one (a plan that ended, the
+                    // last unit taken by a lane that holds no lock). Recorded above, so whatever it took goes
+                    // straight back — and the letter is never stored for a payer the user did not confirm.
+                    // 'error' and anything unrecognised are not a payer at all: they fall through to the
+                    // "charge could not be confirmed" path below, which already gives everything back.
+                    if (expectVia !== null && downloads.namesPayer(via) && downloads.payerWordOf(via) !== expectVia) {
+                        console.warn(`[employerLetter] build for user ${userId} / "${company}": ${via} paid where '${expectVia}' was confirmed — given back and refused`);
+                        await giveBackLetterCharge(userId, took, 'a payer the user did not confirm');
+                        refusal = PAYER_CHANGED;
+                        return;
                     }
                     if (via === 'credits') {
                         if (coveredOnly) {
@@ -1301,7 +1676,7 @@ async function buildEmployerLetter(req, res) {
         await report('pages', 'Laying out your letter', 96);
         const topIds = design && design.ranked.length ? design.ranked.slice(0, PRERENDER_TOP).map((r) => r.id) : ['standard', 'ats_pro'];
         await within((async () => {
-            const saved = await employerDocs.getById(userId, docId, req, { kind: 'cover_letter' });
+            const saved = await withSharedLetterBrand(cl, await employerDocs.getById(userId, docId, req, { kind: 'cover_letter' }));
             if (usableLetter(saved)) await letterCardsFor(userId, saved, topIds, design);
         })(), PRERENDER_BUDGET_MS);
 
@@ -1334,7 +1709,9 @@ async function buildEmployerLetter(req, res) {
 async function employerLetterCards(req, res) {
     const userId = req.user.id;
     try {
-        const doc = await employerDocsMod().getById(userId, req.query && req.query.doc, req, { kind: 'cover_letter' });
+        // The cards' brand hash and their pages read letterBrandOf off this object, so a brand-less letter meets
+        // the shared row's brand HERE, before either — a thumb must be the file the download would produce.
+        const doc = await withSharedLetterBrand(clMod(), await employerDocsMod().getById(userId, req.query && req.query.doc, req, { kind: 'cover_letter' }));
         if (!usableLetter(doc)) return res.status(404).json({ success: false, reason: 'doc_gone', error: 'That cover letter is no longer saved.' });
         const design = await designOfLetterDoc(userId, doc).catch((e) => {
             console.warn('[employerLetter] cards design unavailable:', e.message);
@@ -1362,5 +1739,5 @@ module.exports = {
     currentLetterFingerprint,
     // exported for tests only
     buildEmployerLetterPrompt, parseLetterOutput, findLetterPlaceholders, stripLetterPlaceholders, cleanPosition,
-    passWouldCoverLetter, letterFingerprintOf, jobFieldsOf, uploadContextOf,
+    passWouldCoverLetter, letterFingerprintOf, jobFieldsOf, uploadContextOf, letterStyleFor, usageAndPassFor,
 };

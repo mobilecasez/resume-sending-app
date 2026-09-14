@@ -4,6 +4,9 @@
 // Every AI call, research call, charge and stored document is counted.
 //   node server/scripts/test-employer-doc-lane.js
 //
+// Since 2026-09-14 it also covers what Home's confirm sheet reads from the gate (usage + pass — display only, never
+// on a cache hit) and the employer's hiring CONVENTIONS (research.conventions): the prompt's facts and FORMATTING
+// rules, personal details blanked in code, the page mode, and the stored design's aiFamilies / conventionsSummary.
 // ⚠️ WHY: this lane spends money. A cache hit must touch no billing; coveredOnly must refuse before research
 // (a grounded AI call) and again at the moment of payment; a document is stored only for a build that was
 // actually charged; and the lane must never read or write user_resumes (Home keeps one document PER EMPLOYER).
@@ -29,7 +32,9 @@ const STARTED = Date.now();
 // ── counters ─────────────────────────────────────────────────────────────────────────────────────
 const ai = { calls: 0, prompts: [], queue: [] };          // queue: functions (prompt) => text
 const research = { calls: 0 };
-const render = { previews: 0, pdf: 0, docx: 0 };
+// previewOpts / pdfOpts / docxOpts: the opts each render was handed — the brand a doc-mode render paints in is asserted
+// from these (contract 4: EVERY doc-mode render passes design.brand; the base paths pass none).
+const render = { previews: 0, pdf: 0, docx: 0, previewOpts: [], pdfOpts: null, docxOpts: null };
 const stages = [];
 const refunds = [];
 const historyRows = [];
@@ -175,6 +180,10 @@ const ent = {
   consumeVia: 'plan',                  // what consumeOnSuccess reports
   deductOnCredits: true,               // does the credits lane really deduct (history row)?
   consumed: [],
+  // usageFor (contract 3): what the sheet says is left. usageCalls records every read; usageThrows makes it throw.
+  usage: { kind: 'resume', pool: 'plan', planLabel: 'Plus', remaining: 12, allowance: 15, used: 3, oneTime: false },
+  usageCalls: [],
+  usageThrows: false,
 };
 stub('server/services/entitlements.js', {
   activeSubscription: async () => ent.sub,
@@ -199,11 +208,20 @@ stub('server/services/entitlements.js', {
     return { via: ent.consumeVia, charge, ledgerId };
   },
   usageSnapshot: async () => ({}),
+  usageFor: async (u, kind) => {
+    ent.usageCalls.push(kind);
+    if (ent.usageThrows) throw new Error('ledger unreadable');
+    return { ...ent.usage, kind };
+  },
 } );
 
 // ── the AI ───────────────────────────────────────────────────────────────────────────────────────
+// ⚠️ THE TITLE IS PHRASED FOR THE SECTOR (2026-09-15). The stubbed researcher always names an industry, and contract 5's
+// sameness guard reads "sector known AND the title unchanged" as a generic draft that earns ONE corrective pass. The
+// base résumé (BASE_TEXT) says "Current title: Backend Engineer", so a fixture answering that same title made every
+// one-call scenario a two-call one. The guard itself is exercised on purpose in S28 below.
 const RESUME = (over = {}) => ({
-  personal_info: { full_name: '', email: '', phone: '', location: '', title: 'Backend Engineer', linkedin_url: '', portfolio_url: '', nationality: '', date_of_birth: '' },
+  personal_info: { full_name: '', email: '', phone: '', location: '', title: 'Backend Engineer — Payment Systems', linkedin_url: '', portfolio_url: '', nationality: '', date_of_birth: '' },
   summary: 'Backend engineer with **8 years** building payment systems.\n• Built ledgers\n• Scaled APIs\n• Led migrations',
   experience: [{ company: 'PayCo', role: 'Senior Engineer', location: 'Pune', start_date: 'January 2018', end_date: 'Present', highlights: ['Built the ledger service', 'Scaled the payments API'] }],
   education: [{ institution: 'COEP', degree: 'B.Tech', field_of_study: 'CS', end_date: '2017', grade: '' }],
@@ -227,7 +245,10 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
   },
 } };
 
-stub('ai-employer-researcher.js', { researchEmployer: async (url) => { research.calls++; return { employer_name: 'Amazon', industry: 'E-commerce and cloud computing', company_size: '10,001+ employees', brand_color: '#ff9900', font_name: 'Amazon Ember', technologies: [{ name: 'AWS' }], clients: [], recent_activity: [], key_contacts: [{ name: 'Jane' }] }; } });
+// research.industry: what the researcher names as the sector (null = it names none — the sameness guard then has
+// nothing to phrase a title for, S28).
+research.industry = 'E-commerce and cloud computing';
+stub('ai-employer-researcher.js', { researchEmployer: async (url) => { research.calls++; return { employer_name: 'Amazon', industry: research.industry, company_size: '10,001+ employees', brand_color: '#ff9900', font_name: 'Amazon Ember', technologies: [{ name: 'AWS' }], clients: [], recent_activity: [], key_contacts: [{ name: 'Jane' }] }; } });
 stub('server/services/resumeScorer.js', {
   narrativeFor: async () => ({ text: BASE_TEXT, source: 'builder' }),
   BASE_SNAPSHOT_FP: 'base-resume-before-tailoring:v1',
@@ -239,11 +260,11 @@ stub('server/services/jobService.js', {
 stub('server/services/eventCosts.js', { getEventCost: async () => 2, refundCredits: async (u, key, charge) => { refunds.push({ u, key, charge }); } });
 stub('server/services/downloadHistory.js', { record: async (u, entry) => { historyRows.push(entry); }, list: async () => ({ items: [] }) });
 stub('server/utils/resumeRenderer.js', {
-  renderPdf: async () => { render.pdf++; return Buffer.from('%PDF-1.4 fake'); },
-  renderPreviews: async (data, opts, tpls) => { render.previews += tpls.length; return tpls.map((t) => ({ id: t.id, name: t.name, accent: t.accent, ats: t.ats || null, image: 'data:image/jpeg;base64,' + Buffer.from('JPEG:' + t.id + ':' + (data && data.personal_info && data.personal_info.title)).toString('base64'), width: 794, height: 1123 })); },
+  renderPdf: async (id, data, opts) => { render.pdf++; render.pdfOpts = opts || {}; return Buffer.from('%PDF-1.4 fake'); },
+  renderPreviews: async (data, opts, tpls) => { render.previews += tpls.length; render.previewOpts.push({ opts: opts || {}, ids: tpls.map((t) => t.id) }); return tpls.map((t) => ({ id: t.id, name: t.name, accent: t.accent, ats: t.ats || null, image: 'data:image/jpeg;base64,' + Buffer.from('JPEG:' + t.id + ':' + (data && data.personal_info && data.personal_info.title)).toString('base64'), width: 794, height: 1123 })); },
   warmPreviews: async () => {},
 });
-stub('server/utils/docxBuilder.js', { buildResumeDocx: async () => { render.docx++; return Buffer.from('PK fake'); } });
+stub('server/utils/docxBuilder.js', { buildResumeDocx: async (data, opts) => { render.docx++; render.docxOpts = opts || {}; return Buffer.from('PK fake'); } });
 
 // employerDocs: in-memory, faithful to the contract (exact key get, upsert put, owner/env/kind getById)
 const realDocs = require(path.join(ROOT, 'server/services/employerDocs.js'));   // loads against the stubbed db
@@ -280,6 +301,26 @@ stub('server/services/employerDocs.js', {
 });
 
 const BASE_TEXT = 'Current title: Backend Engineer\n\nEXPERIENCE\nSenior Engineer at PayCo | Pune | January 2018 – Present\n- Built the ledger service\n- Scaled the payments API\n\nEDUCATION\nB.Tech, CS | COEP | 2017';
+
+// ⚠️ THE CONVENTIONS CALL (employerResearch.researchConventions) is a grounded Gemini call of its own. Unstubbed it
+// would go through the @google/generative-ai stub above, count as a SECOND resume AI call and eat the resume's
+// queued answers. It is looked up through module.exports on every use, so it is replaced here: conv.answer is the
+// conventions the "search" found (null = answered, nothing usable), and every call is counted per domain.
+const conv = { calls: 0, domains: [], answer: null };
+const ER = require(path.join(ROOT, 'server/services/employerResearch.js'));
+ER.researchConventions = async (domain) => {
+  conv.calls++; conv.domains.push(domain);
+  return { answered: true, conventions: conv.answer ? ER.sanitiseConventions(conv.answer) : null };
+};
+// ⚠️ THE WEBSITE READ (employerResearch.researchBrand → brandExtract.extractBrand) is a REAL network read of the employer's
+// homepage, bounded at 8 s, and googleFontCheck a real Google Fonts request. Unstubbed, this suite read ~12 real domains
+// (abb.com, monzo.com, wolt.com, …) and spent ~35 s on the wire — and a page that happened to answer would have coloured
+// the assertions. Both are looked up through module.exports on every use, so they are replaced here: brandSite.answer is
+// what "the website" gave (null = nothing usable; a function is asked per domain), brandSite.google the Fonts yes/no,
+// and every read is counted per domain.
+const brandSite = { calls: 0, domains: [], answer: null, google: false };
+ER.researchBrand = async (domain) => { brandSite.calls++; brandSite.domains.push(domain); return typeof brandSite.answer === 'function' ? brandSite.answer(domain) : brandSite.answer; };
+ER.googleFontCheck = async () => brandSite.google;
 
 const RB = require(path.join(ROOT, 'server/controllers/resumeBuilderController.js'));
 
@@ -341,6 +382,22 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const prompt1 = ai.prompts[ai.prompts.length - 1];
   ok('the prompt carries the research block and the family brief', /=== WHAT WE KNOW ABOUT Amazon/.test(prompt1) && /mono \| Tech Mono/.test(prompt1));
   ok('…and the country', /Applying in: India/.test(prompt1));
+  ok('no conventions → no HIRING CONVENTIONS facts and no FORMATTING rules in the prompt',
+    !/=== HOW Amazon HIRES/.test(prompt1) && !/=== FORMATTING FOR/.test(prompt1));
+  ok('the conventions were asked once, for the employer\'s domain', conv.calls === 1 && conv.domains[0] === 'amazon.jobs', conv.domains);
+  // Contract 5: the prompt is WRITTEN FOR this employer — the sector in its own words, the title from the real roles,
+  // the summary's first sentence as the fit, the bullets in the employer's vocabulary, and the never-invent rule again.
+  ok('the prompt carries the WRITTEN FOR block, phrased for the researcher\'s sector',
+    /=== WRITTEN FOR Amazon: THE TOP LINES ===/.test(prompt1) && /E-commerce and cloud computing/.test(prompt1)
+    && /personal_info\.title/.test(prompt1) && /first sentence/i.test(prompt1), prompt1.slice(prompt1.indexOf('=== WRITTEN FOR'), prompt1.indexOf('=== WRITTEN FOR') + 400));
+  // Contract 2/4: the website gave nothing (brandSite.answer null), so the researcher's colour and font stand in — the
+  // font NOT a Google font (the check said no), so the renderer will leave the design's own face.
+  ok('the website read was asked ONCE, for the employer\'s domain, beside the researcher and the conventions',
+    brandSite.calls === 1 && brandSite.domains[0] === 'amazon.jobs', brandSite.domains);
+  ok('⚠️ design.brand is stored: the researcher\'s colour as the accent, its font marked google:false',
+    d1 && d1.design && JSON.stringify(d1.design.brand) === JSON.stringify({ accent: '#ff9900', font: { family: 'Amazon Ember', google: false } }), d1 && d1.design && d1.design.brand);
+  ok('…and the pre-rendered thumbs were painted with THAT brand (the files home-cards reads back)',
+    render.previewOpts.length >= 1 && render.previewOpts.slice(-1).every((p) => JSON.stringify(p.opts.brand) === JSON.stringify(d1.design.brand)), render.previewOpts.slice(-1).map((p) => p.opts.brand));
   const r1before = render.previews;
   const c0 = await call(RB.homeCards, {}, { doc: String(b1.body.docId) });
   ok('opening the carousel right after renders only the 2 of the top 5 not pre-rendered', c0.statusCode === 200 && c0.body.cards.length === 5 && render.previews - r1before === 2, { status: c0.statusCode, rendered: render.previews - r1before });
@@ -350,8 +407,11 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const g1 = await call(RB.generationGate, { employer: 'Amazon', job: { website: 'https://amazon.jobs' }, saveTo: 'employer_doc', employerId: '3f2a9c1e-1111-4222-8333-444455556666' });
   ok('⚠️ saveTo gate → covered via cache (identical fingerprint)', g1.body.covered === true && g1.body.via === 'cache', g1.body);
   ok('…consulting no quota on the way', ent.canCalls === s0.can);
+  ok('⚠️ a cache hit carries usage:null, pass:null (no sheet; a free path reads no billing)',
+    'usage' in g1.body && g1.body.usage === null && 'pass' in g1.body && g1.body.pass === null && ent.usageCalls.length === 0, g1.body);
   const gB = await call(RB.generationGate, { employer: 'Amazon', job: { website: 'https://amazon.jobs' } });
   ok('the builder-lane gate does NOT promise the doc-lane document', gB.body.via !== 'cache', gB.body);
+  ok('…and keeps its old shape: no usage / pass keys (Home\'s sheet is their only reader)', !('usage' in gB.body) && !('pass' in gB.body), gB.body);
   const cur = await RB.currentResumeFingerprint(UID, { job: { company: 'Amazon', website: 'https://amazon.jobs', title: undefined, url: undefined, description: undefined }, env: mkReq({}) });
   ok('⚠️ currentResumeFingerprint === the stored fingerprint', cur === d1.input_fingerprint, { cur, stored: d1.input_fingerprint });
   const curOther = await RB.currentResumeFingerprint(UID, { job: { company: 'Amazon', website: 'https://amazon.jobs', title: 'SDE II' }, env: 'Production' });
@@ -385,6 +445,15 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   ok('⚠️ no research, no AI, no charge, no store', ai.calls === s0.ai && research.calls === s0.research && ent.consumed.length === s0.consumed && db.docs.length === s0.docs, snapshot());
   const g4 = await call(RB.generationGate, { employer: 'Nordex', job: { website: 'https://nordex-online.com' }, saveTo: 'employer_doc' });
   ok('the gate says credits with a price (the app asks first)', g4.body.covered === false && g4.body.via === 'credits' && g4.body.credits === 2, g4.body);
+  ok('⚠️ a non-cache answer carries usage (usageFor\'s own numbers, for the resume) and pass { available, forThisEmployer }',
+    g4.body.usage && g4.body.usage.kind === 'resume' && g4.body.usage.remaining === 12 && g4.body.usage.allowance === 15
+    && ent.usageCalls[ent.usageCalls.length - 1] === 'resume'
+    && JSON.stringify(g4.body.pass) === JSON.stringify({ available: false, forThisEmployer: false }), g4.body);
+  ent.usageThrows = true;
+  const g4b = await call(RB.generationGate, { employer: 'Nordex', job: { website: 'https://nordex-online.com' }, saveTo: 'employer_doc' });
+  ok('⚠️ an unreadable count is a sheet that says less, never a failed gate (usage:null, same covered/via)',
+    g4b.statusCode === 200 && g4b.body.usage === null && g4b.body.via === g4.body.via && g4b.body.covered === g4.body.covered, g4b.body);
+  ent.usageThrows = false;
 
   console.log('── S5 · the user CONFIRMED credits, and the deduction is verified ──');
   s0 = snapshot();
@@ -516,10 +585,110 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const g19 = await call(RB.generationGate, { employer: 'Klarna', job: { website: 'https://klarna.com' }, saveTo: 'employer_doc' });
   ok('the gate says pass', g19.body.covered === true && g19.body.via === 'pass', g19.body);
   ok('…and the dry run bound nothing', !db.passes[0].bound_at);
+  ok('⚠️ pass: available (an unbound pass could pay), not yet this employer\'s — and reading it bound nothing',
+    g19.body.pass && g19.body.pass.available === true && g19.body.pass.forThisEmployer === false && !db.passes[0].bound_at && g19.body.usage, g19.body);
   const b19 = await call(RB.generateAI, buildBody({ job: { company: 'Klarna', website: 'https://klarna.com' } }));
   ok('200 stored', b19.statusCode === 200 && !b19.body.cached && db.docs.length === s0.docs + 1, b19.body);
   ok('⚠️ the pass paid: bound to klarna, resume generation stamped, no plan consumption', db.passes[0].employer_key === 'klarna' && !!db.passes[0].resume_generated_at && ent.consumed.length === s0.consumed, db.passes[0]);
+  const g19b = await call(RB.generationGate, { employer: 'Klarna', job: { website: 'https://klarna.com', title: 'Another role' }, saveTo: 'employer_doc' });
+  // ⚠️ RETARGETED 2026-09-15: this expected forThisEmployer:true on the SPENT pass. The sheet read that as "Covered by
+  // your one-time pass for Klarna — nothing more to pay" and Continue then bound a SECOND pass. A pass that cannot pay for
+  // what is being asked covers nothing, whoever owns it (downloads.passStateFor).
+  ok('…afterwards Klarna\'s pass has spent its resume generation → the empty sheet with NO pass to lean on ({ false, false })',
+    g19b.body.reason === 'quota_exhausted' && g19b.body.pass && g19b.body.pass.forThisEmployer === false && g19b.body.pass.available === false, g19b.body);
+  db.passes.push({ id: db.nextPassId++, user_id: UID, store: 'apple', environment: 'Production', store_txn_id: 'T2', employer_key: null, employer_name: null, bound_at: null, created_at: Date.now() });
+  const g19c = await call(RB.generationGate, { employer: 'Klarna', job: { website: 'https://klarna.com', title: 'Another role' }, saveTo: 'employer_doc' });
+  ok('⚠️ …a SECOND unbound pass beside it: covered via pass, available, and NOT Klarna\'s — Continue would bind that one, which the sheet must offer, never call "nothing more to pay"',
+    g19c.body.covered === true && g19c.body.via === 'pass' && g19c.body.pass && g19c.body.pass.available === true && g19c.body.pass.forThisEmployer === false, g19c.body);
+  ok('…and the read bound nothing', !db.passes[1].bound_at && db.passes[1].employer_key === null, db.passes[1]);
+  db.passes.pop();
   ent.gate = { allowed: true, via: 'plan', remaining: 5 };
+
+  console.log('── S26 · ⚠️ contract C2: `expectVia` — the payer the user CONFIRMED, refused with 409 before anything binds or charges ──');
+  {
+    // The sheet names a payer ('plan' | 'free' | 'pass' | 'cache'); the build the user confirms sends it back. A build
+    // this lane would now pay for some OTHER way is refused with 409 payer_changed — nothing bound, charged or stored —
+    // and one confirmed as a free cache hit that misses is 409 cache_miss before every gate. A build that sends no
+    // expectVia behaves exactly as every scenario above: the lane decides alone.
+    const strip26 = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    ent.gate = { allowed: true, via: 'plan', remaining: 5 }; ent.gateSeq = []; ent.consumeVia = 'plan';
+    let cb26 = 0;
+    const c26 = (over = {}) => buildBody({ clientBuildId: 'cb-26-' + (++cb26), job: { company: 'Wise', website: 'https://wise.com', title: 'C2 role' }, ...over });
+    s0 = snapshot();
+    let b = await call(RB.generateAI, c26({ expectVia: 'cache' }));
+    ok('confirmed as a saved document that is not there → 409 cache_miss', b.statusCode === 409 && b.body.reason === 'cache_miss' && b.body.success === false && !b.body.docId, b.body);
+    ok('⚠️ …before every gate: no quota read, no research, no AI, no charge, nothing stored', JSON.stringify(snapshot()) === JSON.stringify(s0), { s0, now: snapshot() });
+
+    s0 = snapshot();
+    b = await call(RB.generateAI, c26({ expectVia: 'free' }));
+    ok('confirmed as free while the PLAN would pay → 409 payer_changed', b.statusCode === 409 && b.body.reason === 'payer_changed' && b.body.success === false, b.body);
+    ok('⚠️ …after the quota read and before anything else: no research, no AI, no charge, nothing stored',
+      ent.canCalls === s0.can + 1 && ai.calls === s0.ai && research.calls === s0.research && ent.consumed.length === s0.consumed && db.docs.length === s0.docs, { s0, now: snapshot() });
+
+    s0 = snapshot();
+    b = await call(RB.generateAI, c26({ expectVia: 42 }));
+    ok('⚠️ a payer word we cannot read is a confirmation we cannot honour → 409 payer_changed, never a charge on a guess',
+      b.statusCode === 409 && b.body.reason === 'payer_changed' && ai.calls === s0.ai && ent.consumed.length === s0.consumed && db.docs.length === s0.docs, b.body);
+
+    // 'pass' confirmed, but no pass exists: refused BEFORE passCoversGeneration could bind anything.
+    const passes0 = JSON.stringify(db.passes);
+    ent.gate = { allowed: false, via: null, reason: 'quota_exhausted', message: 'no quota' };
+    s0 = snapshot();
+    b = await call(RB.generateAI, c26({ expectVia: 'pass' }));
+    ok('confirmed as the pass, and nothing would pay now → 409 payer_changed (not 402: "ask again", not "you are out")', b.statusCode === 409 && b.body.reason === 'payer_changed', b.body);
+    ok('⚠️ …no pass bound, nothing charged, nothing stored', JSON.stringify(db.passes) === passes0 && ent.consumed.length === s0.consumed && db.docs.length === s0.docs && ai.calls === s0.ai);
+    b = await call(RB.generateAI, c26({ expectVia: 'plan' }));
+    ok('confirmed as the plan, and the plan is gone → 409 payer_changed, not the 402 an unconfirmed build gets', b.statusCode === 409 && b.body.reason === 'payer_changed' && db.docs.length === s0.docs, b.body);
+    b = await call(RB.generateAI, c26());
+    ok('…while the SAME build with no expectVia is the plain 402 quota_exhausted it always was', b.statusCode === 402 && b.body.reason === 'quota_exhausted' && db.docs.length === s0.docs, b.body);
+
+    // 'pass' confirmed and a takeable pass is there: it binds and pays, exactly as S19 — expectVia never blocks the truth.
+    db.passes.push({ id: db.nextPassId++, user_id: UID, store: 'apple', environment: 'Production', store_txn_id: 'T26', employer_key: null, employer_name: null, bound_at: null, created_at: Date.now() });
+    const p26 = db.passes[db.passes.length - 1];
+    s0 = snapshot();
+    b = await call(RB.generateAI, c26({ expectVia: 'pass' }));
+    ok('confirmed as the pass, with a takeable pass → 200, stored, the pass bound to wise and its resume generation stamped, no plan consumption',
+      b.statusCode === 200 && !b.body.cached && db.docs.length === s0.docs + 1 && p26.employer_key === 'wise' && !!p26.resume_generated_at && ent.consumed.length === s0.consumed, { body: b.body, pass: p26 });
+    ent.gate = { allowed: true, via: 'plan', remaining: 5 };
+
+    // 'plan' confirmed and the plan pays: the ordinary build, with expectVia along for the ride.
+    s0 = snapshot();
+    b = await call(RB.generateAI, c26({ expectVia: 'plan', job: { company: 'Monzo', website: 'https://monzo.com' } }));
+    ok('confirmed as the plan, and the plan pays → 200, one AI call, one plan consumption, stored',
+      b.statusCode === 200 && !b.body.cached && ai.calls === s0.ai + 1 && ent.consumed.length === s0.consumed + 1 && db.docs.length === s0.docs + 1, b.body);
+    s0 = snapshot();
+    b = await call(RB.generateAI, c26({ expectVia: 'cache', job: { company: 'Monzo', website: 'https://monzo.com' } }));
+    ok('…and confirmed as a saved document that IS there → the free hit, as always', b.statusCode === 200 && b.body.cached === true && JSON.stringify(snapshot()) === JSON.stringify(s0), b.body);
+
+    // ⚠️ AT THE MOMENT OF PAYMENT: the gate said plan; the re-check under the lock says the FREE allowance would pay now.
+    ent.gateSeq = [{ allowed: true, via: 'plan', remaining: 1 }, { allowed: true, via: 'trial', remaining: 2 }];
+    s0 = snapshot(); const ledger0 = db.ledger.length;
+    b = await call(RB.generateAI, c26({ expectVia: 'plan', job: { company: 'Revolut', website: 'https://revolut.com' } }));
+    ok('⚠️ the plan ended mid-build and the FREE allowance would pay → 409 payer_changed after the AI, nothing consumed, nothing stored',
+      b.statusCode === 409 && b.body.reason === 'payer_changed' && ai.calls === s0.ai + 1 && ent.consumed.length === s0.consumed && db.docs.length === s0.docs && db.ledger.length === ledger0, { body: b.body, ai: ai.calls - s0.ai });
+    ent.gateSeq = [];
+
+    // ⚠️ ON WHAT ACTUALLY PAID: consumeOnSuccess picked the free pool where the plan was confirmed → given back, refused.
+    ent.consumeVia = 'trial';
+    s0 = snapshot(); const ledger1 = db.ledger.length;
+    b = await call(RB.generateAI, c26({ expectVia: 'plan', job: { company: 'N26', website: 'https://n26.com' } }));
+    ok('⚠️ consumeOnSuccess paid from the free pool where the plan was confirmed → 409 payer_changed, the usage row given back by its own id, nothing stored',
+      b.statusCode === 409 && b.body.reason === 'payer_changed' && db.docs.length === s0.docs && db.ledger.length === ledger1 && ent.consumed.length === s0.consumed + 1, { body: b.body, ledger: db.ledger.length - ledger1 });
+    s0 = snapshot();
+    b = await call(RB.generateAI, c26({ job: { company: 'N26', website: 'https://n26.com' } }));
+    ok('…the same build with NO expectVia is stored on the free pool (an older app keeps today\'s behaviour)', b.statusCode === 200 && !b.body.cached && db.docs.length === s0.docs + 1 && db.ledger.length === ledger1 + 1, b.body);
+    ent.consumeVia = 'plan';
+
+    const rbSrc = strip26(fsSync.readFileSync(path.join(ROOT, 'server/controllers/resumeBuilderController.js'), 'utf8'));
+    const iWould = rbSrc.indexOf('passWouldCoverResume(userId, company, req, { boundOnly })');
+    const iBind = rbSrc.indexOf("passCoversGeneration(userId, 'resume', company, req, { boundOnly })");
+    ok('⚠️ the confirmed payer is compared BEFORE passCoversGeneration (the reservation that BINDS), and both refusals are frozen 409s',
+      iWould > 0 && iBind > iWould && /const PAYER_CHANGED = Object\.freeze\(\{\s*status: 409/.test(rbSrc) && /const CACHE_MISS = Object\.freeze\(\{\s*status: 409/.test(rbSrc), { iWould, iBind });
+    ok('…one vocabulary: the lane reads expectVia through downloads.expectedPayerOf and compares through quotaPayerOf / payerWordOf (entitlements says trial, the sheet says free)',
+      /const expectVia = downloads\.expectedPayerOf\(body\);/.test(rbSrc) && /downloads\.quotaPayerOf\(now\) !== expectVia/.test(rbSrc)
+      && /downloads\.namesPayer\(via\) && downloads\.payerWordOf\(via\) !== expectVia/.test(rbSrc)
+      && D.payerWordOf('trial') === 'free' && D.quotaPayerOf({ allowed: false, via: 'plan' }) === null && D.expectedPayerOf({ expectVia: 42 }) === 'unreadable' && D.expectedPayerOf({}) === null);
+  }
 
   console.log('── S13 · home-cards?doc= ──');
   const r404 = await call(RB.homeCards, {}, { doc: '999999' });
@@ -527,11 +696,19 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const rBad = await call(RB.homeCards, {}, { doc: 'abc' });
   ok('a malformed doc id → 404 doc_gone (never the base resume)', rBad.statusCode === 404 && rBad.body.reason === 'doc_gone', rBad.body);
   const before13 = render.previews;
+  // ⚠️ RETARGETED 2026-09-14: home-cards shows a researched row's design RE-RANKED on read (rerankStoredResumeDesign —
+  // the same answer /api/employer-docs/current gives), not the design as stored. It held only by coincidence while
+  // the re-rank reproduced the build's order from the same inputs.
+  const storedDesign13 = JSON.stringify(d1.design);
+  const shown13 = RB.rerankStoredResumeDesign(db.docs.find((d) => d.id === b1.body.docId));
   const c1 = await call(RB.homeCards, {}, { doc: String(b1.body.docId) });
-  const top5 = d1.design.ranked.slice(0, 5).map((r) => r.id);
-  ok('no ids → the design\'s top 5, in ranked order', c1.statusCode === 200 && JSON.stringify(c1.body.cards.map((c) => c.id)) === JSON.stringify(top5), { got: c1.body.cards && c1.body.cards.map((c) => c.id), top5 });
+  const top5 = shown13.ranked.slice(0, 5).map((r) => r.id);
+  ok('no ids → the (re-ranked) design\'s top 5, in ranked order', c1.statusCode === 200 && JSON.stringify(c1.body.cards.map((c) => c.id)) === JSON.stringify(top5), { got: c1.body.cards && c1.body.cards.map((c) => c.id), top5 });
   ok('preferred = ranked[0], sample:false', c1.body.preferred === top5[0] && c1.body.sample === false, c1.body.preferred);
-  ok('each card carries fit (the score) and reason', c1.body.cards.every((c, i) => c.fit === d1.design.ranked[i].score && 'reason' in c && c.image && c.name && c.accent && 'ats' in c), c1.body.cards.map((c) => ({ id: c.id, fit: c.fit })));
+  ok('each card carries fit (the score) and reason', c1.body.cards.every((c, i) => c.fit === shown13.ranked[i].score && 'reason' in c && c.image && c.name && c.accent && 'ats' in c), c1.body.cards.map((c) => ({ id: c.id, fit: c.fit })));
+  ok('⚠️ the re-rank is one answer for every read (rerankStoredDesign kind resume), and is never written back',
+    JSON.stringify(RB.rerankStoredDesign(db.docs.find((d) => d.id === b1.body.docId), { kind: 'resume' })) === JSON.stringify(shown13)
+    && JSON.stringify(db.docs.find((d) => d.id === b1.body.docId).design) === storedDesign13);
   ok('the promoted row (S2b moved updated_at) re-renders under its new key', render.previews - before13 === 5, render.previews - before13);
   const c2 = await call(RB.homeCards, {}, { doc: String(b1.body.docId) });
   ok('a second open renders nothing', render.previews - before13 === 5 && c2.body.cards.length === 5);
@@ -625,7 +802,8 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     }
     const gNone = await call(RB.generationGate, { employer: '(None)', job: { website: 'https://x.test' }, saveTo: 'employer_doc' });
     ok('⚠️ the gate refuses it too, so an auto-start is never told "covered" for a build that only 400s',
-      gNone.statusCode === 400 && gNone.body.reason === 'no_employer' && gNone.body.covered === false, gNone.body);
+      gNone.statusCode === 400 && gNone.body.reason === 'no_employer' && gNone.body.covered === false
+      && gNone.body.usage === null && gNone.body.pass === null, gNone.body);
     ok('⚠️ …and none of it touched the AI, research, the gates, the store or a charge',
       JSON.stringify(snapshot()) === JSON.stringify(s0), snapshot());
   }
@@ -705,6 +883,256 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const blipWithRow = await call(RB.homeCards, {}, {});
     ok('…and with a builder row it never even asks', blipWithRow.body.hasResume === true, blipWithRow.body.hasResume);
     scorer.narrativeFor = realNarr;
+  }
+
+  console.log('── S25 · ⚠️ the employer\'s hiring conventions shape format and emphasis — and nothing about money ──');
+  {
+    ent.consumeVia = 'plan'; ent.gate = { allowed: true, via: 'plan', remaining: 5 };
+    conv.answer = {
+      hq_country: 'Switzerland', role_country: 'Switzerland', employer_type: 'enterprise', sector: 'Industrial automation',
+      ats_vendor: 'Workday', tone: 'formal',
+      cv: { photo: 'expected', length: 'one page', personal_details: 'avoid', date_format: 'MM.YYYY', format: 'ats_plain', notes: ['Swiss employers expect a concise, factual CV with dates for every role.'] },
+      sources: ['https://www.abb.com/careers'],
+    };
+    s0 = snapshot();
+    const convBefore = conv.calls;
+    ai.queue.push(() => JSON.stringify(RESUME({
+      // A sector-phrased title (the conventions name 'Industrial automation'): an unchanged one is the guard's business (S28).
+      personal_info: { full_name: '', email: '', phone: '', location: '', title: 'Backend Engineer — Automation Platforms', linkedin_url: '', portfolio_url: '', nationality: 'Indian', date_of_birth: '1990-01-01' },
+      design: { families: { exec_pro: { score: 95, reason: 'Senior look' }, ats: { score: 70 } }, mode: 'a4', tone: 'Executive', headline: 'Executive Professional suits a senior career' },
+    })));
+    const b25 = await call(RB.generateAI, buildBody({ country: '', job: { company: 'ABB', website: 'https://abb.com' } }));
+    const d25 = db.docs.find((d) => d.id === b25.body.docId);
+    ok('200 stored, ONE resume AI call, ONE conventions call, ONE charge',
+      b25.statusCode === 200 && !!d25 && ai.calls - s0.ai === 1 && conv.calls - convBefore === 1 && ent.consumed.length - s0.consumed === 1,
+      { status: b25.statusCode, ai: ai.calls - s0.ai, conv: conv.calls - convBefore, charged: ent.consumed.length - s0.consumed });
+    const p25 = ai.prompts[ai.prompts.length - 1];
+    ok('the prompt carries the HIRING CONVENTIONS facts and their never-invent rule',
+      /=== HOW ABB HIRES \(web research — may be incomplete or wrong\) ===/.test(p25) && /NEVER invent anything to satisfy a convention/.test(p25) && /Workday/.test(p25), p25.slice(p25.indexOf('=== HOW'), p25.indexOf('=== HOW') + 300));
+    ok('…and the FORMATTING rules: no personal details, one page without dropping an entry, dates, plain ATS text',
+      /=== FORMATTING FOR ABB \(from its hiring conventions\) ===/.test(p25) && /leave personal_info\.date_of_birth and personal_info\.nationality as ""/.test(p25)
+      && /Never drop an entry/.test(p25) && /as MM\.YYYY/.test(p25) && /ABB is known to screen applications with Workday/.test(p25)
+      && /never add, infer or embellish a fact/.test(p25));
+    // Contract 5: the detail level comes from the conventions — one page = at most 3 highlights per role and a summary of
+    // at most 3 sentences; and the WRITTEN FOR block names the conventions' sector, not the researcher's industry.
+    ok('…and the WRITTEN FOR block takes the conventions\' sector and the one-page detail level',
+      /=== WRITTEN FOR ABB: THE TOP LINES ===/.test(p25) && /industrial automation/.test(p25) && !/e-commerce and cloud computing/.test(p25)
+      && /at most 3 highlights per role/.test(p25) && /a summary of at most 3 sentences/.test(p25), p25.slice(p25.indexOf('=== WRITTEN FOR'), p25.indexOf('=== WRITTEN FOR') + 700));
+    ok('⚠️ personalDetails "avoid" is ENFORCED in code: the stored payload has no date of birth or nationality',
+      d25 && d25.payload.personal_info.date_of_birth === '' && d25.payload.personal_info.nationality === '', d25 && d25.payload.personal_info);
+    ok('⚠️ a one-page convention decides the page mode (the AI said a4)', d25 && d25.design && d25.design.mode === 'onepage', d25 && d25.design && d25.design.mode);
+    ok('the design leads with an ATS-safe single column for a Workday employer, not the AI\'s exec_pro favourite',
+      d25 && d25.design && !/^exec_pro/.test(d25.design.ranked[0].id) && ['ats', 'mono', 'startup'].some((f) => d25.design.ranked[0].id.startsWith(f)), d25 && d25.design.ranked.slice(0, 4));
+    ok('the stored design can be re-ranked later for free: aiFamilies + conventionsSummary (≤120)',
+      d25 && d25.design.aiFamilies && typeof d25.design.aiFamilies === 'object' && d25.design.aiFamilies.exec_pro && Number.isFinite(d25.design.aiFamilies.exec_pro.score)
+      && typeof d25.design.conventionsSummary === 'string' && d25.design.conventionsSummary.length > 0 && d25.design.conventionsSummary.length <= 120, d25 && d25.design && { ai: d25.design.aiFamilies, sum: d25.design.conventionsSummary });
+    ok('⚠️ the headline never praises a design that does not lead', d25 && !/Executive Professional/.test(String(d25.design.headline)), d25 && d25.design.headline);
+    ok('the stored research carries the conventions (so a read re-ranks from the row alone)', d25 && d25.research && d25.research.conventions && d25.research.conventions.atsVendor === 'Workday', d25 && d25.research);
+    // The same inputs again: a free hit — conventions are not a fingerprint input, so they can never bill a Refresh.
+    s0 = snapshot();
+    const b25b = await call(RB.generateAI, buildBody({ country: '', clientBuildId: 'cb-25b', job: { company: 'ABB', website: 'https://abb.com' } }));
+    ok('⚠️ the same build again is a FREE hit (no AI, no research, no charge)', b25b.body.cached === true && JSON.stringify(snapshot()) === JSON.stringify(s0), b25b.body);
+    conv.answer = null;
+  }
+
+  console.log('── S27 · ⚠️ THE EMPLOYER\'S BRAND: stored on the document, and in EVERY doc-mode render (2026-09-15) ──');
+  {
+    // The product owner's ask: a resume that looks the same for every employer is not employer-specific. The website's
+    // own colour and font (brandExtract, contract 1) win over the researcher's; the effective pair is stored as
+    // design.brand (contract 4) and handed to home-cards ?doc, preview-templates docId, generate-pdf docId and
+    // generate-docx docId — with the brand hashed into every thumb cache key, so a changed brand is never served in
+    // yesterday's colour. The base (non-doc) paths pass no brand at all. Nothing here touches money.
+    ent.consumeVia = 'plan'; ent.gate = { allowed: true, via: 'plan', remaining: 5 }; ent.gateSeq = [];
+    const SITE = { primary: '#112231', secondary: '#ff4f40', font: { family: 'Space Grotesk', google: true }, from: { primary: 'theme-color', font: 'body' }, fetchedAt: new Date().toISOString() };
+    const WEB_BRAND = { accent: '#112231', font: { family: 'Space Grotesk', google: true } };
+    brandSite.answer = (domain) => (domain === 'brandco-test.com' ? SITE : null);
+    const site0 = brandSite.calls;
+    s0 = snapshot(); render.previewOpts.length = 0;
+    const b27 = await call(RB.generateAI, buildBody({ job: { company: 'BrandCo', website: 'https://brandco-test.com' } }));
+    const d27 = db.docs.find((d) => d.id === b27.body.docId);
+    ok('200 stored, one AI call, one charge', b27.statusCode === 200 && !!d27 && ai.calls - s0.ai === 1 && ent.consumed.length - s0.consumed === 1, b27.body);
+    ok('the website was read ONCE for the employer\'s domain', brandSite.calls - site0 === 1 && brandSite.domains[brandSite.domains.length - 1] === 'brandco-test.com', brandSite.domains.slice(-2));
+    ok('⚠️ design.brand = the WEBSITE\'s colour and font — over the researcher\'s #ff9900 / Amazon Ember',
+      d27 && d27.design && JSON.stringify(d27.design.brand) === JSON.stringify(WEB_BRAND), d27 && d27.design && d27.design.brand);
+    ok('…the stored research carries the brand it came from, without the row\'s brandAt bookkeeping',
+      d27 && d27.research && d27.research.brand && d27.research.brand.primary === '#112231' && d27.research.brand.font.family === 'Space Grotesk' && !('brandAt' in d27.research), d27 && d27.research && d27.research.brand);
+    ok('…and the design\'s legacy brandColor is the same accent (one colour for the tint and the pages)', d27 && d27.design.brandColor === '#112231', d27 && d27.design.brandColor);
+    ok('the pre-render painted the top designs with that brand', render.previewOpts.length >= 1 && render.previewOpts.every((p) => JSON.stringify(p.opts.brand) === JSON.stringify(WEB_BRAND)), render.previewOpts.map((p) => p.opts.brand));
+    ok('docBrandOf reads the stored brand back as one answer; brandKeyOf is stable, case-blind and never "plain" for it',
+      JSON.stringify(RB.docBrandOf(d27)) === JSON.stringify(WEB_BRAND) && RB.brandKeyOf(WEB_BRAND) === RB.brandKeyOf({ accent: '#112231', font: { family: 'SPACE GROTESK', google: true } })
+      && /^[0-9a-f]{12}$/.test(RB.brandKeyOf(WEB_BRAND)) && RB.brandKeyOf(null) === 'plain' && RB.brandKeyOf({}) === 'plain'
+      && RB.brandKeyOf(WEB_BRAND) !== RB.brandKeyOf({ accent: '#112231', font: null }) && RB.brandKeyOf(WEB_BRAND) !== RB.brandKeyOf({ accent: '#ff4f40', font: WEB_BRAND.font }),
+      { key: RB.brandKeyOf(WEB_BRAND), read: RB.docBrandOf(d27) });
+    ok('/current and GET /:id answer the same brand on the re-ranked design (rerankStoredDesign attaches it)',
+      JSON.stringify(RB.rerankStoredDesign(d27, { kind: 'resume' }).brand) === JSON.stringify(WEB_BRAND) && JSON.stringify(RB.rerankStoredResumeDesign(d27).brand) === JSON.stringify(WEB_BRAND));
+    // The same build again: a free hit, and no second website read.
+    s0 = snapshot(); const site1 = brandSite.calls;
+    const b27b = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-27b', job: { company: 'BrandCo', website: 'https://brandco-test.com' } }));
+    ok('the same build again is a FREE hit with no website read', b27b.body.cached === true && JSON.stringify(snapshot()) === JSON.stringify(s0) && brandSite.calls === site1, b27b.body);
+
+    // home-cards ?doc=: every render carries the brand; every card's accent IS the brand accent (the pages are recoloured
+    // to it, so the catalogue swatch would promise a colour that never arrives); a changed brand misses the cache.
+    render.previewOpts.length = 0;
+    const hc = await call(RB.homeCards, {}, { doc: String(d27.id) });
+    ok('home-cards ?doc: the un-pre-rendered cards are rendered WITH the brand', hc.statusCode === 200 && hc.body.cards.length === 5 && render.previewOpts.length >= 1 && render.previewOpts.every((p) => JSON.stringify(p.opts.brand) === JSON.stringify(WEB_BRAND)), render.previewOpts.map((p) => p.opts.brand));
+    ok('⚠️ …and every card wears the brand accent, not the catalogue swatch', hc.body.cards.every((c) => c.accent === '#112231'), hc.body.cards.map((c) => c.accent));
+    const cardsBefore = render.previews;
+    await call(RB.homeCards, {}, { doc: String(d27.id) });
+    ok('a second open renders nothing (cache hit under the brand key)', render.previews === cardsBefore, render.previews - cardsBefore);
+    const namesBefore = new Set(fsSync.readdirSync(THUMB_DIR));
+    const brandWas = d27.design.brand;
+    d27.design = { ...d27.design, brand: { accent: '#00857c', font: null } };
+    render.previewOpts.length = 0;
+    const hc2 = await call(RB.homeCards, {}, { doc: String(d27.id) });
+    const namesAfter = fsSync.readdirSync(THUMB_DIR).filter((n) => !namesBefore.has(n));
+    ok('⚠️ a CHANGED brand misses the thumb cache: all 5 re-rendered in the new colour, under NEW cache names',
+      hc2.statusCode === 200 && render.previewOpts.length >= 1 && render.previewOpts.every((p) => JSON.stringify(p.opts.brand) === JSON.stringify({ accent: '#00857c', font: null }))
+      && hc2.body.cards.every((c) => c.accent === '#00857c') && namesAfter.length === 5, { rendered: render.previewOpts.map((p) => p.ids), fresh: namesAfter.length });
+    d27.design = { ...d27.design, brand: brandWas };
+
+    // preview-templates docId: the brand in the opts and in the cache key.
+    render.previewOpts.length = 0;
+    const pt = await call(RB.previewTemplates, { ids: ['azure', 'mono'], docId: d27.id });
+    ok('preview-templates docId: rendered WITH the brand', pt.statusCode === 200 && pt.body.previews.length === 2 && render.previewOpts.length === 1 && JSON.stringify(render.previewOpts[0].opts.brand) === JSON.stringify(WEB_BRAND), render.previewOpts.map((p) => p.opts.brand));
+    const ptBefore = render.previews;
+    await call(RB.previewTemplates, { ids: ['azure', 'mono'], docId: d27.id });
+    ok('…a second request is a cache hit', render.previews === ptBefore);
+    d27.design = { ...d27.design, brand: { accent: '#00857c', font: null } };
+    render.previewOpts.length = 0;
+    await call(RB.previewTemplates, { ids: ['azure', 'mono'], docId: d27.id });
+    ok('⚠️ …and a changed brand misses it (the brand is part of the preview key)', render.previewOpts.length === 1 && render.previewOpts[0].opts.brand.accent === '#00857c', render.previewOpts.map((p) => p.opts.brand));
+    d27.design = { ...d27.design, brand: brandWas };
+    render.previewOpts.length = 0;
+    await call(RB.previewTemplates, { ids: ['azure'] });
+    ok('the BASE preview path passes no brand', render.previewOpts.length === 0 || render.previewOpts.every((p) => p.opts.brand == null), render.previewOpts.map((p) => p.opts.brand));
+
+    // generate-pdf / generate-docx with a docId: the brand in the opts; the base paths pass none.
+    ent.sub = { plan_key: 'pro' };
+    render.pdfOpts = null; render.docxOpts = null;
+    const pdf27 = await call(RB.generatePDF, { template: 'azure', docId: d27.id });
+    ok('generate-pdf docId: renderPdf gets opts.brand = the document\'s brand', pdf27.statusCode === 200 && render.pdfOpts && JSON.stringify(render.pdfOpts.brand) === JSON.stringify(WEB_BRAND), render.pdfOpts && render.pdfOpts.brand);
+    const docx27 = await call(RB.generateDocx, { template: 'azure', docId: d27.id });
+    ok('generate-docx docId: buildResumeDocx gets opts.brand = the document\'s brand', docx27.statusCode === 200 && render.docxOpts && JSON.stringify(render.docxOpts.brand) === JSON.stringify(WEB_BRAND), render.docxOpts && render.docxOpts.brand);
+    render.pdfOpts = null; render.docxOpts = null;
+    await call(RB.generatePDF, { template: 'azure', employer: 'Acme' });
+    await call(RB.generateDocx, { template: 'ats', employer: 'Acme' });
+    ok('the base pdf/docx paths pass no brand', render.pdfOpts && render.pdfOpts.brand == null && render.docxOpts && render.docxOpts.brand == null, { pdf: render.pdfOpts && render.pdfOpts.brand, docx: render.docxOpts && render.docxOpts.brand });
+    ent.sub = null;
+
+    // A document stored BEFORE brands existed: no design.brand — the research's researcher colour/font stand in, and a
+    // stringified design column is read as well as an object.
+    const old = { ...d27, id: 990027, design: JSON.stringify({ ...d27.design, brand: undefined }), research: { brandColor: '#0e7490', fontName: 'Inter' } };
+    ok('an older document renders in its research\'s colour (font not google: never verified)',
+      JSON.stringify(RB.docBrandOf(old)) === JSON.stringify({ accent: '#0e7490', font: { family: 'Inter', google: false } }), RB.docBrandOf(old));
+    ok('…the researcher\'s invented default (#262633 / Lato) is never a brand', RB.docBrandOf({ design: null, research: { brandColor: '#262633', fontName: 'Lato' } }) === null);
+    ok('docBrandOf is null-safe and shape-checked', RB.docBrandOf(null) === null && RB.docBrandOf({ design: { brand: { accent: 'red', font: { family: '' } } }, research: null }) === null);
+    brandSite.answer = null;
+  }
+
+  console.log('── S28 · ⚠️ THE SAMENESS GUARD: a generic draft earns ONE corrective pass, never a third call (2026-09-15) ──');
+  {
+    // Contract 5: after the model answers, the summary's token-Jaccard similarity to the base summary and the title are
+    // compared; summary similarity > 0.8 OR (sector known AND title unchanged) = generic → ONE corrective pass with an
+    // explicit "rewrite the title and the summary opening for <sector>" instruction, the similarity logged before and
+    // after. It is folded into the existing single pass (placeholders, leaks), so a build never pays for more than one
+    // extra model call. The FIRST draft's design stands across the pass.
+    ent.consumeVia = 'plan'; ent.gate = { allowed: true, via: 'plan', remaining: 5 }; ent.gateSeq = []; conv.answer = null;
+    const logs = [];
+    const realLog = console.log;
+    const capture = async (fn) => { logs.length = 0; console.log = (...a) => { logs.push(a.map(String).join(' ')); }; try { return await fn(); } finally { console.log = realLog; } };
+
+    // tokenJaccard itself.
+    const base = 'Backend engineer with **8 years** building payment systems, ledgers and high-throughput APIs for fintech products. Led migrations of monolith services to event-driven microservices on AWS. Mentors engineers and owns reliability for the payments platform.';
+    const moved = 'Led migrations of monolith services to event-driven microservices on AWS. Backend engineer with 8 years building payment systems, ledgers and high-throughput APIs for fintech products. Owns reliability for the payments platform and mentors engineers.';
+    const rewritten = 'Payments-platform engineer suited to e-commerce and cloud computing: eight years designing ledger services, scalable checkout APIs and event-driven AWS infrastructure that keeps transactions consistent at peak volume. Reduced incident load through ownership of reliability across the platform.';
+    ok('tokenJaccard: identical = 1; the base with a sentence moved > 0.9; a sector rewrite < 0.6; unrelated ≈ 0',
+      RB.tokenJaccard(base, base) === 1 && RB.tokenJaccard(base, moved) > 0.9 && RB.tokenJaccard(base, rewritten) < 0.6
+      && RB.tokenJaccard(base, 'Registered nurse specialising in paediatric intensive care.') < 0.05,
+      { moved: RB.tokenJaccard(base, moved), rewritten: RB.tokenJaccard(base, rewritten) });
+    ok('tokenJaccard: empty vs empty is 1, empty vs text 0; case, punctuation, bold and ≤3-char tokens do not count',
+      RB.tokenJaccard('', '') === 1 && RB.tokenJaccard('', base) === 0 && RB.tokenJaccard(base, '') === 0
+      && RB.tokenJaccard('**Payments** engineer, AWS.', 'payments ENGINEER (aws)') === 1 && RB.tokenJaccard('ledger the', 'ledger for') === 1);
+
+    // (a) sector known (the researcher's industry), the title unchanged → generic → the pass, logged before and after.
+    s0 = snapshot(); stages.length = 0;
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' }, design: { families: { elegant: { score: 97, reason: 'first' } }, mode: 'onepage', tone: 'x', headline: 'first' } })));
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer — Cloud Payment Platforms' }, design: { families: { compact: { score: 97, reason: 'second' } }, mode: 'a4', tone: 'y', headline: 'second' } })));
+    const b28 = await capture(() => call(RB.generateAI, buildBody({ job: { company: 'Sameness Co', website: 'https://sameness-test.com' } })));
+    const d28 = db.docs.find((d) => d.id === b28.body.docId);
+    ok('200 stored, exactly TWO AI calls (draft + the one pass), ONE charge', b28.statusCode === 200 && !!d28 && ai.calls - s0.ai === 2 && ent.consumed.length - s0.consumed === 1, { status: b28.statusCode, ai: ai.calls - s0.ai });
+    const fix28 = ai.prompts[ai.prompts.length - 1];
+    ok('the correction names the rule: the unchanged title, and "Rewrite the title and the summary opening for <sector>"',
+      /=== ⚠️ CORRECTION/.test(fix28) && /the title is the candidate's current title, unchanged/.test(fix28)
+      && /Rewrite the title and the summary opening for E-commerce and cloud computing/.test(fix28) && /Sameness Co's name stays out/.test(fix28),
+      fix28.slice(fix28.indexOf('CORRECTION'), fix28.indexOf('CORRECTION') + 500));
+    ok('the stored title is the corrected one', d28 && d28.payload.personal_info.title === 'Backend Engineer — Cloud Payment Platforms', d28 && d28.payload.personal_info.title);
+    ok('⚠️ the FIRST draft\'s design stands across the pass (the pass corrects wording, not the employer reading)',
+      d28 && d28.design && d28.design.aiFamilies && d28.design.aiFamilies.elegant && !d28.design.aiFamilies.compact && d28.design.mode === 'onepage', d28 && d28.design && { ai: d28.design.aiFamilies, mode: d28.design.mode });
+    const polish = stages.find((s) => s.stage === 'polishing');
+    ok('a "polishing" stage at 70, labelled for the employer when sameness is the only problem, between writing and designing',
+      polish && polish.pct === 70 && polish.label === 'Sharpening it for Sameness Co'
+      && stages.map((s) => s.stage).join() === 'reading,researching,writing,polishing,designing,saving,pages', stages.map((s) => [s.stage, s.pct, s.label]));
+    ok('the similarity is logged BEFORE the pass (title unchanged) and AFTER it (title rewritten)',
+      logs.some((l) => /employer doc for "Sameness Co" came back generic \(summary similarity n\/a, title unchanged\) — one corrective pass for E-commerce and cloud computing/.test(l))
+      && logs.some((l) => /after the corrective pass: summary similarity n\/a, title rewritten$/.test(l)), logs.filter((l) => /Sameness Co/.test(l)));
+
+    // (b) a SUMMARY in the base material, echoed back with a sentence moved → similarity > 0.8 → generic by similarity alone.
+    const withSummary = BASE_TEXT.replace('\n\nEXPERIENCE', `\n\nSUMMARY\n${base}\n\nEXPERIENCE`);
+    s0 = snapshot(); stages.length = 0;
+    ai.queue.push(() => JSON.stringify(RESUME({ summary: `${moved}\n• Built ledgers\n• Scaled APIs\n• Led migrations` })));
+    ai.queue.push(() => JSON.stringify(RESUME({ summary: `${rewritten}\n• Built ledgers\n• Scaled APIs\n• Led migrations` })));
+    const b28b = await capture(() => call(RB.generateAI, buildBody({ rawText: withSummary, job: { company: 'Echo Co', website: 'https://echo-test.com' } })));
+    const d28b = db.docs.find((d) => d.id === b28b.body.docId);
+    ok('an echoed summary (> 0.8 similar) with a rewritten title is still generic → two AI calls, stored corrected',
+      b28b.statusCode === 200 && ai.calls - s0.ai === 2 && d28b && d28b.payload.summary.startsWith('Payments-platform engineer suited to'), { ai: ai.calls - s0.ai, summary: d28b && d28b.payload.summary.slice(0, 60) });
+    const fix28b = ai.prompts[ai.prompts.length - 1];
+    // (the moved summary keeps every token — 8 is a ≤3-char token and drops on both sides — so it scores 1.00)
+    ok('the correction quotes the similarity as a percentage, not the title', /the summary is (9\d|100)% the same as the base resume's/.test(fix28b) && !/current title, unchanged/.test(fix28b), fix28b.slice(fix28b.indexOf('CORRECTION'), fix28b.indexOf('CORRECTION') + 400));
+    ok('logged: similarity ≥ 0.9 before, well under 0.8 after',
+      logs.some((l) => /"Echo Co" came back generic \(summary similarity (0\.9\d|1\.00), title rewritten\)/.test(l))
+      && logs.some((l) => /"Echo Co" after the corrective pass: summary similarity 0\.[0-5]\d, title rewritten$/.test(l)), logs.filter((l) => /Echo Co/.test(l)));
+
+    // (c) the pass answers still generic → delivered as written, still ONE pass, never a third call.
+    s0 = snapshot();
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' } })));
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' } })));
+    const b28c = await capture(() => call(RB.generateAI, buildBody({ job: { company: 'Stubborn Co', website: 'https://stubborn-test.com' } })));
+    const d28c = db.docs.find((d) => d.id === b28c.body.docId);
+    ok('⚠️ still generic after the pass → 200, stored as written, EXACTLY two AI calls (never a third)',
+      b28c.statusCode === 200 && !!d28c && ai.calls - s0.ai === 2 && d28c.payload.personal_info.title === 'Backend Engineer', { ai: ai.calls - s0.ai, title: d28c && d28c.payload.personal_info.title });
+    ok('…and says so in the log', logs.some((l) => /"Stubborn Co" after the corrective pass: summary similarity n\/a, title unchanged — still generic, delivered as written/.test(l)), logs.filter((l) => /Stubborn Co/.test(l)));
+
+    // (d) no sector known (the researcher names no industry, no conventions): an unchanged title is NOT evidence.
+    research.industry = null;
+    s0 = snapshot(); stages.length = 0;
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' } })));
+    const b28d = await capture(() => call(RB.generateAI, buildBody({ job: { company: 'Blank Sector Co', website: 'https://blank-sector-test.com' } })));
+    ok('no sector → an unchanged title is not generic: ONE AI call, no polishing stage',
+      b28d.statusCode === 200 && ai.calls - s0.ai === 1 && !stages.some((s) => s.stage === 'polishing') && !logs.some((l) => /came back generic/.test(l)), { ai: ai.calls - s0.ai, stages: stages.map((s) => s.stage) });
+    research.industry = 'E-commerce and cloud computing';
+
+    // (e) the conventions' sector beats the researcher's industry in the correction.
+    conv.answer = { employer_type: 'enterprise', sector: 'Industrial automation', cv: { length: 'flexible' } };
+    s0 = snapshot();
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' } })));
+    ai.queue.push(() => JSON.stringify(RESUME()));
+    const b28e = await capture(() => call(RB.generateAI, buildBody({ job: { company: 'Conv Sector Co', website: 'https://conv-sector-test.com' } })));
+    ok('the correction is phrased for the conventions\' sector', b28e.statusCode === 200 && ai.calls - s0.ai === 2 && /Rewrite the title and the summary opening for industrial automation/.test(ai.prompts[ai.prompts.length - 1]), ai.calls - s0.ai);
+    conv.answer = null;
+
+    // (f) placeholders AND a generic title: still ONE pass for both (folded), the label the generic one loses.
+    s0 = snapshot(); stages.length = 0;
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' }, experience: [{ company: 'PayCo', role: 'Senior Engineer', start_date: '2018', end_date: 'Present', highlights: ['Cut latency by [X%]'] }] })));
+    ai.queue.push(() => JSON.stringify(RESUME()));
+    const b28f = await capture(() => call(RB.generateAI, buildBody({ job: { company: 'Folded Co', website: 'https://folded-test.com' } })));
+    const fix28f = ai.prompts[ai.prompts.length - 1];
+    ok('⚠️ placeholders + generic = ONE pass naming both, labelled "Polishing the wording"',
+      b28f.statusCode === 200 && ai.calls - s0.ai === 2 && /placeholder text/.test(fix28f) && /Rewrite the title and the summary opening/.test(fix28f)
+      && stages.find((s) => s.stage === 'polishing').label === 'Polishing the wording', { ai: ai.calls - s0.ai, label: (stages.find((s) => s.stage === 'polishing') || {}).label });
+    const src28 = fsSync.readFileSync(path.join(ROOT, 'server/controllers/resumeBuilderController.js'), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    ok('⚠️ the guard\'s threshold is 0.8 and it is ONE pass in code: correctDocDraft is called once in the lane, inside the correction budget',
+      /DOC_SUMMARY_SAME_MAX = 0\.8\b/.test(src28) && (src28.match(/await correctDocDraft\(/g) || []).length === 1 && /Date\.now\(\) - startedAt < DOC_LANE_CORRECTION_BUDGET_MS/.test(src28),
+      (src28.match(/await correctDocDraft\(/g) || []).length);
   }
 
   // ── tidy ─────────────────────────────────────────────────────────────────────────────────────

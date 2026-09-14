@@ -28,6 +28,9 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   trial: { label: 'Free plan', color: T.cyan },
   plan: { label: 'Plan', color: T.emerald },
   credits: { label: 'Credits', color: T.amber },   // history only — rows from before 2026-09-13
+  // The one-time pass. Pass generations are not written to usage_ledger today (downloads.claimGeneration
+  // stamps the pass row instead); listed so that if they ever are, the pill says what paid.
+  pass: { label: 'One-time pass', color: '#7C6BFF' },
 };
 // A source this screen does not know yet. ⚠️ Not the credits pill: that would tell a user a generation
 // was paid in credits, which cannot happen since 2026-09-13.
@@ -102,7 +105,7 @@ export default function UsageScreen() {
             <Text style={s.planName}>
               {sub ? sub.label : trialActive ? (status?.trial?.label || 'Free plan') : trial?.blocked === 'device_trial_used' ? 'Free allowance already used on this device' : 'No plan'}
             </Text>
-            {sub ? <Text style={s.planSub}>Renews {when(sub.periodEnd)}</Text>
+            {sub ? <Text style={s.planSub}>Renews {when(sub.periodEnd)}{quotaTotals ? ` · ${quotaTotals.resumes} tailored resumes + ${quotaTotals.letters} cover letters a month` : ''}</Text>
               : trialActive && freeUsedUp
                 ? <Text style={s.planSub}>All used — pick a plan to keep generating</Text>
               : trialActive && oneTime
@@ -113,7 +116,7 @@ export default function UsageScreen() {
         </View>
         {quotaTotals ? (
           <>
-            <QuotaBar label="Resume generations" used={status!.used.resumes} total={totalOf(quotaTotals.resumes, status!.used.resumes, status!.remaining.resumes)} color="#A78BFA" />
+            <QuotaBar label="Tailored resumes" used={status!.used.resumes} total={totalOf(quotaTotals.resumes, status!.used.resumes, status!.remaining.resumes)} color="#A78BFA" />
             <QuotaBar label="Cover letters" used={status!.used.letters} total={totalOf(quotaTotals.letters, status!.used.letters, status!.remaining.letters)} color="#22D3EE" />
           </>
         ) : null}
@@ -131,9 +134,10 @@ export default function UsageScreen() {
       {/* ── What's free ── */}
       <View style={s.freeRow}>
         <Ionicons name="gift-outline" size={15} color={T.emerald} />
-        {/* ⚠️ Downloads are NOT in this list: they need a plan's download allowance or a one-time
-            single-download pass (the Free plan includes none). Saying they were free sent users into a paywall. */}
-        <Text style={s.freeText}>Job search, fetching jobs, Auto Fill, translate and applying are all free. Plans count resume generations and cover letters; downloads need a paid plan or a single-download pass.</Text>
+        {/* ⚠️ Downloads are NOT in this list: they need a plan's download allowance or the one-time pass
+            (the Free plan includes none). Saying they were free sent users into a paywall. No price here:
+            the pass's price is the store's localized string, shown on Plans and on the confirm sheet. */}
+        <Text style={s.freeText}>Job search, fetching jobs, Auto Fill, translate and applying are all free. Plans count tailored resumes and cover letters, and include downloads. Just need one employer? The one-time pass covers one tailored resume, one cover letter and their downloads.</Text>
       </View>
 
       {/* ── Ledger ── */}
@@ -145,7 +149,7 @@ export default function UsageScreen() {
         const isLetter = it.kind === 'cover_letter';
         const title = isLetter
           ? (it.detail?.position ? `${it.detail.position}` : 'Cover letter')
-          : (it.detail?.name ? `Resume — ${it.detail.name}` : 'Resume generation');
+          : (it.detail?.name ? `Resume — ${it.detail.name}` : 'Tailored resume');
         const sub2 = isLetter ? (it.detail?.companyName || it.detail?.recipientEmail || '') : '';
         return (
           <View key={it.id} style={s.row}>

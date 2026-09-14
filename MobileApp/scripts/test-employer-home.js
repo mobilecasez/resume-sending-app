@@ -100,6 +100,9 @@ const FILES = {
   'employerDocs.ts': docSvcSrc, 'homeBuilds.ts': buildsSrc, 'BuildingOverlay.tsx': overlaySrc,
   // The letter editor a letter page's Customize opens (2026-09-13).
   '(cover-letter)/edit.tsx': R('../app/(cover-letter)/edit.tsx'),
+  // The question before any spend, and the hint that points at the Tailor button (2026-09-14).
+  'GenerateConfirmSheet.tsx': R('../components/employer-home/GenerateConfirmSheet.tsx'),
+  'TailorHint.tsx': R('../components/employer-home/TailorHint.tsx'),
 };
 
 console.log('── every file parses (a JSX slip here white-screens the app) ──');
@@ -964,9 +967,31 @@ ok('…re-asked at the moment of payment, because the AI minute sits in between'
   const worded = lits.filter((l) => /credit/i.test(l) && l !== "'credits'");
   ok('⚠️ no credits wording in anything useHomeBuilds can show (the \'credits\' gate value only)', lits.length > 30 && worded.length === 0, worded);
 }
+// ⚠️ RETARGETED 2026-09-14: the request path used to read `if (gate.covered) { runBuild(final, gate.via, true, …` —
+// every covered answer started at once. Now ONLY a cache hit (free) starts without a question; plan / free / pass go
+// to the confirm sheet, whose Continue is the one runBuild for them (behaviour: test-home-builds.js 1, C1-C28).
 ok('⚠️ an unknown gate answer asks first, never auto-builds',
   /gate\.reason === 'unknown'/.test(kHookC) && /runBuild\(latest\(\), 'unknown', false,/.test(kHookC)
-  && /if \(gate\.covered\) \{ runBuild\(final, gate\.via, true,/.test(kHookC));
+  && /if \(gate\.covered && gate\.via === 'cache'\) \{ runBuild\(final, gate\.via, true,/.test(kHookC)
+  && !/if \(gate\.covered\) \{ runBuild\(/.test(kHookC));
+{
+  // ⚠️ THE ONLY runBuild CALLS: a cache hit (request + drain), a Continue already tapped for the SAME pool (drain),
+  // the unread-gate dialog's two sends, the sheet's Continue, and Generate once's landing on 'cache' | 'pass'.
+  const calls = (kHookC.match(/runBuild\((?:[^()]|\([^()]*\))*?,/g) || []).filter((c) => !/^runBuild\(\s*final: HomeBuildJob/.test(c));
+  const body = (n) => fnBodyOf(kHookC, n);
+  ok('⚠️ covered answers never auto-start: every runBuild site is a cache hit, an answered question, or the pass just bought',
+    calls.length === 8
+    && /if \(gate\.covered && confirmedCovers\(q\.consent, gate\.via\)\)/.test(body('drain'))
+    && /runBuild\(job, pool, true, \{ show: a\.show, consent: \{ via: 'confirmed', pool \}/.test(body('sheetContinue'))
+    && /if \(gate\.covered && \(gate\.via === 'cache' \|\| gate\.via === 'pass'\)\) \{\s*closeSheet\(id\);[\s\S]{0,160}runBuild\(job, gate\.via, true,/.test(kHookC)
+    && /c\.pool === via/.test(body('confirmedCovers')) && /via !== 'cache'/.test(body('confirmedCovers')), calls);
+  ok('⚠️ Generate once buys the pass for THIS employer, and only on a gate that still says nothing is left',
+    /buyDownloadPass\(a0\.job\.company\)/.test(body('sheetBuyOnce'))
+    && /pre\.gate\.covered === false && pre\.gate\.via === null && pre\.gate\.reason === 'quota_exhausted'/.test(body('sheetBuyOnce'))
+    && (kHookC.match(/buyDownloadPass\(/g) || []).length === 1);
+  ok('the hook exposes the sheet (contract 5)', /confirm: ConfirmSheetView;/.test(kHookC)
+    && /onContinue: \(\) => sheetContinue\(id\)/.test(kHookC) && /onBuyOnce: \(\) => \{ sheetBuyOnce\(id\)/.test(kHookC));
+}
 
 console.log('── ⚠️ ONE BUILD, ONE CHARGE — ACROSS A LOST RESPONSE AND A RETRY ──');
 // A dropped connection just after the server created the job left it running and charging while the app
@@ -1651,6 +1676,14 @@ console.log('── ⚠️ THE DEVICE RIDES WITH EVERY HOME REQUEST, AND IS REPO
     && /import \{[^}]*\bdeviceHeaders\b[^}]*\} from '\.\/employerDocs'|import \{[^}]*\bdeviceHeaders\b[^}]*\} from '\.\/employerHomeService';/.test(docSvcSrc)
     && /export async function deviceHeaders\(\)/.test(svcC) && /'x-device-id': deviceIdMemo/.test(svcC) && /from '\.\/deviceId'/.test(svc));
 
+  // ⚠️ CONTRACT C3 (2026-09-15): x-store-env rides with every Home request too. TestFlight StoreKit is always Sandbox, so a
+  // pass bought from Home's sheet is written in Sandbox — and a gate or a build that names no environment is read as
+  // Production, where that pass does not exist: the user pays and the sheet goes on saying nothing is left.
+  ok('⚠️ C3: every Authorization header object in homeAddEmployer also spreads storeEnvHeaders(), which awaits storeEnv\'s header and never throws',
+    (addSvcC.match(/\{ Authorization: `Bearer \$\{t\}`[^}]*\}/g) || []).length >= 2
+    && (addSvcC.match(/\{ Authorization: `Bearer \$\{t\}`[^}]*\}/g) || []).every((h) => /\.\.\.\(await storeEnvHeaders\(\)\)/.test(h))
+    && /async function storeEnvHeaders\(\)[\s\S]{0,220}\.storeEnvHeader\(\); \}\s*catch \{ return \{\}; \}/.test(addSvcC), addSvcC.match(/async function storeEnvHeaders[\s\S]{0,260}/)?.[0]);
+
   // Behaviour: the real helper, the real request code, a fake fetch that records the headers.
   const sent = [];
   const realFetch = global.fetch;
@@ -1659,7 +1692,9 @@ console.log('── ⚠️ THE DEVICE RIDES WITH EVERY HOME REQUEST, AND IS REPO
   let ehs = null, docs = null, add = null;
   try {
     ehs = load(svc, (id) => (id === './deviceId' ? fakeDevice : /secure-store/.test(id) ? secure : /async-storage/.test(id) ? asyncStore : /config/.test(id) ? { API_BASE: 'https://api.test' } : {}));
-    const shared = (id) => (/employerHomeService/.test(id) ? ehs : /secure-store/.test(id) ? secure : /async-storage/.test(id) ? asyncStore : /config/.test(id) ? { API_BASE: 'https://api.test' } : null);
+    // storeEnv answers Sandbox for the whole phase (C3): the header must reach the wire beside the device and the token.
+    const fakeStoreEnv = { storeEnvHeader: async () => ({ 'x-store-env': 'Sandbox' }) };
+    const shared = (id) => (/employerHomeService/.test(id) ? ehs : /storeEnv/.test(id) ? fakeStoreEnv : /secure-store/.test(id) ? secure : /async-storage/.test(id) ? asyncStore : /config/.test(id) ? { API_BASE: 'https://api.test' } : null);
     add = load(addSvcSrc, (id) => shared(id) || {});
     docs = load(docSvcSrc, (id) => shared(id) || (/homeAddEmployer/.test(id) ? { signedInAccount: async () => 'u:7' } : {}));
   } catch (e) { console.log('     (device harness did not load: ' + String(e.message).split('\n')[0] + ')'); }
@@ -1688,6 +1723,8 @@ console.log('── ⚠️ THE DEVICE RIDES WITH EVERY HOME REQUEST, AND IS REPO
           gateR.length === 1 && gateL.length === 1 && doc.length === 1
           && [gateR[0], gateL[0], doc[0]].every((x) => x.headers['x-device-id'] === 'dev-abc-12345' && x.headers.Authorization === 'Bearer TKN'),
           sent.map((x) => [x.url, x.headers]));
+        ok('⚠️ C3: the resume gate and the letter gate go out WITH x-store-env beside the device and the token (the environment the pass was bought in)',
+          gateR.length === 1 && gateL.length === 1 && [gateR[0], gateL[0]].every((x) => x.headers['x-store-env'] === 'Sandbox'), [gateR[0], gateL[0]].map((x) => x && x.headers));
       } finally { global.fetch = realFetch; }
     })().then(() => devicePhaseDone(), (e) => { ok('device harness ran without throwing', false, String(e && e.message)); devicePhaseDone(); });
   } else devicePhaseDone();
@@ -1761,12 +1798,267 @@ console.log('── ⚠️ THE REVIEW SCREEN HAS NO CREDIT GATE: A 0-CREDIT SUBS
   ok('…and no credit price is shown on a button ("1 CR", a diamond count, "N cr")', !/\b1 CR\b|\{creditBalance\} cr|name="diamond"/.test(rvC));
 }
 
+console.log('── ⚠️ ASKS A, B, D (2026-09-14): the empty library card, the Tailor hint, the confirm sheet on Home ──');
+{
+  // A. The empty library card was clipped on a real iPhone: `height: 150` with the body inside the absolute clip.
+  const emptyShell = (histC.match(/emptyShell: \{([^}]*)\}/) || [])[1] || '';
+  const emptyFn = histC.slice(histC.indexOf('function EmptyState('), histC.indexOf('function EmptyState(') + 2400);
+  ok('⚠️ A: the empty card has NO fixed height — it grows with its copy (minHeight only)',
+    !!emptyShell && !/(^|[\s,{])height:/.test(emptyShell) && /minHeight:/.test(emptyShell) && !/height: 150\b/.test(histC), emptyShell);
+  ok('…the glass material sits in the absolute clip BEHIND a body in normal flow',
+    /<View style=\{s\.emptyShell\}>[\s\S]{0,200}<View style=\{s\.clip\} pointerEvents="none">/.test(emptyFn));
+  ok('…and the button grows too (minHeight, not a fixed 34pt)', !/height: 34\b/.test(histC) && /minHeight: 38/.test(histC));
+
+  // B. The Tailor hint: native driver only, and a tap is a SCROLL, never a build.
+  const hintSrc = R('../components/employer-home/TailorHint.tsx');
+  const hintC = strip(hintSrc);
+  const drivers = hintC.match(/useNativeDriver:\s*\w+/g) || [];
+  ok('⚠️ B: TailorHint animates with the native driver ONLY', drivers.length >= 5 && drivers.every((d) => /true$/.test(d)), drivers);
+  ok('…on transform and opacity only (no width, height, colour, top or margin is animated)',
+    !/Animated\.(timing|spring)\([^)]*\b(width|height|backgroundColor|top|left|margin\w*|padding\w*)\b/.test(hintC)
+    && !/\b(width|height|top|backgroundColor|marginTop):\s*\w+\.interpolate/.test(hintC));
+  ok('…it is a memo component with no build or purchase import', /export default React\.memo\(TailorHint\)/.test(hintC)
+    && !/useHomeBuilds|requestBuild|buyDownloadPass|homeAddEmployer/.test(hintC));
+  const hintPress = fnBodyOf(homeC, 'onHintPress');
+  ok('⚠️ …a tap on it only scrolls to the button (never requestBuild / K.request)',
+    /scrollTo\?\.\(\{ y, animated: true \}\)/.test(hintPress) && !/requestBuild|K\.request|runBuild/.test(hintPress), hintPress.slice(0, 200));
+  ok('…Home renders it with that handler, keyed by chip + kind, faded by the NATIVE scroll value',
+    /<TailorHint\s+key=\{hintSig\}[\s\S]{0,160}onPress=\{onHintPress\}[\s\S]{0,60}fade=\{hintFade\}/.test(homeC)
+    && /scrollY\.interpolate\(\{ inputRange: \[0, HINT_FADE_PX\]/.test(homeC));
+  ok('⚠️ …the scroll position is read only where the page RESTS, never a JS listener per frame',
+    /onScroll=\{Animated\.event\(\[\{ nativeEvent: \{ contentOffset: \{ y: scrollY \} \} \}\], \{ useNativeDriver: true \}\)\}/.test(homeC)
+    && /onScrollEndDrag=\{onScrollRest\}/.test(homeC) && /onMomentumScrollEnd=\{onScrollRest\}/.test(homeC)
+    && (homeC.match(/onScroll=/g) || []).length === 1);
+  ok('…the copy names the company in both modes', /Scroll down to tailor this resume for/.test(hintSrc) && /Scroll down to write your cover letter for/.test(hintSrc));
+  // ⚠️ THE 2026-09-15 REVIEW: the pill's height is MEASURED (placed from a 64pt guess, the real 70-100pt pill hung onto the
+  // page's zoom button and took its taps), and the company is never the part the ellipsis eats (one sentence under
+  // numberOfLines={2} lost exactly the name — "Rheinmetall Electronics GmbH" was the truncated words).
+  ok('⚠️ B: the pill reports its laid-out height (onLayout → onHeight on the Pressable), and Home places it from that, never from the guess',
+    /onLayout=\{onHeight \? \(e\) => onHeight\(e\.nativeEvent\.layout\.height\) : undefined\}/.test(hintC)
+    && /const \[hintH, setHintH\] = useState\(TAILOR_HINT_H\);/.test(homeC) && /onHeight=\{onHintHeight\}/.test(homeC)
+    && /const onHintHeight = useStableFn\(\(h: number\) => \{\s*const r = Math\.ceil\(h\);\s*if \(r > 0\) setHintH\(\(o\) => \(o === r \? o : r\)\);/.test(homeC)
+    && !/slotH - 36 - 64 - 22/.test(homeC));
+  ok('…its top keeps the MEASURED bottom, plus the pill\'s reach past its box, above the page\'s zoom button in both modes',
+    /zoomBtnTop - HINT_ZOOM_GAP - TAILOR_HINT_REACH - hintH/.test(homeC) && /slotH - 18 - 50 - 18 - TAILOR_HINT_REACH - hintH/.test(homeC)
+    && /foldY - slotTop - hintH - 24/.test(homeC) && /export const TAILOR_HINT_REACH = 10;/.test(hintC));
+  ok('⚠️ …the company sits on its OWN single line with a MIDDLE ellipsis; the fixed phrase may wrap to two, and never carries the name',
+    /<Text style=\{s\.company\} numberOfLines=\{1\} ellipsizeMode="middle"[^>]*>\s*\{company\}/.test(hintC)
+    && /<Text style=\{s\.title\} numberOfLines=\{2\}[^>]*>\{lead\}<\/Text>/.test(hintC) && !/numberOfLines=\{2\}[^>]*>\{title\}/.test(hintC)
+    && /const lead = kind === 'cover_letter' \? 'Scroll down to write your cover letter' : 'Scroll down to tailor this resume';/.test(hintC));
+  ok('…while a screen reader still hears the whole sentence, company included',
+    /accessibilityLabel=\{`\$\{title\}\. \$\{sub\}\.`\}/.test(hintC) && /const title = kind === 'cover_letter'[\s\S]{0,200}for \$\{company\}`/.test(hintC));
+
+  // D / contract 6: the sheet is rendered next to the overlay, from the hook's own state.
+  const sheetSrc2 = R('../components/employer-home/GenerateConfirmSheet.tsx');
+  const sheetC2 = strip(sheetSrc2);
+  ok('⚠️ D: Home renders <GenerateConfirmSheet> next to BuildingOverlay, fed by K.confirm',
+    /import GenerateConfirmSheet from '\.\/GenerateConfirmSheet';/.test(homeC)
+    && /<GenerateConfirmSheet\s+\{\.\.\.\(previewAsk \? \{[\s\S]*?\} : K\.confirm\)\}\s*\/>/.test(homeC)
+    && homeC.indexOf('<GenerateConfirmSheet') > homeC.indexOf('<BuildingOverlay'));
+  ok('…the harness copy can only close, alert or go to plans — it never builds or buys',
+    !/K\.request|buyDownloadPass|runBuild/.test((homeC.match(/previewAsk \? \{[\s\S]*?\} : K\.confirm/) || [''])[0]));
+  ok('the sheet takes exactly ConfirmSheetView and starts nothing itself',
+    /export default function GenerateConfirmSheet\(\{[\s\S]{0,300}\}: ConfirmSheetView\)/.test(sheetC2)
+    && !/buyDownloadPass|checkBuildGate|buildForEmployer|useHomeBuilds\(/.test(sheetC2));
+  ok('…its price is the store\'s (fetchPassPrice), "$0.99" only a fallback label',
+    /fetchPassPrice\(\)/.test(sheetC2) && /const PRICE_LABEL_FALLBACK = '\$0\.99';/.test(sheetC2)
+    && (sheetC2.match(/\$0\.99/g) || []).length === 1);
+  ok('…one native driver, no credit wording', !/useNativeDriver:\s*false/.test(sheetC2)
+    && ![...sheetC2.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g)].some((m) => /credit/i.test(m[0])));
+}
+
+console.log('── ⚠️ THE LIBRARY IS A SHELF OF PAPER CARDS, TINTED LIKE THE EMPLOYER (2026-09-15) ──');
+{
+  // The product owner's ask: the download cards "look very bad". The library is now a 2-column grid of paper cards —
+  // the document's own rendered page (A4 crop, cover/top), the employer ribbon on it, a padlock when the server says
+  // locked, one strip of facts under it. Its pictures come from what Home already holds (imageFor), the front of the
+  // shelf is filled by a READ (warmDocImages), and the skeletons/placeholders tint with design.brand.accent — the
+  // colour the server actually rendered the pages in. Nothing here fetches, builds or spends.
+  // — DownloadHistory: the prop, the grid, the card —
+  ok('⚠️ imageFor(item) replaces thumbFor for pictures; accentFor stays for the tint',
+    /imageFor: \(item: DownloadHistoryItem\) => string \| null \| undefined;/.test(histC) && /accentFor: \(templateId: string\) => string;/.test(histC)
+    && !/thumbFor/.test(histC) && /image=\{imageFor\(it\)\}/.test(histC) && /accent=\{accentFor\(it\.templateId\)\}/.test(histC));
+  ok('two cards to a line, without an onLayout: 50% cells carrying half the 12pt gutter, lines rowGap apart',
+    /const GUTTER = 12;/.test(histC) && /grid: \{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -GUTTER \/ 2, rowGap: GUTTER \}/.test(histC)
+    && /cell: \{ width: '50%', paddingHorizontal: GUTTER \/ 2 \}/.test(histC));
+  ok('the card is the same dark glass as Home (radius 16, deeper than the page, a lit rim)',
+    /const GLASS_SHELL = \{\s*borderRadius: 16, backgroundColor: 'rgba\(6,11,30,0\.46\)'/.test(histC) && /shell: \{ \.\.\.GLASS_SHELL \}/.test(histC) && /returnLight:/.test(histC));
+  ok('the paper is an A4 page cropped from the foot: aspectRatio, contentFit cover, contentPosition top',
+    /aspectRatio: PAPER_RATIO/.test(histC) && /contentFit="cover"/.test(histC) && /contentPosition="top"/.test(histC));
+  ok('⚠️ no fixed row or card height anywhere: the strip grows with the text (minHeight), the paper with its ratio',
+    !/\b(rowH|ROW_H)\b/.test(histC) && !/\bheight: (50|76|150)\b/.test(histC)
+    && /strip: \{[^}]*minHeight: 48/.test(histC) && !/strip: \{[^}]*[^n]height:/.test(histC)
+    && !/shell: \{[^}]*height:/.test(histC) && !/cell: \{[^}]*height:/.test(histC));
+  ok('the employer ribbon top-left, as the hero page wears it: the initial tile in the gradFor gradient, the name on one line',
+    /<View style=\{s\.ribbon\}>/.test(histC) && /const pair = gradFor\(item\.employer \|\| item\.templateName\);/.test(histC)
+    && /<LinearGradient colors=\{pair\}[^>]*style=\{s\.ribbonTile\}>/.test(histC) && /<Text style=\{s\.ribbonTx\} numberOfLines=\{1\}/.test(histC));
+  ok('⚠️ the padlock is a pill top-right, drawn only when the SERVER says locked (item.unlocked), never dimming the name',
+    /const free = item\.unlocked;/.test(histC) && /\{!free && \([\s\S]{0,300}?<Ionicons name="lock-closed"/.test(histC) && !/ownsEmployer/.test(histC));
+  // ⚠️ RETARGETED (2026-09-15): the meta line WRAPS. On one line with "  ·  " and a letter-spaced format,
+  // "WORD · 12 Aug 2025 · ×12" ran past the ~116pt a 150pt cell leaves at 1.25× text and ellipsised the count,
+  // then the date — the two facts the row exists for. Two lines, ' · ', no letterSpacing on the format, and a
+  // lineHeight so a wrapped tail sits as one block the strip's minHeight grows for.
+  ok('the strip: the design name bold on one line + "PDF · 5 days ago · ×2" (WORD for a docx) on up to TWO lines, sentence-case stamps',
+    /<Text style=\{s\.design\} numberOfLines=\{1\}/.test(histC) && /<Text style=\{s\.meta\} numberOfLines=\{2\}/.test(histC) && !/<Text style=\{s\.meta\} numberOfLines=\{1\}/.test(histC)
+    && /fmt: \{ fontSize: 9\.5/.test(histC) && /days ago/.test(histC) && /×/.test(histSrc) && /WORD/.test(histC));
+  ok('⚠️ the meta line is no longer single-line-with-letterSpacing: \' · \' separators (never "  ·  "), a lineHeight on s.meta, no letterSpacing on s.fmt',
+    (histC.match(/<Text style=\{s\.metaDot\}>\{' · '\}<\/Text>/g) || []).length >= 2 && !/'  ·  '/.test(histC)
+    && /meta: \{[^}]*lineHeight: 14[^}]*\}/.test(histC) && !/meta: \{[^}]*letterSpacing/.test(histC) && !/fmt: \{[^}]*letterSpacing/.test(histC), (histC.match(/(meta|fmt): \{[^}]*\}/g) || []));
+  ok('⚠️ no static inline style object anywhere in DownloadHistory: every style={{ is an Animated interpolation, the literals live in the StyleSheet',
+    !/style=\{\{\s*[a-zA-Z]+:\s*(?:-?[\d.]+|'[^']*')\s*(?:,\s*[a-zA-Z]+:\s*(?:-?[\d.]+|'[^']*')\s*)*,?\s*\}\}/.test(histC)
+    && [...histC.matchAll(/style=\{\{/g)].every((m) => /interpolate\(/.test(histC.slice(m.index, m.index + 300)))
+    && /skBarDesign: \{ width: '72%'/.test(histC) && /skBarMeta: \{ width: '48%'/.test(histC) && /headTx: \{ flex: 1 \}/.test(histC) && /lockedIcon: \{ marginTop: 1 \}/.test(histC)
+    && /<View style=\{\[s\.skBar, s\.skBarDesign\]\} \/>/.test(histC) && /<View style=\{s\.headTx\}>/.test(histC) && /style=\{s\.lockedIcon\}/.test(histC),
+    [...histC.matchAll(/style=\{\{[^]{0,80}/g)].map((m) => m[0].replace(/\s+/g, ' ')));
+  // — the brand tint on the shelf, and the page a library tap opens on —
+  ok('⚠️ Home\'s brandAccentFor(item): the row\'s OWN kind, the employer\'s saved doc, and only when it IS the document on screen → design.brand.accent, else null (catalogue accent)',
+    /const brandAccentFor = useCallback\(\(it: DownloadHistoryItem\): string \| null => \{/.test(homeC) && /if \(!saved \|\| saved\.docId !== doc\.docId\) return null;\s*return doc\.design\?\.brand\?\.accent \|\| null;\s*\}, \[doc, kind, docList\]\);/.test(homeC)
+    && /brandAccentFor=\{brandAccentFor\}/.test(homeC));
+  ok('DownloadHistory takes it as an OPTIONAL prop and the drawn page tints brandAccent || accent — accentFor(templateId) itself untouched',
+    /brandAccentFor\?: \(item: DownloadHistoryItem\) => string \| null;/.test(histC) && /brandAccent=\{brandAccentFor \? brandAccentFor\(it\) : null\}/.test(histC)
+    && /<Letterpress accent=\{brandAccent \|\| accent\} letter=\{letter\} \/>/.test(histC) && /accent=\{accentFor\(it\.templateId\)\}/.test(histC));
+  {
+    const oh = fnBodyOf(homeC, 'openHistoryItem');
+    const at = (re) => { const m = re.exec(oh); return m ? m.index : -1; };
+    const readAt = at(/const image = \(onDeck && onDeck\.image\)\s*\|\| cachedDocImage\(k, saved\.docId, saved\.updatedAt, item\.templateId\)\s*\|\| \(kept && kept\.image\) \|\| null;/);
+    ok('⚠️ openHistoryItem reads the page in the order the card was painted from: the deck on screen → cachedDocImage(kind, docId, updatedAt, templateId) → a kept page — BEFORE the zoom opens and before any render is asked for',
+      readAt >= 0 && readAt < at(/setZoom\(\{\s*src: 'library', n, rect: origin, kind: k, doc: zd/) && readAt < at(/fillDocPage\(n, k, saved, item\.templateId\)/)
+      && /if \(!image && item\.templateId\) fillDocPage\(n, k, saved, item\.templateId\);/.test(oh), { readAt });
+    ok('…the zoomed card of the document on screen wears its brand accent (never a colour change on the way open); any other document keeps accentFor(templateId)',
+      /let accent = accentFor\(item\.templateId\);/.test(oh) && /const brand = onScreen \? onScreen\.design\?\.brand\?\.accent : null;\s*if \(brand\) accent = brand;/.test(oh)
+      && /id: item\.templateId, name: item\.templateName, accent, image, fit/.test(oh));
+  }
+  ok('⚠️ collapsed = the first 4 cards + "See all N"; expanded = everything the server sent (no client cap)',
+    /const PREVIEW_CARDS = 4;/.test(histC) && /const shown = expanded \? items : items\.slice\(0, PREVIEW_CARDS\);/.test(histC)
+    && /items\.length > PREVIEW_CARDS && !expanded/.test(histC) && /See all \{items\.length\}/.test(histC) && !/MAX_ROWS/.test(histC));
+  ok('a skeleton grid of 4 glass cards while loading; the fixed empty card stays',
+    /function SkeletonCard/.test(histC) && /\[0, 1, 2, 3\]\.map\(\(i\) => <SkeletonCard key=\{i\} index=\{i\} \/>\)/.test(histC) && /function EmptyState/.test(histC));
+  ok('the drawn page (no image) is the accent-tinted Letterpress, and it knows a letter from a resume',
+    /function Letterpress\(\{ accent, letter \}/.test(histC) && /LETTER_RULES/.test(histC));
+  ok('every card is accessible and pressable on the native driver (scale + specular, transform/opacity only)',
+    /accessibilityLabel=\{label\}/.test(histC) && /accessibilityRole="button"/.test(histC)
+    && (histC.match(/useNativeDriver: true/g) || []).length >= 4 && !/useNativeDriver: false/.test(histC)
+    && !/Animated\.(timing|spring|loop)[\s\S]{0,200}(width|height|backgroundColor):/.test(histC));
+  ok('Ionicons only, no new icon set', /import \{ Ionicons \} from '@expo\/vector-icons';/.test(histSrc) && !/from '@expo\/vector-icons\/[A-Z]/.test(histSrc) && !/react-native-vector-icons|lucide/.test(histSrc));
+  ok('⚠️ the library still NEVER requests its own renders', !/fetch\(/.test(histC) && !/home-cards/.test(histC) && !/employer-cards/.test(histC) && !/warmDocImages|fetchDocCards/.test(histC));
+
+  // — EmployerHome: imageFor resolves from what is in hand; the warm fills the front of the shelf —
+  ok('Home wires imageFor (not thumbFor) into the shelf', /<DownloadHistory\n[\s\S]{0,600}?imageFor=\{imageFor\}/.test(homeC) && !/<DownloadHistory\n[\s\S]{0,600}?thumbFor=/.test(homeC));
+  ok('Home imports the doc image cache readers from useTargetDoc', /import \{[^}]*\bcachedDocImage\b[^}]*\bwarmDocImages\b[^}]*\} from '\.\/useTargetDoc';/.test(home));
+  const imgFor = (homeC.match(/const imageFor = useCallback\(\(it: DownloadHistoryItem\)[\s\S]*?\n  \}, \[kind, docList, thumbFor, libImgVer\]\);/) || [''])[0];
+  ok('⚠️ imageFor: per the card\'s OWN kind → that employer\'s saved doc → cachedDocImage(kind, docId, updatedAt, templateId) → a kept page → else the base page for a resume, NOTHING for a letter',
+    /const k: DocKind = it\.kind === 'cover_letter' \? 'cover_letter' : 'resume';/.test(imgFor) && /savedDocFor\(docList, who\)/.test(imgFor)
+    && /const own = cachedDocImage\(k, saved\.docId, saved\.updatedAt, it\.templateId\)\s*\|\| libPages\.get\(libPageKey\(k, saved, it\.templateId\)\)\?\.image \|\| null;/.test(imgFor)
+    && /return k === 'resume' \? thumbFor\(it\.templateId\) : null;/.test(imgFor), imgFor.slice(0, 200));
+  ok('⚠️ the warm: the first 8 cards with a saved doc and no cached page, grouped per document, one document at a time, through the injected cards reader',
+    /const LIB_WARM = 8;/.test(homeC) && /for \(const it of history\.slice\(0, LIB_WARM\)\)/.test(homeC)
+    && /if \(!saved \|\| cachedDocImage\(k, saved\.docId, saved\.updatedAt, it\.templateId\)\) continue;/.test(homeC)
+    && /try \{ await warmDocImages\(k, e\.docId, e\.updatedAt, e\.ids, \{ cards \}\); \} catch \{/.test(homeC)
+    && /const cards = docLoadersRef\.current\?\.cards;/.test(homeC) && /setLibImgVer\(\(v\) => v \+ 1\)/.test(homeC));
+  ok('accentFor also knows the letter formats, so a letter card tints with its own accent', /\|\| LETTER_DESIGNS\.find\(\(d\) => d\.id === templateId\);/.test(homeC));
+
+  // — the client brand (contract 6): the type, the shaping, the deck's accent, the two cache readers —
+  ok('employerDocs.ts: Design gains brand?: DesignBrand | null, shaped from the server\'s design.brand',
+    /export type DesignBrand = \{/.test(docSvcSrc) && /brand\?: DesignBrand \| null;/.test(docSvcSrc) && /brand: shapeBrand\(raw\.brand\),/.test(docSvcC)
+    && /function shapeBrand\(raw: any\): DesignBrand \| null/.test(docSvcC));
+  ok('…the accent is a 6-digit hex LOWER-CASED (a brand hashes by its spelling), the family ≤80 chars, google a strict boolean, and no half → null',
+    /\.trim\(\)\.toLowerCase\(\) : null\)/.test(docSvcC) && /optStr\(f\.family, 80\)/.test(docSvcC) && /google: f\.google === true/.test(docSvcC)
+    && /return accent \|\| font \? \{ accent, font \} : null;/.test(docSvcC));
+  ok('⚠️ …and NO fallback from the legacy brandColor: an old document\'s pages were never rendered in it', !/brand: shapeBrand\(raw\.brand\) \|\|/.test(docSvcC) && /NOT "fall back to brandColor"/.test(docSvcSrc));
+  ok('useDocDeck: a card wears design.brand.accent when set, else the catalogue accent',
+    /const brandAccent = doc\.design\?\.brand\?\.accent \|\| undefined;/.test(docHookC) && /accent: brandAccent \|\| meta\.accent/.test(docHookC));
+  ok('useTargetDoc exports cachedDocImage(kind, docId, updatedAt, templateId) and warmDocImages(kind, docId, updatedAt, ids, opts?) over ONE key spelling',
+    /export function cachedDocImage\(kind: DocKind, docId: number, updatedAt: string, templateId: string\): string \| null/.test(docHookC)
+    && /export function warmDocImages\(\s*kind: DocKind,\s*docId: number,\s*updatedAt: string,\s*ids: string\[\],\s*opts\?: \{ cards\?: DocLoaders\['cards'\] \},\s*\): Promise<void>/.test(docHookC)
+    && /const versionKeyOf = \(kind: DocKind, docId: number, updatedAt: string\) =>/.test(docHookC));
+  ok('⚠️ the warm is single-flight twice over: the same call in flight is returned, and every wave takes the deck\'s flying lock',
+    /const warmFlights = new Map<string, Promise<void>>\(\);/.test(docHookC) && /const inflight = warmFlights\.get\(key\);\s*if \(inflight\) return inflight;/.test(docHookC)
+    && /while \(flying\) await landed\(\);/.test(docHookC) && /const WARM_MAX = 10;/.test(docHookC) && !/Animated/.test(docHookC));
+  ok('PaperSkeleton draws the employer\'s colour: the band, a faint sidebar rail (0.12) and the title line (0.42)',
+    /<View style=\{\[s\.rail,/.test(skelC) && /tint\(accent \|\| '', 0\.12\)/.test(skelC) && /tint\(accent \|\| '', 0\.42\)/.test(skelC));
+
+  // — the preview harness: 5 mixed cards, a locked one and a letter among them; branded fixtures —
+  const libFixture = (previewSrc.match(/const RESUME_HISTORY: DownloadHistoryItem\[\] = \[[\s\S]*?\n\];/) || [''])[0];
+  ok('home-preview: the resume library is 5 mixed cards — one locked, one a cover letter, one behind "See all"',
+    (libFixture.match(/\{ id: \d+, kind:/g) || []).length === 5 && /kind: 'cover_letter'/.test(libFixture) && /unlocked: false/.test(libFixture)
+    && /format: 'docx'/.test(libFixture), (libFixture.match(/\{ id: \d+, kind:/g) || []).length);
+  ok('…and its documents carry design.brand in the client shape (a colour + web font, and a colour with no font)',
+    /brand: \{ accent: '#00205b', font: \{ family: 'Inter', google: true \} \}/.test(previewSrc) && /brand: \{ accent: '#e4003a', font: null \}/.test(previewSrc));
+}
+
+/**
+ * The image cache readers run for real: useTargetDoc.ts transpiled with a fake require — react's hooks as plain
+ * functions (a deck built once, no re-render), the account fixed, fetchDocCards a spy. Proves the contract the
+ * shelf leans on: waves of ≤5 / ≤3, single-flight, the same key as the deck, dead ids never re-asked, a failed
+ * wave ends the warm, a gone version is never asked again, the cap, and the deck's brand accent.
+ */
+async function libraryPhase() {
+  console.log('── ⚠️ warmDocImages / cachedDocImage / useDocDeck, run for real (2026-09-15) ──');
+  const calls = [];
+  const GOOD = (kind, docId, ids) => ({ cards: ids.filter((id) => id !== 'g').map((id) => ({ id, name: id.toUpperCase(), accent: '#123456', image: 'img-' + id })) });
+  let answer = GOOD;
+  const react = { useCallback: (f) => f, useEffect: () => {}, useMemo: (f) => f(), useRef: (v) => ({ current: v }), useState: (v) => [typeof v === 'function' ? v() : v, () => {}] };
+  const fakeReq = (id) => {
+    if (id === 'react') return react;
+    if (/homeAddEmployer/.test(id)) return { signedInAccount: async () => 'acct-1' };
+    if (/services\/employerDocs/.test(id)) return { fetchDocCards: async (kind, docId, ids) => { calls.push({ kind, docId, ids: ids.slice() }); return answer(kind, docId, ids); }, cachedCurrentDoc: () => undefined, docLookupOf: () => null, fetchCurrentDoc: async () => null, fetchDocList: async () => null, rememberDoc: () => {} };
+    return {};
+  };
+  let U = null;
+  try {
+    const js = ts.transpileModule(docHookSrc, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText;
+    const m = { exports: {} };
+    new Function('module', 'exports', 'require', js)(m, m.exports, fakeReq);
+    U = m.exports;
+  } catch (e) { ok('useTargetDoc.ts loads under a fake require', false, String(e.message).split('\n')[0]); return; }
+  ok('nothing is cached before a warm; a missing id/version is never a key', U.cachedDocImage('resume', 5, 'u1', 'a') === null && U.cachedDocImage('resume', 0, 'u1', 'a') === null && U.cachedDocImage('resume', 5, '', 'a') === null);
+  const p1 = U.warmDocImages('resume', 5, 'u1', ['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+  const p2 = U.warmDocImages('resume', 5, 'u1', ['g', 'f', 'e', 'd', 'c', 'b', 'a']);
+  ok('⚠️ single-flight: the same warm (version + ids, any order) in flight IS the same promise', p1 === p2 && p1 instanceof Promise);
+  await p1;
+  ok('resume waves of ≤5, in order, for that document', calls.length === 2 && calls[0].ids.join() === 'a,b,c,d,e' && calls[1].ids.join() === 'f,g' && calls.every((c) => c.kind === 'resume' && c.docId === 5), calls);
+  ok('the pages are readable back through cachedDocImage', U.cachedDocImage('resume', 5, 'u1', 'a') === 'img-a' && U.cachedDocImage('resume', 5, 'u1', 'f') === 'img-f' && U.cachedDocImage('resume', 5, 'u2', 'a') === null);
+  await U.warmDocImages('resume', 5, 'u1', ['g', 'a']);
+  ok('⚠️ an id the reply left out is dead for that version: null, and never asked again; a cached id is not re-asked', U.cachedDocImage('resume', 5, 'u1', 'g') === null && calls.length === 2, calls.length);
+  calls.length = 0;
+  await U.warmDocImages('cover_letter', 9, 'u2', ['ats_pro', 'german', 'technical', 'graduate']);
+  ok('letter waves of ≤3', calls.length === 2 && calls[0].ids.length === 3 && calls[1].ids.join() === 'graduate' && calls.every((c) => c.kind === 'cover_letter'), calls);
+  calls.length = 0;
+  await U.warmDocImages('resume', 6, 'u1', Array.from({ length: 14 }, (_, i) => 't' + i));
+  ok('a warm is capped at 10 ids (two resume waves), whatever it was handed', calls.length === 2 && calls.reduce((n, c) => n + c.ids.length, 0) === 10, calls.map((c) => c.ids.length));
+  calls.length = 0; answer = () => { throw new Error('renderer down'); };
+  let rejected = false;
+  await U.warmDocImages('resume', 7, 'u1', ['a', 'b', 'c', 'd', 'e', 'f']).catch(() => { rejected = true; });
+  ok('⚠️ a loader that throws: the warm resolves (never rejects) after ONE wave — the rest is not chained into a failing renderer', !rejected && calls.length === 1, { rejected, calls: calls.length });
+  answer = GOOD;
+  await U.warmDocImages('resume', 7, 'u1', ['a', 'b']);
+  ok('…and those ids are backed off, not re-asked at once', calls.length === 1, calls.length);
+  calls.length = 0; answer = () => 'gone';
+  await U.warmDocImages('resume', 8, 'u1', ['a']);
+  answer = GOOD;
+  await U.warmDocImages('resume', 8, 'u1', ['b', 'c']);
+  ok('⚠️ a version the server says is GONE is never asked for again (a re-lookup, never a rebuild)', calls.length === 1 && U.cachedDocImage('resume', 8, 'u1', 'a') === null, calls.length);
+  calls.length = 0;
+  await U.warmDocImages('resume', 5, 'u1', []); await U.warmDocImages('resume', 0, 'u1', ['a']); await U.warmDocImages('resume', 5, '', ['a']); await U.warmDocImages('resume', 5, 'u1', null);
+  ok('no ids / no doc / no version → resolves without a request', calls.length === 0, calls.length);
+  const catalogue = [{ id: 'a', name: 'A', accent: '#0a7aa6' }, { id: 'zz', name: 'ZZ', accent: '#111111' }];
+  const doc = { docId: 5, kind: 'resume', updatedAt: 'u1', design: { ranked: [{ id: 'a', score: 90, reason: 'fits' }], brand: { accent: '#e30613', font: null } } };
+  let deck = null, err = null;
+  try { deck = U.useDocDeck('resume', doc, catalogue, 0, { enabled: false }).deck; } catch (e) { err = e; }
+  ok('⚠️ useDocDeck: every card wears design.brand.accent, and reads the SAME image store the warm filled (one key for deck and shelf)',
+    !err && deck && deck[0].id === 'a' && deck[0].accent === '#e30613' && deck[0].image === 'img-a' && deck[0].fit === 90 && deck[1].id === 'zz' && deck[1].accent === '#e30613', err ? String(err.message) : deck);
+  let plain = null;
+  try { plain = U.useDocDeck('resume', { ...doc, design: { ranked: [{ id: 'a', score: 90 }] } }, catalogue, 0, { enabled: false }).deck; } catch (e) { err = e; }
+  ok('…and the catalogue accent when the document has no brand', plain && plain[0].accent === '#0a7aa6' && plain[1].accent === '#111111', plain);
+}
+
 let deviceDone = false;
 function devicePhaseDone() { deviceDone = true; }
 (async () => {
   for (let i = 0; i < 400 && !deviceDone; i++) await new Promise((r) => setTimeout(r, 5));
   if (!deviceDone) ok('the device harness finished', false);
   await reportPhase();
+  await libraryPhase();
   console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

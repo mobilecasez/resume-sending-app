@@ -8,6 +8,9 @@
 //   • useDocList    — the slim list of every saved doc (drives the chips' "tailored" dot)
 //   • useTargetDoc  — the doc for the chip on screen (POST /employer-docs/current)
 //   • useDocDeck    — that doc's designs, best fit first, with page images filled in on approach
+// and, for the download library (DownloadHistory), two plain functions over the SAME image store:
+//   • cachedDocImage — the page already rendered for (doc version, design), sync, or null
+//   • warmDocImages  — render a few and put them in the store, behind the deck's own single flight
 //
 // ⚠️ NOTHING HERE EVER STARTS A BUILD OR CHARGES. These are reads only: a lookup that finds no doc
 // answers 'none' and the SCREEN offers an explicit CTA (the letters auto-regen drain is why a
@@ -193,8 +196,10 @@ function adoptAccount(acct: string | null): boolean {
   if (hadOwner) { images.clear(); dead.clear(); goneVersions.clear(); names.clear(); }
   return true;
 }
-const versionKeyOf = (kind: DocKind, doc: DocMeta) =>
-  `${knownAccount ?? '-'}|${kind}|${doc.docId}|${doc.updatedAt}`;
+// ⚠️ THE ONE KEY SPELLING for both the deck and the library: an image the deck rendered for a document is
+// the library card's image for the same document version, and the other way round — no second store.
+const versionKeyOf = (kind: DocKind, docId: number, updatedAt: string) =>
+  `${knownAccount ?? '-'}|${kind}|${docId}|${updatedAt}`;
 function readImage(k: string): string | null {
   const v = images.get(k);
   if (v === undefined) return null;
@@ -225,6 +230,29 @@ const BATCH_RESUME = 5;   // /resume-builder/home-cards caps a request at 5 ids
 const BATCH_LETTER = 3;   // /cover-letter/employer-cards caps a request at 3 ids
 /** A request that got no answer at all: retry those designs after this, not on every swipe. */
 const FAIL_BACKOFF_MS = 60_000;
+
+/**
+ * One wave's answer into the store — the SAME rules whether the deck or the library asked, so a design
+ * the renderer would not draw is dead for both and a doc the server lost is gone for both.
+ *   'gone'            → the version is gone (the screen re-looks the doc up instead of blank pages forever)
+ *   cards             → images written; ids the reply left out are dead for this version, for good
+ *   null (no answer)  → don't hammer a failing renderer, but a dropped connection is not a verdict on
+ *                       the design — those ids are retried after FAIL_BACKOFF_MS, not on every swipe
+ */
+function absorb(version: string, want: string[], got: { cards: DocCard[] } | 'gone' | null): void {
+  if (got === 'gone') { goneVersions.add(version); return; }
+  if (got && Array.isArray(got.cards)) {
+    const add = new Set<string>();
+    for (const c of got.cards) {
+      if (!c || !c.id) continue;
+      if (c.name && !names.has(c.id)) names.set(c.id, { name: c.name, accent: c.accent });
+      if (c.image && want.includes(c.id)) { writeImage(`${version}|${c.id}`, c.image); add.add(c.id); }
+    }
+    for (const id of want) if (!add.has(id)) dead.set(`${version}|${id}`, Infinity);
+    return;
+  }
+  for (const id of want) dead.set(`${version}|${id}`, Date.now() + FAIL_BACKOFF_MS);
+}
 
 const prettyId = (id: string) =>
   id.replace(/[_-]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()).trim() || id;
@@ -271,12 +299,16 @@ export function useDocDeck(
     return () => { alive.current = false; deckListeners.delete(knock); };
   }, []);
 
-  const vKey = doc ? versionKeyOf(kind, doc) : '';
+  const vKey = doc ? versionKeyOf(kind, doc.docId, doc.updatedAt) : '';
 
   const deck: DocDeckCard[] = useMemo(() => {
     if (!doc) return [];
     const known = new Map(catalogue.map((c) => [c.id, c] as const));
     const ranked = Array.isArray(doc.design?.ranked) ? doc.design!.ranked : [];
+    // ⚠️ THE EMPLOYER'S COLOUR, NOT THE DESIGN'S, when the document was rendered with one: every page of
+    // this document was recoloured to design.brand.accent, so a skeleton tinted with the catalogue accent
+    // would promise a blue page and deliver a red one. Absent brand = pages in the design's own colours.
+    const brandAccent = doc.design?.brand?.accent || undefined;
     const seen = new Set<string>();
     const out: DocDeckCard[] = [];
     const push = (id: string, fit: number | null, reason: string | null) => {
@@ -284,7 +316,7 @@ export function useDocDeck(
       if (!meta || seen.has(id)) return;
       seen.add(id);
       const card: DocDeckCard = {
-        id, name: meta.name, accent: meta.accent, image: readImage(`${vKey}|${id}`), fit, reason,
+        id, name: meta.name, accent: brandAccent || meta.accent, image: readImage(`${vKey}|${id}`), fit, reason,
       };
       out.push(card);
     };
@@ -336,21 +368,7 @@ export function useDocDeck(
         try { got = await load(kind, docId, want); } catch { got = null; }
         // ⚠️ Stored even when this effect was cancelled: the key is the doc VERSION, so pixels for a
         // doc the user just switched away from are still right when they switch back.
-        if (got === 'gone') {
-          goneVersions.add(version);
-        } else if (got && Array.isArray(got.cards)) {
-          const add = new Set<string>();
-          for (const c of got.cards) {
-            if (!c || !c.id) continue;
-            if (c.name && !names.has(c.id)) names.set(c.id, { name: c.name, accent: c.accent });
-            if (c.image && want.includes(c.id)) { writeImage(`${version}|${c.id}`, c.image); add.add(c.id); }
-          }
-          for (const id of want) if (!add.has(id)) dead.set(`${version}|${id}`, Infinity);
-        } else {
-          // No answer at all: don't hammer a failing renderer, but a dropped connection is not a
-          // verdict on the design — try again after a while.
-          for (const id of want) dead.set(`${version}|${id}`, Date.now() + FAIL_BACKOFF_MS);
-        }
+        absorb(version, want, got);
         if (alive.current) setVer((v) => v + 1);
       } finally {
         flying = false;
@@ -366,4 +384,91 @@ export function useDocDeck(
   }, [kind, doc, vKey, cardIdx, deck, enabled, gone, nudge]);
 
   return { deck, gone };
+}
+
+/* ── THE LIBRARY'S VIEW OF THE SAME STORE ──────────────────────────────────────────────────────── */
+
+/**
+ * The page already rendered for one design of one document version, or null. Sync — a library card
+ * reads it during render, exactly as the deck does, so a document the user just looked at on Home
+ * paints its library card in the same frame. ⚠️ Same key as the deck: the account it is read under
+ * is the one the last deck (or warm) adopted; before any of those ran, nothing is cached anyway.
+ */
+export function cachedDocImage(kind: DocKind, docId: number, updatedAt: string, templateId: string): string | null {
+  if (!docId || !updatedAt || !templateId) return null;
+  return readImage(`${versionKeyOf(kind, docId, updatedAt)}|${templateId}`);
+}
+
+/** Resolves when the current wave lands (the deck's own `flightWaiters` — a resolver is a knock). */
+const landed = () => new Promise<void>((res) => { flightWaiters.add(res); });
+/** The library never asks for more than this at once, whatever it was handed: 2 resume waves, ~3 letter waves. */
+const WARM_MAX = 10;
+const warmFlights = new Map<string, Promise<void>>();
+
+/**
+ * Render these designs for one document version into the store, so cachedDocImage answers for them.
+ * Resolves (never rejects) once every wave has landed — the caller re-reads then. Nothing happens for
+ * ids already cached, dead for this version, or a version the server said is gone.
+ *
+ * ⚠️ SINGLE-FLIGHT TWICE OVER. (1) The same call (version + ids) in flight is returned as-is: the
+ * library re-renders on every list change and must not queue a wave per render. (2) Every wave takes
+ * the deck's `flying` lock and gives it back the deck's way — renders are serial server-side and the
+ * --single-process chromium dies after ~4-5 pages, so a library warm and a deck hydration running
+ * side by side is the very stampede the lock exists to stop. The deck is knocked after each wave so
+ * a deck open on the same document sees the pages too.
+ *
+ * ⚠️ NEVER A BUILD. /home-cards and /employer-cards only draw what is already saved; a version the
+ * server has lost is marked gone, not rebuilt.
+ *
+ * `opts.cards` lets the dev preview harness supply fixture pages, like DocLoaders does for the hooks.
+ */
+export function warmDocImages(
+  kind: DocKind,
+  docId: number,
+  updatedAt: string,
+  ids: string[],
+  opts?: { cards?: DocLoaders['cards'] },
+): Promise<void> {
+  const want = Array.from(new Set((Array.isArray(ids) ? ids : []).map((x) => String(x || '').trim()).filter(Boolean))).slice(0, WARM_MAX);
+  if (!docId || !updatedAt || !want.length) return Promise.resolve();
+  const key = `${kind}|${docId}|${updatedAt}|${want.slice().sort().join(',')}`;
+  const inflight = warmFlights.get(key);
+  if (inflight) return inflight;
+  const p = (async () => {
+    // ⚠️ Adopt the account BEFORE spelling the key, like the deck's wave: a different account means
+    // every key in the store is someone else's, and the decks must be knocked to re-key too.
+    const acct = await signedInAccount().catch(() => null);
+    if (adoptAccount(acct)) deckListeners.forEach((fn) => fn());
+    const version = versionKeyOf(kind, docId, updatedAt);
+    const batch = kind === 'cover_letter' ? BATCH_LETTER : BATCH_RESUME;
+    const load = opts?.cards || fetchDocCards;
+    for (;;) {
+      if (goneVersions.has(version)) return;
+      const now = Date.now();
+      const need = want.filter((id) => {
+        if (images.has(`${version}|${id}`)) return false;      // `has`, not readImage: a check is not a touch
+        const until = dead.get(`${version}|${id}`);
+        return until === undefined || until <= now;
+      }).slice(0, batch);
+      if (!need.length) return;
+      while (flying) await landed();
+      flying = true;
+      let got: { cards: DocCard[] } | 'gone' | null = null;
+      try {
+        try { got = await load(kind, docId, need); } catch { got = null; }
+        absorb(version, need, got);
+      } finally {
+        flying = false;
+        const waiting = Array.from(flightWaiters);
+        flightWaiters.clear();
+        waiting.forEach((fn) => fn());
+      }
+      deckListeners.forEach((fn) => fn());
+      // One failed wave ends the warm: chaining more batches into a renderer that just gave nothing
+      // (or lost the document) is the hammering FAIL_BACKOFF_MS exists to prevent.
+      if (!got || got === 'gone') return;
+    }
+  })().catch(() => undefined).finally(() => { warmFlights.delete(key); });
+  warmFlights.set(key, p);
+  return p;
 }

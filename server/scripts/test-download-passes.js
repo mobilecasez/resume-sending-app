@@ -315,6 +315,77 @@ const sql = () => db.calls.map((c) => c.sql).join(' | ');
       { settleLen: settle.length, uses: (rb.match(/clientGone/g) || []).length });
   }
 
+  console.log('── ⚠️ passStateFor (Home\'s confirm sheet): READ-ONLY — a sheet that merely LOOKED never binds a pass ──');
+  {
+    // passCoversGeneration with boundOnly:false is a RESERVATION (an UPDATE that binds the oldest unspent pass). A user
+    // who only looked at a company on the sheet would have spent the one company a pass buys — so the sheet's reads are
+    // passStateFor's, clause for clause the same rows, and never a write. { available, forThisEmployer }.
+    const st = async (rows, qrows, employer, kind) => {
+      db.calls.length = 0; db.rows = rows.slice(); db.qrows = qrows.slice();
+      const r = await D.passStateFor(1, employer, 'Production', kind ? { kind } : undefined);
+      const writes = db.calls.filter((c) => /^(UPDATE|INSERT|DELETE)/i.test(c.sql));
+      return { r, writes, calls: db.calls.slice() };
+    };
+    const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    let x = await st([null, null], [[]], 'Airbus', 'resume');
+    ok('no pass at all → { available:false, forThisEmployer:false }', eq(x.r, { available: false, forThisEmployer: false }) && x.writes.length === 0, x);
+    x = await st([null, { id: 3 }], [[]], 'Airbus', 'resume');
+    ok('⚠️ an UNBOUND pass with the resume unused → available, not this employer\'s — and NOTHING was bound',
+      eq(x.r, { available: true, forThisEmployer: false }) && x.writes.length === 0, x);
+    const take = x.calls.find((c) => /resume_generated_at IS NULL/.test(c.sql) && /bound_at IS NULL OR employer_key = \$3/.test(c.sql));
+    ok('…read with passCoversGeneration\'s own takeable clause (unbound, or parked on "(none)")', !!take && take.params[2] === '(none)' && take.params[1] === 'Production', x.calls);
+    x = await st([{ id: 7, employer_name: 'Airbus', employer_key: 'airbus' }, { id: 7 }], [], 'Airbus', 'resume');
+    ok('bound to this employer, resume unused → { true, true }', eq(x.r, { available: true, forThisEmployer: true }) && x.writes.length === 0, x);
+    // ⚠️ RETARGETED 2026-09-15: this used to expect { available:false, forThisEmployer:true } — "a pass EXISTS for this
+    // employer". The sheet read that as "Covered by your one-time pass for Acme — nothing more to pay" over a Continue that
+    // bound and spent a SECOND pass: Acme's own pass had already made its resume, so a takeable one paid for the generation.
+    // forThisEmployer now means "the pass this employer already owns CAN STILL PAY for this kind" — a spent one covers
+    // nothing, whoever owns it, and the two flags can never disagree.
+    x = await st([{ id: 7, employer_name: 'Airbus', employer_key: 'airbus' }, null, null], [], 'Airbus', 'resume');
+    ok('⚠️ bound to this employer but its resume generation is SPENT → nothing (a pass that cannot pay does not cover it, whoever owns it)',
+      eq(x.r, { available: false, forThisEmployer: false }), x);
+    x = await st([{ id: 7, employer_name: 'Airbus', employer_key: 'airbus' }, null, { id: 9 }], [], 'Airbus', 'resume');
+    ok('⚠️ …and with a takeable SECOND pass beside it: available, NOT this employer\'s — Continue would bind that second pass, so the sheet must never say "nothing more to pay"',
+      eq(x.r, { available: true, forThisEmployer: false }) && x.writes.length === 0, x);
+    ok('…the owned pass was asked about by its own id first, then the takeable read (the reservation\'s own clause) followed',
+      x.calls.findIndex((c) => /WHERE id = \$1 AND resume_generated_at IS NULL/.test(c.sql) && c.params[0] === 7) >= 0
+      && x.calls.findIndex((c) => /WHERE id = \$1 AND resume_generated_at IS NULL/.test(c.sql))
+        < x.calls.findIndex((c) => /resume_generated_at IS NULL/.test(c.sql) && /bound_at IS NULL OR employer_key = \$3/.test(c.sql) && c.params[2] === '(none)'), x.calls.map((c) => c.sql));
+    x = await st([{ id: 7, employer_name: 'Airbus', employer_key: 'airbus' }, { id: 7 }], [], 'Airbus', 'cover_letter');
+    ok('the kind picks the column: a letter asks letter_generated_at', eq(x.r, { available: true, forThisEmployer: true })
+      && x.calls.some((c) => /letter_generated_at IS NULL/.test(c.sql)) && !x.calls.some((c) => /resume_generated_at/.test(c.sql)), x.calls.map((c) => c.sql));
+    // ⚠️ RETARGETED 2026-09-15: "no kind → either generation" let a LETTER sheet say "covered" on the RESUME's unused
+    // generation. The question is always about ONE generation, and a sheet that cannot say which must under-promise.
+    x = await st([{ id: 7, employer_name: 'Airbus', employer_key: 'airbus' }, null, { id: 7 }], [], 'Airbus');
+    ok('⚠️ no kind → nothing is covered, and NOTHING is read (a sheet that cannot name the generation under-promises)',
+      eq(x.r, { available: false, forThisEmployer: false }) && x.calls.length === 0, x);
+    x = await st([{ id: 7, employer_name: 'Airbus', employer_key: 'airbus' }, { id: 7 }], [], 'Airbus', 'download');
+    ok('…and so does a kind this module does not track (\'download\' is not a generation)', eq(x.r, { available: false, forThisEmployer: false }) && x.calls.length === 0, x);
+    x = await st([null, { id: 21 }], [[{ id: 21, employer_name: 'Acme Corporation GmbH', employer_key: 'acme corporation gmbh' }]], 'Acme Corp', 'resume');
+    ok('alias-aware, like the real gate: a pass bound to "Acme Corporation GmbH" is Acme Corp\'s', eq(x.r, { available: true, forThisEmployer: true }), x);
+    x = await st([], [], '(None)', 'resume');
+    ok('⚠️ a nameless employer is never covered, and reads nothing', eq(x.r, { available: false, forThisEmployer: false }) && x.calls.length === 0, x);
+    db.mode = 'throw';
+    x = await st([], [], 'Airbus', 'resume');
+    ok('⚠️ an unreadable pass is no pass (fails closed, never throws)', eq(x.r, { available: false, forThisEmployer: false }), x);
+    db.mode = 'ok'; db.rows = []; db.qrows = [];
+    const body = strip(R('server', 'services', 'downloads.js'));
+    const fn = body.slice(body.indexOf('async function passStateFor'), body.indexOf('async function grantPass'));
+    ok('⚠️ passStateFor\'s source has no UPDATE / INSERT and never calls passCoversGeneration or claimGeneration',
+      fn.length > 200 && !/UPDATE|INSERT|passCoversGeneration\(|claimGeneration\(/.test(fn));
+    const rbGate = strip(R('server', 'controllers', 'resumeBuilderController.js'));
+    const lGate = strip(R('server', 'controllers', 'employerLetterController.js'));
+    ok('⚠️ both gates ask it for THEIR kind (a letter\'s "available" is never the resume\'s unused generation)',
+      /downloads\.passStateFor\(userId, employer, req, \{ kind: 'resume' \}\)/.test(rbGate)
+      && /downloads\.passStateFor\(userId, employer \|\| '', req, \{ kind: 'cover_letter' \}\)/.test(lGate));
+    ok('⚠️ forThisEmployer:true is written exactly ONCE in the source — in the branch that found the OWNED pass (boundPassFor, alias-aware) with THIS kind unused — so it can never be true while available is false',
+      (fn.match(/forThisEmployer: true/g) || []).length === 1
+      && /const owned = await boundPassFor\(userId, employer, env\);/.test(fn)
+      && /if \(unused\) return \{ available: true, forThisEmployer: true \};/.test(fn)
+      && !/available: false, forThisEmployer: true/.test(fn)
+      && /const col = GEN_COLUMN\[kind\];\s*if \(!col \|\| employerKeyOf\(employer\) === NONE\) return nothing;/.test(fn), fn.slice(0, 300));
+  }
+
   console.log('── ⚠️ THE HISTORY WRITE MUST MATCH THE TABLE, OR IT FAILS SILENTLY FOREVER ──');
   // A download records its history best-effort: the file already exists and the user has already
   // been charged, so a broken INSERT is swallowed with a warning and the download still succeeds.

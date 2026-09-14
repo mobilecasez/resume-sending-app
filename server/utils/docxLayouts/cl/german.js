@@ -11,7 +11,9 @@
 //
 // Contract: module.exports = function build(data, opts) -> { children, margin }
 //   data = { sender:{name,title,email,phone,location}, company:{name,address}, bodyHtml }
-//   opts = { accent }   accent: hex (with/without '#'); falls back to #334155
+//   opts = { accent, branded? }   accent: hex (with/without '#'); falls back to #334155
+//          branded: the accent is an EMPLOYER's brand — the style's accent re-hued to it by docxBuilder,
+//          never the raw brand hex → the rule is painted in it
 'use strict';
 
 const H = require('../../docxHelpers');
@@ -44,7 +46,11 @@ module.exports = function build(data, opts) {
 
   const M = 1440;                       // ~1in margins (conservative business letter)
   const CONTENT_W = PAGE_W - M - M;      // usable width in twips
-  const ink = '1F2937', slate = '475569', rule = '94A3B8';
+  const ink = '1F2937', slate = '475569';
+  // The thin slate rule — or, for an employer brand (opts.branded), the accent docxBuilder derived:
+  // the PDF re-hues exactly this rule to the brand's hue at slate's own darkness, and the Word
+  // file must match it (the raw brand hex is never handed here — a pastel would vanish on white).
+  const rule = opts.branded ? accent : '94A3B8';
   const out = [];
 
   // ── Letterhead: name (left) + contact (right), thin rule under ──────────────

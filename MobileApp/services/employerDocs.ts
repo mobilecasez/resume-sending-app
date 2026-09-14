@@ -26,15 +26,34 @@ import type { DocKind } from './homeAddEmployer';
 import { cachedJobListing, cleanJobUrl, deviceHeaders, keepJobListings } from './employerHomeService';
 import type { Target } from './employerHomeService';
 
+/**
+ * The employer's look, as the server RENDERED this document with it (employerResearch.brandOf: the colour
+ * and font read off the employer's own website, else the researcher's brand colour). `accent` is what every
+ * page of this document was recoloured to, so a placeholder tinted with it looks like the page that is
+ * coming; `font` is the family the pages were set in (google = a Google Fonts family the renderer could
+ * actually load; otherwise the pages fell back to the design's own stack). Either half may be null.
+ */
+export type DesignBrand = {
+  accent: string | null;
+  font: { family: string; google: boolean } | null;
+};
+
 export type Design = {
   v: number;
   kind: DocKind;
   ranked: Array<{ id: string; score: number; reason?: string }>;
   mode?: 'a4' | 'onepage';
+  /** The researcher's colour as RESEARCHED — kept for old documents and the letter tone; `brand` is what was RENDERED. */
   brandColor?: string | null;
   tone?: string | null;
   region?: string | null;
   headline?: string | null;
+  /**
+   * ⚠️ null/absent means "rendered in the design's own colours" — NOT "fall back to brandColor". A document
+   * stored before brand rendering existed has a brandColor the renderer never used; tinting its placeholder
+   * with that colour would promise a page that arrives in the catalogue accent instead.
+   */
+  brand?: DesignBrand | null;
 };
 
 /**
@@ -179,7 +198,25 @@ function shapeDesign(raw: any, fallbackKind: DocKind): Design | null {
     tone: optStr(raw.tone, 40),
     region: optStr(raw.region, 20),
     headline: optStr(raw.headline, 120),
+    brand: shapeBrand(raw.brand),
   };
+}
+
+/**
+ * A 6-digit hex, lower-cased so two spellings of one colour hash alike (the thumb cache keys a brand by its
+ * text). Anything else — a name, an rgb(), a 3-digit short form the renderer would not have used — is null.
+ */
+const hexOf = (v: any): string | null =>
+  (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : null);
+
+/** `brand` as the document carries it; null unless the server stored an object with at least one usable half. */
+function shapeBrand(raw: any): DesignBrand | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const accent = hexOf(raw.accent);
+  const f = raw.font && typeof raw.font === 'object' ? raw.font : null;
+  const family = f ? optStr(f.family, 80) : null;
+  const font = family ? { family, google: f.google === true } : null;
+  return accent || font ? { accent, font } : null;
 }
 
 function shapeJobInput(v: any): DocJobInput | null {

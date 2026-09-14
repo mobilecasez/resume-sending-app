@@ -1448,13 +1448,24 @@ const FAMILY_ACCENTS = {
   timeline : ['#ea580c', '#c2410c', '#fdba74', '#fed7aa', '#ffedd5', '#fff7ed'],
 };
 
-function recolorHtml(html, familyId, theme) {
+// Re-hue exactly `hexes` (lower- or upper-case spellings) wherever they occur in the HTML. Also the
+// engine behind the letter templates' branding (coverLetterTemplates), which has its own hex lists.
+// `rgba`: also re-hue the same accents spelled as translucent rgba(r,g,b,α) tints (Azure's section-icon
+// tile, Minimal's chip shadow) at their own alpha. The BRAND path asks for it — a red-branded resume
+// must not keep a faint blue tile — while the variants deliberately do not: their unbranded output is
+// pinned byte-for-byte (preview caches, test-resume-templates), so that gap stays theirs.
+const rgbOf = (hexstr) => [1, 3, 5].map((i) => parseInt(hexstr.slice(i, i + 2), 16));
+function recolorHexes(html, hexes, theme, { rgba = false } = {}) {
   let out = html;
-  for (const hx of FAMILY_ACCENTS[familyId] || []) {
+  for (const hx of hexes) {
     const next = shiftHex(hx, theme);
     out = out.split(hx).join(next).split(hx.toUpperCase()).join(next);
+    if (rgba) out = out.split(`rgba(${rgbOf(hx).join(',')},`).join(`rgba(${rgbOf(next).join(',')},`);
   }
   return out;
+}
+function recolorHtml(html, familyId, theme, o) {
+  return recolorHexes(html, FAMILY_ACCENTS[familyId] || [], theme, o);
 }
 
 // Per-family variants: curated hue targets with product-quality names. `sf`/`sm` tune
@@ -1628,9 +1639,118 @@ function templatesForRegion(regionId) {
   return (r ? r.templates : REGIONS[0].templates).map(id => TEMPLATES.find(t => t.id === id)).filter(Boolean);
 }
 
-function renderResumeHtml(templateId, resumeData, opts = {}) {
-  const tpl = TEMPLATES.find(t => t.id === templateId) || TEMPLATES[0];
-  return tpl.build(resumeData || {}, opts);
+// ── Employer branding ─────────────────────────────────────────────────────────
+//
+// A Home employer document (the doc lane in resumeBuilderController) renders in the EMPLOYER'S colour
+// and font: design.brand = { accent: '#rrggbb'|null, font: { family, google }|null } (employerResearch's
+// brandOf — brandExtract's deterministic read of the website first, the researcher's guess second)
+// arrives here as opts.brand. The colour is applied exactly the way a variant is: the FAMILY's accent
+// scheme is re-hued by shiftHex with a theme DERIVED from the brand colour, so every accent keeps its
+// own luminance and white-on-band / heading-on-paper contrast survives whatever colour the employer
+// uses — a brand yellow does not become a yellow sidebar with white text on it, it becomes the
+// sidebar's own darkness in yellow's hue. The font is added ONLY when it is a verified Google font
+// (brandExtract checked fonts.googleapis.com answers for it): its <link> joins the head and the family
+// goes FIRST in every body/heading stack, Lato/Poppins staying as the fallbacks. An unverified font
+// would render as the fallback after a failed fetch, so it is not linked at all.
+// ⚠️ No brand → tpl.build untouched: the unbranded HTML is byte-identical to before branding existed
+// (the gallery previews, the classic downloads and their disk caches all key on that).
+const HEX6_RE = /^#?([0-9a-f]{6})$/i;
+const HEX3_RE = /^#?([0-9a-f]{3})$/i;
+// '#rrggbb' (lower-case) from any hex spelling — #rgb, rrggbb, surrounding whitespace — else null.
+function normHex(v) {
+  const s = String(v == null ? '' : v).trim();
+  let m = HEX6_RE.exec(s);
+  if (m) return '#' + m[1].toLowerCase();
+  m = HEX3_RE.exec(s);
+  return m ? '#' + [...m[1].toLowerCase()].map((c) => c + c).join('') : null;
+}
+// { family, google } from opts.brand.font — the family reduced to what a CSS string and a Google Fonts
+// URL can carry: surrounding quotes dropped, then everything from the first character that is not a
+// letter, digit, space or hyphen cut off ("Roboto, sans-serif" is Roboto; ≤60 chars). A non-Google
+// font is kept (the Word builder wants the name) but never linked.
+function brandFontOf(v) {
+  if (!v || typeof v !== 'object') return null;
+  const family = String(v.family == null ? '' : v.family).replace(/^['"\s]+|['"\s]+$/g, '').split(/[^A-Za-z0-9 \-]/)[0].replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (!family || !/[A-Za-z]/.test(family)) return null;
+  return { family, google: v.google === true };
+}
+// opts.brand → { accent: '#hex'|null, font: {family,google}|null }, or null when it says nothing.
+function normBrand(b) {
+  if (!b || typeof b !== 'object') return null;
+  const accent = normHex(b.accent);
+  const font = brandFontOf(b.font);
+  return accent || font ? { accent, font } : null;
 }
 
-module.exports = { TEMPLATES, TEMPLATE_IDS, REGIONS, FAMILIES, templatesForRegion, renderResumeHtml };
+// The recolour theme a brand colour makes: its hue; its saturation as the floor, and as a multiplier
+// against the reference PRIMARY accent — so a muted brand mutes a vivid family (satMul < 1) and a vivid
+// brand lifts a near-neutral one (Germany's slate, ATS's ink: satMul > 1, which shiftHex caps at 1.0).
+// Lightness is deliberately NOT taken from the brand (see above). `ref` is a family id (its registry
+// accent is the reference) or a '#hex' reference accent (the letter templates pass their own); with
+// neither, the reference is a typical vivid accent.
+const REF_SAT = 0.85;
+function brandThemeOf(accent, ref) {
+  const hx = normHex(accent);
+  if (!hx) return null;
+  const { h, s } = hexToHsl(hx);
+  let refSat = REF_SAT;
+  const refHex = typeof ref === 'string' && ref[0] === '#' ? normHex(ref) : null;
+  if (refHex) refSat = hexToHsl(refHex).s;
+  else if (ref) { const base = TEMPLATES.find((t) => t.id === ref); if (base) refSat = hexToHsl(base.accent).s; }
+  return { hue: h, satFloor: s, satMul: refSat > 0.02 ? s / refSat : 1 };
+}
+
+// What a template becomes under a brand: { accent, band, theme, font } — the accent the gallery/cards
+// show for it, the A4 sidebar band the PDF compositor must paint (recoloured like the HTML), the theme
+// that did it and the font to set. A VARIANT brands from its FAMILY's palette: the brand colour replaces
+// the variant's hue outright, so the family's hexes (the ones its CSS names) are the ones to shift.
+// Without a brand colour the template's own accent/band come back unchanged.
+function brandedTemplate(tpl, brand) {
+  const b = normBrand(brand);
+  const t = (typeof tpl === 'string' ? TEMPLATES.find((x) => x.id === tpl) : tpl) || TEMPLATES[0];
+  const base = TEMPLATES.find((x) => x.id === t.family) || t;
+  const theme = b && b.accent ? brandThemeOf(b.accent, base.id) : null;
+  if (!theme) return { accent: t.accent, band: t.band, theme: null, font: b ? b.font : null };
+  const accents = FAMILY_ACCENTS[base.id] || [];
+  const shiftBand = (hx) => (accents.includes(hx) ? shiftHex(hx, theme) : hx);
+  const band = base.band ? { ...base.band, top: shiftBand(base.band.top), bottom: shiftBand(base.band.bottom) } : undefined;
+  return { accent: shiftHex(base.accent, theme), band, theme, font: b.font };
+}
+
+// The stacks the templates declare (resume and letter alike) — the brand family is put in front of
+// exactly these. ui-monospace (Tech Mono's labels) is a deliberate code look, not a typeface choice,
+// and is left alone.
+const FONT_STACK_HEADS = ["'Lato',", "'Poppins',", "'Merriweather',", 'Georgia,'];
+function googleFontHref(family) {
+  return `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;600;700&display=swap`;
+}
+// Set a verified Google font as the document's typeface: link it and lead every declared stack with
+// it. Anything but { family, google:true } leaves the HTML untouched.
+function brandFontHtml(html, font) {
+  const f = brandFontOf(font);
+  if (!f || !f.google) return html;
+  let out = html;
+  for (const head of FONT_STACK_HEADS) out = out.split(`font-family:${head}`).join(`font-family:'${f.family}',${head}`);
+  // The <link> goes in right before the first <style> — after the templates' own Google Fonts link. The
+  // renderers' route allows exactly that host, and resumeRenderer's font cache keys on this URL.
+  return out.replace('<style>', `<link href="${googleFontHref(f.family)}" rel="stylesheet"><style>`);
+}
+
+function renderResumeHtml(templateId, resumeData, opts = {}) {
+  const tpl = TEMPLATES.find(t => t.id === templateId) || TEMPLATES[0];
+  const brand = normBrand(opts.brand);
+  if (!brand) return tpl.build(resumeData || {}, opts);
+  const { theme, font } = brandedTemplate(tpl, brand);
+  const base = TEMPLATES.find((t) => t.id === tpl.family) || tpl;
+  // With a colour: the FAMILY's layout re-hued to the brand (a variant's own recolour is replaced, not
+  // stacked — its hexes are gone from the family's HTML). Without one: the design exactly as picked.
+  const html = theme ? recolorHtml(base.build(resumeData || {}, opts), base.id, theme, { rgba: true }) : tpl.build(resumeData || {}, opts);
+  return brandFontHtml(html, font);
+}
+
+module.exports = {
+  TEMPLATES, TEMPLATE_IDS, REGIONS, FAMILIES, templatesForRegion, renderResumeHtml,
+  // Employer branding (also consumed by coverLetterTemplates / the renderers / docxBuilder).
+  brandThemeOf, brandedTemplate, brandFontHtml, brandFontOf, normBrand, normHex, googleFontHref,
+  recolorHexes, shiftHex, hexToHsl, hslToHex, relLum,
+};
