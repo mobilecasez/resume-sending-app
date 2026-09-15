@@ -8,7 +8,7 @@ const path         = require('path');
 const fs           = require('fs').promises;
 const crypto       = require('crypto');
 const { renderPdf, renderPreviews, warmPreviews } = require('../utils/resumeRenderer');
-const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion } = require('../utils/resumeTemplates');
+const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion, brandedTemplate } = require('../utils/resumeTemplates');
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
 const downloads = require('../services/downloads');
@@ -424,14 +424,16 @@ async function scrapePage(url) {
 // then truncated mid-JSON and JSON.parse threw. 2.5-flash also spends "thinking"
 // tokens from the same budget, so the cap must be generous; it does NOT change the
 // output, only stops it being cut off.
-async function callGemini(prompt) {
+// `temperature` is the builder lane's 0.4 unless the caller says otherwise — the employer-doc lane asks
+// for DOC_LANE_TEMPERATURE (see there); nothing else about the call differs between the lanes.
+async function callGemini(prompt, { temperature = 0.4 } = {}) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error('GEMINI_API_KEY not set');
     const { GoogleGenerativeAI } = require('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: RESUME_MODEL,
-        generationConfig: { temperature: 0.4, maxOutputTokens: 32768, responseMimeType: 'application/json' },
+        generationConfig: { temperature, maxOutputTokens: 32768, responseMimeType: 'application/json' },
     });
 
     const timeoutPromise = new Promise((_, reject) =>
@@ -921,12 +923,21 @@ function docSectorPhraseOf(sector) {
  * without research the sector the employer hires in is something the model may bring to EMPHASIS (it is not a
  * fact about the candidate). ⚠️ Emphasis and wording only, same as every other block — the never-invent rules
  * stand, and this one restates them where the temptation is strongest.
+ *
+ * ⚠️ THE OPENING HAS A SHAPE AND A WORKED EXAMPLE (2026-09-15). "State the fit for the sector" got the base
+ * summary's first sentence back with the sector list swapped (Deutsche Bahn, prod: "Accomplished Project Manager
+ * with 14+ years … specializing in enterprise solutions for utility construction, waste management, and
+ * logistics") — the likeliest rewrite of a sentence is that sentence. So the first sentence is given as a SHAPE,
+ * "<real role> for <sector> — <the two or three real strengths that matter here>", with an example on a candidate
+ * who is not this one (a data engineer at a hospital group): a shape to fill from the material, never words to
+ * keep. docSamenessOf measures the opening on its own afterwards.
  */
 function docTopLinesBlock({ company, sector, conventions } = {}) {
     const conv = docConventionsOf(conventions);
     const typeText = conv && conv.employerType ? DOC_EMPLOYER_TYPE_TEXT[conv.employerType] || null : null;
     const phrase = sector ? docSectorPhraseOf(sector) : `the field ${company} hires in`;
     const who = typeText ? `${phrase} (${company} is ${typeText})` : phrase;   // the type once, in the opening line
+    const shapeFor = sector ? phrase : `<the sector ${company} hires in>`;   // the slot in the opening's shape
     const length = conv ? conv.cv.length : null;
     const detail = length === 'one_page'
         ? `one page: at most 3 highlights per role (the ones that matter to ${company}), a summary of at most 3 sentences before its 3 bullets, and minor bullets merged — never an entry dropped.`
@@ -937,7 +948,7 @@ function docTopLinesBlock({ company, sector, conventions } = {}) {
         `=== WRITTEN FOR ${company}: THE TOP LINES ===`,
         `A recruiter at ${company} reads the title and the first sentence of the summary before anything else. Both must read as written for ${who} — from the candidate's real record, never from what ${company} would like to hear:`,
         `- personal_info.title: phrase it for ${phrase} using the candidate's REAL roles — the shape is "<their real role> — <the specialism of theirs that this sector needs>" (e.g. a backend engineer applying to a payments company: "Backend Engineer — Payment Systems & APIs"). Never a role the material does not support, never ${company}'s name.`,
-        `- summary, first sentence: state the candidate's fit for ${phrase} with their most relevant REAL strengths — the skills, domains and work in the material that match this sector come first. A generic opening that would suit any employer is wrong here.`,
+        `- summary, first sentence: LEAD with the candidate's fit for ${phrase}, in the vocabulary ${company} uses. The shape is "<their real role> for ${shapeFor} — <the two or three real strengths of theirs that matter most here>", e.g. a data engineer applying to a hospital group: "Data Engineer for healthcare providers — clinical-data pipelines, HL7 integrations and audit-ready reporting" (an example of the SHAPE only, about someone else — never these words). Fill it from the skills, domains and work in the material that match this sector. The material's own opening sentence with a word or two swapped is not a rewrite, and a generic opening that would suit any employer is wrong here.`,
         `- Experience highlights and skills: where the material describes the SAME thing, say it in the vocabulary ${company} uses — the technologies, products and mission named in the research above, in that wording — and put those bullets first. A technology or product the candidate has not touched stays out, whatever the research names.`,
         `- Detail level, ${detail}`,
     ].join('\n');
@@ -973,10 +984,12 @@ function docTopLinesBlock({ company, sector, conventions } = {}) {
  * exactly as before apart from that brief.
  *
  * ⚠️ THE TOP LINES ARE WRITTEN FOR THE SECTOR (2026-09-15) — see docTopLinesBlock: the title in the candidate's
- * real roles phrased for the employer's sector, the summary opening as their fit for it, the bullets in the
- * employer's vocabulary, and the detail level from the conventions (one page → ≤3 highlights per role and a
- * ≤3-sentence summary). generateEmployerDoc MEASURES the answer against the base résumé (docSamenessOf) and
- * sends one corrective pass when it came back generic — the prompt is the first line, not the only one.
+ * real roles phrased for the employer's sector, the summary opening in the shape "<real role> for <sector> — <the
+ * two or three real strengths that matter here>" with a worked example that is never the candidate's own words,
+ * the bullets in the employer's vocabulary, and the detail level from the conventions (one page → ≤3 highlights
+ * per role and a ≤3-sentence summary). generateEmployerDoc MEASURES the answer against the base résumé
+ * (docSamenessOf: the summary, its first sentence, the title, the experience bullets) and sends one corrective
+ * pass when it came back generic — the prompt is the first line, not the only one.
  *
  * Output = the resume JSON schema buildParsePrompt uses (so every template renders it) PLUS a `design`
  * object that generateEmployerDoc strips before storing: the payload is the resume and nothing else.
@@ -1047,7 +1060,7 @@ ${researchBlock ? `${researchBlock}\n` : ''}${conventionsBlock ? `\n${convention
 ${topLinesBlock}
 
 === WHAT YOU MAY CHANGE (this is a full rewrite for ${company}) ===
-- Rewrite \`personal_info.title\` and \`summary\` for what ${company} needs from someone with THIS candidate's real background: its sector, its priorities, its vocabulary — exactly as WRITTEN FOR ${company} above says. A title or an opening sentence that would suit any employer is not a rewrite.
+- Rewrite \`personal_info.title\` and \`summary\` for what ${company} needs from someone with THIS candidate's real background: its sector, its priorities, its vocabulary — exactly as WRITTEN FOR ${company} above says. A title or an opening sentence that would suit any employer is not a rewrite, and neither is the material's own opening with a word or two swapped.
 - Rewrite the wording of every experience highlight and project bullet in the vocabulary ${company} uses — only where it describes the SAME thing the candidate did. Re-wording is not a licence to claim.
 - Reorder the highlights inside each experience entry, the projects, and \`skills.technical\` / \`skills.soft\`, so what matters most to ${company} comes first.
 - Condense highlights that are clearly irrelevant to ${company}: shorten them, or merge two minor ones into one line. Condense — never drop an entry: every experience entry and every education entry must still appear.
@@ -1275,14 +1288,25 @@ function employerNameLeaks(resumeData, company, sourceText) {
 // ── Sameness: did the rewrite actually write for THIS employer? ─────────────────────────────────────
 // ⚠️ THE MODEL SAYS "REWRITTEN FOR AMAZON" AND HANDS BACK THE BASE RÉSUMÉ. Every employer's document came
 // back with the candidate's own title and the same generic opening (2026-09-15), and nothing checked. The lane
-// now measures the two lines a recruiter reads first against the base material the prompt was given — the
-// narrative Home sends as rawText (resumeScorer.flattenResume: "Current title: …", a SUMMARY section) and the
+// now measures what a recruiter reads against the base material the prompt was given — the narrative Home sends
+// as rawText (resumeScorer.flattenResume: "Current title: …", a SUMMARY section, EXPERIENCE bullets) and the
 // parsed upload (resume_metadata: summary, job_titles) — and a generic answer costs ONE corrective pass, the
 // same pass placeholders and name leaks already share. Wording is measured, never facts: a summary that keeps
 // every fact and says them for the sector scores LOW here, which is exactly the answer wanted.
+//
+// ⚠️ FOUR READINGS, BECAUSE TWO WERE NOT ENOUGH (2026-09-15, later that day). The Deutsche Bahn document in prod
+// passed the first guard — summary 0.73 against a 0.8 line, the title rewritten — and still read as the base
+// résumé: the summary kept the base's opening word for word up to the sector list, and the bullets were "Led" →
+// "Directed". So the summary line is 0.6; the FIRST SENTENCE is measured on its own (it is the line the recruiter
+// reads — half its words the base's is the base's, 0.5); and the experience highlights are counted: when six in
+// ten are a base bullet near-verbatim (> 0.9 each), the bullets were not rewritten whatever the summary says. The
+// title rule is unchanged. Each measure is null where either side lacks the material, and null never counts.
 
-const DOC_SUMMARY_SAME_MAX = 0.8;    // token-Jaccard above this = the base summary in different clothes
-const DOC_STOPWORD_MAX_LEN = 3;      // "the", "and", "for", "with"… carry no sector; dropped before comparing
+const DOC_SUMMARY_SAME_MAX = 0.6;        // token-Jaccard above this = the base summary in different clothes
+const DOC_OPENING_SAME_MAX = 0.5;        // …the base's first sentence, the line a recruiter reads
+const DOC_HIGHLIGHT_SAME_MIN = 0.9;      // a highlight this similar to a base bullet IS that bullet
+const DOC_HIGHLIGHTS_SAME_SHARE = 0.6;   // this share of unchanged highlights = the bullets were not rewritten
+const DOC_STOPWORD_MAX_LEN = 3;          // "the", "and", "for", "with"… carry no sector; dropped before comparing
 
 /** The comparable words of a text: lower-cased, punctuation and bold markers gone, short stopwords dropped. */
 function docTokensOf(s) {
@@ -1294,7 +1318,7 @@ function docTokensOf(s) {
 /**
  * Token-Jaccard similarity of two texts, 0..1: |A ∩ B| / |A ∪ B| over docTokensOf. Two empty texts are the same
  * text (1); one empty text shares nothing (0). A summary re-worded for a sector scores well under 0.6 against its
- * base; the base summary with a sentence moved scores above 0.9 — see scripts/test-employer-doc-lane.js.
+ * base (the guard's line); the base summary with a sentence moved scores above 0.9 — see scripts/test-employer-doc-lane.js.
  */
 function tokenJaccard(a, b) {
     const A = docTokensOf(a);
@@ -1310,25 +1334,62 @@ function tokenJaccard(a, b) {
 const docTitleKeyOf = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
 /**
- * The base material's own top lines: { title, titles, summary } — the narrative's "Current title:" line and SUMMARY
- * section, the upload's job_titles and summary (experience_summary as its fallback). Each null / [] when the material
- * does not carry it, so a check with nothing to compare against is skipped, never guessed. Never throws.
+ * The paragraph of a summary — what stands before its "• " bullets, whether they sit on their own lines (a draft)
+ * or inline (the narrative flattens the base summary to one line) — as compared. '' for none. The opening is read
+ * from this; the summary reading takes the WHOLE summary, bullets included (docSummaryTextOf).
+ */
+function docSummaryParagraphOf(s) {
+    return String(s || '').split('\n').filter((l) => !/^\s*•/.test(l)).join(' ').split('•')[0].replace(/\s+/g, ' ').trim();
+}
+
+/** The whole summary as compared — paragraph and bullets, on one line. '' for none. */
+const docSummaryTextOf = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+
+/**
+ * The first sentence of a paragraph, as compared: bold markers off, cut at ". " / "! " / "? " before a capital, a digit
+ * or an opening quote. A first "sentence" of fewer than five comparable words ("Project Manager." — a narrative that
+ * opens with the title) takes the next one with it, so a stub never stands in for the opening. '' for no text.
+ */
+function docFirstSentenceOf(text) {
+    const s = String(text || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    const parts = s.split(/(?<=[.!?])\s+(?=[\p{Lu}\p{N}"“(])/u);
+    let out = parts[0];
+    for (let i = 1; i < parts.length && docTokensOf(out).size < 5; i++) out += ` ${parts[i]}`;
+    return out;
+}
+
+/**
+ * The base material's own lines: { title, titles, summary, highlights } — the narrative's "Current title:" line, its
+ * SUMMARY section and the EXPERIENCE section's "- " bullets, the upload's job_titles and summary (experience_summary as
+ * its fallback). Each null / [] when the material does not carry it, so a check with nothing to compare against is
+ * skipped, never guessed. Never throws.
  */
 function baseTopLinesOf(rawText, uploadedResumeContext) {
-    const out = { title: null, titles: [], summary: null };
+    const out = { title: null, titles: [], summary: null, highlights: [] };
     const text = String(rawText || '');
     const t = text.match(/^Current title:\s*(.+?)\s*$/m);
     if (t) out.title = t[1].replace(/\s+/g, ' ');
     const lines = text.split('\n');
+    const isHeader = (l) => /^[A-Z][A-Z &/]+$/.test(l);
     const at = lines.findIndex((l) => l.trim() === 'SUMMARY');
     if (at >= 0) {
         const body = [];
         for (let i = at + 1; i < lines.length; i++) {
             const l = lines[i].trim();
-            if (!l || /^[A-Z][A-Z &/]+$/.test(l)) break;              // a blank line or the next section header ends it
+            if (!l || isHeader(l)) break;              // a blank line or the next section header ends it
             body.push(l);
         }
         if (body.length) out.summary = body.join(' ');
+    }
+    // The experience bullets alone — a project's "- " lines describe the project, and the guard counts experience.
+    const exp = lines.findIndex((l) => l.trim() === 'EXPERIENCE');
+    if (exp >= 0) {
+        for (let i = exp + 1; i < lines.length; i++) {
+            const l = lines[i].trim();
+            if (isHeader(l)) break;                     // the next section header ends it
+            if (/^[-•]\s+\S/.test(l)) out.highlights.push(l.replace(/^[-•]\s+/, ''));
+        }
     }
     try {
         const up = uploadedResumeContext ? JSON.parse(uploadedResumeContext) : null;
@@ -1345,31 +1406,62 @@ function baseTopLinesOf(rawText, uploadedResumeContext) {
 }
 
 /**
- * How generic a draft's top lines are against the base material: { summarySim, titleUnchanged, sectorKnown, generic }.
- *   summarySim     — tokenJaccard of the draft's summary and the base summary (the paragraph before the bullets on
- *                    both sides), or null when either side has none;
+ * How generic a draft is against the base material:
+ * { summarySim, openingSim, openings, titleUnchanged, sectorKnown, highlights, generic }.
+ *   summarySim     — tokenJaccard of the draft's WHOLE summary and the base's (paragraph and bullets: the recruiter's
+ *                    summary box; the prod pair measures 0.73 this way), or null when either side has none;
+ *   openingSim     — tokenJaccard of the FIRST SENTENCE of each paragraph (docSummaryParagraphOf → docFirstSentenceOf),
+ *                    or null; `openings` carries the two sentences ({ base, draft }) for the corrective pass to quote;
  *   titleUnchanged — the draft's title is, folded, one of the base titles (the narrative's current title, the
  *                    upload's job_titles); false with no title on either side;
- *   generic        — summarySim > DOC_SUMMARY_SAME_MAX, or the sector is known AND the title is unchanged. Without a
- *                    known sector an unchanged title is not evidence: there was nothing to phrase it for.
+ *   highlights     — { unchanged, total, share }: of the draft's experience highlights, how many are a base bullet
+ *                    near-verbatim (tokenJaccard > DOC_HIGHLIGHT_SAME_MIN with any base bullet) — null when either
+ *                    side has none;
+ *   generic        — summarySim > DOC_SUMMARY_SAME_MAX, or openingSim > DOC_OPENING_SAME_MAX, or the sector is known
+ *                    AND the title is unchanged, or highlights.share ≥ DOC_HIGHLIGHTS_SAME_SHARE. Without a known
+ *                    sector an unchanged title is not evidence: there was nothing to phrase it for.
  */
 function docSamenessOf(draft, base, sector) {
-    const b = base && typeof base === 'object' ? base : { title: null, titles: [], summary: null };
+    const b = base && typeof base === 'object' ? base : { title: null, titles: [], summary: null, highlights: [] };
     const pi = draft && draft.personal_info && typeof draft.personal_info === 'object' ? draft.personal_info : {};
-    const para = (s) => String(s || '').split('\n').filter((l) => !/^\s*•/.test(l)).join(' ').trim();
-    const draftSummary = para(draft && draft.summary);
-    const baseSummary = para(b.summary);
+    const draftSummary = docSummaryTextOf(draft && draft.summary);
+    const baseSummary = docSummaryTextOf(b.summary);
     const summarySim = draftSummary && baseSummary ? tokenJaccard(draftSummary, baseSummary) : null;
+    const openings = {
+        base: summarySim == null ? '' : docFirstSentenceOf(docSummaryParagraphOf(b.summary)),
+        draft: summarySim == null ? '' : docFirstSentenceOf(docSummaryParagraphOf(draft && draft.summary)),
+    };
+    const openingSim = summarySim == null ? null : tokenJaccard(openings.draft, openings.base);
     const key = docTitleKeyOf(pi.title);
     const titleUnchanged = !!key && (b.titles || []).some((t) => docTitleKeyOf(t) === key);
     const sectorKnown = !!sector;
-    return { summarySim, titleUnchanged, sectorKnown, generic: (summarySim != null && summarySim > DOC_SUMMARY_SAME_MAX) || (sectorKnown && titleUnchanged) };
+    const draftHighlights = [];
+    for (const e of Array.isArray(draft && draft.experience) ? draft.experience : []) {
+        for (const h of Array.isArray(e && e.highlights) ? e.highlights : []) if (typeof h === 'string' && h.trim()) draftHighlights.push(h);
+    }
+    const baseHighlights = Array.isArray(b.highlights) ? b.highlights : [];
+    let highlights = null;
+    if (draftHighlights.length && baseHighlights.length) {
+        const unchanged = draftHighlights.filter((h) => baseHighlights.some((bh) => tokenJaccard(h, bh) > DOC_HIGHLIGHT_SAME_MIN)).length;
+        highlights = { unchanged, total: draftHighlights.length, share: unchanged / draftHighlights.length };
+    }
+    const generic = (summarySim != null && summarySim > DOC_SUMMARY_SAME_MAX)
+        || (openingSim != null && openingSim > DOC_OPENING_SAME_MAX)
+        || (sectorKnown && titleUnchanged)
+        || (highlights != null && highlights.share >= DOC_HIGHLIGHTS_SAME_SHARE);
+    return { summarySim, openingSim, openings, titleUnchanged, sectorKnown, highlights, generic };
 }
 
-/** "summary similarity 0.93, title unchanged" — one log phrase for before and after. */
+/**
+ * "summary similarity 0.93, title unchanged" — one log phrase for before and after. The opening and the bullets are
+ * named only when they are over their line, so the phrase says what made it generic and no more.
+ */
 function docSamenessText(s) {
     if (!s) return 'not measured';
-    return `summary similarity ${s.summarySim == null ? 'n/a' : s.summarySim.toFixed(2)}, title ${s.titleUnchanged ? 'unchanged' : 'rewritten'}`;
+    const parts = [`summary similarity ${s.summarySim == null ? 'n/a' : s.summarySim.toFixed(2)}`, `title ${s.titleUnchanged ? 'unchanged' : 'rewritten'}`];
+    if (s.openingSim != null && s.openingSim > DOC_OPENING_SAME_MAX) parts.push(`opening similarity ${s.openingSim.toFixed(2)}`);
+    if (s.highlights && s.highlights.share >= DOC_HIGHLIGHTS_SAME_SHARE) parts.push(`${s.highlights.unchanged}/${s.highlights.total} highlights unchanged`);
+    return parts.join(', ');
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1810,6 +1902,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 const DOC_LANE_CORRECTION_BUDGET_MS = 3 * 60 * 1000;
 
+/**
+ * The doc lane's sampling temperature, above the builder lane's 0.4 (2026-09-15). At 0.4 the rewrite for Deutsche
+ * Bahn kept the base summary's opening word for word and swapped one verb per bullet ("Led" → "Directed"): the
+ * likeliest continuation of a résumé is that résumé. A little more room lets the model leave the base's phrasing;
+ * the facts are held by the prompt's rules and the sameness guard, not by the temperature. The builder lane is
+ * untouched (callGemini's default).
+ */
+const DOC_LANE_TEMPERATURE = 0.55;
+
 /** The research for a build, or null. employerResearch never throws; a module that fails to load is null too. */
 async function researchForDoc(website, company) {
     try {
@@ -1945,7 +2046,7 @@ async function writeDocDraft(prompt, report) {
     for (let attempt = 1; attempt <= 3; attempt++) {
         if (attempt > 1) await report('retry', 'Taking another pass at it', 38 + attempt * 6);
         try {
-            const { text, finishReason } = await callGemini(prompt);
+            const { text, finishReason } = await callGemini(prompt, { temperature: DOC_LANE_TEMPERATURE });
             if (finishReason === 'MAX_TOKENS') throw new Error('TRUNCATED_OUTPUT');
             const parsed = parseDocJson(text);
             if (parsed) return parsed;
@@ -1962,8 +2063,9 @@ async function writeDocDraft(prompt, report) {
 
 /**
  * What the draft got wrong that one more pass may fix: placeholders, the employer's name, and — when `base` is
- * given — top lines that are the base résumé's (docSamenessOf; `sameness` is always measured, `generic` is the
- * problem). The design block is not the resume, so it is not scanned.
+ * given — a résumé that is still the base one (docSamenessOf: the summary, its opening, the title, the experience
+ * bullets; `sameness` is always measured, `generic` is the problem). The design block is not the resume, so it is
+ * not scanned.
  */
 function docProblemsOf(draft, company, sourceText, { base = null, sector = null } = {}) {
     const resumeOnly = { ...draft, design: undefined };
@@ -1979,8 +2081,12 @@ const problemCount = (p) => p.placeholders.length + p.leaks.length + (p.generic 
 
 /**
  * The ONE corrective pass: the same prompt, the draft that broke a rule, and exactly which rule — placeholders,
- * the employer's name, and top lines that are still the base résumé's (`sector` names what to rewrite them for).
- * Returns the corrected resume, or null. Never throws — the first draft is still deliverable after stripping.
+ * the employer's name, and a résumé that is still the base one (`sector` names what to rewrite it for). For that
+ * last one the pass quotes the base opening and the draft's back to the model — the model cannot see its own
+ * sameness — and demands the opening's shape ("<real role> for <sector> — <the two or three real strengths that
+ * matter here>"), the bullets rephrased in the sector's language with the relevant ones first, and, again, no
+ * fact added. Returns the corrected resume, or null. Never throws — the first draft is still deliverable after
+ * stripping.
  */
 async function correctDocDraft(prompt, draft, problems, company, { sector = null } = {}) {
     const lines = [];
@@ -1992,12 +2098,18 @@ async function correctDocDraft(prompt, draft, problems, company, { sector = null
     }
     if (problems.generic) {
         const s = problems.sameness || {};
+        const pct = (v) => `${Math.round(v * 100)}%`;
         const why = [
-            s.summarySim != null && s.summarySim > DOC_SUMMARY_SAME_MAX ? `the summary is ${Math.round(s.summarySim * 100)}% the same as the base resume's` : '',
+            s.summarySim != null && s.summarySim > DOC_SUMMARY_SAME_MAX ? `the summary is ${pct(s.summarySim)} the same as the base resume's` : '',
+            s.openingSim != null && s.openingSim > DOC_OPENING_SAME_MAX ? `its first sentence is ${pct(s.openingSim)} the base resume's opening` : '',
             s.titleUnchanged ? 'the title is the candidate\'s current title, unchanged' : '',
-        ].filter(Boolean).join(' and ');
+            s.highlights && s.highlights.share >= DOC_HIGHLIGHTS_SAME_SHARE ? `${s.highlights.unchanged} of its ${s.highlights.total} experience highlights are the base resume's bullets with a word swapped` : '',
+        ].filter(Boolean).join(', ');
         const forWhat = sector ? docSectorPhraseOf(sector) : `the field ${company} hires in`;
-        lines.push(`- It reads like the candidate's general resume, not one written for ${company}${why ? ` (${why})` : ''}. Rewrite the title and the summary opening for ${forWhat}: personal_info.title phrased for ${forWhat} using the candidate's REAL roles ("<real role> — <their specialism this sector needs>"), and the summary's first sentence stating their fit for ${forWhat} with their most relevant real strengths; reword the experience highlights in ${company}'s vocabulary where they describe the same work. Wording and emphasis only — every fact stays exactly as the material states it, nothing is added, and ${company}'s name stays out.`);
+        const op = s.openings || {};
+        const cut = (v) => String(v || '').slice(0, 400);
+        const quoted = op.base && op.draft ? ` The base resume opens: ${JSON.stringify(cut(op.base))} — your answer opens: ${JSON.stringify(cut(op.draft))}.` : '';
+        lines.push(`- It reads like the candidate's general resume, not one written for ${company}${why ? ` (${why})` : ''}.${quoted} Rewrite the title and the summary opening for ${forWhat}: personal_info.title phrased for ${forWhat} using the candidate's REAL roles ("<real role> — <their specialism this sector needs>"); the summary's first sentence LEADING with their fit for ${forWhat} in ${company}'s vocabulary, in the shape "<real role> for ${forWhat} — <the two or three real strengths that matter here>", filled from the material and not from the base opening's wording. Then rephrase the experience highlights in the language of ${forWhat} where they describe the same work, the ones that matter to ${company} first — a bullet with one verb swapped is not rephrased. Wording, order and emphasis only: every fact stays exactly as the material states it, NO fact may be added (no skill, tool, number, client or achievement the material does not state), and ${company}'s name stays out.`);
     }
     const fixPrompt = `${prompt}
 
@@ -2006,7 +2118,7 @@ ${lines.join('\n')}
 Here is that previous answer. Return the COMPLETE corrected JSON in the same schema (including "design"), changing only what the rules above require and keeping every entry:
 ${JSON.stringify(draft)}`;
     try {
-        const { text, finishReason } = await callGemini(fixPrompt);
+        const { text, finishReason } = await callGemini(fixPrompt, { temperature: DOC_LANE_TEMPERATURE });
         if (finishReason === 'MAX_TOKENS') return null;
         return parseDocJson(text);
     } catch (e) {
@@ -2173,16 +2285,22 @@ function keepDesignExtras(normalised, raw) {
 }
 
 /**
- * Every catalogue design exactly once, integer scores, best first — the invariant every reader of `ranked` relies on.
- * `ids` is the catalogue of the design's kind (the resume catalogue by default).
+ * Every catalogue design exactly once, integer scores — the invariant every reader of `ranked` relies on. `ids` is
+ * the catalogue of the design's kind (the resume catalogue by default).
+ * ⚠️ THE ORDER IS THE PRODUCER'S, NOT CHECKED HERE (2026-09-15). This used to demand scores descending over the whole
+ * list, and a resume `ranked` is FAMILY-FIRST now (designFit: one card per family, then the variants — the first
+ * variant of the tail outscores the last family card by design), so that test read every re-ranked resume design
+ * as broken and rerankStoredDesign answered null for all of them: the cards fell back to the stored order the
+ * re-rank exists to replace. designFit.familyFirst is pure and idempotent and normaliseDesign applies it on read;
+ * a letter's seven designs stay in plain score order. Neither needs this function to re-verify the sort.
  */
 function isCompleteRanking(d, ids = TEMPLATE_IDS) {
     if (!d || typeof d !== 'object' || !Array.isArray(d.ranked) || d.ranked.length !== ids.length) return false;
     const seen = new Set();
-    return d.ranked.every((r, i, a) => {
+    return d.ranked.every((r) => {
         if (!r || !ids.includes(r.id) || seen.has(r.id) || !Number.isInteger(r.score)) return false;
         seen.add(r.id);
-        return i === 0 || a[i - 1].score >= r.score;
+        return true;
     });
 }
 
@@ -2213,13 +2331,31 @@ function docRegionFor(fit, conventions, { country = null, website = null } = {})
 
 const BRAND_HEX_RE = /^#[0-9a-f]{6}$/i;
 
-/** A { accent, font } brand exactly as the renderer reads it (accent lower-cased, family ≤ 80 chars, google a boolean), or null when neither half is usable. */
+/**
+ * A stored font as the renderer will LOAD it (2026-09-15): a face Google does not host becomes its static-table
+ * alternative (employerResearch.effectiveFont — "DB Neo Screen Sans Regular" → Barlow, Segoe UI → Open Sans), reduced
+ * to { family, google } so from/original never reach the renderer or brandKeyOf. ⚠️ Prod doc 9 stored its raw face on
+ * design.brand at build time (google:false) and rendered in Lato, while its research snapshot would have answered
+ * Barlow through brandOf — two readings of one row. Every stored brand is read through docBrandShapeOf, so the table
+ * is applied here and the two paths agree. Deterministic: a static table, no memory, no network. A research module
+ * without effectiveFont, or a face the table does not know, leaves the font exactly as stored.
+ */
+function docFontAsLoaded(font) {
+    try {
+        const er = require('../services/employerResearch');
+        const eff = typeof er.effectiveFont === 'function' ? er.effectiveFont(font) : null;
+        if (eff && typeof eff.family === 'string' && eff.family.trim()) return { family: eff.family.replace(/\s+/g, ' ').trim().slice(0, 80), google: eff.google === true };
+    } catch { /* the face as stored */ }
+    return font;
+}
+
+/** A { accent, font } brand exactly as the renderer reads it (accent lower-cased, family ≤ 80 chars, google a boolean, the font as loaded — docFontAsLoaded), or null when neither half is usable. */
 function docBrandShapeOf(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     const accent = typeof raw.accent === 'string' && BRAND_HEX_RE.test(raw.accent.trim()) ? raw.accent.trim().toLowerCase() : null;
     const f = raw.font && typeof raw.font === 'object' && !Array.isArray(raw.font) ? raw.font : null;
     const family = f && typeof f.family === 'string' ? f.family.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
-    const font = family ? { family, google: f.google === true } : null;
+    const font = family ? docFontAsLoaded({ family, google: f.google === true }) : null;
     return accent || font ? { accent, font } : null;
 }
 
@@ -2712,10 +2848,11 @@ async function generateEmployerDoc(req, res) {
         });
         let draft = await writeDocDraft(prompt, report);
 
-        // The placeholder guard, the employer's name kept out of the title and summary, and the top lines measured
-        // against the base résumé (docSamenessOf — a generic answer is a problem like the other two): ONE corrective
-        // pass for all of them while there is time, then whatever placeholder is left is removed. A name or a generic
-        // opening that survives the pass is delivered as written — cutting into a sentence would garble it.
+        // The placeholder guard, the employer's name kept out of the title and summary, and the résumé measured
+        // against the base one (docSamenessOf — the summary, its opening, the title and the experience bullets; a
+        // generic answer is a problem like the other two): ONE corrective pass for all of them while there is time,
+        // then whatever placeholder is left is removed. A name or a generic opening that survives the pass is
+        // delivered as written — cutting into a sentence would garble it.
         const sourceText = [rawText, uploadedResumeContext].join('\n');
         const base = baseTopLinesOf(rawText, uploadedResumeContext);
         let problems = docProblemsOf(draft, company, sourceText, { base, sector });
@@ -2928,7 +3065,8 @@ async function generateEmployerDoc(req, res) {
         }
 
         await report('pages', 'Laying out your top designs', 96);
-        await prerenderDocThumbs(userId, docId, resumeData, design, brand, 3, 20000);
+        // The top designs' full-size pages, into the cache the gallery and Home's cards share (prerenderDocPages).
+        await prerenderDocPages(userId, docId, resumeData, design, brand, 3, 20000);
         return res.json({ success: true, cached: false, docId: Number(docId), tailoredFor: company });
     } catch (e) {
         console.error('[resumeBuilder] employer doc error:', e.message);
@@ -3918,29 +4056,6 @@ async function previewTemplates(req, res) {
     const userId = req.user.id;
     const { region, ids } = req.body || {};
     try {
-        let row;
-        let docTag = '';
-        let brand = null;
-        if (hasDocId(req.body)) {
-            // The gallery for ONE employer's stored document renders that document. Its previews share
-            // this cache, namespaced by the document id (a document and the base row can carry the same
-            // updated_at millisecond, and must never serve each other's pages) and by the brand it renders
-            // in (the brand is drawn INTO the page, so a brand that changed is a different page).
-            const doc = await loadResumeDoc(userId, req.body.docId, req);
-            if (!doc) return res.status(404).json({ success: false, error: 'That version of your resume is no longer saved.', reason: 'doc_gone' });
-            row = { resume_data: doc.payload, updated_at: doc.updated_at };
-            brand = docBrandOf(doc);
-            docTag = `doc${Number(doc.id)}-${brandKeyOf(brand)}-`;
-        } else {
-            await ensureResumeTable();
-            // ⚠️ updated_at IS HALF THE CACHE KEY (previewFile). It used to be missing from this SELECT, so
-            // every key fell back to Date.now(): no gallery preview ever hit, and every batch wrote files
-            // that only prunePreviews would ever touch again.
-            row = await dbConfig.get('SELECT resume_data, updated_at FROM user_resumes WHERE user_id = $1', [userId]);
-            if (!row || !row.resume_data) {
-                return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
-            }
-        }
         // ── ids mode: the gallery asks for a small batch as the user scrolls/taps a swatch. ──
         // Rendering all 37 designs in one request is exactly the shape that used to break the
         // preview at NINE (multi-MB inline base64 + a serial chromium loop outliving the client
@@ -3948,10 +4063,36 @@ async function previewTemplates(req, res) {
         const tpls = Array.isArray(ids) && ids.length
             ? [...new Set(ids)].slice(0, 6).map(id => TEMPLATES.find(t => t.id === id)).filter(Boolean)
             : templatesForRegion(region);                 // legacy region mode (older app builds)
+        if (hasDocId(req.body)) {
+            // The gallery for ONE employer's stored document renders that document — through the SAME cache as
+            // Home's cards (docPages: uploads/.thumb_cache/<user>/, keyed by the document, its version, the photo,
+            // the design and the brand it renders in, which is drawn INTO the page), never temp/. So the build's
+            // pre-render of the top designs is the gallery's first previews already rendered, and a design the
+            // gallery renders is Home's next card. Misses are rendered in ONE batch (the warm browser is reused).
+            const doc = await loadResumeDoc(userId, req.body.docId, req);
+            if (!doc) return res.status(404).json({ success: false, error: 'That version of your resume is no longer saved.', reason: 'doc_gone' });
+            if (!tpls.length) return res.status(400).json({ error: 'No valid template ids.' });
+            const pages = await docPages(userId, doc, tpls.map((t) => t.id), await photoVersion(userId), docBrandOf(doc));
+            const got = tpls.map((t) => pages.get(t.id)).filter(Boolean);   // in the order asked for
+            if (!got.length) return res.status(500).json({ error: 'Failed to render design previews. Please try again.' });
+            pruneDocThumbs(userId, got.map((p) => p.file));                  // fire and forget
+            console.log(`[resumeBuilder] previews for doc ${Number(doc.id)}: ${got.filter((p) => p.cached).length} cached, ${got.filter((p) => !p.cached).length} rendered`);
+            const previews = got.map(({ id, name, accent, ats, image, width, height }) => ({ id, name, accent, ats, image, width, height }));
+            return res.json({ success: true, region: region || 'generic', previews });
+        }
+        await ensureResumeTable();
+        // ⚠️ updated_at IS HALF THE CACHE KEY (previewFile). It used to be missing from this SELECT, so
+        // every key fell back to Date.now(): no gallery preview ever hit, and every batch wrote files
+        // that only prunePreviews would ever touch again.
+        const row = await dbConfig.get('SELECT resume_data, updated_at FROM user_resumes WHERE user_id = $1', [userId]);
+        if (!row || !row.resume_data) {
+            return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
+        }
         if (!tpls.length) return res.status(400).json({ error: 'No valid template ids.' });
         // Serve what we already have; render only what is genuinely missing, in ONE batch so the
-        // warm browser is reused. A second visit to the gallery renders nothing at all.
-        const pver = docTag + await photoVersion(userId);
+        // warm browser is reused. A second visit to the gallery renders nothing at all. (The base résumé
+        // has no employer and no brand: its previews stay in temp/, keyed by resume version + photo + design.)
+        const pver = await photoVersion(userId);
         const hits = [];
         const missing = [];
         for (const tpl of tpls) {
@@ -3961,7 +4102,7 @@ async function previewTemplates(req, res) {
         let fresh = [];
         if (missing.length) {
             const { photo, photoRect } = await photosFor(userId);
-            fresh = await renderPreviews(row.resume_data, { photo, photoRect, brand }, missing);
+            fresh = await renderPreviews(row.resume_data, { photo, photoRect }, missing);
             for (const p of fresh) await writePreviewCache(userId, row, p, pver);
             prunePreviews(userId);                       // fire and forget
         }
@@ -4215,76 +4356,191 @@ async function homeCards(req, res) {
     }
 }
 
-// ── Employer-document thumbnails: a persistent, private, per-user LRU ───────────────────────────────
+// ── Employer-document pages and cards: a persistent, private, per-user LRU ─────────────────────────
 // Home switches between employers constantly, and each chip's carousel is THAT employer's resume in its
-// best-ranked designs. temp/ is wiped by every deploy, so a doc thumb there would be a chromium render
-// per card again after each release — these live on the uploads VOLUME instead.
+// best-ranked designs; the gallery shows the same document at full size. temp/ is wiped by every deploy,
+// so a render there would be a chromium render per card again after each release — these live on the
+// uploads VOLUME instead.
 //
-// ⚠️ A DOT DIRECTORY, ON PURPOSE. server.js serves uploads/ publicly (express.static), and a thumb is
+// ⚠️ ONE CACHE FOR THE GALLERY AND THE CARDS (2026-09-15). The gallery's doc-mode previews used to live in
+// temp/ as JSON while Home's cards lived here as 480-px thumbs, so the build's pre-render warmed the cards
+// and the gallery's first (visible) design still paid a cold chromium render, its neighbours arriving after
+// a scroll. What is stored now is the FULL-SIZE 794-px page (docPages), per (user, document, its updated_at,
+// the photo's version, the design, the brand it renders in — brandKeyOf); the 480-px card (docThumb) is
+// DERIVED from it with sharp on first read and stored alongside under the page's name suffixed .w480. The
+// build's pre-render of the top designs is therefore the gallery's first previews, and a design the gallery
+// renders is Home's next card.
+//
+// ⚠️ A DOT DIRECTORY, ON PURPOSE. server.js serves uploads/ publicly (express.static), and a page is
 // someone's resume with their photo on it. serve-static's default `dotfiles: 'ignore'` answers 404 for
 // any path with a segment starting with "." — verified against this repo's node_modules (serve-static
 // 2.2.0 / send 1.2.0): /uploads/.thumb_cache/<id>/<file> is a 404, including %2E-encoded and ../ forms,
 // and res.sendFile refuses it the same way. File names are sha256 hashes, so nothing in a name is
 // guessable either. ⚠️ Do not rename this directory to one without the leading dot.
 //
-// The key is (user, document, its updated_at, the photo's version, the design, the brand it renders in —
-// brandKeyOf): an edit, a rebuild, a new photo or a brand that changed is a different file, never a stale
-// image. Letter thumbs (cl_ prefix) share the directory; this LRU only ever counts and deletes its own
-// 64-hex-char names.
+// An edit, a rebuild, a new photo or a brand that changed is a different file, never a stale image. Letter
+// thumbs (cl_ prefix) share the directory; this LRU only ever counts and deletes its own names (64 hex
+// characters, with or without the card suffix).
 const DOC_THUMB_ROOT = path.join(__dirname, '../../uploads/.thumb_cache');
 const DOC_THUMB_KEEP = 240;
-const DOC_THUMB_NAME = /^[0-9a-f]{64}\.jpg$/;
+const DOC_CARD_SUFFIX = `.w${THUMB_W}`;                                            // "<page>.w480.jpg" is the card of "<page>.jpg"
+const DOC_THUMB_NAME = new RegExp(`^[0-9a-f]{64}(?:\\${DOC_CARD_SUFFIX})?\\.jpg$`);
+const DOC_PAGE_W = 794;                                                            // the renderer's A4 width, for a page whose header cannot be read
+const DOC_PAGE_H = 1123;
 const docThumbDirOf = (userId) => path.join(DOC_THUMB_ROOT, String(parseInt(userId, 10) || 0));
-const docThumbFlights = new Map();   // absolute path → Promise — one render per file, however many ask
+const docThumbFlights = new Map();   // absolute path of a page → Promise<page> — one render per file, however many ask
 
-function docThumbNameOf(userId, doc, pver, tplId, brand) {
+/** The page file of one design of one stored document. v3: the file IS the full-size page (v2 files were cards). */
+function docPageNameOf(userId, doc, pver, tplId, brand) {
     const ms = new Date(doc.updated_at || 0).getTime() || 0;
     return crypto.createHash('sha256')
-        .update(['resume-doc-thumb:v2', userId, doc.id, ms, pver, tplId, brandKeyOf(brand)].join('|'))
+        .update(['resume-doc-page:v3', userId, doc.id, ms, pver, tplId, brandKeyOf(brand)].join('|'))
         .digest('hex') + '.jpg';
+}
+/** The card derived from a page: the page's name, suffixed. */
+const docCardNameOf = (pageName) => pageName.replace(/\.jpg$/, `${DOC_CARD_SUFFIX}.jpg`);
+
+/** The pixel size of a JPEG from its frame header, { width, height } — or null when the bytes are not one. */
+function jpegSizeOf(buf) {
+    if (!Buffer.isBuffer(buf) || buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+    let i = 2;
+    while (i + 9 <= buf.length) {
+        if (buf[i] !== 0xff) { i++; continue; }                                         // fill bytes between segments
+        const marker = buf[i + 1];
+        if (marker === 0xff) { i++; continue; }
+        if (marker === 0x01 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; }   // standalone markers
+        if (marker === 0xd9 || marker === 0xda) return null;                            // the image ended, or the scan began, before a frame header
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+            return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) }; // SOFn: length, precision, height, width
+        }
+        i += 2 + buf.readUInt16BE(i + 2);
+    }
+    return null;
+}
+
+/** A cached file's bytes — touching its mtime, because this is an LRU and a read is a use — or null. */
+async function readDocFile(abs) {
+    try {
+        const buf = await fs.readFile(abs);
+        const now = new Date();
+        fs.utimes(abs, now, now).catch(() => {});
+        return buf;
+    } catch { return null; }
+}
+
+/** Written aside and renamed in, so a reader never gets half a JPEG. Never throws — a miss next time is the only cost. */
+async function writeDocFile(dir, name, buf) {
+    try {
+        await fs.mkdir(dir, { recursive: true });
+        const abs = path.join(dir, name);
+        const tmp = `${abs}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+        await fs.writeFile(tmp, buf);
+        await fs.rename(tmp, abs);
+    } catch (e) { console.warn('[resumeBuilder] doc page not cached:', e.message); }
 }
 
 /**
- * One design of one stored document → { image, name } (a downscaled JPEG data URI), rendered in `brand` (the
- * document's — docBrandOf — which every caller passes so the key and the page agree). Throws on a failed render.
+ * A page answer from its bytes: the catalogue's name and ats, the accent the page shows (brandedTemplate — every
+ * variant is re-hued to the brand, so the catalogue swatch would promise a colour that never arrives), the size from
+ * the JPEG header (the renderer's A4 width and height when the bytes are not a JPEG the parser reads), and `file` —
+ * the name the LRU keeps alive.
+ */
+function docPageOf(tpl, brand, name, buf, cached) {
+    const size = jpegSizeOf(buf) || { width: DOC_PAGE_W, height: DOC_PAGE_H };
+    let accent = (brand && brand.accent) || tpl.accent;
+    try { accent = brandedTemplate(tpl, brand).accent || accent; } catch { /* an unreadable brand: the accent it names */ }
+    return {
+        id: tpl.id, name: tpl.name, accent, ats: tpl.ats || null,
+        image: `data:image/jpeg;base64,${buf.toString('base64')}`, width: size.width, height: size.height, file: name, cached,
+    };
+}
+
+/**
+ * The full-size pages of one stored document in the designs asked for → Map id → { id, name, accent, ats, image,
+ * width, height, file, cached }: from the cache where the page exists, else rendered in ONE renderPreviews batch (the
+ * warm browser is reused) and stored. A design already rendering for another request (docThumbFlights) is awaited,
+ * never rendered twice; a design whose render failed is absent from the answer (callers treat a missing id as
+ * "could not render"). `brand` is the document's (docBrandOf), which every caller passes so the key and the page
+ * agree. Never throws.
+ */
+async function docPages(userId, doc, tplIds, pver, brand = null) {
+    const dir = docThumbDirOf(userId);
+    const out = new Map();
+    const misses = [];                 // { tpl, name, settle }
+    const awaited = [];                // [id, another request's flight]
+    for (const id of [...new Set(tplIds)]) {
+        const tpl = TEMPLATES.find((t) => t.id === id);
+        if (!tpl) continue;
+        const name = docPageNameOf(userId, doc, pver, id, brand);
+        const abs = path.join(dir, name);
+        const buf = await readDocFile(abs);
+        if (buf && buf.length) { out.set(id, docPageOf(tpl, brand, name, buf, true)); continue; }
+        if (docThumbFlights.has(abs)) { awaited.push([id, docThumbFlights.get(abs)]); continue; }
+        let settle = null;
+        const flight = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+        flight.catch(() => {});                                                       // a failed render is reported by absence, never as an unhandled rejection
+        docThumbFlights.set(abs, flight);
+        flight.finally(() => { if (docThumbFlights.get(abs) === flight) docThumbFlights.delete(abs); }).catch(() => {});
+        misses.push({ tpl, name, settle });
+    }
+    if (misses.length) {
+        let rendered = [];
+        try {
+            const { photo, photoRect } = await photosFor(userId);
+            rendered = await renderPreviews(doc.payload, { photo, photoRect, brand }, misses.map((m) => m.tpl));
+        } catch (e) { console.warn('[resumeBuilder] doc page render failed:', e.message); }
+        const byId = new Map((Array.isArray(rendered) ? rendered : []).map((p) => [p.id, p]));
+        for (const m of misses) {
+            const pv = byId.get(m.tpl.id);
+            const full = Buffer.from(String((pv && pv.image) || '').split(',')[1] || '', 'base64');
+            if (!full.length) { m.settle.reject(new Error(`could not render ${m.tpl.id}`)); continue; }
+            await writeDocFile(dir, m.name, full);
+            const page = docPageOf(m.tpl, brand, m.name, full, false);
+            // A fresh render knows its own size and accent better than the header parser does.
+            if (Number(pv.width) > 0 && Number(pv.height) > 0) { page.width = Number(pv.width); page.height = Number(pv.height); }
+            if (typeof pv.accent === 'string' && pv.accent) page.accent = pv.accent;
+            out.set(m.tpl.id, page);
+            m.settle.resolve(page);
+        }
+    }
+    for (const [id, flight] of awaited) {
+        try { out.set(id, await flight); } catch { /* that request's render failed: absent here too */ }
+    }
+    return out;
+}
+
+/**
+ * One design of one stored document → { image, name, names } for Home's card: a 480-px JPEG data URI. Read from the
+ * card file, else derived with sharp from the page (docPages: the cache, or a render) and stored alongside it; without
+ * sharp — or on bytes it cannot read — the page itself is served, heavier but correct, and no card is written.
+ * `name` is the file served, `names` every file this answer keeps alive (the card and its page) for the LRU. Throws
+ * on a failed render.
  */
 async function docThumb(userId, doc, tplId, pver, brand = null) {
     const tpl = TEMPLATES.find((t) => t.id === tplId);
     if (!tpl) throw new Error(`unknown design ${tplId}`);
     const dir = docThumbDirOf(userId);
-    const name = docThumbNameOf(userId, doc, pver, tplId, brand);
-    const abs = path.join(dir, name);
-    try {
-        const buf = await fs.readFile(abs);
+    const pageName = docPageNameOf(userId, doc, pver, tplId, brand);
+    const cardName = docCardNameOf(pageName);
+    const card = await readDocFile(path.join(dir, cardName));
+    if (card && card.length) {
         const now = new Date();
-        fs.utimes(abs, now, now).catch(() => {});   // an LRU: a read is a use
-        return { image: `data:image/jpeg;base64,${buf.toString('base64')}`, name };
-    } catch { /* not rendered yet */ }
-    if (docThumbFlights.has(abs)) return docThumbFlights.get(abs);
-    const flight = (async () => {
-        const { photo, photoRect } = await photosFor(userId);
-        const [pv] = await renderPreviews(doc.payload, { photo, photoRect, brand }, [tpl]);
-        const full = Buffer.from(String(pv && pv.image || '').split(',')[1] || '', 'base64');
-        if (!full.length) throw new Error('empty render');
-        let thumb = full;
-        try {
-            const sharp = require('sharp');
-            thumb = await sharp(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer();
-        } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
-        try {
-            await fs.mkdir(dir, { recursive: true });
-            // Written aside and renamed in, so a reader never gets half a JPEG.
-            const tmp = `${abs}.${process.pid}.${Date.now()}.tmp`;
-            await fs.writeFile(tmp, thumb);
-            await fs.rename(tmp, abs);
-        } catch (e) { console.warn('[resumeBuilder] doc thumb not cached:', e.message); }
-        return { image: `data:image/jpeg;base64,${thumb.toString('base64')}`, name };
-    })().finally(() => docThumbFlights.delete(abs));
-    docThumbFlights.set(abs, flight);
-    return flight;
+        fs.utimes(path.join(dir, pageName), now, now).catch(() => {});                 // the pair ages together
+        return { image: `data:image/jpeg;base64,${card.toString('base64')}`, name: cardName, names: [cardName, pageName] };
+    }
+    const page = (await docPages(userId, doc, [tplId], pver, brand)).get(tplId);
+    if (!page) throw new Error(`could not render ${tplId}`);
+    const full = Buffer.from(page.image.split(',')[1] || '', 'base64');
+    let thumb = null;
+    try { thumb = await require('sharp')(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer(); }
+    catch { /* sharp unavailable, or bytes it cannot read → the page is served as it is */ }
+    if (thumb) await writeDocFile(dir, cardName, thumb);
+    return thumb
+        ? { image: `data:image/jpeg;base64,${thumb.toString('base64')}`, name: cardName, names: [cardName, pageName] }
+        : { image: page.image, name: pageName, names: [pageName] };
 }
 
-/** Keep the DOC_THUMB_KEEP most recently used doc thumbs for this user; `keep` (names) is never deleted. */
+/** Keep the DOC_THUMB_KEEP most recently used pages and cards for this user; `keep` (names) is never deleted. */
 async function pruneDocThumbs(userId, keep) {
     try {
         const dir = docThumbDirOf(userId);
@@ -4347,7 +4603,7 @@ async function docHomeCards(req, res) {
                     id, name: meta.name || id, accent: (brand && brand.accent) || meta.accent || '#4F8DFF', ats: meta.ats || null, image: c.image,
                     fit: r ? r.score : null, reason: r && r.reason ? r.reason : null,
                 });
-                names.push(c.name);
+                names.push(...c.names);                                // the card and its page both stay
             } catch (e) { console.warn('[resumeBuilder] doc card render failed for', id, e.message); }
         }
         if (ids.length && !cards.length) return res.status(500).json({ success: false, error: 'Could not render previews.' });
@@ -4361,33 +4617,29 @@ async function docHomeCards(req, res) {
 }
 
 /**
- * Right after a paid document is stored: render its top designs into the doc thumb cache, so the
- * carousel that opens on it shows pages rather than skeletons. Bounded (`budgetMs`) — a slow chromium
- * must not hold the build's answer; whatever is still rendering then finishes into the cache on its own.
- * `brand` is the one the build stored on the design — the key home-cards will compute from the row.
- * Never throws: the document is already stored and paid for.
+ * Right after a paid document is stored: render its top designs' pages into the shared cache, so the gallery's first
+ * previews are already there and the carousel's cards (derived from them on first read — docThumb) show pages rather
+ * than skeletons. Bounded (`budgetMs`) — a slow chromium must not hold the build's answer; whatever is still
+ * rendering then finishes into the cache on its own. `brand` is the one the build stored on the design — the key
+ * home-cards and the gallery will compute from the row. Never throws: the document is already stored and paid for.
  */
-async function prerenderDocThumbs(userId, docId, payload, design, brand, count, budgetMs) {
+async function prerenderDocPages(userId, docId, payload, design, brand, count, budgetMs) {
     try {
-        // The key needs the row's own updated_at — exactly what home-cards will read back.
+        // The key needs the row's own updated_at — exactly what home-cards and the gallery will read back.
         const row = await dbConfig.get('SELECT updated_at FROM user_employer_documents WHERE id = $1 AND user_id = $2', [docId, userId]);
         if (!row || !row.updated_at) return;
         const doc = { id: docId, updated_at: row.updated_at, payload };
         const ranked = design && Array.isArray(design.ranked) ? design.ranked.map((r) => r.id) : TEMPLATE_IDS;
         const ids = ranked.filter((id) => TEMPLATE_IDS.includes(id)).slice(0, count);
         const work = (async () => {
-            const pver = await photoVersion(userId);
-            const names = [];
-            for (const id of ids) {
-                try { names.push((await docThumb(userId, doc, id, pver, brand)).name); }
-                catch (e) { console.warn('[resumeBuilder] doc thumb pre-render failed for', id, e.message); }
-            }
-            pruneDocThumbs(userId, names);
-        })().catch(() => {});
+            const pages = await docPages(userId, doc, ids, await photoVersion(userId), brand);
+            for (const id of ids) if (!pages.has(id)) console.warn('[resumeBuilder] doc page pre-render failed for', id);
+            pruneDocThumbs(userId, [...pages.values()].map((p) => p.file));
+        })().catch((e) => console.warn('[resumeBuilder] doc page pre-render skipped:', e.message));
         let timer = null;
         await Promise.race([work, new Promise((resolve) => { timer = setTimeout(resolve, budgetMs); if (timer.unref) timer.unref(); })]);
         if (timer) clearTimeout(timer);
-    } catch (e) { console.warn('[resumeBuilder] doc thumb pre-render skipped:', e.message); }
+    } catch (e) { console.warn('[resumeBuilder] doc page pre-render skipped:', e.message); }
 }
 
 // Reusable: build a REGION-formatted resume PDF from the user's Resume-Builder resume.
@@ -4427,6 +4679,7 @@ module.exports = {
     // The employer-doc lane: the fingerprint /api/employer-docs/current labels staleness with, and the
     // prompt + placeholder guard + the sameness measure (exported for tests).
     currentResumeFingerprint, buildEmployerDocPrompt, findPlaceholders, stripPlaceholders, tokenJaccard,
+    docSamenessOf, baseTopLinesOf, docSamenessText,   // the sameness guard and its log phrase, exported for tests only
     // The design every read of a stored employer document shows (/api/employer-docs/current and GET /:id use it too),
     // and the brand it renders in (employerDocsRoutes attaches it on the paths that do not re-rank).
     rerankStoredDesign, rerankStoredResumeDesign, docBrandOf, withSharedBrand, brandKeyOf,

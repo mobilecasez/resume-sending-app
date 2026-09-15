@@ -163,8 +163,41 @@ ok('the catalogue request pre-warms the pipeline', /listTemplates[\s\S]{0,400}wa
 ok('sharp photo crops are cached against the file mtime', /photoCache/.test(ctl) && /mtimeMs/.test(ctl));
 // The second argument is `force`, added so returning from the editor can invalidate a cache that
 // otherwise served pre-edit renders forever. The ORDER — visible design first — is the rule here.
-ok('the gallery renders the VISIBLE design first, neighbours after',
-  /ensurePreviews\(\[cur\], force\)\.then\(/.test(tpl));
+// ⚠️ RETARGETED 2026-09-15: the neighbours are no longer CHAINED on the visible design's answer. Prod's first (visible)
+// card sat on "Rendering…" alone while its neighbours only started once it finished, or after a scroll. The visible
+// design's call still goes first, in the SAME tick (its fetch leaves first); the neighbours' call follows at once.
+ok('the gallery requests the VISIBLE design first and its two neighbours in the SAME tick, never chained on its answer',
+  /if \(cur\) ensurePreviews\(\[cur\], force\);\s*\n\s*if \(rest\.length\) ensurePreviews\(rest, force\);/.test(tpl) && !/ensurePreviews\(\[cur\], force\)\.then\(/.test(tpl));
+ok('…the neighbours are the next and the previous family\'s chosen variant', /const rest = \[idOf\(idx \+ 1\), idOf\(idx - 1\)\]\.filter\(\(id\) => id && id !== cur\);/.test(tpl));
+ok('…the two requests never overlap on an id (inFlight dedupe) and each keeps its own clock', /!inFlight\.current\.has\(id\)\);/.test(tpl) && /const tmr = setTimeout\(\(\) => controller\.abort\(\), 45_000\);/.test(tpl));
+
+console.log('── a design pending too long offers a way out (2026-09-15) ──');
+// Field report: the gallery's first preview "stayed loading for a long time" — no failure, no error, nothing to tap
+// until the 45 s abort. A card still pending after 20 s keeps its spinner (the request is alive and its answer is
+// still welcome) and gains "Still rendering — tap to retry"; the tap re-requests JUST that id with a fresh clock.
+ok('after 20 s a still-pending card shows "Still rendering — tap to retry" (a state, not a failure)',
+  /const SLOW_AFTER_MS = 20_000;/.test(tpl) && /const \[slow, setSlow\] = useState<Record<string, true>>\(\{\}\);/.test(tpl) && /Still rendering — tap to retry/.test(tpl));
+ok('the slow card keeps its spinner and its tap re-requests JUST that id (retryPreview → ensurePreviews([id], true))',
+  /slow\[tid\] \? \([\s\S]{0,300}onPress=\{\(\) => retryPreview\(tid\)\}[\s\S]{0,200}<ActivityIndicator[\s\S]{0,200}Still rendering — tap to retry/.test(tpl)
+  && /function retryPreview\(id: string\) \{[\s\S]{0,400}ensurePreviews\(\[id\], true\);/.test(tpl));
+ok('a retry re-homes the id first: the slow request loses ownership, inFlight lets the retry through, the flag clears',
+  /function retryPreview\(id: string\) \{\s*inFlight\.current\.delete\(id\);\s*owner\.current\.delete\(id\);\s*setSlow\(/.test(tpl));
+ok('every request arms ONE slow timer over the ids it still owns, cleared when it settles and on unmount',
+  /const slowTmr = setTimeout\(\(\) => \{[\s\S]{0,400}\}, SLOW_AFTER_MS\);/.test(tpl) && /clearTimeout\(slowTmr\)/.test(tpl) && /slowTimers\.current\.forEach\(clearTimeout\)/.test(tpl));
+ok('⚠️ an AbortError (the 45 s clock) keeps its retry: un-flagged, then marked failed with "This took too long." — never back to a bare spinner',
+  /e\?\.name === 'AbortError' \? 'This took too long\.'/.test(tpl) && /const own = batch\.filter\(mine\);\s*unflag\(own\);\s*if \(own\.length\) setFailed\(/.test(tpl));
+ok('a superseded request may still deliver an image, but cannot mark the id failed or drop it from inFlight under its new owner',
+  /const mine = \(id: string\) => owner\.current\.get\(id\) === req;/.test(tpl) && /const missing = batch\.filter\(\(id\) => !gotIds\.has\(id\) && mine\(id\)\);/.test(tpl)
+  && /need\.forEach\(\(id\) => \{ if \(mine\(id\)\) \{ inFlight\.current\.delete\(id\); owner\.current\.delete\(id\); \} \}\);/.test(tpl));
+ok('an image is accepted whoever asked for it (the card stops waiting the moment one lands)', /for \(const p of got\) next\[p\.id\] = p;/.test(tpl) && /unflag\(batch\.filter\(\(id\) => gotIds\.has\(id\) \|\| mine\(id\)\)\);/.test(tpl));
+ok('the Edit-return invalidation clears owner and slow with the rest', /owner\.current\.clear\(\);\s*setPreviews\(\{\}\);\s*setFailed\(\{\}\);\s*setSlow\(\{\}\);/.test(tpl));
+// ⚠️ The doc-mode "All" order follows the FAMILY-FIRST ranked list (designFit, 2026-09-15): one pager page per family,
+// in the order the ranked list first names each family, opening on the family's best-ranked variant; the other variants
+// stay swatches. Prod's three germany pages up front came from the old score-sorted list; both orders derive the same
+// one-page-per-family sequence here, so an old-order document (normaliseDesign fixes it on read) still pages once per family.
+ok('the doc-mode "All" order: one page per family, ordered by the family\'s FIRST position in the ranked list; the base gallery is untouched',
+  /function orderFamilies\(fams: Family\[\], rk: Ranking \| null\): Family\[\] \{\s*if \(!rk\) return fams;/.test(tpl) && /\.sort\(\(a, b\) => \(a\.b - b\.b\) \|\| \(a\.i - b\.i\)\)/.test(tpl) && /if \(r && r\.pos < best\) best = r\.pos;/.test(tpl));
+ok('…each family\'s page opens on its best-ranked variant, the others remain the swatches', /function bestVariantOf\(f: Family, rk: Ranking\): string \{[\s\S]{0,300}if \(p < best\) \{ best = p; bestId = v\.id; \}/.test(tpl));
 
 console.log('── a lost preview request must NEVER spin forever ──');
 // Field report (b195): "Rendering Azure Sidebar and just spinning." Production rendered in

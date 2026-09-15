@@ -829,21 +829,37 @@ export default function EmployerHome({
    * until the network answers. Painting the last answer first is the difference between a section
    * that appears and one that pops in a second late; the reference for this shape is the Job Hub's
    * dashboard cache. A failed refresh returns null and leaves what is on screen alone.
+   *
+   * ⚠️ ITS OWN READ, NOT A PART OF load(). load() is throttled to one run a minute, and the library
+   * used to be re-read only from the mode effect — so a PDF downloaded from the gallery (the server had
+   * its download_history row) came back to a Home that did not show the card until the throttle let a
+   * reload through. This is asked for on every focus after the first and when a build lands, on top of
+   * the mode switch, and it never looks at lastLoad. ⚠️ NO THROTTLE HERE EITHER: a read of one small list.
+   *
+   * ⚠️ SEQUENCE GUARD (histSeq): a focus read, a landing and a mode switch can overlap, and a slower OLDER
+   * answer landing last would put the previous shelf back — or another kind's — over the newer one. Only
+   * the newest read may touch the list, and a superseded one leaves the loading flag to its successor.
+   * Stable identity (useStableFn), so the focus effect never re-subscribes because of it.
    */
-  const refreshHistory = useCallback(async (kind: Mode) => {
+  const histSeq = useRef(0);
+  const refreshHistory = useStableFn(async (kind: Mode) => {
     const wire: 'resume' | 'cover_letter' = kind === 'letter' ? 'cover_letter' : 'resume';
-    setHistOpen(false);
+    const seq = ++histSeq.current;
+    const current = () => alive.current && seq === histSeq.current;
     if (!loaders) {
       const cached = await cachedDownloadHistory(wire).catch(() => null);
-      if (cached) { setHistory(cached.items); setHistLoading(false); }
+      if (cached && current()) { setHistory(cached.items); setHistLoading(false); }
     }
     const fresh = await loadHistory(wire).catch(() => null);
+    if (!current()) return;
     if (fresh) setHistory(fresh.items);
     else if (loaders) setHistory([]);
     setHistLoading(false);
-  }, [loadHistory, loaders]);
+  });
 
-  useEffect(() => { setHistLoading(true); refreshHistory(mode); }, [mode, refreshHistory]);
+  // A kind switch is the one read that empties the shelf first: the other kind's cards must not sit under
+  // the new heading while its own answer is on its way. A focus or a landing re-reads in place.
+  useEffect(() => { setHistLoading(true); setHistOpen(false); refreshHistory(mode); }, [mode, refreshHistory]);
 
   /**
    * Get a document again.
@@ -920,12 +936,18 @@ export default function EmployerHome({
 
   // Back on Home from the editor, the gallery or the plans screen, a saved document may have been edited
   // (new pages) or gone stale, so the documents are asked for again — a READ, never a build. The very first
-  // focus is the mount, which asks anyway.
+  // focus is the mount, which asks anyway (the mode effect reads the library). ⚠️ The library is re-read
+  // here on its own, NOT through load(): its 60 s throttle is what hid a PDF downloaded from the gallery
+  // (see refreshHistory). The kind on screen comes from kindRef, which moves with the state.
   const focusCount = useRef(0);
   useFocusEffect(useCallback(() => {
     load();
-    if (focusCount.current++ > 0) { setDocToken((n) => n + 1); setListToken((n) => n + 1); }
-  }, [load]));
+    if (focusCount.current++ > 0) {
+      setDocToken((n) => n + 1);
+      setListToken((n) => n + 1);
+      refreshHistory(modeOfKind(kindRef.current));
+    }
+  }, [load, refreshHistory]));
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -1389,6 +1411,10 @@ export default function EmployerHome({
     // still "nothing saved", and that flashed "Tailor my resume" over a document the user had just bought.
     if (docId != null && job.rk) markLanded(storeKeyOf(job.kind, job.rk), docId);
     setListToken((n) => n + 1);
+    // The shelf for the kind on screen is re-read now, outside load()'s throttle (see refreshHistory). A
+    // landing of the OTHER kind that moves the screen onto it switches the mode below, and the mode effect
+    // reads that kind's shelf; one that does not move the screen changes nothing on the shelf shown.
+    if (job.kind === kindRef.current) refreshHistory(modeOfKind(job.kind));
     const list = targetsRef.current;
     const j = list.findIndex((t) => rkOf(t) === job.rk);
     const onScreen = j >= 0 && j === empIdxRef.current && job.kind === kindRef.current;

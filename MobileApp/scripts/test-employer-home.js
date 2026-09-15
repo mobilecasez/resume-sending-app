@@ -507,6 +507,21 @@ ok('…and the drawn page knows a letter from a resume', /LETTER_RULES/.test(his
 
 ok('the section paints from cache BEFORE the network', /cachedDownloadHistory/.test(homeC));
 ok('…and a failed refresh leaves what is on screen alone', /if \(fresh\) setHistory/.test(homeC));
+// ⚠️ 2026-09-15: a PDF downloaded from the gallery did not show on Home — the server had recorded download_history row 11,
+// but the library was only re-read inside load(), throttled to once per 60 s. The library is now its OWN cached-then-
+// fresh read, asked for on every focus after the first and when a build lands, never through load().
+const refreshSrc = (homeC.match(/const refreshHistory = useStableFn\(async \(kind: Mode\) => \{[\s\S]*?\n  \}\);/) || [''])[0];
+ok('refreshHistory is a stable fn (useStableFn) that never reads load()\'s throttle', refreshSrc.length > 100 && !/lastLoad/.test(refreshSrc) && !/60_000/.test(refreshSrc));
+ok('…guarded by a sequence (histSeq): only the newest read touches the list, the cached paint included',
+  /const histSeq = useRef\(0\);/.test(homeC) && /const seq = \+\+histSeq\.current;/.test(refreshSrc) && /if \(!current\(\)\) return;/.test(refreshSrc) && /if \(cached && current\(\)\)/.test(refreshSrc));
+ok('…cached first, then the network', refreshSrc.indexOf('cachedDownloadHistory') > 0 && refreshSrc.indexOf('cachedDownloadHistory') < refreshSrc.indexOf('loadHistory('));
+ok('…and it does not collapse an open library (setHistOpen(false) belongs to the kind switch alone)',
+  !/setHistOpen\(false\)/.test(refreshSrc) && /useEffect\(\(\) => \{ setHistLoading\(true\); setHistOpen\(false\); refreshHistory\(mode\); \}, \[mode, refreshHistory\]\);/.test(homeC));
+ok('⚠️ every focus after the first re-reads the library for the kind on screen, beside the still-throttled load()',
+  /useFocusEffect\(useCallback\(\(\) => \{\s*load\(\);\s*if \(focusCount\.current\+\+ > 0\) \{[\s\S]{0,200}refreshHistory\(modeOfKind\(kindRef\.current\)\);/.test(homeC));
+ok('⚠️ a landed build re-reads the shelf for its kind when that kind is on screen (the other kind\'s shelf is read by the mode switch)',
+  /if \(job\.kind === kindRef\.current\) refreshHistory\(modeOfKind\(job\.kind\)\);/.test(homeC) && homeC.indexOf('if (job.kind === kindRef.current) refreshHistory(') > homeC.indexOf('const onLanded = useStableFn('));
+ok('load() still throttles ITSELF to 60 s (the documents) — the library read is the one outside it', /if \(!force && Date\.now\(\) - lastLoad\.current < 60_000\) return undefined;/.test(homeC));
 // ⚠️ RETARGETED (2026-09-13): a library TAP no longer downloads — it opens the page (openHistoryItem, pinned
 // in the LIBRARY CARD OPENS ITS PAGE section). These two now cover only the one fallback that still gets the
 // file: a cover letter with no saved letter behind it, where there is no page to preview.

@@ -29,6 +29,8 @@
 // within what is left of the caller's time. Only a FOUND brand is written to the row (a null is mostly
 // the network's — a timeout, a 403 for non-browsers — and is remembered in memory for an hour instead).
 // brandOf(research) is what the renderers paint with: the website's brand first, the researcher's second.
+// A face Google does not host (DB Neo, Segoe UI, Helvetica) is painted as its static Google stand-in
+// (brandExtract.googleAlternativeFor → effectiveFont): Barlow, Open Sans, Inter — deterministic, no network.
 // EMPLOYER_BRAND_EXTRACT=off switches the website read off; every build then paints the usual way.
 //
 // ⚠️ RESEARCH IS OPTIONAL GROUNDING, NEVER A DEPENDENCY. getEmployerResearch NEVER throws and
@@ -1223,18 +1225,50 @@ function conventionsPromptBlock(conventions, company, { forLetter = false } = {}
 
 // ── brandOf ───────────────────────────────────────────────────────────────────
 /**
- * What the renderers paint with: { accent: '#rrggbb'|null, font: { family, google }|null }. The website's
- * own brand wins (brand.primary, brand.font); the researcher's brandColor / fontName stand in when the
- * website gave none. Always an object, NEVER throws; null and a research from before the brand existed are fine.
+ * The font the renderer PAINTS for a brand font { family, google }: the family itself when Google hosts it
+ * (google true — the shape is untouched: { family, google: true }); else the visually close Google face
+ * brandExtract.googleAlternativeFor names for it — { family: alt, google: true, from: 'alternative', original:
+ * <the site's family> } (DB Neo Screen Sans → Barlow, Segoe UI → Open Sans, Helvetica Neue → Inter, and a
+ * Google face the researcher named but nobody verified, Montserrat → Montserrat); else the font as it was,
+ * google:false, and the renderer keeps the design's own stack. WHY (2026-09-15): Deutsche Bahn's document
+ * got its red and NOT its face — "DB Neo Screen Sans Regular" is on no Google Fonts URL, so every card fell
+ * back to Lato and three brand-tinted variants read as one page. A static table is as deterministic as the
+ * row (the rule below), so a stored document answers the same face on every process. Never throws; a font
+ * that is not { family } answers null. Exported for the doc lanes: a STORED design.brand.font that predates
+ * this (doc 9's raw "DB Neo…", google:false) is read straight off the design, not through brandOf, and must
+ * be passed through here to render in Barlow.
+ */
+function effectiveFont(font) {
+  try {
+    const f = font && typeof font === 'object' && !Array.isArray(font) ? font : null;
+    const family = f ? familyOf(f.family) : null;
+    if (!family) return null;
+    if (f.google === true) return { family, google: true };
+    const alt = brandExtract.googleAlternativeFor(family);
+    return alt && alt.google === true && familyOf(alt.family)
+      ? { family: alt.family, google: true, from: 'alternative', original: family }
+      : { family, google: false };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the renderers paint with: { accent: '#rrggbb'|null, font: { family, google[, from, original] }|null }. The
+ * website's own brand wins (brand.primary, brand.font); the researcher's brandColor / fontName stand in when the
+ * website gave none. A font Google does not host becomes its table alternative (effectiveFont). Always an object,
+ * NEVER throws; null and a research from before the brand existed are fine.
  *
- * ⚠️ DETERMINISTIC — A BARE RESEARCHER fontName IS google:false, ALWAYS (2026-09-15). The Google Fonts answer for
- * a researcher font lives on brand.font, where withResearcherFont writes it on every fresh research (google true
- * only when the check saw Google serve the family). This function used to consult brandExtract.googleFontKnown
- * for a fontName that never got there — a per-process 24 h memory — so a document stored before design.brand
+ * ⚠️ DETERMINISTIC — A FUNCTION OF THE RESEARCH AND A STATIC TABLE, NOTHING ELSE (2026-09-15). The Google Fonts
+ * answer for a researcher font lives on brand.font, where withResearcherFont writes it on every fresh research
+ * (google true only when the check saw Google serve the family). This function used to consult brandExtract's
+ * per-process 24 h font memory for a fontName that never got there, so a document stored before design.brand
  * existed (its research: fontName 'Montserrat', no brand) rendered in Lato after a deploy, in Montserrat once any
  * user's build had checked that family (a new thumb/preview cache key, every card re-rendered), and in Lato again
  * a day later. A stored document's brand must read the same on every process, so nothing here reads that memory:
- * a font with no verified answer on the research is not a Google font, and the renderer keeps the design's stack.
+ * a bare fontName is google:false on the way in, and only googleAlternativeFor's STATIC table — the same on every
+ * process, no network — may lift it to a Google face (Montserrat to itself, Segoe UI to Open Sans). A face the
+ * table does not know stays google:false and the renderer keeps the design's stack.
  */
 function brandOf(research) {
   try {
@@ -1247,7 +1281,7 @@ function brandOf(research) {
       const family = familyOf(r.fontName);
       if (family && family.toLowerCase() !== RESEARCHER_DEFAULT_FONT) font = { family, google: false };
     }
-    return { accent, font };
+    return { accent, font: font ? effectiveFont(font) : null };
   } catch {
     return { accent: null, font: null };
   }
@@ -1315,6 +1349,8 @@ module.exports = {
   conventionsPromptBlock,
   regionForConventions,
   brandOf,
+  // A stored brand font → the face the renderer can load (the doc lanes read design.brand.font straight off the row).
+  effectiveFont,
   // A stored document's way to the row's brand (read-only; see the function) — never part of a build.
   cachedBrandFor,
   // The one grounded conventions call. Looked up through module.exports on every use, so a test can

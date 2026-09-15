@@ -1441,13 +1441,28 @@ async function lookupBrandColor(companyName, websiteUrl) {
 // docId downloads read the brand through letterBrandOf and nothing else.
 const BRAND_HEX_RE = /^#[0-9a-f]{6}$/i;
 const brandHexOf = (v) => (typeof v === 'string' && BRAND_HEX_RE.test(v.trim()) ? v.trim().toLowerCase() : null);
-/** { family, google } from any font spelling: the Brand's { family, google }, or a bare family name (not google). */
+/**
+ * A font as the renderer will LOAD it (2026-09-15): a face Google does not host becomes its static-table alternative
+ * (employerResearch.effectiveFont — "DB Neo Screen Sans Regular" → Barlow), reduced to { family, google }. A letter
+ * whose design.brand stored the raw face at build time (google:false) is read straight off the row, never through
+ * brandOf, so the table is applied here — the one place every stored letter font passes. Deterministic; a face the
+ * table does not know, or a research module without effectiveFont, leaves the font as stored.
+ */
+function letterFontAsLoaded(font) {
+    try {
+        const er = require('../services/employerResearch');
+        const eff = typeof er.effectiveFont === 'function' ? er.effectiveFont(font) : null;
+        if (eff && typeof eff.family === 'string' && eff.family.trim()) return { family: eff.family.replace(/\s+/g, ' ').trim().slice(0, 80), google: eff.google === true };
+    } catch { /* the face as stored */ }
+    return font;
+}
+/** { family, google } from any font spelling, as loaded (letterFontAsLoaded): the Brand's { family, google }, or a bare family name (not google unless the table knows it). */
 function brandFontOf(v) {
     if (!v) return null;
-    if (typeof v === 'string') { const f = v.replace(/\s+/g, ' ').trim().slice(0, 80); return f ? { family: f, google: false } : null; }
+    if (typeof v === 'string') { const f = v.replace(/\s+/g, ' ').trim().slice(0, 80); return f ? letterFontAsLoaded({ family: f, google: false }) : null; }
     if (typeof v !== 'object') return null;
     const f = typeof v.family === 'string' ? v.family.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
-    return f ? { family: f, google: v.google === true } : null;
+    return f ? letterFontAsLoaded({ family: f, google: v.google === true }) : null;
 }
 /** A { accent, font } pair, or null when it says nothing — never an object with two nulls. */
 function brandPairOf(accent, font) {

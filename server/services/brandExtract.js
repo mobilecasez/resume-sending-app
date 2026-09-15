@@ -24,6 +24,8 @@
 // never count; Roboto / Ubuntu / Fira Sans / Noto Sans — the tail of every default stack — count only when
 // nothing else was named. font.google is whether https://fonts.googleapis.com/css2?family=<name> answers
 // 200 (cached in memory for 24 h), because that is the only kind of font the renderer can actually load.
+// A face Google does not host is answered by googleAlternativeFor (a static table, no network) with a
+// visually close Google face — DB Neo → Barlow, Segoe UI → Open Sans — or null when it knows no stand-in.
 //
 // ⚠️ THIS MODULE FETCHES A URL A USER TYPED. An employer's "website" is user input, so every fetch here is
 // SSRF-safe, without exception:
@@ -957,6 +959,83 @@ async function checkGoogleFont(family, { timeoutMs = GOOGLE_CHECK_MS, deadline =
   }
 }
 
+// ── Google alternatives for the faces a website names but Google does not host ────────────────
+// WHY (2026-09-15): Deutsche Bahn's site sets "DB Neo Screen Sans Regular", Nexplore's researcher named
+// "Segoe UI" — corporate and system faces no Google Fonts URL will ever serve, so the renderer kept the
+// design's own stack (Lato) and the brand colour was the only thing that changed. A brand font that cannot
+// be loaded is worth a visually close face that can: DIN-like → Barlow, Helvetica-like → Inter, humanist
+// (Frutiger / Myriad / Segoe) → Open Sans, geometric (Gotham / Proxima) → Montserrat. STATIC and PURE — no
+// memory, no network — so a stored document reads the same alternative on every process (the reason
+// employerResearch.brandOf reads nothing else; see its header). A face this table does not know answers
+// null: NO GUESSING (Comic Sans MS is not "close to" anything the renderer should paint a resume in).
+//
+// Matching: the family is lower-cased, [-_] become spaces, weight / style / foundry suffix words are dropped
+// ("Regular", "Bold", "Italic", "Pro", "LT", "Std", "Display", "Text", "W01"…), then the LONGEST leading word
+// run that is a key wins: "DB Neo Screen Sans Regular" → "db neo screen sans" → … → "db neo"; "Helvetica
+// Neue" matches its own key before "helvetica" would; "Comic Sans MS" → "comic sans ms" / "comic sans" /
+// "comic" → nothing. Google-hosted faces map to THEMSELVES (Roboto → Roboto, google true), so a caller that
+// only knows a family name gets one deterministic yes for the faces every site uses.
+const GOOGLE_ALTERNATIVES = new Map(Object.entries({
+  // DIN-like industrial grotesques
+  'din': 'Barlow', 'ff din': 'Barlow', 'din next': 'Barlow', 'din pro': 'Barlow', 'din 2014': 'Barlow', 'pf din': 'Barlow',
+  'db neo': 'Barlow', 'db type': 'Barlow', 'db sans': 'Barlow', 'db screen sans': 'Barlow', 'db head': 'Barlow', 'dbsans': 'Barlow',
+  // humanist sans
+  'frutiger': 'Open Sans', 'myriad': 'Open Sans', 'segoe ui': 'Open Sans', 'segoe': 'Open Sans', 'verdana': 'Open Sans',
+  'tahoma': 'Open Sans', 'lucida grande': 'Open Sans', 'lucida sans': 'Open Sans', 'univers next': 'Open Sans',
+  // neo-grotesques
+  'helvetica': 'Inter', 'helvetica neue': 'Inter', 'neue helvetica': 'Inter', 'arial': 'Inter', 'sf pro': 'Inter', 'sf pro display': 'Inter',
+  'sf pro text': 'Inter', 'san francisco': 'Inter', 'apple system': 'Inter', 'blinkmacsystemfont': 'Inter', 'system ui': 'Inter',
+  'neue haas grotesk': 'Inter', 'akzidenz grotesk': 'Inter', 'aktiv grotesk': 'Inter', 'suisse': 'Inter', 'sans': 'Inter', 'sans serif': 'Inter',
+  // geometric
+  'gotham': 'Montserrat', 'proxima nova': 'Montserrat', 'avenir next': 'Montserrat', 'brandon grotesque': 'Montserrat', 'circular': 'Montserrat',
+  'avenir': 'Nunito Sans', 'futura': 'Jost', 'century gothic': 'Jost', 'univers': 'Roboto Condensed',
+  // office faces
+  'calibri': 'Carlito', 'trebuchet': 'Fira Sans', 'trebuchet ms': 'Fira Sans', 'cambria': 'Merriweather',
+  // serifs
+  'georgia': 'Lora', 'times': 'EB Garamond', 'times new roman': 'EB Garamond', 'garamond': 'EB Garamond', 'adobe garamond': 'EB Garamond',
+  'minion': 'EB Garamond', 'baskerville': 'Libre Baskerville', 'palatino': 'EB Garamond', 'serif': 'Merriweather',
+  // Google-hosted faces: themselves
+  'roboto': 'Roboto', 'roboto condensed': 'Roboto Condensed', 'roboto slab': 'Roboto Slab', 'lato': 'Lato', 'open sans': 'Open Sans',
+  'montserrat': 'Montserrat', 'inter': 'Inter', 'poppins': 'Poppins', 'nunito': 'Nunito', 'nunito sans': 'Nunito Sans', 'raleway': 'Raleway',
+  'source sans': 'Source Sans 3', 'source sans pro': 'Source Sans 3', 'source sans 3': 'Source Sans 3', 'noto sans': 'Noto Sans', 'ubuntu': 'Ubuntu',
+  'fira sans': 'Fira Sans', 'work sans': 'Work Sans', 'dm sans': 'DM Sans', 'manrope': 'Manrope', 'rubik': 'Rubik', 'barlow': 'Barlow',
+  'jost': 'Jost', 'merriweather': 'Merriweather', 'lora': 'Lora', 'eb garamond': 'EB Garamond', 'playfair display': 'Playfair Display',
+  'pt sans': 'PT Sans', 'pt serif': 'PT Serif', 'oswald': 'Oswald', 'karla': 'Karla', 'mulish': 'Mulish', 'space grotesk': 'Space Grotesk',
+  'ibm plex sans': 'IBM Plex Sans', 'ibm plex serif': 'IBM Plex Serif', 'libre baskerville': 'Libre Baskerville', 'carlito': 'Carlito',
+}));
+/** Words that describe a cut, not a face — dropped before matching (never the ONLY word: "sans" alone is a hint the table knows). */
+const CUT_WORDS = new Set([
+  'regular', 'normal', 'book', 'roman', 'medium', 'semibold', 'demibold', 'bold', 'extrabold', 'ultrabold', 'black', 'heavy', 'light',
+  'extralight', 'ultralight', 'thin', 'hairline', 'italic', 'oblique', 'condensed', 'compressed', 'extended', 'wide', 'narrow',
+  'pro', 'std', 'lt', 'mt', 'ff', 'w01', 'w02', 'w1g', 'web', 'webfont', 'display', 'text', 'caption', 'headline', 'body', 'variable', 'var',
+]);
+// ⚠️ a key that IS a cut word ("ff din", "sf pro text", "roboto condensed") is tried BEFORE its words are dropped.
+
+/**
+ * A Google-hosted face that reads like `family`: { family, google: true, from: 'alternative' }, or null when
+ * the table does not know the face (never a guess). Pure, synchronous, no network; a family the renderer can
+ * already load (Roboto, Lato…) maps to itself. Never throws.
+ */
+function googleAlternativeFor(family) {
+  try {
+    const raw = String(family == null ? '' : family).replace(/^["'\s]+|["'\s]+$/g, '').toLowerCase();
+    if (!raw || raw.length > 80) return null;
+    const words = raw.replace(/[-_]+/g, ' ').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+    if (!words.length) return null;
+    const stripped = words.filter((w) => !CUT_WORDS.has(w));
+    const lookup = (ws) => {
+      for (let n = ws.length; n >= 1; n--) {
+        const hit = GOOGLE_ALTERNATIVES.get(ws.slice(0, n).join(' '));
+        if (hit) return { family: hit, google: true, from: 'alternative' };
+      }
+      return null;
+    };
+    return lookup(words) || (stripped.length && stripped.length !== words.length ? lookup(stripped) : null);
+  } catch {
+    return null;
+  }
+}
+
 // ── Stylesheet choice ─────────────────────────────────────────────────────────
 // A framework's stylesheet is that framework's brand (Bootstrap's blue on every Bootstrap site): the
 // site's own sheets come first, and the well-known libraries are not read at all.
@@ -1056,6 +1135,7 @@ module.exports = {
   extractBrand,
   checkGoogleFont,
   googleFontKnown,
+  googleAlternativeFor,
   // exposed for the harness / tests only
   _internals: {
     TIMEOUT_MS, HTML_CAP, CSS_CAP, MAX_REDIRECTS, MAX_SHEETS,
@@ -1064,6 +1144,6 @@ module.exports = {
     parseHtml, importsOf, cutSpans, tagsOf, styleBlocksOf, stripCssComments,
     cssRules, declarationsOf, substituteVars, parseColor, coloursIn, toHsl, toHex, brandish,
     familiesOf, classifyFamily, chooseFont, chooseColours, brandFromSources, pickSheets, googleFamiliesOf,
-    _googleCache: googleCache,
+    _googleCache: googleCache, GOOGLE_ALTERNATIVES, CUT_WORDS,
   },
 };

@@ -362,6 +362,34 @@ const lookup = async (host) => {
     ok('a spent clock (timeBudgetMs: -1) answers nulls without throwing', (() => { const v = brandFromSources(parseHtml('<html><head><style>.x{background:#e30613}</style></head></html>', 'https://example.test/'), [], { timeBudgetMs: -1 }); return v && v.primary === null && v.font === null; })());
   }
 
+  console.log('── googleAlternativeFor: a STATIC table from a site face to a Google-hosted one (2026-09-15) ──');
+  {
+    // Prod doc 9 (Deutsche Bahn): the site's "DB Neo Screen Sans Regular" is not on Google Fonts, so the renderer fell
+    // back to Lato and the brand's typography was lost. This is a table of well-known corporate / system faces to a
+    // visually close Google-hosted face — pure, synchronous, no network, never a guess.
+    const alt = BE.googleAlternativeFor;
+    const { GOOGLE_ALTERNATIVES, CUT_WORDS } = BE._internals;
+    ok('exported, and answers { family, google: true, from: "alternative" }', typeof alt === 'function' && JSON.stringify(alt('DIN')) === JSON.stringify({ family: 'Barlow', google: true, from: 'alternative' }), alt('DIN'));
+    const table = { 'DIN': 'Barlow', 'FF DIN': 'Barlow', 'DB Neo': 'Barlow', 'Frutiger': 'Open Sans', 'Myriad': 'Open Sans', 'Segoe UI': 'Open Sans', 'Verdana': 'Open Sans', 'Helvetica': 'Inter', 'Helvetica Neue': 'Inter', 'Arial': 'Inter', 'SF Pro': 'Inter',
+      'Gotham': 'Montserrat', 'Proxima Nova': 'Montserrat', 'Avenir Next': 'Montserrat', 'Avenir': 'Nunito Sans', 'Futura': 'Jost', 'Univers': 'Roboto Condensed', 'Calibri': 'Carlito', 'Trebuchet': 'Fira Sans', 'Trebuchet MS': 'Fira Sans',
+      'Georgia': 'Lora', 'Times': 'EB Garamond', 'Times New Roman': 'EB Garamond', 'Garamond': 'EB Garamond', 'Cambria': 'Merriweather', 'serif': 'Merriweather', 'sans': 'Inter',
+      'Roboto': 'Roboto', 'Lato': 'Lato', 'Open Sans': 'Open Sans', 'Montserrat': 'Montserrat', 'Inter': 'Inter', 'Poppins': 'Poppins' };
+    const wrong = Object.entries(table).filter(([k, v]) => !(alt(k) && alt(k).family === v && alt(k).google === true && alt(k).from === 'alternative'));
+    ok('every contract case answers: DIN / DB Neo / FF DIN → Barlow; Frutiger / Myriad / Segoe UI / Verdana → Open Sans; Helvetica / Arial / SF Pro → Inter; Gotham / Proxima Nova / Avenir Next → Montserrat; Avenir → Nunito Sans; Futura → Jost; Univers → Roboto Condensed; Calibri → Carlito; Trebuchet → Fira Sans; Georgia → Lora; Times / Garamond → EB Garamond; Cambria → Merriweather; serif → Merriweather; sans → Inter; Google faces → themselves',
+      wrong.length === 0, wrong.map(([k]) => [k, alt(k)]));
+    ok('"DB Neo Screen Sans Regular" → key "db neo": weight / style words dropped, the LONGEST leading word run that is a key wins',
+      alt('DB Neo Screen Sans Regular').family === 'Barlow' && GOOGLE_ALTERNATIVES.has('db neo') && CUT_WORDS.has('regular') && alt('Helvetica Neue LT Std 55 Roman').family === 'Inter', alt('DB Neo Screen Sans Regular'));
+    ok('case-insensitive, [-_] read as spaces, quotes and padding ignored', alt('SEGOE UI').family === 'Open Sans' && alt('proxima-nova').family === 'Montserrat' && alt('  "Gotham_Bold" ').family === 'Montserrat' && alt('times_new_roman').family === 'EB Garamond');
+    ok('a key that IS made of cut words is tried before the words are dropped: FF DIN → Barlow, SF Pro Text → Inter, Roboto Condensed → Roboto Condensed', alt('FF DIN').family === 'Barlow' && alt('SF Pro Text').family === 'Inter' && alt('Roboto Condensed').family === 'Roboto Condensed');
+    ok('"sans" alone is a hint the table knows, never dropped as a cut word', alt('sans').family === 'Inter' && alt('sans-serif').family === 'Inter' && !CUT_WORDS.has('sans'));
+    ok('unknown → null, never a guess; junk never throws', alt('Comic Sans MS') === null && alt('Amazon Ember') === null && alt('Zilla Slab') === null && alt('') === null && alt() === null && alt(42) === null && alt({}) === null && alt('a'.repeat(100)) === null && alt('Regular Bold') === null);
+    ok('every answer is itself a Google-hosted table key mapping to itself (the renderer can load every family it names)', [...new Set(GOOGLE_ALTERNATIVES.values())].every((v) => GOOGLE_ALTERNATIVES.get(v.toLowerCase()) === v), [...new Set(GOOGLE_ALTERNATIVES.values())].filter((v) => GOOGLE_ALTERNATIVES.get(v.toLowerCase()) !== v));
+    const memBefore = _googleCache && typeof _googleCache.size === 'number' ? _googleCache.size : null;
+    const a1 = alt('Frutiger'), a2 = alt('Frutiger');
+    ok('pure and deterministic: the same answer twice, a fresh object each time, and the Google Fonts memory untouched (no network, no memory)',
+      JSON.stringify(a1) === JSON.stringify(a2) && a1 !== a2 && (memBefore === null || _googleCache.size === memBefore));
+  }
+
   for (const s of sockets) s.destroy();
   server.close();
   console.log(`\nbrand extract: ${pass} passed, ${fail} failed`);

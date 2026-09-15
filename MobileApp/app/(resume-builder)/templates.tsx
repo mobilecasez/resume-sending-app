@@ -61,6 +61,10 @@ const REGION_FLAGS: Record<string, string> = {
 const WIN = Dimensions.get('window').width;
 const SIDE_PAD = 12;
 const CARD_W = WIN - SIDE_PAD * 2;
+// A preview still pending after this long offers "Still rendering — tap to retry" (the request itself
+// runs on to its 45s abort). Well under that abort: a cold chromium render is ~2-5s, so 20s of
+// nothing means the request is queued behind something, and a fresh one usually lands first.
+const SLOW_AFTER_MS = 20_000;
 
 async function getToken() {
   const raw = await SecureStore.getItemAsync('userSession');
@@ -76,7 +80,14 @@ function docIdOf(raw: unknown): number | null {
 }
 
 // ── Doc ranking ─────────────────────────────────────────────────────────────────────────────────
-// pos = the design's place in design.ranked (0 = the best fit for this employer).
+// pos = the design's place in design.ranked (0 = the best fit for this employer). The list is
+// FAMILY-FIRST (designFit.familyFirst, applied on read as well, so old documents arrive the same way):
+// one card per family — its best variant for the brand — in family-score order, then every remaining
+// variant after all the families. So a family's FIRST occurrence is both its page's place in the
+// "All" pager (orderFamilies) and the swatch its page opens on (bestVariantOf); the other variants
+// stay swatches. ⚠️ Prod once showed germany_warm / germany / germany_blue as the first THREE pages —
+// three recolours of one layout, identical once the brand colour was applied, with "different" fit
+// numbers. One family per page is the rule here, whatever order the server sends.
 type Rank = { score: number; reason: string; pos: number };
 type Ranking = { byId: Map<string, Rank>; topId: string | null };
 // The fit reason under the pager is a fixed two-line slot (see reasonSlotH): one line's height,
@@ -110,7 +121,8 @@ function bestPosOf(f: Family, rk: Ranking): number {
   return best;
 }
 
-/** Families ordered best-fit first (stable: unranked families keep catalogue order at the end).
+/** Families ordered best-fit first — one pager page per family, in the order the family-first ranked
+ *  list first names each family (stable: unranked families keep catalogue order at the end).
  *  ⚠️ Returns the SAME array when there is no ranking, so the base gallery is untouched. */
 function orderFamilies(fams: Family[], rk: Ranking | null): Family[] {
   if (!rk) return fams;
@@ -164,9 +176,21 @@ export default function ResumeTemplates() {
   // failure here was an infinite "Rendering Azure Sidebar…": the full-screen error only covers
   // catalogue failure, so a lost preview request left the pager spinning with no way out.
   const [failed, setFailed] = useState<Record<string, string>>({});
+  // ids whose request has been PENDING for SLOW_AFTER_MS → the spinner gains "Still rendering — tap to
+  // retry". Not a failure (the request is still running and its answer is still welcome): the field
+  // report was the FIRST card sitting on "Rendering…" for ages while neighbours loaded after a scroll,
+  // and a 45s abort was the only way out. The tap re-requests just that id (see retryPreview).
+  const [slow, setSlow] = useState<Record<string, true>>({});
   // The account has no built resume yet — previews are impossible, say so instead of spinning.
   const [noResume, setNoResume] = useState(false);
   const inFlight = useRef<Set<string>>(new Set());
+  // Which ensurePreviews call OWNS each in-flight id. A retry tap hands the id to a fresh request while
+  // the slow one is still running; the old one may still deliver an image (welcome) but must not mark
+  // the id failed, un-flag it, or delete it from inFlight under the request that now owns it.
+  const owner = useRef<Map<string, number>>(new Map());
+  const reqSeq = useRef(0);
+  const slowTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  useEffect(() => () => { slowTimers.current.forEach(clearTimeout); slowTimers.current.clear(); }, []);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
   const [active, setActive]     = useState(0);
@@ -191,9 +215,23 @@ export default function ResumeTemplates() {
   const cacheGen = useRef(0);
   async function ensurePreviews(ids: string[], force = false) {
     const gen = cacheGen.current;
+    const req = ++reqSeq.current;
     const need = [...new Set(ids)].filter((id) => id && (force || !previews[id]) && !inFlight.current.has(id));
     if (!need.length) return;
-    need.forEach((id) => inFlight.current.add(id));
+    need.forEach((id) => { inFlight.current.add(id); owner.current.set(id, req); });
+    // "Mine" = still owned by THIS call. A retry tap re-homes an id (retryPreview), after which this
+    // call may still hand over an image but touches nothing else about that id.
+    const mine = (id: string) => owner.current.get(id) === req;
+    const unflag = (idsDone: string[]) => setSlow((sl) => {
+      if (!idsDone.some((id) => sl[id])) return sl;
+      const next = { ...sl }; for (const id of idsDone) delete next[id]; return next;
+    });
+    const slowTmr = setTimeout(() => {
+      slowTimers.current.delete(slowTmr);
+      const still = need.filter((id) => mine(id) && inFlight.current.has(id));
+      if (still.length && cacheGen.current === gen) setSlow((sl) => { const next = { ...sl }; for (const id of still) next[id] = true; return next; });
+    }, SLOW_AFTER_MS);
+    slowTimers.current.add(slowTmr);
     setFailed((f) => { const next = { ...f }; for (const id of need) delete next[id]; return next; });
     try {
       const token = await getToken();
@@ -217,37 +255,64 @@ export default function ResumeTemplates() {
           if (res.status === 404) { setNoResume(true); return; }
           if (!res.ok) throw new Error(json.error || 'Could not build previews');
           const got: Preview[] = json.previews || [];
+          // An image is an image, whoever asked for it — the card stops waiting the moment one lands.
           setPreviews((prev) => {
             const next = { ...prev };
             for (const p of got) next[p.id] = p;
             return next;
           });
           const gotIds = new Set(got.map((p) => p.id));
-          const missing = batch.filter((id) => !gotIds.has(id));
+          unflag(batch.filter((id) => gotIds.has(id) || mine(id)));
+          const missing = batch.filter((id) => !gotIds.has(id) && mine(id));
           if (missing.length) setFailed((f) => { const next = { ...f }; for (const id of missing) next[id] = 'Could not render this design.'; return next; });
         } catch (e: any) {
           if (cacheGen.current !== gen) return;
+          // ⚠️ An AbortError (the 45s clock) keeps its retry: the card flips from "Still rendering" to
+          // "This took too long" + Tap to retry — never back to a bare spinner.
           const msg = e?.name === 'AbortError' ? 'This took too long.' : (e?.message || 'Could not render this design.');
-          setFailed((f) => { const next = { ...f }; for (const id of batch) next[id] = msg; return next; });
+          const own = batch.filter(mine);
+          unflag(own);
+          if (own.length) setFailed((f) => { const next = { ...f }; for (const id of own) next[id] = msg; return next; });
         } finally {
           clearTimeout(tmr);
         }
       }
     } catch (e: any) {
-      if (cacheGen.current === gen) setFailed((f) => { const next = { ...f }; for (const id of need) next[id] = e?.message || 'Could not render this design.'; return next; });
+      const own = need.filter(mine);
+      if (cacheGen.current === gen && own.length) {
+        unflag(own);
+        setFailed((f) => { const next = { ...f }; for (const id of own) next[id] = e?.message || 'Could not render this design.'; return next; });
+      }
     } finally {
-      need.forEach((id) => inFlight.current.delete(id));
+      clearTimeout(slowTmr);
+      slowTimers.current.delete(slowTmr);
+      need.forEach((id) => { if (mine(id)) { inFlight.current.delete(id); owner.current.delete(id); } });
     }
   }
 
-  // The VISIBLE design renders first, alone — its request must never wait behind the
-  // neighbours'. They prefetch immediately after, so a swipe still lands on a warm image.
+  // "Still rendering — tap to retry": a fresh request for just this id, with its own 45s clock. The slow
+  // request is NOT aborted — the server is most likely mid-render for it, and whichever answer lands
+  // first fills the card (the loser rewrites the same image). It only loses ownership of the id, so its
+  // eventual failure cannot paint over the retry, and inFlight's dedupe lets the retry through.
+  function retryPreview(id: string) {
+    inFlight.current.delete(id);
+    owner.current.delete(id);
+    setSlow((sl) => { if (!sl[id]) return sl; const next = { ...sl }; delete next[id]; return next; });
+    ensurePreviews([id], true);
+  }
+
+  // The VISIBLE design and both neighbours are requested in the SAME tick — the visible one's call goes
+  // first, so its fetch leaves first, but the neighbours no longer wait for its ANSWER. ⚠️ They used to
+  // be chained on the visible's completion (`.then(() => ensurePreviews(rest))`), which is exactly the
+  // field report: one slow first render held the other two hostage, the first card sat on "Rendering…"
+  // alone, and the neighbours only started once it finished (or the user scrolled). Two requests in the
+  // air, each with its own timeout and its own failure marking; inFlight keeps them from overlapping.
   function prefetchAround(idx: number, fams: Family[], sel: Record<string, string>, force = false) {
     const idOf = (j: number) => { const f = fams[j]; return f ? (sel[f.id] || f.id) : ''; };
-    const rest = [idOf(idx + 1), idOf(idx - 1)].filter(Boolean);
     const cur = idOf(idx);
-    if (cur) ensurePreviews([cur], force).then(() => { if (rest.length) ensurePreviews(rest, force); });
-    else if (rest.length) ensurePreviews(rest, force);
+    const rest = [idOf(idx + 1), idOf(idx - 1)].filter((id) => id && id !== cur);
+    if (cur) ensurePreviews([cur], force);
+    if (rest.length) ensurePreviews(rest, force);
   }
 
   async function loadCatalogue() {
@@ -343,8 +408,10 @@ export default function ResumeTemplates() {
     returningFromEdit.current = false;
     cacheGen.current += 1;             // orphan anything still in the air (it renders the OLD résumé)
     inFlight.current.clear();
+    owner.current.clear();
     setPreviews({});
     setFailed({});
+    setSlow({});
     const { active: a, fams, sel } = focusState.current;
     if (fams.length) prefetchAround(a, fams, sel, true);   // force: the ids are all "already cached"
   }, []));
@@ -656,6 +723,13 @@ export default function ResumeTemplates() {
                                 <Ionicons name="refresh" size={13} color="#fff" />
                                 <Text style={s.retryChipText}>Tap to retry</Text>
                               </View>
+                            </TouchableOpacity>
+                          ) : slow[tid] ? (
+                            // Still pending after SLOW_AFTER_MS: the spinner stays (the request is alive),
+                            // the line becomes the way out. A tap re-requests THIS id only.
+                            <TouchableOpacity style={s.previewLoading} activeOpacity={0.8} onPress={() => retryPreview(tid)}>
+                              <ActivityIndicator size="large" color={accent} />
+                              <Text style={s.previewLoadingText}>Still rendering — tap to retry</Text>
                             </TouchableOpacity>
                           ) : (
                             <View style={s.previewLoading}>

@@ -30,7 +30,7 @@ const THUMB_DIR = path.join(ROOT, 'uploads', '.thumb_cache', String(UID));
 const STARTED = Date.now();
 
 // ── counters ─────────────────────────────────────────────────────────────────────────────────────
-const ai = { calls: 0, prompts: [], queue: [] };          // queue: functions (prompt) => text
+const ai = { calls: 0, prompts: [], queue: [], temps: [] };   // queue: functions (prompt) => text; temps: generationConfig.temperature per model
 const research = { calls: 0 };
 // previewOpts / pdfOpts / docxOpts: the opts each render was handed — the brand a doc-mode render paints in is asserted
 // from these (contract 4: EVERY doc-mode render passes design.brand; the base paths pass none).
@@ -220,10 +220,13 @@ stub('server/services/entitlements.js', {
 // sameness guard reads "sector known AND the title unchanged" as a generic draft that earns ONE corrective pass. The
 // base résumé (BASE_TEXT) says "Current title: Backend Engineer", so a fixture answering that same title made every
 // one-call scenario a two-call one. The guard itself is exercised on purpose in S28 below.
+// ⚠️ THE HIGHLIGHTS ARE REPHRASED TOO (2026-09-15): the guard now counts experience highlights that are a base bullet
+// near-verbatim (> 0.9 each; ≥ 60% of them = generic), and the fixture used to answer BASE_TEXT's own two bullets word
+// for word — which would earn every one-call scenario a corrective pass. These two describe the same work in other words.
 const RESUME = (over = {}) => ({
   personal_info: { full_name: '', email: '', phone: '', location: '', title: 'Backend Engineer — Payment Systems', linkedin_url: '', portfolio_url: '', nationality: '', date_of_birth: '' },
   summary: 'Backend engineer with **8 years** building payment systems.\n• Built ledgers\n• Scaled APIs\n• Led migrations',
-  experience: [{ company: 'PayCo', role: 'Senior Engineer', location: 'Pune', start_date: 'January 2018', end_date: 'Present', highlights: ['Built the ledger service', 'Scaled the payments API'] }],
+  experience: [{ company: 'PayCo', role: 'Senior Engineer', location: 'Pune', start_date: 'January 2018', end_date: 'Present', highlights: ['Designed the payments ledger service for high-volume settlement', 'Scaled the checkout API for peak traffic'] }],
   education: [{ institution: 'COEP', degree: 'B.Tech', field_of_study: 'CS', end_date: '2017', grade: '' }],
   projects: [], skills: { technical: ['Node.js', 'PostgreSQL'], soft: ['Mentoring'] },
   certifications: [], languages: [], achievements: [],
@@ -233,7 +236,8 @@ const RESUME = (over = {}) => ({
 const genaiPath = require.resolve(path.join(ROOT, 'node_modules/@google/generative-ai'));
 require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, exports: {
   GoogleGenerativeAI: class {
-    getGenerativeModel() {
+    getGenerativeModel(cfg) {
+      ai.temps.push(cfg && cfg.generationConfig ? cfg.generationConfig.temperature : null);
       return { generateContent: async (prompt) => {
         ai.calls++;
         ai.prompts.push(typeof prompt === 'string' ? prompt : JSON.stringify(prompt));
@@ -259,9 +263,26 @@ stub('server/services/jobService.js', {
 });
 stub('server/services/eventCosts.js', { getEventCost: async () => 2, refundCredits: async (u, key, charge) => { refunds.push({ u, key, charge }); } });
 stub('server/services/downloadHistory.js', { record: async (u, entry) => { historyRows.push(entry); }, list: async () => ({ items: [] }) });
+// ⚠️ A REAL JPEG (2026-09-15). The shared page cache stores the renderer's 794-px page and DERIVES Home's 480-px card
+// from it with sharp, so the stub's bytes must be an image sharp can read: one 794×1123 page, built once, with the old
+// 'JPEG:<id>:<title>' tag carried in a COM segment right after SOI — the "rendered from the DOCUMENT" pins still read the
+// title out of the bytes, and jpegSizeOf (the size of a cache hit) still finds the frame header behind it.
+const sharp = require(path.join(ROOT, 'node_modules/sharp'));
+let pageJpeg = null;
+const pageBytesFor = async (tag) => {
+  if (!pageJpeg) pageJpeg = await sharp({ create: { width: 794, height: 1123, channels: 3, background: '#dfe6ee' } }).jpeg({ quality: 30 }).toBuffer();
+  const com = Buffer.from(tag, 'utf8');
+  const seg = Buffer.concat([Buffer.from([0xff, 0xfe, (com.length + 2) >> 8, (com.length + 2) & 0xff]), com]);
+  return Buffer.concat([pageJpeg.subarray(0, 2), seg, pageJpeg.subarray(2)]);
+};
 stub('server/utils/resumeRenderer.js', {
   renderPdf: async (id, data, opts) => { render.pdf++; render.pdfOpts = opts || {}; return Buffer.from('%PDF-1.4 fake'); },
-  renderPreviews: async (data, opts, tpls) => { render.previews += tpls.length; render.previewOpts.push({ opts: opts || {}, ids: tpls.map((t) => t.id) }); return tpls.map((t) => ({ id: t.id, name: t.name, accent: t.accent, ats: t.ats || null, image: 'data:image/jpeg;base64,' + Buffer.from('JPEG:' + t.id + ':' + (data && data.personal_info && data.personal_info.title)).toString('base64'), width: 794, height: 1123 })); },
+  renderPreviews: async (data, opts, tpls) => {
+    render.previews += tpls.length; render.previewOpts.push({ opts: opts || {}, ids: tpls.map((t) => t.id) });
+    const out = [];
+    for (const t of tpls) out.push({ id: t.id, name: t.name, accent: t.accent, ats: t.ats || null, image: 'data:image/jpeg;base64,' + (await pageBytesFor('JPEG:' + t.id + ':' + (data && data.personal_info && data.personal_info.title))).toString('base64'), width: 794, height: 1123 });
+    return out;
+  },
   warmPreviews: async () => {},
 });
 stub('server/utils/docxBuilder.js', { buildResumeDocx: async (data, opts) => { render.docx++; render.docxOpts = opts || {}; return Buffer.from('PK fake'); } });
@@ -362,13 +383,24 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   ok('200 with a numeric docId, cached:false', b1.statusCode === 200 && b1.body.success === true && b1.body.cached === false && typeof b1.body.docId === 'number', b1.body);
   ok('tailoredFor is the company', b1.body.tailoredFor === 'Amazon');
   ok('ONE AI call, ONE research call', ai.calls - s0.ai === 1 && research.calls - s0.research === 1, { ai: ai.calls - s0.ai, research: research.calls - s0.research });
+  // ⚠️ 2026-09-15: the doc lane samples at 0.55 (at the builder's 0.4 the Deutsche Bahn rewrite kept the base's opening and
+  // bullets word for word); the builder lane's own 0.4 is pinned in code in S28.
+  ok('⚠️ the doc lane asked the model at temperature 0.55', ai.temps.length >= 1 && ai.temps[ai.temps.length - 1] === 0.55, ai.temps.slice(-2));
   ok('ONE charge', ent.consumed.length - s0.consumed === 1, ent.consumed);
   ok('ONE stored document', db.docs.length - s0.docs === 1);
   const d1 = db.docs.find((d) => d.id === b1.body.docId);
   ok('the stored payload has no design block', d1 && !('design' in d1.payload), d1 && Object.keys(d1.payload));
   ok('…carries the contact details the build was sent', d1 && d1.payload.personal_info.full_name === 'Harness User' && d1.payload.personal_info.email === 'h@u.test');
   ok('the design ranks EVERY template id exactly once', d1 && d1.design && d1.design.ranked.length === require(path.join(ROOT, 'server/utils/resumeTemplates')).TEMPLATE_IDS.length && new Set(d1.design.ranked.map((r) => r.id)).size === d1.design.ranked.length, d1 && d1.design && d1.design.ranked.length);
-  ok('…sorted by integer score desc', d1 && d1.design.ranked.every((r, i, a) => Number.isInteger(r.score) && (i === 0 || a[i - 1].score >= r.score)));
+  // ⚠️ RETARGETED 2026-09-15: a resume `ranked` is FAMILY-FIRST (designFit.familyFirst) — one card per family in family-score
+  // order, then the variants — not "sorted desc over the whole list" (prod showed three germany variants as the top three).
+  const FAM_COUNT = require(path.join(ROOT, 'server/utils/resumeTemplates')).FAMILIES.length;
+  const famOf1 = (id) => (require(path.join(ROOT, 'server/utils/resumeTemplates')).TEMPLATES.find((t) => t.id === id) || {}).family || id;
+  ok('…integer scores; the first 15 cards are 15 DIFFERENT families, each run sorted desc (family-first)',
+    d1 && d1.design.ranked.every((r) => Number.isInteger(r.score))
+    && new Set(d1.design.ranked.slice(0, FAM_COUNT).map((r) => famOf1(r.id))).size === FAM_COUNT
+    && d1.design.ranked.slice(0, FAM_COUNT).every((r, i, a) => i === 0 || a[i - 1].score >= r.score)
+    && d1.design.ranked.slice(FAM_COUNT).every((r, i, a) => i === 0 || a[i - 1].score >= r.score), d1 && d1.design.ranked.slice(0, 16).map((r) => `${r.id}:${r.score}`));
   ok('…the AI-favoured family leads (mono)', d1 && /^mono/.test(d1.design.ranked[0].id), d1 && d1.design.ranked.slice(0, 3));
   ok('…mode from the AI, brand colour from the research', d1 && d1.design.mode === 'onepage' && d1.design.brandColor === '#ff9900', d1 && d1.design);
   ok('employer id stored, research stored without key_contacts', d1 && d1.employer_id === '3f2a9c1e-1111-4222-8333-444455556666' && d1.research && !('key_contacts' in d1.research) && !('keyContacts' in d1.research), d1 && d1.research);
@@ -378,7 +410,10 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   ok('stage labels name the company', stages.find((s) => s.stage === 'researching').label === 'Researching Amazon' && stages.find((s) => s.stage === 'writing').label === 'Rewriting your resume for Amazon');
   ok('pcts ascend (16 / 38 / 86 / 92 / 96)', JSON.stringify(stages.map((s) => s.pct)) === JSON.stringify([8, 16, 38, 86, 92, 96]), stages.map((s) => s.pct));
   const thumbs1 = fsSync.existsSync(THUMB_DIR) ? fsSync.readdirSync(THUMB_DIR) : [];
-  ok('the top 3 designs were pre-rendered into the dot-directory cache', thumbs1.length === 3 && thumbs1.every((n) => /^[0-9a-f]{64}\.jpg$/.test(n)), thumbs1);
+  // ⚠️ ONE CACHE (2026-09-15): the pre-render stores the FULL 794-px PAGES (the gallery's first previews); Home's 480-px
+  // cards are derived from them on the first home-cards read (below), never a second render.
+  ok('the top 3 designs were pre-rendered into the dot-directory cache as full PAGES (64-hex .jpg, no card yet)', thumbs1.length === 3 && thumbs1.every((n) => /^[0-9a-f]{64}\.jpg$/.test(n)), thumbs1);
+  ok('…each a real 794-px JPEG (what the gallery serves)', thumbs1.every((n) => { const b = fsSync.readFileSync(path.join(THUMB_DIR, n)); return b[0] === 0xff && b[1] === 0xd8 && b.toString('latin1').includes('Backend Engineer'); }));
   const prompt1 = ai.prompts[ai.prompts.length - 1];
   ok('the prompt carries the research block and the family brief', /=== WHAT WE KNOW ABOUT Amazon/.test(prompt1) && /mono \| Tech Mono/.test(prompt1));
   ok('…and the country', /Applying in: India/.test(prompt1));
@@ -390,6 +425,10 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   ok('the prompt carries the WRITTEN FOR block, phrased for the researcher\'s sector',
     /=== WRITTEN FOR Amazon: THE TOP LINES ===/.test(prompt1) && /E-commerce and cloud computing/.test(prompt1)
     && /personal_info\.title/.test(prompt1) && /first sentence/i.test(prompt1), prompt1.slice(prompt1.indexOf('=== WRITTEN FOR'), prompt1.indexOf('=== WRITTEN FOR') + 400));
+  ok('…gives the opening SHAPE with a worked example about someone else (SHAPE only), and says a word-swapped base opening is not a rewrite',
+    /"<their real role> for [^"]+ — <the two or three real strengths of theirs that matter most here>"/.test(prompt1)
+    && /Data Engineer for healthcare providers — clinical-data pipelines, HL7 integrations and audit-ready reporting/.test(prompt1)
+    && /SHAPE only/.test(prompt1) && /with a word or two swapped is not a rewrite/.test(prompt1), prompt1.slice(prompt1.indexOf('summary, first sentence'), prompt1.indexOf('summary, first sentence') + 300));
   // Contract 2/4: the website gave nothing (brandSite.answer null), so the researcher's colour and font stand in — the
   // font NOT a Google font (the check said no), so the renderer will leave the design's own face.
   ok('the website read was asked ONCE, for the employer\'s domain, beside the researcher and the conventions',
@@ -401,6 +440,12 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const r1before = render.previews;
   const c0 = await call(RB.homeCards, {}, { doc: String(b1.body.docId) });
   ok('opening the carousel right after renders only the 2 of the top 5 not pre-rendered', c0.statusCode === 200 && c0.body.cards.length === 5 && render.previews - r1before === 2, { status: c0.statusCode, rendered: render.previews - r1before });
+  const files2 = fsSync.readdirSync(THUMB_DIR);
+  const cards2 = files2.filter((n) => /\.w480\.jpg$/.test(n));
+  ok('⚠️ Home\'s 5 cards are DERIVED .w480.jpg files, each beside its page — 5 pages + 5 cards, nothing else',
+    cards2.length === 5 && files2.length === 10 && cards2.every((c) => files2.includes(c.replace('.w480', ''))) && files2.every((n) => /^[0-9a-f]{64}(?:\.w480)?\.jpg$/.test(n)), files2);
+  const cardMeta0 = await sharp(Buffer.from(c0.body.cards[0].image.split(',')[1], 'base64')).metadata();
+  ok('…and the card served is the 480-px JPEG (sharp-derived), not the page', cardMeta0.width === 480 && cardMeta0.format === 'jpeg', cardMeta0);
 
   console.log('── S3 · the gate agrees with the build ──');
   s0 = snapshot();
@@ -717,7 +762,8 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const c4 = await call(RB.homeCards, {}, { doc: String(b1.body.docId), ids: 'nope' });
   ok('nothing valid asked → 200 with no cards (not a 500)', c4.statusCode === 200 && c4.body.cards.length === 0, c4.body);
   const names = fsSync.readdirSync(THUMB_DIR);
-  ok('thumbs live under uploads/.thumb_cache/<uid>/ as 64-hex .jpg', names.length >= 5 && names.every((n) => /^[0-9a-f]{64}\.jpg$/.test(n)), names);
+  ok('the cache under uploads/.thumb_cache/<uid>/ holds 64-hex .jpg pages and their .w480.jpg cards, every card beside its page, nothing else',
+    names.length >= 5 && names.every((n) => /^[0-9a-f]{64}(?:\.w480)?\.jpg$/.test(n)) && names.filter((n) => /\.w480\.jpg$/.test(n)).every((c) => names.includes(c.replace('.w480', ''))), names);
 
   console.log('── S14 · preview-templates with a docId ──');
   const p404 = await call(RB.previewTemplates, { ids: ['azure'], docId: 424242 });
@@ -734,6 +780,35 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   const beforeDoc = render.previews;
   await call(RB.previewTemplates, { ids: ['azure'], docId: b1.body.docId });
   ok('…and so is a second doc request, under its own key', render.previews === beforeDoc, render.previews - beforeDoc);
+  // ⚠️ ONE CACHE FOR THE GALLERY AND THE CARDS (2026-09-15). Prod: the build's pre-render warmed Home's cards while the
+  // gallery's FIRST preview still paid a cold render. Now the pre-rendered page IS the gallery's preview, and a page
+  // the gallery rendered is Home's next card (derived, no render).
+  ok('a hit answers the FULL page with its size read from the JPEG header (794 × 1123)', p1.body.previews.every((p) => p.width === 794 && p.height === 1123), p1.body.previews.map((p) => [p.id, p.width, p.height]));
+  const top1 = d1.design.ranked[0].id;
+  const beforeTop = render.previews;
+  const pTop = await call(RB.previewTemplates, { ids: [top1], docId: b1.body.docId });
+  ok('⚠️ the gallery\'s FIRST design (ranked[0], pre-rendered by the build) is a hit — no render', pTop.statusCode === 200 && pTop.body.previews.length === 1 && pTop.body.previews[0].id === top1 && render.previews === beforeTop, { top1, rendered: render.previews - beforeTop });
+  // A design nobody has asked for yet (a variant: never a family card, never in S13's asked ids): the gallery renders it
+  // and stores the page; Home's card for it is then derived, not rendered.
+  const files0 = fsSync.readdirSync(THUMB_DIR);
+  const r0 = render.previews;
+  const pFresh = await call(RB.previewTemplates, { ids: ['timeline_orchid'], docId: b1.body.docId });
+  const filesBefore14 = fsSync.readdirSync(THUMB_DIR);
+  ok('a gallery request for an uncached design renders it ONCE and stores the full page in the shared cache', pFresh.statusCode === 200 && pFresh.body.previews.length === 1 && render.previews - r0 === 1
+    && filesBefore14.length === files0.length + 1 && /^[0-9a-f]{64}\.jpg$/.test(filesBefore14.find((n) => !files0.includes(n)) || ''), { rendered: render.previews - r0, added: filesBefore14.filter((n) => !files0.includes(n)) });
+  const rBefore14 = render.previews;
+  const hcAz = await call(RB.homeCards, {}, { doc: String(b1.body.docId), ids: 'timeline_orchid' });
+  const filesAfter14 = fsSync.readdirSync(THUMB_DIR);
+  const newFiles14 = filesAfter14.filter((n) => !filesBefore14.includes(n));
+  ok('⚠️ a design the GALLERY rendered is Home\'s next card with NO render: one .w480 card derived beside the stored page',
+    hcAz.statusCode === 200 && hcAz.body.cards.length === 1 && hcAz.body.cards[0].id === 'timeline_orchid' && render.previews === rBefore14
+    && newFiles14.length === 1 && /\.w480\.jpg$/.test(newFiles14[0]) && filesBefore14.includes(newFiles14[0].replace('.w480', '')), { rendered: render.previews - rBefore14, newFiles14 });
+  const azMeta = await sharp(Buffer.from(hcAz.body.cards[0].image.split(',')[1], 'base64')).metadata();
+  ok('…a 480-px JPEG derived from the 794-px page', azMeta.width === 480 && azMeta.format === 'jpeg', azMeta);
+  const azBefore = render.previews;
+  const hcAz2 = await call(RB.homeCards, {}, { doc: String(b1.body.docId), ids: 'timeline_orchid' });
+  ok('…and the card file is read back next time (no derive, no render)', hcAz2.body.cards[0].image === hcAz.body.cards[0].image && render.previews === azBefore && fsSync.readdirSync(THUMB_DIR).length === filesAfter14.length);
+  ok('the gallery path writes NO temp/ JSON for a document (the base gallery keeps temp/)', !fsSync.readdirSync(path.join(ROOT, 'temp')).some((f) => new RegExp(`^resume_prev_${UID}_.*doc`).test(f)));
 
   console.log('── S15 · generate-pdf with a docId ──');
   ent.sub = { plan_key: 'pro' };      // a plan: downloads unlimited (DOWNLOADS_METERED off)
@@ -987,7 +1062,8 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const namesAfter = fsSync.readdirSync(THUMB_DIR).filter((n) => !namesBefore.has(n));
     ok('⚠️ a CHANGED brand misses the thumb cache: all 5 re-rendered in the new colour, under NEW cache names',
       hc2.statusCode === 200 && render.previewOpts.length >= 1 && render.previewOpts.every((p) => JSON.stringify(p.opts.brand) === JSON.stringify({ accent: '#00857c', font: null }))
-      && hc2.body.cards.every((c) => c.accent === '#00857c') && namesAfter.length === 5, { rendered: render.previewOpts.map((p) => p.ids), fresh: namesAfter.length });
+      && hc2.body.cards.every((c) => c.accent === '#00857c') && namesAfter.filter((n) => /^[0-9a-f]{64}\.jpg$/.test(n)).length === 5 && namesAfter.filter((n) => /\.w480\.jpg$/.test(n)).length === 5,
+      { rendered: render.previewOpts.map((p) => p.ids), fresh: namesAfter.length });
     d27.design = { ...d27.design, brand: brandWas };
 
     // preview-templates docId: the brand in the opts and in the cache key.
@@ -1022,8 +1098,22 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     // A document stored BEFORE brands existed: no design.brand — the research's researcher colour/font stand in, and a
     // stringified design column is read as well as an object.
     const old = { ...d27, id: 990027, design: JSON.stringify({ ...d27.design, brand: undefined }), research: { brandColor: '#0e7490', fontName: 'Inter' } };
-    ok('an older document renders in its research\'s colour (font not google: never verified)',
-      JSON.stringify(RB.docBrandOf(old)) === JSON.stringify({ accent: '#0e7490', font: { family: 'Inter', google: false } }), RB.docBrandOf(old));
+    // ⚠️ RETARGETED 2026-09-15: a bare researcher fontName is read through brandExtract's STATIC alternative table (Inter →
+    // itself, google:true; Segoe UI → Open Sans) — deterministic on every process, no memory, no network. A face the
+    // table does not know stays google:false, as before.
+    ok('an older document renders in its research\'s colour; its bare researcher font reads through the static table (Inter → itself, google:true)',
+      JSON.stringify(RB.docBrandOf(old)) === JSON.stringify({ accent: '#0e7490', font: { family: 'Inter', google: true } }), RB.docBrandOf(old));
+    ok('…a face the table does not know stays google:false (the renderer keeps the design\'s stack)',
+      JSON.stringify(RB.docBrandOf({ ...old, research: { brandColor: '#0e7490', fontName: 'Amazon Ember' } })) === JSON.stringify({ accent: '#0e7490', font: { family: 'Amazon Ember', google: false } }));
+    // ⚠️ PROD DOC 9 (2026-09-15): design.brand stored the site's raw "DB Neo Screen Sans Regular" google:false at build time
+    // and rendered in Lato. A STORED brand is read straight off the design, never through brandOf — so the table applies
+    // there too (docBrandShapeOf), and the cache key is the alternative's: one reading of one row on every path.
+    const db9 = { ...d27, id: 990009, design: { ...d27.design, brand: { accent: '#EC0016', font: { family: 'DB Neo Screen Sans Regular', google: false } } } };
+    ok('⚠️ a stored raw site face renders in its Google alternative (doc 9: DB Neo → Barlow) and keys the cache as Barlow',
+      JSON.stringify(RB.docBrandOf(db9)) === JSON.stringify({ accent: '#ec0016', font: { family: 'Barlow', google: true } })
+      && RB.brandKeyOf(db9.design.brand) === RB.brandKeyOf({ accent: '#ec0016', font: { family: 'Barlow', google: true } })
+      && JSON.stringify(RB.rerankStoredResumeDesign(db9).brand) === JSON.stringify({ accent: '#ec0016', font: { family: 'Barlow', google: true } }), RB.docBrandOf(db9));
+    ok('…a stored Google-hosted face keeps its exact shape (Space Grotesk stays Space Grotesk)', JSON.stringify(RB.docBrandOf(d27)) === JSON.stringify(WEB_BRAND));
     ok('…the researcher\'s invented default (#262633 / Lato) is never a brand', RB.docBrandOf({ design: null, research: { brandColor: '#262633', fontName: 'Lato' } }) === null);
     ok('docBrandOf is null-safe and shape-checked', RB.docBrandOf(null) === null && RB.docBrandOf({ design: { brand: { accent: 'red', font: { family: '' } } }, research: null }) === null);
     brandSite.answer = null;
@@ -1053,6 +1143,49 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
       RB.tokenJaccard('', '') === 1 && RB.tokenJaccard('', base) === 0 && RB.tokenJaccard(base, '') === 0
       && RB.tokenJaccard('**Payments** engineer, AWS.', 'payments ENGINEER (aws)') === 1 && RB.tokenJaccard('ledger the', 'ledger for') === 1);
 
+    // ⚠️ THE PROD PAIR (2026-09-15). Deutsche Bahn's document changed its title, kept the base's opening ("Accomplished
+    // Project Manager with 14+ years…"), scored 0.73 on the whole summary — UNDER the old 0.8 line — and its bullets were
+    // the base's with a verb swapped ("Led" → "Directed"). The guard now reads four lines (docSamenessOf): the whole summary
+    // at 0.6, the FIRST SENTENCE at 0.5, an unchanged title with a known sector, and ≥ 60% of the highlights a base bullet
+    // near-verbatim (> 0.9 each). A draft written for the sector passes all four.
+    const dbRaw = 'Current title: Project Manager\n\nSUMMARY\nAccomplished Project Manager with 14+ years of experience in software development and delivery leadership, specializing in enterprise platforms, agile transformation and stakeholder management. Proven record of delivering complex programmes on time and within budget for banking and logistics clients.\n\nEXPERIENCE\nProject Manager at Northwind Systems | Vienna | 2016 – Present\n- Led a team of 12 engineers delivering an enterprise ticketing platform for a logistics client\n- Managed a €4M budget across three concurrent software delivery streams\n- Introduced agile ceremonies that cut release cycle time from 8 weeks to 2\n\nPROJECTS\nTimetable viewer\n- Built a viewer for timetable data\n\nEDUCATION\nMSc | TU Wien | 2011';
+    const dbBase = RB.baseTopLinesOf(dbRaw, null);
+    ok('baseTopLinesOf reads the narrative\'s title, SUMMARY and the EXPERIENCE "- " bullets (three) — never a project\'s',
+      dbBase.title === 'Project Manager' && dbBase.summary.startsWith('Accomplished Project Manager') && dbBase.highlights.length === 3 && dbBase.highlights[0].startsWith('Led a team'), dbBase);
+    const prodDraft = {
+      personal_info: { title: 'Project Manager — Enterprise Software Delivery (Rail & Logistics)' },
+      summary: 'Accomplished Project Manager with 14+ years of experience in software development and delivery leadership, specializing in enterprise platforms, agile transformation and stakeholder management for rail and logistics operators. Trusted by programme sponsors to bring multi-vendor rail platforms into service on schedule.\n• Enterprise delivery\n• Agile transformation\n• Stakeholder management',
+      experience: [{ company: 'Northwind Systems', role: 'Project Manager', highlights: ['Directed a team of 12 engineers delivering an enterprise ticketing platform for a logistics client', 'Managed a €4M budget across three concurrent software delivery streams', 'Introduced agile ceremonies that cut release cycle time from 8 weeks to 2'] }],
+    };
+    const sProd = RB.docSamenessOf(prodDraft, dbBase, 'Rail and logistics');
+    ok('⚠️ the prod pair is GENERIC: the first sentence is the base\'s (> 0.5) and 2 of 3 highlights are base bullets with a verb swapped (≥ 60%) — a rewritten title did not save it, and the whole-summary reading alone would have (0.46)',
+      sProd.generic === true && sProd.openingSim > 0.5 && sProd.highlights.unchanged === 2 && sProd.highlights.total === 3 && sProd.highlights.share >= 0.6 && sProd.titleUnchanged === false && sProd.summarySim < 0.6,
+      { summary: sProd.summarySim, opening: sProd.openingSim, highlights: sProd.highlights });
+    ok('…openings carries both first sentences for the pass to quote back', sProd.openings.base.startsWith('Accomplished Project Manager with 14+ years') && sProd.openings.draft.startsWith('Accomplished Project Manager with 14+ years') && /operators\.$/.test(sProd.openings.draft), sProd.openings);
+    ok('…and the log phrase names every reading over its line, and only those', /^summary similarity 0\.4\d, title rewritten, opening similarity 0\.8\d, 2\/3 highlights unchanged$/.test(RB.docSamenessText(sProd)), RB.docSamenessText(sProd));
+    const midDraft = { personal_info: { title: 'Project Manager — Rail Delivery' }, summary: 'Delivery lead for rail and logistics operators bringing ticketing platforms into service. Proven record of delivering complex programmes on time and within budget for banking and logistics clients, with 14+ years of experience in software development and delivery leadership across enterprise platforms, agile transformation and stakeholder management.' };
+    const sMid = RB.docSamenessOf(midDraft, dbBase, 'Rail and logistics');
+    ok('⚠️ a whole summary between the OLD 0.8 line and the NEW 0.6 one is generic by the summary reading alone (no highlights, a new opening)',
+      sMid.generic === true && sMid.summarySim > 0.6 && sMid.summarySim < 0.8 && sMid.openingSim <= 0.5 && sMid.highlights === null, { summary: sMid.summarySim, opening: sMid.openingSim, openings: sMid.openings });
+    const stubOpen = RB.docSamenessOf({ summary: 'Project Manager. Accomplished Project Manager with 14+ years of experience in software development and delivery leadership.' }, dbBase, 'x');
+    ok('…a stub first sentence ("Project Manager.") takes the next sentence with it, so a stub never stands in for the opening — and that opening is the base\'s',
+      /^Project Manager\. Accomplished Project Manager with 14\+ years/.test(stubOpen.openings.draft) && stubOpen.openingSim > 0.5 && stubOpen.generic === true, stubOpen.openings.draft);
+    const rewrittenDraft = {
+      personal_info: { title: 'Project Manager — Enterprise Software Delivery (Rail & Logistics)' },
+      summary: 'Project Manager for rail and logistics operators — enterprise ticketing platforms, multi-stream delivery governance and agile release management for operations that run to a timetable. Fourteen years leading software delivery, most recently for banking and logistics clients.\n• Ticketing platforms\n• Delivery governance\n• Release management',
+      experience: [{ company: 'Northwind Systems', role: 'Project Manager', highlights: ['Steered a 12-engineer delivery team through the rollout of an enterprise ticketing platform for a logistics operator', 'Governed a €4M programme budget spanning three parallel software delivery streams', 'Brought release cycles down from eight weeks to two by introducing agile ceremonies across the delivery teams'] }],
+    };
+    const sRe = RB.docSamenessOf(rewrittenDraft, dbBase, 'Rail and logistics');
+    ok('a draft written for the sector — a sector-led opening, the bullets rephrased in its language — is NOT generic on any reading',
+      sRe.generic === false && sRe.summarySim < 0.6 && sRe.openingSim <= 0.5 && sRe.highlights.unchanged === 0 && sRe.titleUnchanged === false, { summary: sRe.summarySim, opening: sRe.openingSim, highlights: sRe.highlights });
+    ok('…logged as "summary similarity 0.29, title rewritten" — nothing else was over its line', RB.docSamenessText(sRe) === 'summary similarity 0.29, title rewritten', RB.docSamenessText(sRe));
+    const bare = { personal_info: { title: 'Project Manager' } };
+    ok('null readings never count: no summary and no highlights on either side leave only the title rule (generic with a sector, not without)',
+      RB.docSamenessOf(bare, dbBase, 'Rail and logistics').generic === true && RB.docSamenessOf(bare, dbBase, null).generic === false
+      && RB.docSamenessOf(bare, dbBase, 'x').summarySim === null && RB.docSamenessOf(bare, dbBase, 'x').openingSim === null && RB.docSamenessOf(bare, dbBase, 'x').highlights === null
+      && RB.docSamenessOf(prodDraft, { title: null, titles: [], summary: null, highlights: [] }, 'x').generic === false);
+    ok('docSamenessOf / baseTopLinesOf / docSamenessText never throw on junk', (() => { try { return RB.docSamenessOf(null, null, null).generic === false && RB.baseTopLinesOf(null, '{bad json').title === null && RB.docSamenessText(null) === 'not measured'; } catch { return false; } })());
+
     // (a) sector known (the researcher's industry), the title unchanged → generic → the pass, logged before and after.
     s0 = snapshot(); stages.length = 0;
     ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' }, design: { families: { elegant: { score: 97, reason: 'first' } }, mode: 'onepage', tone: 'x', headline: 'first' } })));
@@ -1060,6 +1193,7 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const b28 = await capture(() => call(RB.generateAI, buildBody({ job: { company: 'Sameness Co', website: 'https://sameness-test.com' } })));
     const d28 = db.docs.find((d) => d.id === b28.body.docId);
     ok('200 stored, exactly TWO AI calls (draft + the one pass), ONE charge', b28.statusCode === 200 && !!d28 && ai.calls - s0.ai === 2 && ent.consumed.length - s0.consumed === 1, { status: b28.statusCode, ai: ai.calls - s0.ai });
+    ok('…both at the doc lane\'s 0.55 (the corrective pass too)', ai.temps.slice(-2).every((t) => t === 0.55), ai.temps.slice(-2));
     const fix28 = ai.prompts[ai.prompts.length - 1];
     ok('the correction names the rule: the unchanged title, and "Rewrite the title and the summary opening for <sector>"',
       /=== ⚠️ CORRECTION/.test(fix28) && /the title is the candidate's current title, unchanged/.test(fix28)
@@ -1088,6 +1222,13 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const fix28b = ai.prompts[ai.prompts.length - 1];
     // (the moved summary keeps every token — 8 is a ≤3-char token and drops on both sides — so it scores 1.00)
     ok('the correction quotes the similarity as a percentage, not the title', /the summary is (9\d|100)% the same as the base resume's/.test(fix28b) && !/current title, unchanged/.test(fix28b), fix28b.slice(fix28b.indexOf('CORRECTION'), fix28b.indexOf('CORRECTION') + 400));
+    // ⚠️ 2026-09-15: the model cannot see its own sameness, so the pass quotes the base opening and the draft's back, demands
+    // the sector-led SHAPE for the first sentence, the bullets rephrased (relevant ones first), and again: no fact added.
+    ok('⚠️ the pass quotes BOTH openings back, demands the sector-led shape, the bullets rephrased, and that NO fact is added',
+      /The base resume opens: "Backend engineer with 8 years building payment systems/.test(fix28b) && /your answer opens: "Led migrations of monolith services/.test(fix28b)
+      && /in the shape "<real role> for E-commerce and cloud computing — <the two or three real strengths that matter here>"/.test(fix28b)
+      && /rephrase the experience highlights in the language of E-commerce and cloud computing[^.]*the ones that matter to Echo Co first — a bullet with one verb swapped is not rephrased/.test(fix28b)
+      && /NO fact may be added \(no skill, tool, number, client or achievement the material does not state\)/.test(fix28b), fix28b.slice(fix28b.indexOf('The base resume opens'), fix28b.indexOf('The base resume opens') + 600));
     ok('logged: similarity ≥ 0.9 before, well under 0.8 after',
       logs.some((l) => /"Echo Co" came back generic \(summary similarity (0\.9\d|1\.00), title rewritten\)/.test(l))
       && logs.some((l) => /"Echo Co" after the corrective pass: summary similarity 0\.[0-5]\d, title rewritten$/.test(l)), logs.filter((l) => /Echo Co/.test(l)));
@@ -1130,9 +1271,15 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
       b28f.statusCode === 200 && ai.calls - s0.ai === 2 && /placeholder text/.test(fix28f) && /Rewrite the title and the summary opening/.test(fix28f)
       && stages.find((s) => s.stage === 'polishing').label === 'Polishing the wording', { ai: ai.calls - s0.ai, label: (stages.find((s) => s.stage === 'polishing') || {}).label });
     const src28 = fsSync.readFileSync(path.join(ROOT, 'server/controllers/resumeBuilderController.js'), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
-    ok('⚠️ the guard\'s threshold is 0.8 and it is ONE pass in code: correctDocDraft is called once in the lane, inside the correction budget',
-      /DOC_SUMMARY_SAME_MAX = 0\.8\b/.test(src28) && (src28.match(/await correctDocDraft\(/g) || []).length === 1 && /Date\.now\(\) - startedAt < DOC_LANE_CORRECTION_BUDGET_MS/.test(src28),
-      (src28.match(/await correctDocDraft\(/g) || []).length);
+    // ⚠️ RETARGETED 2026-09-15: four lines (summary 0.6, opening 0.5, a highlight 0.9, 60% of them) and the doc lane's 0.55
+    // over the builder's default 0.4 — the builder's one call passes no temperature, the doc lane's two pass the constant.
+    ok('⚠️ the guard\'s four lines, the two temperatures, and ONE pass in code: correctDocDraft is called once in the lane, inside the correction budget',
+      /DOC_SUMMARY_SAME_MAX = 0\.6\b/.test(src28) && /DOC_OPENING_SAME_MAX = 0\.5\b/.test(src28) && /DOC_HIGHLIGHT_SAME_MIN = 0\.9\b/.test(src28) && /DOC_HIGHLIGHTS_SAME_SHARE = 0\.6\b/.test(src28)
+      && /DOC_LANE_TEMPERATURE = 0\.55\b/.test(src28) && /async function callGemini\(prompt, \{ temperature = 0\.4 \} = \{\}\)/.test(src28)
+      && (src28.match(/await callGemini\((?:prompt|fixPrompt), \{ temperature: DOC_LANE_TEMPERATURE \}\)/g) || []).length === 2
+      && (src28.match(/await callGemini\(prompt\);/g) || []).length === 1 && (src28.match(/await callGemini\(/g) || []).length === 3
+      && (src28.match(/await correctDocDraft\(/g) || []).length === 1 && /Date\.now\(\) - startedAt < DOC_LANE_CORRECTION_BUDGET_MS/.test(src28),
+      { passes: (src28.match(/await correctDocDraft\(/g) || []).length, calls: (src28.match(/await callGemini\(/g) || []).length });
   }
 
   // ── tidy ─────────────────────────────────────────────────────────────────────────────────────

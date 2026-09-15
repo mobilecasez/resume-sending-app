@@ -631,7 +631,13 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     const rb = CL.researchBrandOf({ brandColor: '#1a73e8', fontName: 'Inter', brand: { primary: '#ff0000', font: { family: 'Poppins', google: true } } });
     ok('researchBrandOf: brand.primary / brand.font beat the researcher\'s colour and font', rb && rb.accent === '#ff0000' && rb.font.family === 'Poppins' && rb.font.google === true, rb);
     const rb2 = CL.researchBrandOf({ brandColor: '#1A73E8', fontName: 'Inter' });
-    ok('researchBrandOf: the researcher\'s pair stands in (lower-cased; a font never seen on Google Fonts is not google)', rb2 && rb2.accent === '#1a73e8' && rb2.font.family === 'Inter' && rb2.font.google === false, rb2);
+    // ⚠️ RETARGETED 2026-09-15: a bare researcher fontName reads through brandExtract's STATIC alternative table (Inter →
+    // itself, google:true; Segoe UI → Open Sans) — deterministic, no memory, no network; a face the table does not know
+    // stays google:false. brandPairOf reduces the font to { family, google } (from / original never reach the renderer).
+    ok('researchBrandOf: the researcher\'s pair stands in (lower-cased; a Google-hosted family name reads google:true from the static table)', rb2 && rb2.accent === '#1a73e8' && rb2.font.family === 'Inter' && rb2.font.google === true && !('from' in rb2.font), rb2);
+    const rb2b = CL.researchBrandOf({ brandColor: '#1A73E8', fontName: 'Amazon Ember' });
+    ok('…a face the table does not know is not google; a non-hosted face it knows renders in its alternative (Segoe UI → Open Sans)',
+      rb2b && rb2b.font.family === 'Amazon Ember' && rb2b.font.google === false && JSON.stringify(CL.researchBrandOf({ brandColor: '#0078d4', fontName: 'Segoe UI' }).font) === JSON.stringify({ family: 'Open Sans', google: true }), rb2b);
     ok('researchBrandOf: nothing usable → null, null-safe', CL.researchBrandOf({ industry: 'x' }) === null && CL.researchBrandOf(null) === null);
     const lb = CL.letterBrandOf({ design: { brand: { accent: '#00ff00', font: null } }, research: { brandColor: '#1a73e8' }, payload: { brandColor: '#123456' } });
     ok('letterBrandOf: the stored design.brand first', lb && lb.accent === '#00ff00' && lb.font === null, lb);
@@ -696,13 +702,24 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
       const BX = require(path.join(ROOT, 'server/services/brandExtract.js'));
       const oldLetter = { id: 2, design: { ranked: [] }, research: { domain: 'mont-letter-test.com', fontName: 'Montserrat', brandColor: '#123456' }, payload: { coverLetterHtml: '<p>x</p>' } };
       const lBefore = CL.letterBrandOf(oldLetter);
-      ok('cold process: the bare researcher fontName is google:false', !!lBefore && lBefore.font.family === 'Montserrat' && lBefore.font.google === false && lBefore.accent === '#123456', lBefore);
+      // ⚠️ RETARGETED 2026-09-15: Montserrat is google:true from the STATIC table on every process; the memory-independence
+      // the pin protects is held by a face the table does not know (Amazon Ember), which the memory is then taught.
+      ok('cold process: the bare researcher fontName reads through the static table (Montserrat → itself, google:true)', !!lBefore && lBefore.font.family === 'Montserrat' && lBefore.font.google === true && lBefore.accent === '#123456', lBefore);
+      const emberLetter = { ...oldLetter, id: 3, research: { ...oldLetter.research, fontName: 'Amazon Ember' } };
+      const eBefore = CL.letterBrandOf(emberLetter);
+      ok('…a face the table does not know is google:false', !!eBefore && eBefore.font.family === 'Amazon Ember' && eBefore.font.google === false, eBefore);
       const realKnown = BX.googleFontKnown;
-      BX.googleFontKnown = (f) => (String(f).toLowerCase() === 'montserrat' ? true : realKnown(f));
+      BX.googleFontKnown = (f) => (['montserrat', 'amazon ember'].includes(String(f).toLowerCase()) ? true : realKnown(f));
       try {
         const fresh = await research._internals.withResearcherFont({ domain: 'mont-letter-test.com', fontName: 'Montserrat' }, 5000);
         ok('(the memory is live: a fresh build writes google:true onto brand.font)', !!fresh && !!fresh.brand && fresh.brand.font.google === true);
-        ok('⚠️ the stored letter\'s brand is byte-identical after the memory learned the family', JSON.stringify(CL.letterBrandOf(oldLetter)) === JSON.stringify(lBefore), CL.letterBrandOf(oldLetter));
+        ok('⚠️ the stored letter\'s brand is byte-identical after the memory learned the family — the table-known one AND the unknown one (still google:false)',
+          JSON.stringify(CL.letterBrandOf(oldLetter)) === JSON.stringify(lBefore) && JSON.stringify(CL.letterBrandOf(emberLetter)) === JSON.stringify(eBefore) && CL.letterBrandOf(emberLetter).font.google === false, [CL.letterBrandOf(oldLetter), CL.letterBrandOf(emberLetter)]);
+        // ⚠️ PROD DOC 9's letter-side twin: a letter whose design.brand STORED the raw site face at build time is read straight
+        // off the row, never through brandOf — so the table is applied there too (brandFontOf), one reading of one row.
+        ok('⚠️ a stored raw site face on design.brand renders in its Google alternative (DB Neo → Barlow); a stored unknown face stays as stored',
+          JSON.stringify(CL.letterBrandOf({ id: 9, design: { ranked: [], brand: { accent: '#EC0016', font: { family: 'DB Neo Screen Sans Regular', google: false } } } })) === JSON.stringify({ accent: '#ec0016', font: { family: 'Barlow', google: true } })
+          && JSON.stringify(CL.letterBrandOf({ id: 9, design: { ranked: [], brand: { accent: '#ff9900', font: { family: 'Amazon Ember', google: false } } } })) === JSON.stringify({ accent: '#ff9900', font: { family: 'Amazon Ember', google: false } }));
         ok('…while a research carrying the verified answer reads google:true', CL.researchBrandOf(fresh).font.google === true);
       } finally { BX.googleFontKnown = realKnown; }
     }

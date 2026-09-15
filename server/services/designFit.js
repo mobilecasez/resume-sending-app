@@ -19,11 +19,21 @@
 //
 // ⚠️ THE INVARIANTS ARE THE CONTRACT, NOT A NICETY. Every consumer (home-cards, the templates
 // screen, the carousel) indexes `ranked` as "the whole catalogue, best first": `ranked` lists EVERY
-// template id of that kind exactly once, sorted by score desc with ties in catalogue order, and
-// every score is an integer 0..100. A design with a missing id makes that design unreachable from
-// the ranked gallery; a duplicate shows the same card twice; a float fit renders "87.4% fit". So
-// every producer below funnels through finaliseRanked(), and a stored design from an older catalogue is
-// repaired by normaliseDesign() rather than trusted.
+// template id of that kind exactly once and every score is an integer 0..100. A design with a
+// missing id makes that design unreachable from the ranked gallery; a duplicate shows the same card
+// twice; a float fit renders "87.4% fit". So every producer below funnels through finaliseRanked(),
+// and a stored design from an older catalogue is repaired by normaliseDesign() rather than trusted.
+//
+// ⚠️ RESUME ORDER IS FAMILY-FIRST (2026-09-15). Prod showed Deutsche Bahn's top three as germany_warm 86,
+// germany 84, germany_blue 83 — three colour variants of ONE family, and with the brand colour painted
+// over all of them three IDENTICAL pages with "different" fit numbers. So a resume `ranked` is two runs:
+// first ONE card per family (its best variant for the brand — closest accent, catalogue order without a
+// brand) in family-score order, then every remaining variant, each keeping its family score minus the
+// small variant step. Scores descend WITHIN each run (ties in catalogue order), not across the seam —
+// the first variant of the tail outscores the last family card by design, so a consumer must not read
+// "sorted desc" over the whole list. ranked[0] is still the global best. familyFirst() is the one
+// reorder (pure, idempotent) and normaliseDesign() applies it on read, so a document stored with the
+// old score-sorted order comes back family-first. Letters (7 distinct designs) keep plain score order.
 //
 // ⚠️ THE AI'S SCORES ARE ADVICE, NEVER THE WHOLE ANSWER. A model asked to score 15 families will
 // sometimes score three, return "92%" strings, key by a variant id, or rate a German photo CV 95
@@ -609,7 +619,8 @@ function colourDistance(a, b) {
 // ── finalise: the one place invariants are enforced ───────────────────────────
 /**
  * scores: Map id → { score, reason }. Emits EVERY catalogue id exactly once (missing → 0),
- * integer-clamped, sorted by score desc, ties in catalogue order.
+ * integer-clamped, sorted by score desc, ties in catalogue order. A resume list then goes through
+ * familyFirst() (below) — this is the score-sorted intermediate, and the final letter order.
  */
 function finaliseRanked(ids, scores) {
   const order = new Map(ids.map((id, i) => [id, i]));
@@ -619,6 +630,53 @@ function finaliseRanked(ids, scores) {
       return { id, score: clampInt(s ? s.score : 0), reason: shortText(s && s.reason, REASON_MAX) };
     })
     .sort((a, b) => (b.score - a.score) || (order.get(a.id) - order.get(b.id)));
+}
+
+// ── familyFirst: one card per family, then the variants ──────────────────────
+/**
+ * A resume `ranked` list reordered family-first: for every family its best member (highest score;
+ * ties in catalogue order — with a brand the variant scores strictly decrease closest-first, so the
+ * card is the closest accent, and without one it is the base design) in family-score order (ties
+ * in FAMILY catalogue order), then every remaining member sorted by score desc, ties in catalogue
+ * order. Entries are neither mutated nor rescored — a variant keeps its family score minus the
+ * variant step it was given, and the reason it already carries (its family's).
+ *
+ * PURE and IDEMPOTENT: a family-first list is its own fixed point (each family's max is already its
+ * card), so normaliseDesign can apply it to every stored design on read, old order or new, and
+ * rerankDesign / rankResumeDesigns produce the same shape. Every id of the input appears exactly
+ * once in the output. An id outside the resume catalogue (a retired template, a letter id) counts
+ * as a family of its own, after the catalogue ones, in input order — finaliseRanked never emits one,
+ * this is only so a stray entry cannot throw. Not an array → [].
+ */
+function familyFirst(ranked) {
+  if (!Array.isArray(ranked)) return [];
+  const ids = resumeTemplates.TEMPLATE_IDS || [];
+  const order = new Map(ids.map((id, i) => [id, i]));
+  const familyOf = new Map((resumeTemplates.TEMPLATES || []).map((t) => [t.id, t.family || t.id]));
+  const familyOrder = new Map((resumeTemplates.FAMILIES || []).map((f, i) => [f.id, i]));
+  const at = (id, i) => (order.has(id) ? order.get(id) : ids.length + i);
+  // A stray entry (null, a non-numeric score) sorts as 0 — never NaN, never a throw.
+  const scoreOf = (e) => { const n = Number(e && typeof e === 'object' ? e.score : 0); return Number.isFinite(n) ? n : 0; };
+  const byScore = (a, b) => (scoreOf(b.e) - scoreOf(a.e)) || (a.at - b.at);
+
+  const groups = new Map(); // family → [{ e, at }] in input order
+  ranked.forEach((e, i) => {
+    const id = e && typeof e === 'object' ? e.id : null;
+    const fam = familyOf.get(id) || id || `#${i}`;
+    if (!groups.has(fam)) groups.set(fam, []);
+    groups.get(fam).push({ e, at: at(id, i) });
+  });
+
+  const cards = [];
+  const tail = [];
+  for (const [fam, members] of groups) {
+    members.sort(byScore);
+    cards.push({ e: members[0].e, score: scoreOf(members[0].e), at: familyOrder.has(fam) ? familyOrder.get(fam) : familyOrder.size + members[0].at });
+    for (const m of members.slice(1)) tail.push(m);
+  }
+  cards.sort((a, b) => (b.score - a.score) || (a.at - b.at));
+  tail.sort(byScore);
+  return [...cards.map((c) => c.e), ...tail.map((m) => m.e)];
 }
 
 // ── rankResumeDesigns ─────────────────────────────────────────────────────────
@@ -677,8 +735,8 @@ function rankResumeDesigns({
     familyResults.push({ f, score: famScore, reason });
 
     // Variants: closest accent to the brand first. The step grows by one per rank plus up to 3 for
-    // a far colour, so within a family the order is STRICTLY decreasing — the global tie-break
-    // (catalogue order) can never flip "closest first".
+    // a far colour, so within a family the order is STRICTLY decreasing — the tie-break (catalogue
+    // order) can never flip "closest first", and familyFirst's card for the family IS the closest.
     let members = f.members.map((m, i) => ({ ...m, i, d: brand ? colourDistance(m.accent, brand) : 0 }));
     if (brand) {
       members = members.slice().sort((x, y) => (x.d - y.d) || (x.i - y.i));
@@ -693,7 +751,9 @@ function rankResumeDesigns({
     }
   }
 
-  const ranked = finaliseRanked(ids, scores);
+  // Family-first (see the header): one card per family, then the variants. ranked[0] is still the
+  // best family's best variant — the global maximum — so the headline / tone logic below is unmoved.
+  const ranked = familyFirst(finaliseRanked(ids, scores));
   const top = ranked[0];
   const topFamily = top && familyResults.find((r) => r.f.members.some((m) => m.id === top.id));
   const topName = top ? ((resumeTemplates.TEMPLATES.find((t) => t.id === top.id) || {}).name || top.id) : '';
@@ -834,10 +894,12 @@ function rankLetterDesigns({
 /**
  * Repair a stored design against TODAY's catalogue: unknown ids dropped (a retired template),
  * duplicates dropped (first wins), missing ids appended with score 0 (a family that shipped after
- * the build), scores clamped, re-sorted, defaults filled. null only when raw is not an object —
- * a broken design is fixable, a missing one is the caller's "compute a rule-only design" signal.
- * aiFamilies (resume only: family ids of today's catalogue, clamped) and conventionsSummary are kept —
- * they are what lets rerankDesign re-rank the design later without the AI.
+ * the build), scores clamped, re-sorted (a resume list family-first — a document stored with the
+ * old score-sorted order comes back in today's order on read, scores untouched), defaults filled.
+ * null only when raw is not an object — a broken design is fixable, a missing one is the caller's
+ * "compute a rule-only design" signal. aiFamilies (resume only: family ids of today's catalogue,
+ * clamped) and conventionsSummary are kept — they are what lets rerankDesign re-rank the design
+ * later without the AI.
  */
 function normaliseDesign(raw, kind) {
   let obj = raw;
@@ -865,10 +927,11 @@ function normaliseDesign(raw, kind) {
     if (ai.size) aiFamilies = Object.fromEntries([...ai.entries()].map(([id, e]) => [id, { score: e.score, reason: e.reason }]));
   }
 
+  const sorted = finaliseRanked(ids, scores);
   return {
     v: 1,
     kind: k,
-    ranked: finaliseRanked(ids, scores),
+    ranked: k === 'resume' ? familyFirst(sorted) : sorted,
     mode: VALID_MODES.has(obj.mode) ? obj.mode : 'a4',
     brandColor: hexOrNull(obj.brandColor),
     tone: textOrNull(obj.tone, TONE_MAX),
@@ -938,6 +1001,7 @@ module.exports = {
   rankLetterDesigns,
   normaliseDesign,
   rerankDesign,
+  familyFirst,
   // exposed for tests / diagnostics only
   _internals: {
     sizeClassOf, colourDistance, ruleScoreFamily, resumeCatalogue, FAMILY_META,

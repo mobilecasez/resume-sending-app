@@ -236,8 +236,24 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
 
   console.log('── designFit: the ranking invariants, for every catalogue ──');
   const fit = require(path.join(ROOT, 'server/services/designFit.js'));
-  const RIDS = require(path.join(ROOT, 'server/utils/resumeTemplates.js')).TEMPLATE_IDS;
+  const RT = require(path.join(ROOT, 'server/utils/resumeTemplates.js'));
+  const RIDS = RT.TEMPLATE_IDS;
   const LIDS = require(path.join(ROOT, 'server/utils/coverLetterTemplates.js')).TEMPLATE_IDS;
+  // ⚠️ RETARGETED 2026-09-15 — RESUME ORDER IS FAMILY-FIRST. Prod ranked Deutsche Bahn's top three as germany_warm 86 /
+  // germany 84 / germany_blue 83: three colour variants of ONE family, three identical pages once the brand colour was
+  // painted over them. A resume `ranked` is now two runs: ONE card per family (its best member) in family-score order,
+  // ties in FAMILY catalogue order; then every remaining variant, score desc, ties in catalogue order. Scores descend
+  // within each run, NOT across the seam (the tail's first variant outscores the last family card by design), so
+  // "sorted desc over the whole list" is no longer the invariant for a resume. Letters keep plain score order.
+  const FAMS = RT.FAMILIES.map((f) => f.id);
+  const famOfId = (id) => (RT.TEMPLATES.find((t) => t.id === id) || {}).family || id;
+  const sortedRun = (run, ids, tieIndex) => {
+    for (let i = 1; i < run.length; i++) {
+      if (run[i - 1].score < run[i].score) return 'not sorted at ' + i;
+      if (run[i - 1].score === run[i].score && tieIndex(run[i - 1].id) > tieIndex(run[i].id)) return 'tie order at ' + i;
+    }
+    return null;
+  };
   const invariant = (d, ids, kind) => {
     if (!d || d.v !== 1 || d.kind !== kind || !Array.isArray(d.ranked)) return 'shape';
     if (d.ranked.length !== ids.length) return 'length ' + d.ranked.length + ' vs ' + ids.length;
@@ -247,11 +263,20 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       const r = d.ranked[i];
       if (!Number.isInteger(r.score) || r.score < 0 || r.score > 100) return 'score ' + JSON.stringify(r);
       if (typeof r.reason !== 'string' || r.reason.length > 90) return 'reason ' + JSON.stringify(r);
-      if (i && d.ranked[i - 1].score < r.score) return 'not sorted at ' + i;
-      // ties keep catalogue order
-      if (i && d.ranked[i - 1].score === r.score && ids.indexOf(d.ranked[i - 1].id) > ids.indexOf(r.id)) return 'tie order at ' + i;
     }
     if (!['a4', 'onepage'].includes(d.mode)) return 'mode';
+    if (kind !== 'resume') return sortedRun(d.ranked, ids, (id) => ids.indexOf(id));   // letters: one run, ties in catalogue order
+    const cards = d.ranked.slice(0, FAMS.length);
+    const tail = d.ranked.slice(FAMS.length);
+    if (new Set(cards.map((r) => famOfId(r.id))).size !== FAMS.length) return 'two cards of one family among the first ' + FAMS.length;
+    for (const c of cards) {
+      const best = Math.max(...d.ranked.filter((r) => famOfId(r.id) === famOfId(c.id)).map((r) => r.score));
+      if (c.score !== best) return 'card ' + c.id + ' is not its family\'s best (' + c.score + ' vs ' + best + ')';
+    }
+    const cardsErr = sortedRun(cards, ids, (id) => FAMS.indexOf(famOfId(id)));
+    if (cardsErr) return 'cards: ' + cardsErr;
+    const tailErr = sortedRun(tail, ids, (id) => ids.indexOf(id));
+    if (tailErr) return 'variants: ' + tailErr;
     return null;
   };
   const resumeCases = [
@@ -263,7 +288,7 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   ];
   for (const [i, c] of resumeCases.entries()) {
     const d = fit.rankResumeDesigns(c);
-    ok(`resume ranking #${i}: every id once, integer 0..100, sorted desc, ties in catalogue order`, invariant(d, RIDS, 'resume') === null, invariant(d, RIDS, 'resume'));
+    ok(`resume ranking #${i}: every id once, integer 0..100, family-first (one card per family, then the variants), each run sorted desc`, invariant(d, RIDS, 'resume') === null, invariant(d, RIDS, 'resume'));
   }
   const dAi = fit.rankResumeDesigns(resumeCases[3]);
   ok('an AI score over 100 is clamped, and the AI\'s mode wins when valid', dAi.ranked.every((r) => r.score <= 100) && dAi.mode === 'onepage');
@@ -286,6 +311,44 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     fit.regionFor({ country: 'Germany', website: 'acme.co.uk' }) === 'dach' && fit.regionFor({ website: 'https://acme.co.uk' }) === 'uk_au' && fit.regionFor({}) === 'generic',
     [fit.regionFor({ country: 'Germany', website: 'acme.co.uk' }), fit.regionFor({ website: 'https://acme.co.uk' }), fit.regionFor({})]);
   ok('seniorityYearsOf never throws and is 0 when unknown', fit.seniorityYearsOf(null) === 0 && fit.seniorityYearsOf({ experience: [{ start_date: 'soon' }] }) === 0);
+
+  console.log('── ⚠️ RESUME ORDER IS FAMILY-FIRST (2026-09-15): one card per family, then the variants ──');
+  {
+    // Deutsche Bahn-like: brand #ec0016, DACH, an enterprise, 14 years. Prod's first three cards were germany_warm /
+    // germany / germany_blue — one family three times, three identical pages under the brand colour.
+    const DB = { region: 'dach', brandColor: '#ec0016', industry: 'Rail and logistics', companySize: '10,001+ employees', seniorityYears: 14, employerType: 'enterprise' };
+    const dDb = fit.rankResumeDesigns(DB);
+    const cards = dDb.ranked.slice(0, FAMS.length);
+    ok('⚠️ no two of the first 15 cards share a family (15 families, 15 cards)', new Set(cards.map((r) => famOfId(r.id))).size === FAMS.length && cards.length === FAMS.length, cards.map((r) => `${r.id}:${r.score}`));
+    ok('every id appears exactly once (73)', dDb.ranked.length === RIDS.length && new Set(dDb.ranked.map((r) => r.id)).size === RIDS.length);
+    ok('every score an integer 0..100', dDb.ranked.every((r) => Number.isInteger(r.score) && r.score >= 0 && r.score <= 100));
+    ok('the German CV leads for a German employer, and its ONE card is the variant closest to the brand red (germany_warm — the prod winner), not the base',
+      famOfId(dDb.ranked[0].id) === 'germany' && dDb.ranked[0].id === 'germany_warm' && !cards.slice(1).some((r) => famOfId(r.id) === 'germany'), dDb.ranked.slice(0, 3));
+    ok('each card is its family\'s best score; the other variants follow after ALL the families, keeping their family score minus the step',
+      invariant(dDb, RIDS, 'resume') === null && dDb.ranked.slice(FAMS.length).every((r) => r.score <= cards.find((c) => famOfId(c.id) === famOfId(r.id)).score), invariant(dDb, RIDS, 'resume'));
+    ok('⚠️ the seam: the tail\'s first variant outscores the last family card — why "sorted desc over the whole list" is no longer the invariant',
+      dDb.ranked[FAMS.length].score > dDb.ranked[FAMS.length - 1].score, [dDb.ranked[FAMS.length - 1], dDb.ranked[FAMS.length]]);
+    ok('a variant\'s reason / fit is its family\'s', dDb.ranked.slice(FAMS.length).every((r) => r.reason === cards.find((c) => famOfId(c.id) === famOfId(r.id)).reason));
+    ok('familyFirst is idempotent: a family-first list is its own fixed point', JSON.stringify(fit.familyFirst(dDb.ranked)) === JSON.stringify(dDb.ranked));
+    const oldOrder = dDb.ranked.slice().sort((a, b) => (b.score - a.score) || (RIDS.indexOf(a.id) - RIDS.indexOf(b.id)));
+    ok('(the old score-sorted order DID stack the germany variants up front)', oldOrder.slice(0, 3).every((r) => famOfId(r.id) === 'germany'), oldOrder.slice(0, 3).map((r) => r.id));
+    const frozen = JSON.stringify(oldOrder);
+    ok('familyFirst is pure: the old-order input is not mutated, and its answer is the family-first list', fit.familyFirst(oldOrder).length === RIDS.length && JSON.stringify(oldOrder) === frozen && JSON.stringify(fit.familyFirst(oldOrder)) === JSON.stringify(dDb.ranked));
+    const storedOld = fit.normaliseDesign({ ...dDb, ranked: oldOrder }, 'resume');
+    ok('⚠️ normaliseDesign applies it on read: a document STORED in the old order comes back family-first, brandColor / aiFamilies / region kept',
+      JSON.stringify(storedOld.ranked) === JSON.stringify(dDb.ranked) && storedOld.brandColor === '#ec0016' && storedOld.region === 'dach' && invariant(storedOld, RIDS, 'resume') === null, invariant(storedOld, RIDS, 'resume'));
+    ok('…and rerankDesign produces the same shape', invariant(fit.rerankDesign({ ...dDb, ranked: oldOrder }, { kind: 'resume', region: 'dach', brandColor: '#ec0016', seniorityYears: 14 }), RIDS, 'resume') === null);
+    const plain = fit.rankResumeDesigns({});
+    ok('without a brand every card is the family\'s BASE design (catalogue order within the family)', plain.ranked.slice(0, FAMS.length).every((r) => r.id === famOfId(r.id)), plain.ranked.slice(0, FAMS.length).map((r) => r.id));
+    const nx = fit.rankResumeDesigns({ region: 'dach', brandColor: '#0078d4', industry: 'IT services', companySize: '51-200 employees', seniorityYears: 14, employerType: 'sme' });
+    ok('the Nexplore-like case (#0078d4, Swiss SME): 15 distinct families up front too', new Set(nx.ranked.slice(0, FAMS.length).map((r) => famOfId(r.id))).size === FAMS.length && invariant(nx, RIDS, 'resume') === null, invariant(nx, RIDS, 'resume'));
+    ok('familyFirst never throws: not an array → [], a stray / retired id is a family of its own after the catalogue ones',
+      JSON.stringify(fit.familyFirst(null)) === '[]' && JSON.stringify(fit.familyFirst([])) === '[]'
+      && (() => { const r = fit.familyFirst([{ id: 'gone_design', score: 99 }, { id: 'mono', score: 50 }, null, { id: 'ats', score: 'x' }]); return r.length === 4 && r[0].id === 'gone_design' && r[1].id === 'mono' && r[2].id === 'ats' && r[3] === null; })());
+    ok('ranked[0] is still the global best (headline / tone / the pre-rendered top card are unmoved)', dDb.ranked[0].score === Math.max(...dDb.ranked.map((r) => r.score)) && /German/.test(dDb.headline || '') === /German/.test(dDb.headline || ''));
+    const lDb = fit.rankLetterDesigns(DB);
+    ok('letters are untouched: seven distinct designs in plain score order, the German letter first for DACH', invariant(lDb, LIDS, 'cover_letter') === null && lDb.ranked[0].id === 'german' && lDb.ranked.every((r, i, a) => i === 0 || a[i - 1].score >= r.score));
+  }
 
   console.log('── employerResearch: sanitised before it is cached or prompted ──');
   const er = require(path.join(ROOT, 'server/services/employerResearch.js'));
@@ -433,7 +496,7 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     for (const [k, s] of Object.entries(S)) {
       const d = rank(s);
       top[k] = { region: d.region, fam: famOf(d.ranked[0].id), senior: famOf(rank(s, { seniorityYears: 20 }).ranked[0].id), biased: famOf(rank(s, { seniorityYears: 20, aiFamilyScores: EXEC_BIAS }).ranked[0].id), d };
-      ok(`${k}: every id once, sorted (invariants)`, invariant(d, RIDS, 'resume') === null, invariant(d, RIDS, 'resume'));
+      ok(`${k}: every id once, family-first, each run sorted (invariants)`, invariant(d, RIDS, 'resume') === null, invariant(d, RIDS, 'resume'));
     }
     const view = Object.fromEntries(Object.entries(top).map(([k, v]) => [k, [v.region, v.fam, v.senior, v.biased]]));
     ok('regions: Swiss dach, Moroccan eu, Ghanaian uk_au, US us_ca, German-on-.com dach (hqCountry), London uk_au',
@@ -742,21 +805,72 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     const BX = require(path.join(ROOT, 'server/services/brandExtract.js'));
     const oldDoc = { id: 1, design: JSON.stringify({ ranked: [], mode: 'a4' }), research: { domain: 'mont-brand-test.com', industry: 'Design', fontName: 'Montserrat', brandColor: '#123456' } };
     const before = RBX.docBrandOf(oldDoc), keyBefore = RBX.brandKeyOf(before);
-    ok('cold process: a pre-brand snapshot\'s bare researcher fontName is google:false, its colour the accent',
-      JSON.stringify(before) === JSON.stringify({ accent: '#123456', font: { family: 'Montserrat', google: false } }), before);
+    // ⚠️ RETARGETED 2026-09-15: a bare researcher fontName is read through brandExtract's STATIC alternative table
+    // (googleAlternativeFor — Montserrat → itself, google:true; a face the table does not know stays google:false).
+    // As deterministic as the row: the same answer on every process, no memory, no network — what the pins below hold.
+    ok('cold process: a pre-brand snapshot\'s bare researcher fontName reads through the static table (Montserrat → itself, google:true), its colour the accent',
+      JSON.stringify(before) === JSON.stringify({ accent: '#123456', font: { family: 'Montserrat', google: true } }), before);
+    const emberDoc = { ...oldDoc, research: { ...oldDoc.research, fontName: 'Amazon Ember' } };
+    const emberBefore = RBX.docBrandOf(emberDoc);
+    ok('…and a face the table does not know is google:false (the renderer keeps the design\'s stack)', JSON.stringify(emberBefore) === JSON.stringify({ accent: '#123456', font: { family: 'Amazon Ember', google: false } }), emberBefore);
     const realKnown = BX.googleFontKnown;
-    BX.googleFontKnown = (f) => (String(f).toLowerCase() === 'montserrat' ? true : realKnown(f));
+    BX.googleFontKnown = (f) => (['montserrat', 'amazon ember'].includes(String(f).toLowerCase()) ? true : realKnown(f));
     try {
       const fresh = await er._internals.withResearcherFont({ domain: 'mont-brand-test.com', fontName: 'Montserrat' }, 5000);
       ok('(the memory IS live, and withResearcherFont is its ONE consumer: a fresh build\'s research gets brand.font google:true from it)', !!fresh && !!fresh.brand && fresh.brand.font.google === true && fresh.brand.from.font === 'researcher', fresh && fresh.brand);
       const after = RBX.docBrandOf(oldDoc);
       ok('⚠️ the stored document\'s brand is byte-identical after the memory learned Montserrat', JSON.stringify(after) === JSON.stringify(before), { before, after });
       ok('⚠️ …and so is its cache key (no thumb or preview re-render on a deploy)', RBX.brandKeyOf(after) === keyBefore && keyBefore !== 'plain', { keyBefore, keyAfter: RBX.brandKeyOf(after) });
-      ok('brandOf ignores the memory for a bare fontName, and honours the verified answer the build wrote on brand.font', er.brandOf({ fontName: 'Montserrat' }).font.google === false && er.brandOf(fresh).font.google === true);
+      ok('⚠️ brandOf ignores the memory for a bare fontName: Amazon Ember stays google:false after the memory learned it; Montserrat is google:true from the TABLE; the verified answer the build wrote on brand.font is honoured',
+        er.brandOf({ fontName: 'Amazon Ember' }).font.google === false && JSON.stringify(RBX.docBrandOf(emberDoc)) === JSON.stringify(emberBefore)
+        && er.brandOf({ fontName: 'Montserrat' }).font.google === true && er.brandOf({ fontName: 'Montserrat' }).font.from === 'alternative' && er.brandOf(fresh).font.google === true,
+        { ember: er.brandOf({ fontName: 'Amazon Ember' }).font, mont: er.brandOf({ fontName: 'Montserrat' }).font });
     } finally { BX.googleFontKnown = realKnown; }
     const erC = strip(R('server/services/employerResearch.js'));
     const brandOfSrc = (erC.match(/function brandOf\(research\) \{[\s\S]*?\n\}/) || [''])[0];
     ok('the source: brandOf never reads googleFontKnown (withResearcherFont alone does)', brandOfSrc.length > 100 && !/googleFontKnown/.test(brandOfSrc) && (erC.match(/googleFontKnown/g) || []).length === 1);
+
+    console.log('── ⚠️ A SITE FONT GOOGLE DOES NOT HOST RENDERS IN ITS CLOSEST GOOGLE FACE (2026-09-15) ──');
+    {
+      // Prod doc 9 (Deutsche Bahn): brand font "DB Neo Screen Sans Regular" — not on Google Fonts, so the renderer fell
+      // back to Lato and the brand's typography was lost. brandExtract.googleAlternativeFor is a STATIC table of
+      // well-known corporate / system faces → a visually close Google-hosted face; employerResearch.brandOf answers it
+      // for a non-hosted font (deterministic: no memory, no network), and the stored-document readers apply it too.
+      const alt = BX.googleAlternativeFor;
+      ok('googleAlternativeFor: DB Neo Screen Sans Regular → Barlow (the weight suffix stripped, the longest leading key wins)',
+        JSON.stringify(alt('DB Neo Screen Sans Regular')) === JSON.stringify({ family: 'Barlow', google: true, from: 'alternative' }), alt('DB Neo Screen Sans Regular'));
+      const table = { 'DIN': 'Barlow', 'FF DIN': 'Barlow', 'Frutiger': 'Open Sans', 'Myriad Pro': 'Open Sans', 'Segoe UI': 'Open Sans', 'Verdana': 'Open Sans', 'Helvetica Neue': 'Inter', 'Arial': 'Inter', 'SF Pro Display': 'Inter',
+        'Gotham': 'Montserrat', 'Proxima Nova': 'Montserrat', 'Avenir Next': 'Montserrat', 'Avenir': 'Nunito Sans', 'Futura': 'Jost', 'Univers': 'Roboto Condensed', 'Calibri': 'Carlito', 'Trebuchet MS': 'Fira Sans',
+        'Georgia': 'Lora', 'Times New Roman': 'EB Garamond', 'Times': 'EB Garamond', 'Garamond': 'EB Garamond', 'Cambria': 'Merriweather', 'serif': 'Merriweather', 'sans': 'Inter',
+        'Roboto': 'Roboto', 'Lato': 'Lato', 'Open Sans': 'Open Sans', 'Montserrat': 'Montserrat', 'Inter': 'Inter', 'Poppins': 'Poppins' };
+      const wrong = Object.entries(table).filter(([k, v]) => !(alt(k) && alt(k).family === v && alt(k).google === true && alt(k).from === 'alternative'));
+      ok('the contract\'s table cases all answer (DIN family → Barlow, humanist → Open Sans, neo-grotesque → Inter, geometric → Montserrat, office and serif faces, Google faces → themselves)', wrong.length === 0, wrong.map(([k]) => [k, alt(k)]));
+      ok('matching is case-insensitive and blind to weight / style suffixes: "HELVETICA NEUE LT Std Bold Italic" → Inter, "avenir-next-w01-medium" → Montserrat',
+        alt('HELVETICA NEUE LT Std Bold Italic').family === 'Inter' && alt('avenir-next-w01-medium').family === 'Montserrat' && alt('  "Gotham" ').family === 'Montserrat', [alt('HELVETICA NEUE LT Std Bold Italic'), alt('avenir-next-w01-medium')]);
+      ok('an unknown face is null — never a guess (Comic Sans MS, Amazon Ember, junk, nothing)', alt('Comic Sans MS') === null && alt('Amazon Ember') === null && alt('') === null && alt(null) === null && alt({}) === null && alt('x'.repeat(200)) === null);
+      ok('pure and deterministic: the same answer twice, a new object each time', JSON.stringify(alt('Segoe UI')) === JSON.stringify(alt('Segoe UI')) && alt('Segoe UI') !== alt('Segoe UI'));
+      const dbResearch = { domain: 'deutschebahn.com', brandColor: '#ec0016', fontName: 'DB Neo Screen Sans Regular', brand: { primary: '#ec0016', font: { family: 'DB Neo Screen Sans Regular', google: false }, from: { primary: 'css-var', font: 'body' }, fetchedAt: new Date().toISOString() } };
+      const dbBrand = er.brandOf(dbResearch);
+      ok('⚠️ brandOf: a site font Google does not host answers the alternative, with the site\'s family kept as `original`',
+        JSON.stringify(dbBrand) === JSON.stringify({ accent: '#ec0016', font: { family: 'Barlow', google: true, from: 'alternative', original: 'DB Neo Screen Sans Regular' } }), dbBrand);
+      ok('…deterministically (no memory, no network): byte-identical on a second read', JSON.stringify(er.brandOf(dbResearch)) === JSON.stringify(dbBrand));
+      ok('the researcher\'s bare fontName too (Nexplore: Segoe UI → Open Sans)', JSON.stringify(er.brandOf({ brandColor: '#0078d4', fontName: 'Segoe UI' })) === JSON.stringify({ accent: '#0078d4', font: { family: 'Open Sans', google: true, from: 'alternative', original: 'Segoe UI' } }), er.brandOf({ brandColor: '#0078d4', fontName: 'Segoe UI' }));
+      ok('a Google-hosted site font keeps its exact shape (no from / original)', JSON.stringify(er.brandOf({ brand: { primary: '#112231', font: { family: 'Space Grotesk', google: true } } }).font) === JSON.stringify({ family: 'Space Grotesk', google: true }));
+      ok('a face the table does not know stays google:false, no from', JSON.stringify(er.brandOf({ brandColor: '#ff9900', fontName: 'Amazon Ember' }).font) === JSON.stringify({ family: 'Amazon Ember', google: false }));
+      ok('effectiveFont is exported and null-safe', typeof er.effectiveFont === 'function' && er.effectiveFont(null) === null && er.effectiveFont({ family: '' }) === null && JSON.stringify(er.effectiveFont({ family: 'Segoe UI', google: false })) === JSON.stringify({ family: 'Open Sans', google: true, from: 'alternative', original: 'Segoe UI' }));
+      // The stored-document readers: docBrandOf / letterBrandOf read design.brand straight off the row (never brandOf), so
+      // prod doc 9 — its raw face stored google:false at build time — needed the table applied there as well.
+      const doc9 = { id: 9, design: { ranked: [], mode: 'a4', brand: { accent: '#ec0016', font: { family: 'DB Neo Screen Sans Regular', google: false } } }, research: dbResearch };
+      ok('⚠️ docBrandOf: a stored raw face renders in the alternative (doc 9 → Barlow, reduced to { family, google } for the renderer and the cache key)',
+        JSON.stringify(RBX.docBrandOf(doc9)) === JSON.stringify({ accent: '#ec0016', font: { family: 'Barlow', google: true } }), RBX.docBrandOf(doc9));
+      ok('…the design path and the research path key the cache identically for that row', RBX.brandKeyOf(RBX.docBrandOf(doc9)) === RBX.brandKeyOf(RBX.docBrandOf({ ...doc9, design: { ranked: [], mode: 'a4' } })));
+      const CLX = require(path.join(ROOT, 'server/controllers/coverLetterController.js'));
+      ok('letterBrandOf too: a stored raw Segoe UI letter renders in Open Sans; an unknown face stays as stored',
+        JSON.stringify(CLX.letterBrandOf({ design: { brand: { accent: '#0078d4', font: { family: 'Segoe UI', google: false } } } })) === JSON.stringify({ accent: '#0078d4', font: { family: 'Open Sans', google: true } })
+        && JSON.stringify(CLX.letterBrandOf({ design: { brand: { accent: '#ff9900', font: { family: 'Amazon Ember', google: false } } } })) === JSON.stringify({ accent: '#ff9900', font: { family: 'Amazon Ember', google: false } }));
+      ok('⚠️ RESEARCH_REV / LETTER_REV / FP_VERSION are untouched by the font change (a bump would re-bill every saved document)',
+        er.RESEARCH_REV === 'r1' && /const LETTER_REV = 'letter-v1';/.test(R('server/controllers/employerLetterController.js')) && /const FP_VERSION = 'v1';/.test(R('server/services/employerDocs.js')));
+    }
 
     reset();
     const rows = new Map();
@@ -856,6 +970,17 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   ok('home-cards ?doc= dispatches to the doc mode first', /if \(req\.query && req\.query\.doc !== undefined\) return docHomeCards\(req, res\);/.test(ctl));
   ok('⚠️ doc mode 404s doc_gone and has NO fallback padding', /reason: 'doc_gone'/.test(cards) && !/fallback|FALLBACK|sampleResumeFor|user_resumes/.test(cards) && /sample: false/.test(cards));
   ok('doc thumbs live in a DOT directory on the uploads volume', /const DOC_THUMB_ROOT = path\.join\(__dirname, '\.\.\/\.\.\/uploads\/\.thumb_cache'\)/.test(ctl) && /const DOC_THUMB_KEEP = 240;/.test(ctl));
+  // ⚠️ ONE CACHE FOR THE GALLERY AND THE CARDS (2026-09-15): the file is the FULL 794-px page keyed by (user, doc, updated_at,
+  // photo version, template, brand hash); Home's 480-px card is derived from it with sharp and stored beside it (.w480).
+  ok('the stored file is the full page, keyed with the brand hash (resume-doc-page:v3 … brandKeyOf)', /'resume-doc-page:v3', userId, doc\.id, ms, pver, tplId, brandKeyOf\(brand\)/.test(ctl));
+  ok('the card is derived with sharp at THUMB_W and stored alongside under the page\'s name suffixed .w480', /const DOC_CARD_SUFFIX = `\.w\$\{THUMB_W\}`/.test(ctl) && /const THUMB_W = 480\b/.test(ctl) && /require\('sharp'\)\(full\)\.resize\(\{ width: THUMB_W \}\)/.test(fnBody(ctl, 'docThumb')));
+  ok('the gallery\'s doc-mode path and Home\'s cards both go through docPages (one render per file, in-flight requests deduped)',
+    /await docPages\(/.test(fnBody(ctl, 'previewTemplates')) && /await docPages\(/.test(fnBody(ctl, 'docThumb')) && /await docPages\(/.test(fnBody(ctl, 'prerenderDocPages')) && /docThumbFlights/.test(fnBody(ctl, 'docPages')));
+  ok('…the doc-mode gallery path writes no temp/ JSON (writePreviewCache is the BASE gallery\'s alone)', !/writePreviewCache\([^)]*docId/.test(fnBody(ctl, 'previewTemplates')) && (fnBody(ctl, 'previewTemplates').indexOf('await docPages(') < fnBody(ctl, 'previewTemplates').indexOf('writePreviewCache(')));
+  ok('the LRU counts pages and cards alike, never the letters\' cl_ files', /new RegExp\(`\^\[0-9a-f\]\{64\}\(\?:\\\\\$\{DOC_CARD_SUFFIX\}\)\?\\\\\.jpg\$`\)/.test(ctl) || /DOC_THUMB_NAME = new RegExp/.test(ctl));
+  ok('⚠️ the doc lane samples at 0.55 and the builder lane keeps its 0.4 (the default nobody else overrides)',
+    /const DOC_LANE_TEMPERATURE = 0\.55;/.test(ctl) && /async function callGemini\(prompt, \{ temperature = 0\.4 \} = \{\}\)/.test(ctl)
+    && (strip(ctl).match(/await callGemini\((?:prompt|fixPrompt), \{ temperature: DOC_LANE_TEMPERATURE \}\)/g) || []).length === 2 && (strip(ctl).match(/await callGemini\(/g) || []).length === 3);
   ok('the base preview path selects updated_at, so its cache key is stable', /SELECT resume_data, updated_at FROM user_resumes/.test(fnBody(ctl, 'previewTemplates')));
   ok('generate-pdf/docx bill a doc download to the DOCUMENT\'s employer (body.employer ignored)',
     /const billingEmployerOf = \(doc, body\) => \(doc \? doc\.employer_name \|\| null :/.test(ctl)
