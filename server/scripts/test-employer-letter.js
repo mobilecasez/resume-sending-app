@@ -560,7 +560,11 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('200, ONE AI call, ONE consume', r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1, { status: r.statusCode, ai: ai.calls.length, consumed: ent.consumed.length });
     ok('the letter prompt carries the conventions block, letter version (no CV habits)',
       /=== HOW Conv GmbH HIRES/.test(pc) && /Personio/.test(pc) && /never mention them in the letter/.test(pc) && !/CV conventions: /.test(pc), pc.slice(pc.indexOf('=== HOW'), pc.indexOf('=== HOW') + 400));
-    ok('…a startup\'s shorter band (230-320 words) and the German-speaking register', /230-320/.test(pc) && /German-speaking employers expect a formal, structured letter/.test(pc));
+    // ⚠️ CHANGED 2026-09-16 (the country playbook): the research names Germany, so GERMANY's own letter habit
+    // speaks and the six-region line stands down — one voice about where this letter is going, never two that
+    // could disagree. The startup's band is untouched: the employer type still leads, as it always has.
+    ok('…a startup\'s shorter band (230-320 words), and Germany\'s own letter habit in place of the region\'s',
+      /230-320/.test(pc) && /discuss the role in person/.test(pc) && !/German-speaking employers expect a formal, structured letter/.test(pc), pc.slice(pc.indexOf('FOR THIS EMPLOYER'), pc.indexOf('FOR THIS EMPLOYER') + 400));
     ok('⚠️ …and the absolute rule: conventions never add facts', /never (add|state|imply)[^.]*fact/i.test(pc));
     const putC = store.puts[store.puts.length - 1] || {};
     ok('region from the research (Germany → dach) when the chip names no country', putC.design && putC.design.region === 'dach', putC.design && putC.design.region);
@@ -569,6 +573,171 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     const style = EL.letterStyleFor(null, 'generic');
     ok('no conventions + generic region → v1\'s 300-450 words, no extra notes', style && /300-450/.test(JSON.stringify(style)) && (!style.notes || style.notes.length === 0), style);
     researchConv = null;
+  }
+
+  console.log('── ⚠️ the country reaches the LETTER too: register and structure only — never a CV habit, never a charge ──');
+  {
+    // The playbook (cvPlaybook) answers "how is a document written where this application is going" for every
+    // country regionFromCountry knows. A LETTER takes only the half a letter can honour — how formal it reads,
+    // how long it runs, how it opens and how it closes. Photos, dates of birth, personal details, page counts,
+    // date patterns and section orders are the résumé's, and one of them in a letter is a defect, not a
+    // convention. None of it is hashed, so none of it can bill anyone for a letter they already have.
+    const toneOf = (p) => (String(p).match(/^TONE: (.+)$/m) || [])[1] || '';
+    const bandOf = (p) => (String(p).match(/(\d{3}-\d{3}) words in total/) || [])[1] || '';
+    const blockOf = (p) => {
+      const i = String(p).indexOf('=== HOW A COVER LETTER READS');
+      if (i < 0) return '';
+      const rest = String(p).slice(i);
+      const end = rest.indexOf('\n\n');
+      return end < 0 ? rest : rest.slice(0, end);
+    };
+    const notesOf = (p) => (String(p).match(/\nFOR THIS EMPLOYER:\n([\s\S]*?)\nNever use:/) || [])[1] || '';
+    // Every CV habit, spelled the way a CV prompt spells it. NOT ONE of these may reach a letter.
+    const CV_HABIT = /photo|date of birth|marital|nationality|personal details|\bpages?\b|\bcvs?\b|r[eé]sum[eé]|section order|MM\/YYYY|\bbullets?\b|skills block/i;
+    const PB = require(path.join(ROOT, 'server/services/cvPlaybook.js'));
+    const realFor = PB.playbookFor, realBlock = PB.playbookPromptBlock;
+
+    // ── a formal country and a direct one must not read the same ──
+    reset();
+    let rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Chateau SA', country: 'France', job: { ...JOB, company: 'Chateau SA', website: 'chateau.test', title: 'Backend Engineer' } }));
+    const pFr = String((ai.calls[0] || {}).prompt || '');
+    const fpFr = (store.puts[0] || {}).fingerprint;
+    ok('a French employer → 200, ONE AI call, ONE consume, ONE research call: the country costs nothing extra',
+      rp.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && researchCalls.length === 1 && store.puts.length === 1,
+      { status: rp.statusCode, ai: ai.calls.length, consumed: ent.consumed.length, research: researchCalls.length });
+    ok('…France\'s own letter block, headed by the country', /=== HOW A COVER LETTER READS IN FRANCE ===/.test(pFr), blockOf(pFr));
+    ok('…a formal register and the French arc in the notes', /^formal and courteous/.test(toneOf(pFr)) && /what the employer needs/.test(notesOf(pFr)), { tone: toneOf(pFr), notes: notesOf(pFr) });
+
+    // ⚠️ THE MONEY LINE: the country changes how a letter READS, never what it costs. The same employer and the
+    // same job fields are the same fingerprint whatever country the chip names — so the letter just written is
+    // still the free cache hit it would have been before any of this existed.
+    reset();
+    rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Chateau SA', country: 'Japan', job: { ...JOB, company: 'Chateau SA', website: 'chateau.test', title: 'Backend Engineer' } }));
+    ok('⚠️ the same letter under a different country is the SAME free cache hit — no AI, no gate, no charge',
+      rp.statusCode === 200 && rp.body.cached === true && ai.calls.length === 0 && ent.gateCalls === 0 && ent.consumed.length === 0 && store.puts.length === 0,
+      { status: rp.statusCode, body: rp.body, ai: ai.calls.length });
+    ok('…because the country was never a fingerprint input', (await EL.currentLetterFingerprint(7, { job: { company: 'Chateau SA', website: 'chateau.test', title: 'Backend Engineer' }, country: 'Japan', env: 'Production' })) === fpFr);
+
+    reset();
+    rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Statewide Inc', country: 'United States', job: { ...JOB, company: 'Statewide Inc', website: 'statewide.test', title: 'Backend Engineer' } }));
+    const pUs = String((ai.calls[0] || {}).prompt || '');
+    ok('an American employer reads direct, at the shorter band', rp.statusCode === 200 && /^direct and specific/.test(toneOf(pUs)) && bandOf(pUs) === '250-350', { tone: toneOf(pUs), band: bandOf(pUs) });
+    ok('⚠️ a country with a formal convention really does read differently from one without',
+      toneOf(pFr) !== toneOf(pUs) && bandOf(pFr) !== bandOf(pUs) && blockOf(pFr) !== blockOf(pUs), { fr: [toneOf(pFr), bandOf(pFr)], us: [toneOf(pUs), bandOf(pUs)] });
+
+    // ── ⚠️ NEVER A CV HABIT, IN ANY COUNTRY ──
+    // Swept over the prompt itself (block + TONE + notes), for a country from every corner of the table. The
+    // prompt is built directly here: the register, the band and the block are pure functions of the country, so
+    // this costs nothing and can afford to ask the question everywhere rather than in one place.
+    const promptFor = (country) => {
+      const pb = EL.letterPlaybookFor({ country, website: '', conventions: null, research: null });
+      return EL.buildEmployerLetterPrompt({
+        company: 'Acme', website: '', job: { title: 'Backend Engineer', url: '', description: '', website: '' },
+        material: { baseText: 'Current title: Backend Engineer', uploadText: '' }, tailored: null,
+        researchBlock: '', conventionsBlock: '', playbookBlock: EL.letterPlaybookBlockFor(pb, 'Acme'),
+        style: EL.letterStyleFor(null, pb ? pb.region : 'generic', pb), sector: '',
+      });
+    };
+    const SWEEP = ['United States', 'United Kingdom', 'Germany', 'France', 'Switzerland', 'Netherlands', 'Italy',
+      'Poland', 'Russia', 'India', 'Japan', 'Singapore', 'Indonesia', 'Brazil', 'Nigeria', 'Saudi Arabia', 'Morocco'];
+    const leaks = SWEEP.filter((c) => { const p = promptFor(c); return CV_HABIT.test(blockOf(p)) || CV_HABIT.test(notesOf(p)) || CV_HABIT.test(toneOf(p)); });
+    ok('⚠️ NOT ONE CV habit in any country\'s letter guidance (17 countries, block + tone + notes)', leaks.length === 0, leaks);
+    const mute = SWEEP.filter((c) => { const p = promptFor(c); return !toneOf(p) || toneOf(p) === EL.letterStyleFor(null, 'generic').register; });
+    ok('…and every one of them is actually answered: a register of its own, not the generic one', mute.length === 0, mute);
+    const bands = new Set(SWEEP.map((c) => bandOf(promptFor(c))));
+    ok('…with more than one length band across the table (how long a letter runs is part of the answer)', bands.size >= 2, [...bands]);
+
+    // ── every country regionFromCountry knows is answered, and answered safely ──
+    const RF = require(path.join(ROOT, 'server/utils/regionFromCountry.js'));
+    const unanswered = RF._internals.COUNTRY_ROWS.map((row) => row[1])
+      .filter((c) => !EL.countryLetterRowOf(EL.letterPlaybookFor({ country: c })));
+    ok('every country in the table has a letter register of its own — none falls through to the generic one', unanswered.length === 0, unanswered.slice(0, 8));
+    ok('…one row per CV profile the country table uses, no more and no fewer',
+      JSON.stringify(Object.keys(EL.LETTER_PROFILES).sort()) === JSON.stringify(Object.keys(RF._internals.CV_PROFILES).sort()),
+      Object.keys(EL.LETTER_PROFILES).sort());
+    const badRow = Object.entries(EL.LETTER_PROFILES).filter(([, row]) => {
+      const band = String(row.words || '').match(/^(\d{3})-(\d{3})$/);
+      // ⚠️ THE ~230-WORD FLOOR: parseLetterOutput refuses a letter under 120 words and the placeholder guard
+      // under 80, so a band that let a letter start short would throw away work the user paid for.
+      return !row.register || !band || Number(band[1]) < 230 || Number(band[2]) > 450 || Number(band[1]) >= Number(band[2])
+        || CV_HABIT.test(row.register) || (row.structure && CV_HABIT.test(row.structure));
+    });
+    ok('…and every row is well formed: a register, a band inside the 230-450 floor, and no CV habit in either', badRow.length === 0, badRow.map(([k]) => k));
+
+    // ── ⚠️ THE GUARD IS THE POINT: a CV line that ever appears in cvPlaybook's letter block is dropped HERE ──
+    const gPb = EL.letterPlaybookFor({ country: 'Germany' });
+    PB.playbookPromptBlock = () => ['=== HOW A COVER LETTER READS IN GERMANY ===',
+      '- A photo belongs top right, and the date of birth under it.',
+      '- Length: up to two pages is normal here.',
+      '- Dates: write every start and end date as MM/YYYY.',
+      '- Section order read here: contact → summary → experience.',
+      '- Name the exact post applied for in the opening line.',
+      '- These are habits of the place, not facts about the candidate: never add anything their material does not contain.'].join('\n');
+    const guarded = EL.letterPlaybookBlockFor(gPb, 'Acme');
+    ok('⚠️ the CV lines are dropped and the letter-safe one survives', !CV_HABIT.test(guarded) && /Name the exact post applied for/.test(guarded), guarded);
+    PB.playbookPromptBlock = () => '=== HOW A COVER LETTER READS IN GERMANY ===\n- A photo belongs top right.\n- Length: one page.';
+    ok('…and a block of nothing but CV lines is no block at all (a header with no rule is tokens, not guidance)', EL.letterPlaybookBlockFor(gPb, 'Acme') === '');
+    PB.playbookPromptBlock = () => ['=== HOW A COVER LETTER READS IN GERMANY ===', '- one', '- two', '- three', '- four', '- five', '- six', '- seven',
+      '- These are habits of the place, not facts about the candidate: never add anything their material does not contain.'].join('\n');
+    const capped = EL.letterPlaybookBlockFor(gPb, 'Acme');
+    ok('…a long block is capped — and what survives the cap is the guard rail, never the seventh rule (the corrective pass pays for every line twice)',
+      capped.split('\n').length === 7 && /habits of the place/.test(capped) && !/- seven/.test(capped), capped);
+    PB.playbookPromptBlock = realBlock;
+
+    // ⚠️ THE OTHER HALF OF THE GUARANTEE: the letter lane never READS the playbook's cv half — there is no path
+    // from a photo or a page count into a letter, not merely a filter in front of one. (cvPlaybook reads its own
+    // cv half when it builds a block; what comes back is what letterSafeBlock above answers for.)
+    const seen = new Set();
+    const spy = new Proxy(EL.letterPlaybookFor({ country: 'Germany' }), { get(t, k) { if (typeof k === 'string') seen.add(k); return t[k]; } });
+    const spied = EL.letterStyleFor({ employerType: 'startup', tone: 'direct' }, 'dach', spy);
+    ok('⚠️ the letter lane never even LOOKS at the playbook\'s CV half', !seen.has('cv') && !seen.has('content') && seen.has('profile') && seen.has('source'), [...seen]);
+
+    // ── country beats region, and the region still speaks when no country does ──
+    const deReg = EL.letterStyleFor(null, 'dach', null);
+    const deCty = EL.letterStyleFor(null, 'dach', EL.letterPlaybookFor({ country: 'Germany' }));
+    ok('a caller with no playbook keeps exactly the style it had before (the six region notes)',
+      deReg.words === '300-450' && deReg.notes.length === 1 && /German-speaking employers expect/.test(deReg.notes[0]), deReg);
+    ok('⚠️ …and with the country resolved it is the COUNTRY that speaks, never both',
+      /^formal and impersonal/.test(deCty.register) && deCty.notes.length === 1 && !deCty.notes.some((n) => /German-speaking employers expect/.test(n)), deCty);
+    const euWord = EL.letterStyleFor(null, 'eu', EL.letterPlaybookFor({ country: 'Europe' }));
+    ok('a region WORD knows less than the region switch — so the switch keeps it', euWord.notes.some((n) => /European motivation-letter habit/.test(n)), euWord);
+    ok('…and a country nobody can place is the letter we always wrote', JSON.stringify(EL.letterStyleFor(null, 'generic', EL.letterPlaybookFor({ country: 'Atlantis' }))) === JSON.stringify(EL.letterStyleFor(null, 'generic')));
+
+    // ── the employer still leads: a country fills a silence, it never overrules the employer type ──
+    const jp = EL.letterPlaybookFor({ country: 'Japan' });
+    const TYPE_BANDS = { public_sector: '350-450', academia: '350-450', enterprise: '300-400', sme: '280-380', startup: '230-320', agency: '250-350', ngo: '300-400' };
+    const overruled = Object.keys(TYPE_BANDS).filter((t) => EL.letterStyleFor({ employerType: t }, 'generic', jp).words !== TYPE_BANDS[t]
+      || EL.letterStyleFor({ employerType: t }, 'generic', jp).register !== EL.letterStyleFor({ employerType: t }, 'generic').register);
+    ok('⚠️ every employer type keeps its own band and register under a country playbook', overruled.length === 0, overruled);
+    ok('…while the country still adds its structure line on top', spied.notes.some((n) => /discuss the role in person/.test(n)) && spied.words === '230-320', spied);
+
+    // ── deterministic, and free ──
+    const twice = [1, 2].map(() => JSON.stringify(EL.letterStyleFor({ employerType: 'sme' }, 'eu', EL.letterPlaybookFor({ country: 'Italy' }))));
+    ok('the same inputs give the same style, every time', twice[0] === twice[1]);
+    ok('…and the resolution is synchronous: a Promise would mean something was fetched', !(EL.letterPlaybookFor({ country: 'Italy' }) instanceof Promise));
+
+    // ── an unavailable / broken cvPlaybook writes the letter exactly as this lane wrote it before ──
+    PB.playbookFor = () => { throw new Error('module half-deployed'); };
+    reset();
+    rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Fallback Ltd', country: 'France', job: { ...JOB, company: 'Fallback Ltd', website: 'fallback.test', title: 'Backend Engineer' } }));
+    const pFb = String((ai.calls[0] || {}).prompt || '');
+    ok('⚠️ a cvPlaybook that throws costs the user nothing: 200, one AI call, the letter written as it always was',
+      rp.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && !blockOf(pFb) && bandOf(pFb) === '300-450' && toneOf(pFb) === EL.letterStyleFor(null, 'generic').register,
+      { status: rp.statusCode, band: bandOf(pFb), tone: toneOf(pFb) });
+    PB.playbookFor = realFor;
+
+    {
+      const elP = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
+      // ⚠️ THE MONEY CONSTANT, through the country round too. Register and structure are not facts: a stored
+      // letter written before this slice is still a true letter, so nobody pays for ours having improved.
+      ok('⚠️ LETTER_REV stays letter-v1 through the country round (a bump re-bills every saved letter)',
+        /const LETTER_REV = 'letter-v1';/.test(elP) && !/LETTER_REV = 'letter-v[2-9]'/.test(elP));
+      ok('…cvPlaybook is resolved lazily, like every other module the paid half needs', /const playbookMod = \(\) => require\('\.\.\/services\/cvPlaybook'\);/.test(elP));
+      ok('…and the playbook is resolved ONCE per build, then handed to the style and the block',
+        (elP.match(/letterPlaybookFor\(\{ country, website: site/g) || []).length === 1
+        && /playbookBlock: letterPlaybookBlockFor\(playbook, company\)/.test(elP) && /style: letterStyleFor\(conventions, region, playbook\)/.test(elP));
+    }
+    reset();
   }
 
   console.log('── cards ──');

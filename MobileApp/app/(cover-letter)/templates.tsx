@@ -323,13 +323,37 @@ export default function CoverLetterTemplates() {
     if (ids.length) ensureDocCards(ids, did);
   }
 
-  // One-shot: carry the pager to the design Home opened us on, once it exists to be scrolled.
+  // Carry the pager to the design Home opened us on, once it exists to be scrolled. The pagerH guard
+  // is what keeps this from firing before the pager is mounted (the resume gallery was missing it and
+  // landed every deep link on page 0) — but the guard alone is only half of it: see onPagerContent.
   useEffect(() => {
     if (loading || landOn.current == null || !docSlots.length || pagerH <= 0) return;
     const idx = Math.min(landOn.current, docSlots.length - 1);
-    landOn.current = null;
-    if (idx > 0) requestAnimationFrame(() => scrollRef.current?.scrollTo({ x: idx * WIN, animated: false }));
+    if (idx <= 0) { landOn.current = null; return; }
+    requestAnimationFrame(() => scrollRef.current?.scrollTo({ x: idx * WIN, animated: false }));
   }, [loading, docSlots.length, pagerH]);
+
+  // ⚠️ THE LANDING IS NOT GIVEN UP UNTIL IT IS PROVABLY POSSIBLE. A scrollTo that reaches the pager
+  // before its pages have a width clamps to 0 and stays there silently, and clearing landOn on the
+  // line above the scroll destroyed the only record of where the user asked to be. Re-apply it from
+  // the content itself, and only forget it once the content is wide enough to hold the offset.
+  function onPagerContent(w: number) {
+    const i = landOn.current;
+    if (i == null || i <= 0) { landOn.current = null; return; }
+    if (w < (i + 1) * WIN) return;      // pages not laid out yet — the next content pass tries again
+    landOn.current = null;
+    scrollRef.current?.scrollTo({ x: i * WIN, animated: false });
+  }
+
+  // ── SAFETY NET: the card on screen ALWAYS has a request behind it ─────────────────────────────
+  // ensureDocAround asks for `active` and its two neighbours, and `active` is an assumption about
+  // what the pager is showing. When the two part company the visible card has no request at all, and
+  // its fallback is a spinner — so it waits for ever with nothing coming. Re-asking is free:
+  // ensureDocCards early-returns on any id already held or in flight.
+  useEffect(() => {
+    if (loading || docGone || !docId || !docSlots.length) return;
+    ensureDocAround(active, docSlots, docId);
+  }, [active, docSlots, docId, loading, docGone]);
 
   function pickRegion(id: string) {
     if (id === region || loading || !ctx) return;
@@ -337,10 +361,17 @@ export default function CoverLetterTemplates() {
     loadPreviews(id, ctx);
   }
 
+  // ⚠️ Wired to onScrollEndDrag as well: a paging drag released exactly on a page boundary with no
+  // velocity fires no momentum end on iOS, so `active` stopped following the card on screen — and the
+  // request window with it. The `idx !== active` guard is gone from the fetch as well: re-asking for
+  // a page already held is a free no-op (the docImages/docInFlight dedupe), not asking is a dead card.
   function onScrollEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
-    const idx = Math.round(e.nativeEvent.contentOffset.x / WIN);
-    if (idx !== active) setActive(idx);
-    if (docId && idx !== active) ensureDocAround(idx, docSlots, docId);
+    const len = docId ? docSlots.length : previews.length;
+    const raw = Math.round(e.nativeEvent.contentOffset.x / WIN);
+    const idx = Math.max(0, Math.min(raw, Math.max(0, len - 1)));
+    landOn.current = null;              // the user is driving — a pending landing must not drag them back
+    setActive(idx);
+    if (docId) ensureDocAround(idx, docSlots, docId);
   }
   function goTo(idx: number) {
     scrollRef.current?.scrollTo({ x: idx * WIN, animated: true });
@@ -483,6 +514,8 @@ export default function CoverLetterTemplates() {
                 horizontal pagingEnabled
                 showsHorizontalScrollIndicator={false}
                 onMomentumScrollEnd={onScrollEnd}
+                onScrollEndDrag={onScrollEnd}
+                onContentSizeChange={onPagerContent}
                 decelerationRate="fast"
               >
                 {docSlots.map((slot, i) => {
@@ -525,11 +558,23 @@ export default function CoverLetterTemplates() {
                                 <Text style={s.retryChipText}>Tap to retry</Text>
                               </View>
                             </TouchableOpacity>
-                          ) : (
+                          ) : docInFlight.current.has(slot.id) ? (
                             <View style={s.previewLoading}>
                               <ActivityIndicator size="large" color={slot.accent} />
                               <Text style={s.previewLoadingText}>Rendering {slot.name}…</Text>
                             </View>
+                          ) : (
+                            // ⚠️ NOT A DEAD END. A spinner is only honest while a request is running;
+                            // with none in the air this was a card that waited for ever. The safety-net
+                            // effect should make it unreachable — this is the way out if it ever is not.
+                            <TouchableOpacity style={s.previewLoading} activeOpacity={0.8} onPress={() => ensureDocCards([slot.id], docId)}>
+                              <Ionicons name="color-palette-outline" size={38} color={T.faint} />
+                              <Text style={s.previewLoadingText}>Tap to load this design</Text>
+                              <View style={[s.retryChip, { backgroundColor: slot.accent }]}>
+                                <Ionicons name="refresh" size={13} color="#fff" />
+                                <Text style={s.retryChipText}>Load</Text>
+                              </View>
+                            </TouchableOpacity>
                           )}
                         </View>
                         {/* Fit for this employer (top-right) and the best design (top-left). Siblings of
@@ -577,6 +622,7 @@ export default function CoverLetterTemplates() {
                 horizontal pagingEnabled
                 showsHorizontalScrollIndicator={false}
                 onMomentumScrollEnd={onScrollEnd}
+                onScrollEndDrag={onScrollEnd}
                 decelerationRate="fast"
               >
                 {previews.map((p) => {

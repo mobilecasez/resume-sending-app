@@ -869,12 +869,290 @@ function conventionsBlockForDoc(conventions, company) {
     }
 }
 
+// ── How a CV is written WHERE THE APPLICATION IS GOING (server/services/cvPlaybook.js) ───────────────
+// ⚠️ EVERY COUNTRY GOT THE SAME DOCUMENT (2026-09-16). The conventions above are what the research found about
+// ONE employer, and for most employers it finds nothing at all: the prompt then fell back to habits it never
+// names out loud — "Month YYYY" dates, an Anglo summary, "as the material has it" detail, and not one word
+// about projects. So an Indian résumé, where screening stack-matches the PROJECT inventory before it reads the
+// roles, came back with nine projects merged into three lines, and a German one came back without the gapless
+// dated table a Lebenslauf IS. Meanwhile regionFromCountry already resolves EVERY country to a CV profile and
+// designFit already reads it for the DESIGN — only the WRITING knew nothing about where it was going.
+//
+// cvPlaybook is that same resolution read for the writing, plus the columns the country table has no slot for
+// (projects, experience depth, bullets per role, metrics, the summary, skills, the section order, the date
+// pattern, a few country notes), merged in designFit.employerContext's order: profile row → country override →
+// employer size/type → the researched conventions for THIS employer. ⚠️ THE LANE RESOLVES IT ONCE
+// (generateEmployerDoc) and hands the SAME object to the prompt, the personal-details backstop and the design
+// ranking: a document written for one country and designed for another is the one failure mode this must not
+// have — and it is the shape the mode decision already had, twice, from the same raw conventions.
+//
+// ⚠️ IT IS NOT A FINGERPRINT INPUT, AND MUST NEVER BECOME ONE. employerDocs.fingerprint hashes the base text,
+// the four job fields and researchRev — no prompt string, no country, no playbook value (see
+// generationFingerprint). So this changes what a NEW document says and leaves every stored one a free cache
+// hit, exactly as the conventions slice did. Making it retro-apply would mean bumping docResearchRev, which
+// re-bills every stored employer résumé.
+
+/**
+ * The four readings of "how is a CV written here", resolved TOGETHER so they can never disagree:
+ *   playbook   — cvPlaybook's merged answer: its own prompt block, and the content rules this lane reads
+ *                (today `content.projects === 'all'`, which the schema and the ZERO-MISS rule must honour);
+ *   conv       — the MERGED conventions in docConventionsOf's shape: the researched value wherever the research
+ *                spoke for the country being written for, the country baseline in every gap. The page mode, the
+ *                personal-details backstop, the date rule and the detail level all read THIS one;
+ *   researched — the same shape carrying ONLY the researched values that survived that merge. It is what
+ *                docFormattingBlock speaks for, so a country generalisation never reaches a block headed "from
+ *                its hiring conventions", and the two blocks can never state one rule twice or two rules once:
+ *                cvPlaybook stays quiet about a value the research supplied (its own `_from` check) and this
+ *                stays quiet about one the research did not supply — or that cvPlaybook demoted because it was
+ *                researched for ANOTHER country's hiring (designFit's W_FOREIGN_RESEARCH, in code here);
+ *   facts      — the RAW conventions employerResearch's own block speaks from, with exactly those demoted cv
+ *                values taken out. Everything else it prints — the HQ, where the employer hires, its type,
+ *                sector, ATS, register and notes — is untouched: they are facts about the employer and stay
+ *                true wherever the application is going.
+ *
+ * ⚠️ THE FACTS BLOCK IS THE ONE THAT GIVES ORDERS (2026-09-16). conventionsPromptBlock does not only list what
+ * the research found; under "HOW TO USE THESE CONVENTIONS" it turns cv.personalDetails / length / dateFormat /
+ * format into imperatives. Fed the raw conventions it issued them for the EMPLOYER'S HOME country while the
+ * country block issued the opposite ones for the country being applied to — a US-headquartered employer hiring
+ * in Germany got "leave date of birth and nationality out" and "keep the date of birth and nationality exactly
+ * as the material states them" twenty lines apart, and "fit one page" against "up to two pages is normal here".
+ * FORMATTING went quiet correctly (it reads `researched`); the unfiltered facts block was the hole. So the same
+ * filter feeds both, and the prompt can never hold two answers to one question.
+ *
+ * ⚠️ AND THE FILTER IS PROVENANCE, NOT VALUE EQUALITY. `spoken` used to keep a field whenever the researched
+ * value happened to EQUAL the merged one, so a research answer the country baseline agreed with (Germany's
+ * MM/YYYY, researched as MM/YYYY) was credited to the research — FORMATTING stated the date rule and cvPlaybook,
+ * whose own `_from` said 'country', stated it again. fromOf() is the very map playbookPromptBlock suppresses by,
+ * so reading it here is what makes "said exactly once" true in both directions.
+ *
+ * Never throws and never fails a build: without cvPlaybook (a checkout from before it) it answers the researched
+ * conventions in `conv` and `researched` and the raw ones in `facts` — exactly how this lane read before it existed.
+ */
+function docPlaybookOf({ country = null, website = null, conventions = null, research = null } = {}) {
+    const raw = conventions !== undefined && conventions !== null ? conventions : conventionsOfResearch(research);
+    const researched = docConventionsOf(raw);
+    let playbook = null;
+    try {
+        const cvp = require('../services/cvPlaybook');
+        if (typeof cvp.playbookFor === 'function') {
+            playbook = cvp.playbookFor({ country: country || null, website: website || null, conventions: raw || null, research: research || null });
+        }
+    } catch (e) { console.warn('[resumeBuilder] cvPlaybook unavailable — the country baseline is skipped:', e.message); }
+    if (!playbook || !playbook.cv) return { playbook: null, conv: researched, researched, facts: raw || null };
+    // Which layer cvPlaybook's merged answer came from, field by field ('research' | 'country' | 'region' |
+    // 'size' | null) — the very map playbookPromptBlock suppresses by, read off the playbook it handed us.
+    const from = docPlaybookFromOf(playbook);
+    const hasFrom = Object.keys(from).length > 0;
+    const conv = {
+        hqCountry: researched ? researched.hqCountry : null,
+        roleCountry: researched ? researched.roleCountry : null,
+        employerType: researched ? researched.employerType : null,
+        sector: researched ? researched.sector : null,
+        atsVendor: researched ? researched.atsVendor : null,
+        cv: { photo: null, personalDetails: null, length: null, dateFormat: null, format: null },
+    };
+    const spoken = { photo: null, personalDetails: null, length: null, dateFormat: null, format: null };
+    for (const f of Object.keys(conv.cv)) {
+        const found = researched ? researched.cv[f] : null;
+        // cvPlaybook has already laid the research over the country baseline (and dropped it where it was
+        // researched for somewhere else), so its answer IS the merge; `found` only fills a field the country
+        // table has no opinion on at all.
+        const merged = playbook.cv[f] || found || null;
+        conv.cv[f] = merged;
+        // ⚠️ Only what cvPlaybook itself credits to the research may be spoken AS the research's (see the header).
+        // Where cvPlaybook has no opinion at all the research is the whole answer and nobody else will state it.
+        // ⚠️ AND WITHOUT PROVENANCE, THE OLD VALUE TEST — never silence. A cvPlaybook that cannot say where its
+        // answer came from would otherwise leave FORMATTING quiet about a rule its own block is ALSO quiet about
+        // (it suppresses whatever it credits to the research), and the document would be written to nobody's
+        // conventions at all. One rule stated twice is a blemish; a rule both blocks drop is the bug.
+        spoken[f] = playbook.cv[f]
+            ? (hasFrom ? (from[f] === 'research' ? merged : null) : (found && found === merged ? found : null))
+            : (found || null);
+    }
+    return {
+        playbook,
+        conv: docConventionsOf(conv),
+        researched: researched ? { ...researched, cv: spoken } : null,
+        facts: docFactConventionsOf(raw, spoken),
+    };
+}
+
+/**
+ * cvPlaybook's own provenance for the five cv fields, off the playbook object it returned ('research' |
+ * 'country' | 'region' | 'size' | null per field), or {} when it carries none — a cvPlaybook from before it
+ * travelled. It rides on a non-enumerable `_from` (invisible to JSON, so a stored playbook and a fresh one still
+ * compare equal); cvPlaybook's own fromOf() reads exactly this. {} means "cannot tell", and docPlaybookOf falls
+ * back to the value test rather than letting both blocks fall silent.
+ */
+function docPlaybookFromOf(playbook) {
+    const pb = playbook && typeof playbook === 'object' && !Array.isArray(playbook) ? playbook : null;
+    const f = pb ? pb._from : null;
+    return f && typeof f === 'object' && !Array.isArray(f) ? f : {};
+}
+
+/**
+ * The RAW conventions object the FACTS block (employerResearch.conventionsPromptBlock) may speak from: every
+ * fact about the employer as the research gave it, with only the cv values cvPlaybook demoted removed — see
+ * docPlaybookOf's header for why a demoted one must not reach that block.
+ *
+ * ⚠️ THE `cv` OBJECT IS REPLACED, NEVER MERGED. sanitiseConventions reads camelCase first and snake_case second
+ * (`personalDetails` then `personal_details`), so merging a camelCase null over a snake_case answer would leave
+ * the snake_case one standing — the researcher's own shape is snake_case. The notes travel with it: they are
+ * the employer's own lines, not a cv enum, and losing them would cost the block its only free-text facts.
+ */
+function docFactConventionsOf(raw, spoken) {
+    const c = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!c) return null;
+    const cv = c.cv && typeof c.cv === 'object' && !Array.isArray(c.cv) ? c.cv : {};
+    const notes = Array.isArray(cv.notes) ? cv.notes : (Array.isArray(c.notes) ? c.notes : []);
+    return { ...c, cv: { ...(spoken || {}), notes } };
+}
+
+/**
+ * cvPlaybook.playbookPromptBlock (the country's own rules, with its own guard rails), defensively: '' without a
+ * playbook, when the export is missing (a checkout from before cvPlaybook) or when it throws. Mirrors
+ * conventionsBlockForDoc exactly — a block from another module can never fail a build.
+ */
+function docPlaybookBlock(playbook, company) {
+    if (!playbook) return '';
+    try {
+        const cvp = require('../services/cvPlaybook');
+        if (typeof cvp.playbookPromptBlock !== 'function') return '';
+        return String(cvp.playbookPromptBlock(playbook, company, { forLetter: false }) || '');
+    } catch (e) {
+        console.warn('[resumeBuilder] cv playbook block unavailable:', e.message);
+        return '';
+    }
+}
+
+/**
+ * The page mode the document is STORED under — which must be the page the prompt asked the model to WRITE.
+ *
+ * ⚠️ ONE PAGE IS A CONSTRAINT; TWO PAGES IS A PERMISSION. A one-page rule, whether it came from the employer's
+ * research or from the country the application is going to, wrote the content to one page (at most 3 highlights
+ * a role, a summary of at most 3 sentences) — so the stored mode follows it, or the download is a two-page
+ * shell around one page of content. "Up to two pages is normal here" only ALLOWS the room: from the RESEARCH it
+ * still decides (an employer that says so has said it about itself, and that is how this lane has always read
+ * it), but from a COUNTRY baseline it leaves the model's own reading of how much material there is alone —
+ * otherwise every Indian, German and British document would be stored 'a4' whatever the candidate's record holds.
+ */
+function docPageModeOf(plan, aiMode) {
+    const conv = plan && plan.conv;
+    const researched = plan && plan.researched;
+    if (conv && conv.cv.length === 'one_page') return 'onepage';
+    if (researched && researched.cv.length === 'two_pages') return 'a4';
+    return aiMode;
+}
+
+// ── The country a stored document was WRITTEN for ────────────────────────────────────────────────────
+// ⚠️ THE WRONG COUNTRY'S DOCUMENT WAS FREE FOR EVER (2026-09-16). Since docPlaybookOf the chip's country decides
+// what the document SAYS — the section order, the date pattern, one entry per project, the page mode the row is
+// stored under, and the date of birth and nationality applyPersonalDetailsConvention blanks in code. None of it
+// is hashed (see generationFingerprint: the base text, the four job fields and the research revision — and it
+// must STAY that way, or every stored document turns stale and every user is re-billed for a better prompt). So
+// a user who built "Acme" while the chip said United States, then corrected the chip to Germany, re-posted the
+// identical inputs, hit the identical fingerprint and was handed back the American document — one page, no date
+// of birth, Anglo section order — labelled fresh, with no way to ever get the German one.
+//
+// The fix is not a new hash: it is that the document REMEMBERS which country it was written for (design
+// .writtenFor) and is not served as a free hit for a different one. A mismatch is a cache MISS, and a miss is
+// the path this lane already has: a build the app confirmed as 'cache' is refused with 409 cache_miss (nothing
+// bound, nothing charged) and Home re-asks on its sheet, exactly as it does when a saved document is gone.
+// ⚠️ NOBODY IS RE-BILLED FOR THIS. Not one stored row carries the marker, and a document without one is always
+// served — so every document that exists today stays the free hit it is, and only a NEW build can ever disagree
+// with a later country.
+//
+// ⚠️ IT READS THE CHIP AND THE VETTED SITE, NEVER THE RESEARCH. The research's own hqCountry / roleCountry also
+// resolve a place (regionFromCountry.placeFor reads them), but the research is a 30-day cache that refreshes on
+// its own: keyed on it, a document could stop matching itself with nobody having touched anything, and the user
+// would be asked to pay for a rebuild they did not ask for. The chip's country and the employer's website are
+// the user's own inputs, and they move only when the user moves them.
+
+/**
+ * The country this build is being written for, as a short stable key ('in', 'de', 'us', …), or '' when neither
+ * the chip nor the website names one. Same resolution chain as the playbook and the design region, minus the
+ * research — see the note above. Never throws: without the country table it answers '' (no opinion).
+ */
+function docPlaceKeyOf({ country = null, website = null } = {}) {
+    try {
+        const region = require('../utils/regionFromCountry');
+        if (typeof region.placeFor !== 'function') return '';
+        const place = region.placeFor({ country: country || null, website: website || null, conventions: null });
+        const key = place && (place.iso2 || place.name);
+        return typeof key === 'string' ? key.trim().toLowerCase().slice(0, 40) : '';
+    } catch (e) {
+        console.warn('[resumeBuilder] country resolution unavailable — the document records no country:', e.message);
+        return '';
+    }
+}
+
+/** The country a STORED document records having been written for, or '' (every row from before the marker). */
+function docWrittenForOf(doc) {
+    let design = doc && doc.design;
+    if (typeof design === 'string') { try { design = JSON.parse(design); } catch { design = null; } }
+    const v = design && typeof design === 'object' && !Array.isArray(design) ? design.writtenFor : null;
+    return typeof v === 'string' ? v.trim().toLowerCase().slice(0, 40) : '';
+}
+
+/**
+ * May this stored document be served as a FREE cache hit for `placeKey`?
+ *
+ * Yes unless BOTH sides name a country and they differ. A row with no marker is every document built before
+ * this existed — served, or the slice would re-bill its owner. A build that resolves no country at all cannot
+ * tell whether the document suits it, and "cannot tell" is never a reason to charge someone.
+ */
+function docServesPlace(doc, placeKey) {
+    const was = docWrittenForOf(doc);
+    if (!was || !placeKey) return true;
+    return was === placeKey;
+}
+
+/**
+ * Was this stored document written for a DIFFERENT country than the chip is asking about now? — the STALE
+ * LABEL's half of the same question docServesPlace answers for the cache.
+ *
+ * ⚠️ WITHOUT IT THE MARKER ONLY EVER REFUSES. The wrong country's document is no longer handed over free —
+ * but /api/employer-docs/current labels staleness by comparing fingerprints, and the country is deliberately
+ * not hashed (see the header above, and it must stay that way or every stored document turns stale and every
+ * user is re-billed), so the American document re-hashes to a PERFECT MATCH for a German chip and reports
+ * fresh. The Refresh pill is drawn on `stale`, so nothing on the screen offers the rebuild the refusal makes
+ * possible, and the Tailor button is drawn only when the chip has NO document at all. That is the 2026-09-16
+ * bug with its harm halved: nobody is re-billed and nobody is served the wrong country's résumé — and nobody
+ * can get the right one either. So the routes ask this, beside the fingerprint, and a true answer is stale.
+ *
+ * ⚠️ ONE IMPLEMENTATION, HERE, for the same reason rerankStoredDesign is: the label must give the answer the
+ * BUILD gives. Same website vetting (docResearchSiteFor — a job board's ccTLD is not the employer's), same
+ * placeFor chain, and the same two "cannot tell" cases that keep a document free (no marker on the row, no
+ * country on the request). A second copy in the routes would drift, and the pill would nag on a document the
+ * build then serves as a free hit — a paid rebuild the user did not need.
+ *
+ * It hashes nothing, reads no database and never throws: a LABEL, never a cache key. `country` and `job` are
+ * the REQUEST's own fields — the chip's country and { website, url } as the build would send them — never the
+ * row's: re-deriving the place from the document's own stored job can only ever answer the country it was
+ * already written for, which reads fresh for ever, and the wrong country's résumé stays on the screen.
+ */
+function docWrittenElsewhere(doc, { employer = null, country = null, job = null } = {}) {
+    const j = job && typeof job === 'object' ? job : {};
+    const asked = { website: typeof j.website === 'string' ? j.website : '', url: typeof j.url === 'string' ? j.url : '' };
+    const site = docResearchSiteFor(typeof employer === 'string' ? employer : '', asked) || asked.website;
+    return !docServesPlace(doc, docPlaceKeyOf({ country: typeof country === 'string' ? country : null, website: site || null }));
+}
+
 /**
  * The one formatting convention enforced in CODE as well as in the prompt: an employer whose conventions say a CV
  * carries NO personal details gets none, whatever the draft says. A date of birth or a nationality on a CV sent
  * where they are not expected is noise at best and, where hiring guards against discrimination, a reason to set
  * it aside. It is the candidate's own fact, so blanking it on THIS employer's copy loses nothing: the base resume
  * keeps it. ('include' is prompt-only: the code cannot tell a fact the model dropped from one it never had.)
+ *
+ * ⚠️ IT TAKES THE MERGED VIEW (docPlaybookOf's `conv`), not the raw research — 2026-09-16. A US or UK posting
+ * whose employer research came back empty says 'avoid' through the COUNTRY, and the prompt now tells the model
+ * so; without the same answer here that rule would be advice with no backstop, which is the split the header
+ * above warns about. A raw conventions object still works (docConventionsOf reads both shapes).
+ * ⚠️ WHICH IS WHY THE DOCUMENT RECORDS ITS COUNTRY (docPlaceKeyOf). This is the one country decision that
+ * DELETES the candidate's own facts from the stored payload, and it is irreversible for that row — served for
+ * a country that expects a date of birth, it is a Lebenslauf permanently missing one. It is safe only because
+ * a document is never handed back as a free hit for a country it was not written for.
  */
 function applyPersonalDetailsConvention(resumeData, conventions) {
     const c = docConventionsOf(conventions);
@@ -919,9 +1197,11 @@ function docSectorPhraseOf(sector) {
 /**
  * The WRITTEN FOR section of the employer-doc prompt: which lines a recruiter reads first and what each must say
  * for THIS sector — the title in the candidate's real roles, the summary's first sentence as their fit for the
- * sector, the bullets in the employer's vocabulary, and the detail level the conventions set. Always present: even
- * without research the sector the employer hires in is something the model may bring to EMPHASIS (it is not a
- * fact about the candidate). ⚠️ Emphasis and wording only, same as every other block — the never-invent rules
+ * sector, the bullets in the employer's vocabulary, and the detail level the conventions set — since 2026-09-16
+ * the MERGED conventions (this employer's where the research found them, the country's where it did not), so a
+ * one-page country and a one-page employer are told the same thing. Always present: even without research the
+ * sector the employer hires in is something the model may bring to EMPHASIS (it is not a fact about the
+ * candidate). ⚠️ Emphasis and wording only, same as every other block — the never-invent rules
  * stand, and this one restates them where the temptation is strongest.
  *
  * ⚠️ THE OPENING HAS A SHAPE AND A WORKED EXAMPLE (2026-09-15). "State the fit for the sector" got the base
@@ -983,6 +1263,14 @@ function docTopLinesBlock({ company, sector, conventions } = {}) {
  * seniority is a minor tie-breaker. `conventions` defaults to research.conventions; without any, the prompt reads
  * exactly as before apart from that brief.
  *
+ * ⚠️ AND THE DOCUMENT IS WRITTEN FOR THE COUNTRY IT IS GOING TO (2026-09-16) — see docPlaybookOf. Where the
+ * research found nothing, the prompt used to carry no formatting instruction at all and the model fell back to
+ * Anglo habits for every country on earth: "Month YYYY", no rule about projects, "as the material has it"
+ * detail. cvPlaybook's block now sits between FORMATTING and WRITTEN FOR — the country's projects, experience
+ * depth, bullets per role, metrics, summary, skills, section order and dates — and the same merged answer
+ * drives the page mode, the date rule, the personal-details slot and the detail level. FORMAT AND EMPHASIS
+ * ONLY, like every block here: a convention the candidate's material cannot meet is simply not met.
+ *
  * ⚠️ THE TOP LINES ARE WRITTEN FOR THE SECTOR (2026-09-15) — see docTopLinesBlock: the title in the candidate's
  * real roles phrased for the employer's sector, the summary opening in the shape "<real role> for <sector> — <the
  * two or three real strengths that matter here>" with a worked example that is never the candidate's own words,
@@ -994,7 +1282,7 @@ function docTopLinesBlock({ company, sector, conventions } = {}) {
  * Output = the resume JSON schema buildParsePrompt uses (so every template renders it) PLUS a `design`
  * object that generateEmployerDoc strips before storing: the payload is the resume and nothing else.
  */
-function buildEmployerDocPrompt({ name, email, phone, location, rawText, uploadedResumeContext, job, research, familyBrief, country, conventions } = {}) {
+function buildEmployerDocPrompt({ name, email, phone, location, rawText, uploadedResumeContext, job, research, familyBrief, country, conventions, playbook } = {}) {
     const j = job && typeof job === 'object' ? job : {};
     const company = String(j.company || '').replace(/\s+/g, ' ').trim().slice(0, 160) || 'this employer';
     const website = String(j.website || '').replace(/\s+/g, '').trim().slice(0, 300);
@@ -1009,20 +1297,41 @@ function buildEmployerDocPrompt({ name, email, phone, location, rawText, uploade
         researchBlock = research ? researchPromptBlock(research, company) : '';
     } catch (e) { console.warn('[resumeBuilder] research block unavailable:', e.message); }
     const rawConventions = conventions !== undefined ? conventions : conventionsOfResearch(research);
-    const conv = docConventionsOf(rawConventions);
+    // How a CV is written where this application is going, merged with what the research found about THIS
+    // employer. generateEmployerDoc resolves it once and passes it in — the design ranking and the
+    // personal-details backstop then read the very same object; a direct caller (a test) may leave it out and
+    // this resolves the identical answer itself.
+    const plan = playbook && playbook.conv !== undefined ? playbook : docPlaybookOf({ country, website: j.website, conventions: rawConventions, research });
+    const conv = plan.conv;
+    const book = plan.playbook;
     // The facts block is employerResearch's to judge (it may carry notes this lane's enums do not read); the rules are ours.
-    const conventionsBlock = rawConventions ? conventionsBlockForDoc(rawConventions, company) : '';
-    const formattingBlock = conv ? docFormattingBlock(rawConventions, company) : '';
+    // ⚠️ IT IS FED plan.facts, NOT THE RAW CONVENTIONS. That block gives ORDERS about personal details, length,
+    // dates and CV format, and a value cvPlaybook demoted (researched for another country's hiring) would order
+    // the opposite of the country block twenty lines below it — see docPlaybookOf. Everything else it prints is
+    // untouched: the HQ, where the employer hires, its type, sector, ATS, register and notes are facts.
+    const conventionsBlock = plan.facts ? conventionsBlockForDoc(plan.facts, company) : '';
+    // ⚠️ FORMATTING speaks ONLY for what the research found about this employer — its header says so, and a
+    // country generalisation printed under it would be a lie the model repeats. Everything the research did not
+    // answer is the country block's to say (docPlaybookOf), so between them each rule is stated exactly once.
+    const formattingBlock = plan.researched ? docFormattingBlock(plan.researched, company) : '';
+    const playbookBlock = docPlaybookBlock(book, company);
+    // ⚠️ India lists EVERY project (cvPlaybook content.projects === 'all'): the schema's project fields, the
+    // writing rule and the ZERO-MISS rule below all widen for it, or the prompt would ask for nine entries in
+    // one block and quietly allow them to be merged in the next.
+    const everyProject = !!(book && book.content && book.content.projects === 'all');
     // The sector the top lines are written for, and the block that says how (docTopLinesBlock) — the same
-    // docSectorOf reading the corrective pass and the sameness guard use.
+    // docSectorOf reading the corrective pass and the sameness guard use. Its DETAIL LEVEL reads the merged
+    // view, so a one-page country and a one-page employer are told the same thing.
     const sector = docSectorOf(research, rawConventions);
-    const topLinesBlock = docTopLinesBlock({ company, sector, conventions: rawConventions });
+    const topLinesBlock = docTopLinesBlock({ company, sector, conventions: conv });
     const onePage = !!(conv && conv.cv.length === 'one_page');
     const avoidPersonal = !!(conv && conv.cv.personalDetails === 'avoid');
     const personalSlot = avoidPersonal ? 'always an empty string for this employer' : 'ONLY if the material states it, else empty string';
+    // The mode INSTRUCTION is docPageModeOf's rule in words: what the model is asked to write is what the lane
+    // stores (a country's "two pages are normal" is room, not an order — see docPageModeOf).
     const modeRule = conv && conv.cv.length === 'one_page'
-        ? '"onepage" — one page is the norm for this employer.'
-        : conv && conv.cv.length === 'two_pages'
+        ? '"onepage" — one page is the norm where this application is going.'
+        : plan.researched && plan.researched.cv.length === 'two_pages'
             ? '"a4" — two pages are normal for this employer.'
             : '"onepage" where one page is the norm or the real material is concise; "a4" when the candidate\'s real material needs the room.';
 
@@ -1056,14 +1365,14 @@ ${uploadedBlock}
 === THE EMPLOYER ===
 Company: ${company}
 ${website ? `Website: ${website}   (identifies the company only — do not describe it)\n` : ''}${place ? `Applying in: ${place}\n` : ''}${roleBlock}
-${researchBlock ? `${researchBlock}\n` : ''}${conventionsBlock ? `\n${conventionsBlock}\n` : ''}${formattingBlock ? `\n${formattingBlock}\n` : ''}
+${researchBlock ? `${researchBlock}\n` : ''}${conventionsBlock ? `\n${conventionsBlock}\n` : ''}${formattingBlock ? `\n${formattingBlock}\n` : ''}${playbookBlock ? `\n${playbookBlock}\n` : ''}
 ${topLinesBlock}
 
 === WHAT YOU MAY CHANGE (this is a full rewrite for ${company}) ===
 - Rewrite \`personal_info.title\` and \`summary\` for what ${company} needs from someone with THIS candidate's real background: its sector, its priorities, its vocabulary — exactly as WRITTEN FOR ${company} above says. A title or an opening sentence that would suit any employer is not a rewrite, and neither is the material's own opening with a word or two swapped.
 - Rewrite the wording of every experience highlight and project bullet in the vocabulary ${company} uses — only where it describes the SAME thing the candidate did. Re-wording is not a licence to claim.
 - Reorder the highlights inside each experience entry, the projects, and \`skills.technical\` / \`skills.soft\`, so what matters most to ${company} comes first.
-- Condense highlights that are clearly irrelevant to ${company}: shorten them, or merge two minor ones into one line. Condense — never drop an entry: every experience entry and every education entry must still appear.
+- Condense highlights that are clearly irrelevant to ${company}: shorten them, or merge two minor ones into one line. Condense — never drop an entry: every experience entry and every education entry must still appear.${everyProject ? ' Two PROJECTS are never merged into one, however similar they look — see the country rules above.' : ''}
 - Choose one-page or A4 (\`design.mode\` below).
 
 === WHAT YOU MUST NEVER DO ===
@@ -1075,21 +1384,23 @@ ${topLinesBlock}
 - Keep every employer name, job title, institution, degree and date as the material gives them (a standard degree abbreviation may be expanded, e.g. "BCA" → "Bachelor of Computer Applications (BCA)").
 
 === ⚠️ ZERO-MISS RULE ===
-Tailoring never loses information. Every job, internship, freelance role, project, education entry (including school level: Class X / Class XII), grade, certification, spoken language and achievement in the material must appear in the JSON. When unsure whether something belongs, INCLUDE IT.
+Tailoring never loses information. Every job, internship, freelance role, project, education entry (including school level: Class X / Class XII), grade, certification, spoken language and achievement in the material must appear in the JSON. When unsure whether something belongs, INCLUDE IT.${everyProject ? '\nAnd here every project is its OWN entry: nine projects in the material means nine entries in `projects`. Merging two of them is dropping one.' : ''}
 
 === WRITING RULES ===
 - Summary: implied first person — never "I", "me", "my", the candidate's name, "he", "she" or "they". A tight paragraph of ${onePage ? 'at most 3 sentences (one page is the norm for this employer)' : '3-4 sentences'}, opening with the candidate's fit for ${company}'s sector (see WRITTEN FOR ${company}), then exactly 3 bullets; separate them with \\n and start each bullet with "• ". Wrap 3-6 genuinely important terms per sentence in **double asterisks** (technologies, domains, years of experience the material states). No clichés ("passionate", "go-getter", "team player", "proven track record").
 - Experience highlights: one sentence each, at most 22 words, starting with a strong past-tense action verb, outcome first. Use a number ONLY when the material states that number.
-- Projects: "about" is 1-2 sentences on what the project is, from the material only; "role" is the candidate's role; "role_highlights" are 2-3 action-verb bullets.
-- Dates: ${conv && conv.cv.dateFormat ? `${conv.cv.dateFormat}, as FORMATTING above says,` : '"Month YYYY"'} or "Present"; a year alone is fine for education.
+- Projects: ${everyProject
+        ? 'EVERY project the material contains gets its own entry — none merged, none summarised away, none left out. "title" is the project\'s own name; "type" is what kind of project it is, with the employer or client it ran for where the material names one; "about" is 1-2 sentences on what it is and the technology stack the material states for it; "role" is the candidate\'s role on it; "role_highlights" are 2-3 action-verb bullets on what they did. Never a project, client, technology or date the material does not contain.'
+        : '"about" is 1-2 sentences on what the project is, from the material only; "role" is the candidate\'s role; "role_highlights" are 2-3 action-verb bullets.'}
+- Dates: ${conv && conv.cv.dateFormat ? `${conv.cv.dateFormat}, as the rules above say,` : '"Month YYYY"'} or "Present"; a year alone is fine for education.
 - Education "grade": exactly as written (e.g. "85.40%", "8.5 CGPA"), else "".
-- personal_info.nationality and personal_info.date_of_birth: ${avoidPersonal ? 'always "" for this employer, even when the material states them (see FORMATTING above).' : 'ONLY if the material states them, else "".'}
+- personal_info.nationality and personal_info.date_of_birth: ${avoidPersonal ? 'always "" for this employer, even when the material states them (see the rules above).' : 'ONLY if the material states them, else "".'}
 - Write in the same language as the candidate's material.
 
 === DESIGN — how well each layout family fits the way ${company} hires ===
 ${familyBrief || localFamilyBrief()}
 - Score EVERY family id above from 0 to 100, EMPLOYER FIRST — in this order of weight:
-  1. the CV conventions where the candidate is applying${conv ? ' (the conventions and FORMATTING above)' : ''}: whether a photo is expected, optional or avoided (expected in Germany, Austria and Switzerland; common across much of continental Europe, the Middle East and Latin America; unusual in the US, the UK, Ireland, Canada and Australia), one page or two, personal details, and the CV format (tabular, Europass, plain for screening software). A family that breaks a convention scores low however good it looks;
+  1. the CV conventions where the candidate is applying${formattingBlock && playbookBlock ? ' (the FORMATTING and the country rules above)' : formattingBlock ? ' (the conventions and FORMATTING above)' : playbookBlock ? ' (the country rules above)' : ''}: whether a photo is expected, optional or avoided (expected in Germany, Austria and Switzerland; common across much of continental Europe, the Middle East and Latin America; unusual in the US, the UK, Ireland, Canada and Australia), one page or two, personal details, and the CV format (tabular, Europass, plain for screening software). A family that breaks a convention scores low however good it looks;
   2. ${company}'s type and sector: public bodies, universities, banks and law firms read conservative layouts; startups and technology companies modern ones; agencies and media visual ones;
   3. its screening software: favour ATS-safe single-column families when ${company} is known to use an applicant tracking system, or is a large employer where they are near-universal (the US, the UK, India);
   4. only then the candidate's seniority — a minor tie-breaker, never the reason a family leads.
@@ -1119,7 +1430,9 @@ ${familyBrief || localFamilyBrief()}
     { "institution": "", "degree": "", "field_of_study": "", "end_date": "", "grade": "" }
   ],
   "projects": [
-    { "title": "", "type": "", "link": "", "about": "", "role": "", "role_highlights": [""] }
+    ${everyProject
+        ? '{ "title": "the project\'s own name", "type": "what kind of project it is — and the employer or client it ran for when the material names one", "link": "", "about": "1-2 sentences: what it is, and the technology stack the material states for it", "role": "the candidate\'s role on it", "role_highlights": ["2-3 bullets on what they did on it"] }'
+        : '{ "title": "", "type": "", "link": "", "about": "", "role": "", "role_highlights": [""] }'}
   ],
   "skills": { "technical": [], "soft": [] },
   "certifications": [ { "name": "", "issuer": "", "year": "" } ],
@@ -1132,7 +1445,7 @@ ${familyBrief || localFamilyBrief()}
     "headline": ""
   }
 }
-Certifications, languages and achievements: ONLY those the material mentions; otherwise return an empty array [].`;
+Certifications, languages and achievements: ONLY those the material mentions; otherwise return an empty array [].${everyProject ? '\n`projects`: ONE entry per project in the material, in the order of importance the material gives them — never merged, never folded into another entry, never left out.' : ''}`;
 }
 
 // ── Placeholders: the backstop for the prompt's "no brackets" rule ──────────────────────────────────
@@ -2442,22 +2755,28 @@ function brandKeyOf(brand) {
  * with what a later read needs to RE-RANK it for free: aiFamilies (the AI's own scores) and conventionsSummary.
  * null when designFit is unavailable or throws — the row is then stored without one and the read routes rank it
  * rule-only. ⚠️ Runs BEFORE the charge, and can never fail the build.
- * ⚠️ A LENGTH CONVENTION DECIDES THE MODE (one_page → onepage, two_pages → a4): the prompt wrote the content to that
- * length. Otherwise the AI's mode, as before. The headline follows docHeadlineFor — never one about a design that
- * does not lead.
+ * ⚠️ A LENGTH CONVENTION DECIDES THE MODE (one_page → onepage, a researched two_pages → a4): the prompt wrote the
+ * content to that length, and since 2026-09-16 it is the LANE'S ONE READING that decides — docPageModeOf on the
+ * plan generateEmployerDoc resolved, never a second derivation from the raw conventions here. Otherwise the AI's
+ * mode. The headline follows docHeadlineFor — never one about a design that does not lead.
  * `brand` (brandOfResearch) rides on the result as design.brand — what every render of the document is recoloured
  * with — and its accent is the colour the variants are ordered by (closest first), ahead of the researcher's.
  */
-function rankDocDesign({ aiDesign, resumeData, research, country, website, conventions = null, company = '', brand = null }) {
+function rankDocDesign({ aiDesign, resumeData, research, country, website, conventions = null, company = '', brand = null, playbook = null }) {
     try {
         const fit = require('../services/designFit');
         const r = research && typeof research === 'object' ? research : {};
         const d = aiDesign && typeof aiDesign === 'object' ? aiDesign : {};
         const text = (v) => (typeof v === 'string' ? stripPlaceholderText(v) : null);
-        const conv = docConventionsOf(conventions);
+        // ⚠️ THE PROMPT'S ANSWER, NOT A SECOND READING OF THE RESEARCH (2026-09-16). The page mode used to be
+        // derived here from the raw conventions all over again, so a length the PROMPT knew and this did not —
+        // a one-page country with no research — wrote one page of content into a document stored as 'a4'.
+        // generateEmployerDoc resolves the plan once and hands the same object to both; a caller with none gets
+        // the same answer resolved here, from the same inputs.
+        const plan = playbook && playbook.conv !== undefined ? playbook : docPlaybookOf({ country, website, conventions, research });
+        const conv = plan.conv;
         const aiFamilyScores = familyScoresOf(d.families);
-        const mode = conv && conv.cv.length === 'one_page' ? 'onepage'
-            : conv && conv.cv.length === 'two_pages' ? 'a4' : d.mode;
+        const mode = docPageModeOf(plan, d.mode);
         const ranked = fit.rankResumeDesigns({
             aiFamilyScores,
             region: docRegionFor(fit, conventions, { country, website }),
@@ -2477,6 +2796,10 @@ function rankDocDesign({ aiDesign, resumeData, research, country, website, conve
             priorFamily: aiTopFamilyOf(aiFamilyScores), priorHeadline: text(d.headline), conventions, company,
         });
         design.brand = docBrandShapeOf(brand);       // null = rendered in the design's own colours (the phone reads it so)
+        // The country this document was WRITTEN for, stored beside the region it was DESIGNED for — so the lane
+        // can refuse to serve it free for another one (docServesPlace). '' is stored as null: no opinion, always
+        // served. Not a ranking input, and never hashed — see the note above docPlaceKeyOf.
+        design.writtenFor = docPlaceKeyOf({ country, website }) || null;
         return design;
     } catch (e) {
         console.warn('[resumeBuilder] design ranking failed — stored without one (the routes rank it on read):', e.message);
@@ -2751,12 +3074,23 @@ async function generateEmployerDoc(req, res) {
             // it must never be paid for.
             return res.status(500).json({ error: 'We could not read your resume just now. Please try again.', reason: 'failed' });
         }
+        // The website the design ranking and the playbook read (a job board's ccTLD is not the employer's) —
+        // resolved here because the country a HIT must match is resolved from it. Pure and cheap: no I/O.
+        const researchSite = docResearchSiteFor(company, job);
+        // ⚠️ AND WHICH COUNTRY THIS BUILD IS FOR. A stored document written for another one is NOT a free hit:
+        // the country decides what the document says and what the row stores, and none of it is hashed — see
+        // docPlaceKeyOf. Documents from before the marker (and builds that resolve no country) always match.
+        const placeKey = docPlaceKeyOf({ country, website: researchSite || job.website });
         const hit = await employerDocs.get(userId, 'resume', company, cacheFp, env);
-        if (hit && hit.id && hit.payload && hit.payload.personal_info) {
+        if (hit && hit.id && hit.payload && hit.payload.personal_info && docServesPlace(hit, placeKey)) {
             await report('cached', `Found your ${company} resume`, 90);
             await promoteServedDoc(userId, hit, employerId, env);
             console.log(`[resumeBuilder] employer doc cache hit for "${company}" (doc ${hit.id}) — no AI call, nothing charged`);
             return res.json({ success: true, cached: true, docId: Number(hit.id), tailoredFor: company });
+        }
+        if (hit && hit.id && !docServesPlace(hit, placeKey)) {
+            // Not a failure and not yet a charge: the refusal below (or the gates) decides what happens next.
+            console.log(`[resumeBuilder] employer doc ${hit.id} for "${company}" was written for '${docWrittenForOf(hit)}' and this build is for '${placeKey}' — not served as a hit`);
         }
         // ⚠️ CONFIRMED AS FREE, AND IT IS NOT (contract C2). The app starts a 'cache' build with no sheet at all,
         // because a stored document costs nothing — so a miss here would charge someone who was never asked.
@@ -2815,9 +3149,8 @@ async function generateEmployerDoc(req, res) {
         await report('researching', `Researching ${company}`, 16);
         // A posting link with no text is read here, as the builder lane does — in parallel with the
         // research, so the slower of the two is the only wait. ⚠️ website is never scraped (it is context).
-        // ⚠️ Research goes to the VETTED site (docResearchSiteFor), never the raw field: a job board or an ATS
-        // is not the employer. The fingerprint keeps job.website exactly as sent.
-        const researchSite = docResearchSiteFor(company, job);
+        // ⚠️ Research goes to the VETTED site (researchSite, resolved at the cache step above — docResearchSiteFor),
+        // never the raw field: a job board or an ATS is not the employer. The fingerprint keeps job.website as sent.
         const needPosting = !job.description && !!job.url;
         const [research, posting] = await Promise.all([
             researchSite ? researchForDoc(researchSite, company) : Promise.resolve(null),
@@ -2833,6 +3166,13 @@ async function generateEmployerDoc(req, res) {
         // ⚠️ Not in the fingerprint (RESEARCH_REV is): conventions arriving on an old cache row must not make
         // every saved document stale and paid to refresh.
         const conventions = conventionsOfResearch(research);
+        // ⚠️ AND HOW A CV IS WRITTEN WHERE THIS APPLICATION IS GOING, RESOLVED ONCE (2026-09-16 — docPlaybookOf):
+        // the country's own conventions with this employer's researched ones laid over them. The prompt, the
+        // personal-details backstop and the design ranking are handed THIS object, so a document can never be
+        // written for one country and designed for another. It reads the VETTED research site (a job board's
+        // ccTLD says nothing about where the role is), which is the website the design ranking gets too.
+        // ⚠️ Not in the fingerprint either — nothing here is hashed, so no stored document turns stale for it.
+        const plan = docPlaybookOf({ country, website: researchSite || job.website, conventions, research });
         // The employer's look (its website's colour and font when the extractor found them, else the researcher's):
         // stored on the design and passed to EVERY render of this document — the cards, the gallery, the PDF, the Word file.
         const brand = brandOfResearch(research);
@@ -2844,7 +3184,7 @@ async function generateEmployerDoc(req, res) {
         try { familyBrief = require('../services/designFit').resumeFamilyBrief(); }
         catch (e) { console.warn('[resumeBuilder] designFit unavailable for the prompt:', e.message); familyBrief = localFamilyBrief(); }
         const prompt = buildEmployerDocPrompt({
-            name, email, phone, location, rawText, uploadedResumeContext, job: promptJob, research, familyBrief, country, conventions,
+            name, email, phone, location, rawText, uploadedResumeContext, job: promptJob, research, familyBrief, country, conventions, playbook: plan,
         });
         let draft = await writeDocDraft(prompt, report);
 
@@ -2887,13 +3227,14 @@ async function generateEmployerDoc(req, res) {
         if (phone)    resumeData.personal_info.phone     = phone;
         if (location) resumeData.personal_info.location  = location;
         resumeData._buildMethod = 'ai';
-        // The prompt's personal-details rule, enforced: where the conventions say a CV carries none, it carries none.
-        applyPersonalDetailsConvention(resumeData, conventions);
+        // The prompt's personal-details rule, enforced: where the conventions — this employer's, or the country's
+        // when the research found none — say a CV carries none, it carries none.
+        applyPersonalDetailsConvention(resumeData, plan.conv);
 
         await report('designing', `Ranking designs for ${company}`, 86);
         // The region reads the VETTED employer site first (a job board's TLD says nothing about the employer) — the
         // same domain the stored research carries, so a later re-rank on read starts from the same place.
-        const design = rankDocDesign({ aiDesign, resumeData, research, country, website: researchSite || job.website, conventions, company, brand });
+        const design = rankDocDesign({ aiDesign, resumeData, research, country, website: researchSite || job.website, conventions, company, brand, playbook: plan });
 
         // ── 5 + 6. THE CHARGE, THEN THE STORE — one request at a time per user (withUsageLock) ────────────
         // ⚠️ EVERY MONEY DECISION BELOW IS THIS REQUEST'S OWN ANSWER: the pass claim's charged + passId, and
@@ -2913,8 +3254,11 @@ async function generateEmployerDoc(req, res) {
                 // ⚠️ A racing identical build (another device, same inputs) may have stored this exact document
                 // during our AI minute. Then that document is what the user gets: served as the hit it now is,
                 // nothing charged and nothing stored — paying twice for one document is the failure to avoid.
+                // ⚠️ Same country test as the cache step (docServesPlace): a race that landed a document for
+                // ANOTHER country is not this build's document, and serving it would hand back exactly the
+                // wrong-country résumé the marker exists to prevent. This build then pays and stores its own.
                 const landed = await employerDocs.get(userId, 'resume', company, cacheFp, env);
-                if (landed && landed.id && landed.payload && landed.payload.personal_info) { served = landed; return; }
+                if (landed && landed.id && landed.payload && landed.payload.personal_info && docServesPlace(landed, placeKey)) { served = landed; return; }
 
                 let charged = false;
                 let spentPass = false;
@@ -3171,6 +3515,12 @@ async function docGateExtrasFor(userId, employer, req) {
  * fingerprint comes from generationFingerprint, the one function generateAI also uses, fed the build
  * Home sends: the server-side base narrative as rawText, the upload included, these job fields.
  * A regenerate never reads the cache (in either place), so it skips this step.
+ * ⚠️ AND THE SAME COUNTRY TEST AS THE BUILD (docServesPlace): a document written for another country is not a
+ * free hit there, so it must not be promised as one here. `country` is read from the body when the client sends
+ * it (the letter gate always has; the resume gate's caller may not yet), and without it this answers exactly as
+ * it always did — the build then refuses the promised 'cache' with 409 cache_miss, having bound and charged
+ * nothing, and Home asks on its sheet. Over-promising a FREE document is the safe direction; under-promising a
+ * paid one is not.
  *
  * ⚠️ THEN A TRUE DRY RUN, IN generateAI's ORDER: regen lane → canConsumeMany → pass. canConsumeMany
  * checks and never reserves (it may lazily create the free-plan anchor row, which every status read
@@ -3214,7 +3564,15 @@ async function generationGate(req, res) {
                 : await generationFingerprint(userId, { includeUploadedResume: true, job, env });
             if (fp) {
                 const hit = await employerDocs.get(userId, 'resume', employer, fp, env);
-                if (hit && hit.payload && hit.payload.personal_info) return answer(true, 'cache', null, null);
+                // The country the BUILD would resolve, from what this request carries — '' when the client sends
+                // none, and then every document matches, exactly as before (see the header).
+                const placeKey = docLane
+                    ? docPlaceKeyOf({
+                        country: typeof body.country === 'string' ? body.country : null,
+                        website: docResearchSiteFor(employer, job) || job.website,
+                    })
+                    : '';
+                if (hit && hit.payload && hit.payload.personal_info && docServesPlace(hit, placeKey)) return answer(true, 'cache', null, null);
             }
         }
         // Same subscription read, same (Production-default) environment, as generateAI's regen lane.
@@ -4679,6 +5037,10 @@ module.exports = {
     // The employer-doc lane: the fingerprint /api/employer-docs/current labels staleness with, and the
     // prompt + placeholder guard + the sameness measure (exported for tests).
     currentResumeFingerprint, buildEmployerDocPrompt, findPlaceholders, stripPlaceholders, tokenJaccard,
+    // ⚠️ The other half of that label: the fingerprint cannot see the country (it is not hashed, and must not
+    // be), so /api/employer-docs/current asks this whether the row was written for somewhere else — the same
+    // answer the build's cache step gives, from the one implementation both use.
+    docWrittenElsewhere,
     docSamenessOf, baseTopLinesOf, docSamenessText,   // the sameness guard and its log phrase, exported for tests only
     // The design every read of a stored employer document shows (/api/employer-docs/current and GET /:id use it too),
     // and the brand it renders in (employerDocsRoutes attaches it on the paths that do not re-rank).

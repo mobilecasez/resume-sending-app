@@ -455,6 +455,7 @@ export default function ResumeTemplates() {
     if (id === region) return;
     setRegion(id);
     setActive(0);
+    landOn.current = null;              // a landing that never became possible must not survive the chip
     scrollRef.current?.scrollTo({ x: 0, animated: false });
     // The new region's first family must start rendering immediately.
     const fams = id === 'all' ? orderedFams : (() => {
@@ -467,9 +468,37 @@ export default function ResumeTemplates() {
     prefetchAround(0, fams, chosen);
   }
 
+  // ⚠️ WIRED TO onScrollEndDrag AS WELL AS onMomentumScrollEnd. A paging drag released exactly on a
+  // page boundary with no velocity fires onScrollEndDrag with decelerating:false and NO momentum end
+  // on iOS — so `active` silently stopped following the page on screen, and with it every preview
+  // request, the name row, the swatches and the Download button. Both events land here; the handler
+  // is idempotent, so being told twice about one swipe costs nothing.
+  // ⚠️ And the prefetch is no longer skipped when the index looks unchanged: re-asking for an id we
+  // already hold is a free no-op (the previews/inFlight dedupe), whereas not asking is unrecoverable.
   function onScrollEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
-    const idx = Math.round(e.nativeEvent.contentOffset.x / WIN);
-    if (idx !== active) { setActive(idx); prefetchAround(idx, visibleFams, chosen); }
+    const raw = Math.round(e.nativeEvent.contentOffset.x / WIN);
+    const idx = Math.max(0, Math.min(raw, visibleFams.length - 1));   // a bounce past either end is not a page
+    landOn.current = null;              // the user is driving — a pending landing must never drag them back
+    setActive(idx);
+    prefetchAround(idx, visibleFams, chosen);
+  }
+
+  // The pager's content was (re)laid out. ⚠️ THE LANDING IS NOT GIVEN UP UNTIL IT IS PROVABLY
+  // POSSIBLE: a scrollTo that reaches the pager before its pages have a width clamps to 0 and stays
+  // there, silently, with nothing to re-fire the effect — so the offset is re-applied here, from the
+  // content itself, and landOn is only cleared once the content is wide enough to hold it.
+  // It also re-clamps `active` when a region chip leaves the pager pointing past the end of a
+  // shorter list (a programmatic clamp fires no scroll-end event of its own).
+  function onPagerContent(w: number) {
+    const i = landOn.current;
+    if (i != null && i > 0) {
+      if (w < (i + 1) * WIN) return;    // pages not laid out yet — the next content pass tries again
+      landOn.current = null;
+      scrollRef.current?.scrollTo({ x: i * WIN, animated: false });
+      return;
+    }
+    landOn.current = null;
+    if (active > visibleFams.length - 1) setActive(Math.max(0, visibleFams.length - 1));
   }
   function goTo(idx: number) {
     scrollRef.current?.scrollTo({ x: idx * WIN, animated: true });
@@ -514,13 +543,42 @@ export default function ResumeTemplates() {
       ? 'Locked'
       : (dlState.metered && dlState.paid && dlState.remaining != null ? `${dlState.remaining} left` : null);
 
-  // One-shot: carry the pager to the design Home opened us on, once it exists to be scrolled.
+  // Carry the pager to the design Home opened us on, once it exists to be scrolled.
+  // ⚠️ THIS EFFECT USED TO FIRE INTO THE VOID, and not as a race — as a certainty. It ran in the very
+  // commit that flips `loading` to false, and pagerH cannot be anything but 0 in that commit: the view
+  // it measures (s.pagerWrap) is rendered only in the non-loading branch, so it did not exist to be
+  // laid out in any earlier one. The pager ScrollView is gated on pagerH > 0, so scrollRef.current was
+  // null, the rAF scrollTo no-opped, landOn had already been thrown away on the line above it, and the
+  // deps never re-fired when pagerH finally arrived. The field report is exactly that: tap Bold Banner
+  // on Home, land on page 0 — "Rendering Azure Sidebar…" for ever — while the indicator underneath
+  // still says "Bold Banner · 10/15 layouts".
+  // ⚠️ Gate the EFFECT, never the view: the pages are sized `height: pagerH`, so an ungated pager
+  // would draw zero-height cards. The cover-letter gallery has had this guard all along — that
+  // asymmetry was the tell.
   useEffect(() => {
-    if (loading || landOn.current == null || !visibleFams.length) return;
+    if (loading || landOn.current == null || !visibleFams.length || pagerH <= 0) return;
     const idx = Math.min(landOn.current, visibleFams.length - 1);
-    landOn.current = null;
-    if (idx > 0) requestAnimationFrame(() => scrollRef.current?.scrollTo({ x: idx * WIN, animated: false }));
-  }, [loading, visibleFams.length]);
+    if (idx <= 0) { landOn.current = null; return; }
+    requestAnimationFrame(() => scrollRef.current?.scrollTo({ x: idx * WIN, animated: false }));
+  }, [loading, visibleFams.length, pagerH]);
+
+  // ── SAFETY NET: whatever page is on screen ALWAYS has a request behind it ──────────────────────
+  // prefetchAround asks for `active` and its two neighbours — and `active` is what we THINK is on
+  // screen, an assumption about the pager rather than an observation of it. Every way the two can part
+  // company (a landing, a region chip that shortens the list under a pager sitting past its new end, a
+  // swatch tap, the Edit round trip, a drag the pager reported in a way we were not listening for) used
+  // to leave the visible page with NO request at all — and the card's last branch was a bare spinner,
+  // so it sat there for ever with nothing coming and nothing to tap.
+  // ⚠️ This is free to re-run: ensurePreviews early-returns on any id already held or in flight, so no
+  // design is ever rendered twice and the serial chromium sees no extra load. And the deps hold still
+  // while a card is failed or slow, so a failing design keeps its tap-to-retry instead of looping.
+  // ⚠️ docGone / noResume are the states that render NO pager, so there is no visible page to protect
+  // and nothing to ask for — loadCatalogue deliberately skips its own prefetch on a vanished document
+  // (`if (!gone)`), and this must not quietly undo that by rendering pages of a deleted version.
+  useEffect(() => {
+    if (loading || docGone || noResume || !visibleFams.length) return;
+    prefetchAround(active, visibleFams, chosen);
+  }, [active, visibleFams, chosen, loading, docGone, noResume]);
   const selectedId = activeFam ? (chosen[activeFam.id] || activeFam.id) : '';
   const selected = previews[selectedId];
   const selectedMeta = activeFam?.variants.find((v) => v.id === selectedId);
@@ -690,6 +748,8 @@ export default function ResumeTemplates() {
                 pagingEnabled
                 showsHorizontalScrollIndicator={false}
                 onMomentumScrollEnd={onScrollEnd}
+                onScrollEndDrag={onScrollEnd}
+                onContentSizeChange={onPagerContent}
                 decelerationRate="fast"
               >
                 {visibleFams.map((f) => {
@@ -731,11 +791,27 @@ export default function ResumeTemplates() {
                               <ActivityIndicator size="large" color={accent} />
                               <Text style={s.previewLoadingText}>Still rendering — tap to retry</Text>
                             </TouchableOpacity>
-                          ) : (
+                          ) : inFlight.current.has(tid) ? (
                             <View style={s.previewLoading}>
                               <ActivityIndicator size="large" color={accent} />
                               <Text style={s.previewLoadingText}>Rendering {f.variants.find((v) => v.id === tid)?.name || f.name}…</Text>
                             </View>
+                          ) : (
+                            // ⚠️ THE LAST BRANCH IS NOT A DEAD END ANY MORE. A spinner is only honest
+                            // while a request is actually running; with none in the air it was the
+                            // infinite "Rendering Azure Sidebar…" of the field report. The safety-net
+                            // effect should make this unreachable — this is what the user gets if it
+                            // ever is not, instead of a screen that waits for nothing.
+                            // (`inFlight` is a ref, but every add to it is paired with a setFailed that
+                            // always returns a fresh object, so a render always follows the add.)
+                            <TouchableOpacity style={s.previewLoading} activeOpacity={0.8} onPress={() => ensurePreviews([tid])}>
+                              <Ionicons name="color-palette-outline" size={38} color={T.faint} />
+                              <Text style={s.previewLoadingText}>Tap to load this design</Text>
+                              <View style={[s.retryChip, { backgroundColor: accent }]}>
+                                <Ionicons name="refresh" size={13} color="#fff" />
+                                <Text style={s.retryChipText}>Load</Text>
+                              </View>
+                            </TouchableOpacity>
                           )}
                         </View>
                         {/* Doc mode: fit for this employer (top-right) and the single best design

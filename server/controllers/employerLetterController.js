@@ -47,6 +47,10 @@ const designFitMod = () => require('../services/designFit');
 const researchMod = () => require('../services/employerResearch');
 const scorerMod = () => require('../services/resumeScorer');
 const clMod = () => require('./coverLetterController');
+// cvPlaybook is newer than this lane and answers for the RESUME first: a deploy where it is missing, or an
+// older copy without the letter variant, must still write letters exactly as they were written before it
+// existed — so it is resolved here, defensively, and never at load.
+const playbookMod = () => require('../services/cvPlaybook');
 
 /** ⚠️ ≤ 48 chars — user_employer_documents.model is VARCHAR(48) and Postgres refuses, not truncates. */
 const LETTER_MODEL = 'gemini-2.5-flash';
@@ -528,60 +532,317 @@ function letterRegionFor(research, designFit, conventions, { country, website })
 
 const LETTER_REGISTER_DEFAULT = 'professional but human — someone who did their homework, not a template. Clear, direct, medium vocabulary; vary sentence length.';
 
+// ── The country's own letter habits ───────────────────────────────────────────────────────────────
+// ⚠️ A LETTER TAKES THE REGISTER AND STRUCTURE HALF OF THE PLAYBOOK, AND NOTHING ELSE. cvPlaybook answers
+// "how is a CV written where this application is going" for every country regionFromCountry knows. A cover
+// letter keeps only the half a letter can honour — how formal it reads, how long it runs, how it opens and
+// how it closes — and must NEVER carry a CV habit: no photo, no date of birth, no personal details, no page
+// count, no date pattern, no section order, no projects policy. Those belong to the résumé, and a letter that
+// mentions one is a defect, not a convention. Two mechanisms, not one promise:
+//   • countryLetterRowOf reads ONLY playbook.source and playbook.profile. The playbook's cv half is never
+//     read in this file at all, so the CV habits cannot leak from the table — there is no path;
+//   • letterPlaybookBlockFor puts cvPlaybook's own letter block through letterSafeBlock, so a CV line that
+//     ever appears in it is dropped HERE, in the lane that must not carry it, rather than trusted away.
+// ⚠️ THE SALUTATION, THE DATE LINE AND THE SIGNATURE BLOCK ARE THE TEMPLATE'S, NOT THE MODEL'S. Every design
+// prints "Dear …", the date and the sign-off itself (parseLetterOutput strips them from the body precisely
+// because a model that writes one has it printed twice), so no country rule here may ask for any of them.
+// Who the letter is addressed TO is likewise decided after the call, from evidence: a name only where the
+// posting or the research states one.
+
+/**
+ * How a letter READS where this application is going, per regionFromCountry CV profile — all 17, so every
+ * country that table knows is answered. Three columns, and deliberately only three:
+ *   register  — how formal (the prompt's TONE line);
+ *   words     — how long, never below the ~230-word floor letterStyleFor documents;
+ *   structure — ONE line about the arc or the closing, and only where that country departs from the
+ *               four-paragraph shape the prompt already describes. Most countries close a letter the same
+ *               way; seventeen slightly different sentences saying so would be prompt noise, paid for twice
+ *               whenever the corrective pass re-sends the prompt.
+ * ⚠️ WHAT IS NOT HERE, AND WHY: emphasis — what evidence leads, how it is presented — is cvPlaybook's own
+ * letter block, printed beside this one (letterPlaybookBlockFor). The two are split by subject so they never
+ * say the same thing twice: register, length and the closing here; the opening and the emphasis there.
+ * ⚠️ NO COUNTRY OVERRIDE TABLE. regionFromCountry's profile IS the grouping of countries that read a letter
+ * the same way, and a register that differed from a country's neighbours' would be a claim this file cannot
+ * source. A country that really does depart belongs in that table, where the whole app reads it.
+ */
+const LETTER_PROFILES = {
+    // US, Israel, Puerto Rico — the shortest, plainest letter in the table; it is scanned once.
+    anglo1: {
+        register: 'direct and specific — plain sentences, concrete nouns, no ceremony.',
+        words: '250-350',
+        structure: 'Four paragraphs and a one-sentence close: this letter gets one quick read.',
+    },
+    // UK, Ireland, Canada, Australia, NZ and the Commonwealth by proxy.
+    anglo2: {
+        register: 'professional and understated — evidence before adjectives, no superlatives, no hard sell.',
+        words: '300-400',
+        structure: null,
+    },
+    // Germany, Austria, Switzerland — the Anschreiben: formal, impersonal, and it closes on the meeting.
+    dach: {
+        register: 'formal and impersonal — complete sentences, no contractions, no exclamation marks, no casual asides.',
+        words: '300-400',
+        structure: 'Close by offering to discuss the role in person, rather than restating the letter.',
+    },
+    // France, Belgium, Luxembourg — the lettre de motivation, and its "vous-moi-nous" arc.
+    franco: {
+        register: 'formal and courteous throughout — complete sentences, no contractions, no familiarity.',
+        words: '300-400',
+        structure: 'The arc this market reads is: what the employer needs, then what the candidate brings, then what they would do together.',
+    },
+    // Maghreb, francophone and lusophone Africa.
+    franco_ext: {
+        register: 'ceremonious and correct — complete sentences, no contractions, no familiarity.',
+        words: '300-400',
+        structure: null,
+    },
+    // Italy, Portugal, Greece, Malta, Cyprus.
+    south_eu: {
+        register: 'formal and measured — complete sentences, courteous phrasing, no casual asides.',
+        words: '300-400',
+        structure: null,
+    },
+    // Spain, Andorra.
+    iberia: {
+        register: 'formal but warm — courteous complete sentences, no casual phrasing.',
+        words: '300-400',
+        structure: null,
+    },
+    // Netherlands and the Nordics — ceremony reads as padding here.
+    north_eu: {
+        register: 'matter-of-fact — concrete, unadorned sentences; no superlatives and no flattery.',
+        words: '250-350',
+        structure: 'Close in a single sentence — anything longer reads as padding here.',
+    },
+    // Central & Eastern Europe, the Baltics.
+    cee: {
+        register: 'professional and formal — complete sentences, no contractions.',
+        words: '300-400',
+        structure: null,
+    },
+    // Russia, the Caucasus, Central Asia, Turkey.
+    cis: {
+        register: 'formal and business-like — complete sentences, no casual asides.',
+        words: '280-380',
+        structure: null,
+    },
+    // The Gulf states, the Levant, Egypt.
+    gulf: {
+        register: 'formal and courteous — polished and respectful throughout.',
+        words: '300-400',
+        structure: null,
+    },
+    // Anglophone Africa.
+    africa_en: {
+        register: 'formal and respectful — complete sentences, courteous, no casual phrasing.',
+        words: '300-400',
+        structure: null,
+    },
+    // India, Pakistan, Bangladesh, Sri Lanka, Nepal — skills and projects are what is read first.
+    south_asia: {
+        register: 'respectful and professional — courteous complete sentences, no slang and no hard sell.',
+        words: '300-400',
+        structure: 'Paragraphs 2 and 3 stay with the skills, tools and projects the material names — that is what is read first here.',
+    },
+    // Singapore, Hong Kong, Macau.
+    sg: {
+        register: 'concise and corporate — precise sentences, no filler.',
+        words: '250-350',
+        structure: 'Stay at the lower end of the length band: a long letter is skimmed here.',
+    },
+    // Malaysia, Indonesia, the Philippines, Thailand, Vietnam.
+    sea: {
+        register: 'polite and professional — courteous complete sentences, warm but never familiar.',
+        words: '300-400',
+        structure: null,
+    },
+    // Japan, Korea, China, Taiwan — modesty is the register; self-promotion reads badly.
+    east_asia: {
+        register: 'formal and deferential — courteous, measured sentences that never boast.',
+        words: '250-350',
+        structure: null,
+    },
+    // Latin America.
+    latam: {
+        register: 'warm but professional — complete sentences, no slang and no familiarity.',
+        words: '300-400',
+        structure: null,
+    },
+};
+
+/**
+ * The row for the country this application is going to, or null.
+ * ⚠️ ONLY A RESOLVED COUNTRY SPEAKS. A playbook built from a region WORD ("Europe", "APAC") knows less than
+ * letterStyleFor's own region switch already does — its `profile` is a nearest proxy, not that region's
+ * habit — so it is left to the region switch, exactly as cvPlaybook leaves its own region rows.
+ * ⚠️ `source` and `profile` are the only two fields this lane reads from a playbook. Not `cv`, ever.
+ */
+function countryLetterRowOf(playbook) {
+    const pb = playbook && typeof playbook === 'object' ? playbook : null;
+    if (!pb || pb.source !== 'country') return null;
+    return LETTER_PROFILES[pb.profile] || null;
+}
+
+/**
+ * The country playbook for THIS application — cvPlaybook.playbookFor, defensively: null when the module is
+ * absent (a deploy mid-slice), when it is older than the playbook slice, when it answers null, or when it
+ * throws. A null playbook writes the letter exactly as this lane wrote it before any of this existed.
+ * ⚠️ RESOLVED ONCE PER BUILD and handed to both the style and the block. Two resolutions could disagree, and
+ * a letter written for one country while its designs are ranked for another is the one thing that must not
+ * happen — the same rule the doc lane carries.
+ */
+function letterPlaybookFor({ country, website, conventions, research }) {
+    try {
+        const mod = playbookMod();
+        if (!mod || typeof mod.playbookFor !== 'function') return null;
+        return mod.playbookFor({ country: country || null, website: website || null, conventions, research }) || null;
+    } catch (e) {
+        console.warn('[employerLetter] country playbook unavailable:', e.message);
+        return null;
+    }
+}
+
+/**
+ * A CV habit, in the letter lane. Any line naming one is DROPPED before the model ever sees it: a photo, a
+ * date of birth or nationality, personal details, a page count, a date pattern, a section order, the CV's own
+ * sections. They are all legitimate in a résumé prompt and all defects in a letter — the letter's ABSOLUTE
+ * RULES tell the model so, and this makes sure it is never told the opposite three lines earlier.
+ */
+const CV_HABIT_RE = new RegExp([
+    'photo|photograph|headshot',
+    'date of birth|birth date|\\bdob\\b|marital|civil status|nationality|passport|personal details',
+    '\\bpages?\\b|one[- ]page|two[- ]pages|page count',
+    '\\bcvs?\\b|curriculum vitae|\\br[eé]sum[eé]s?\\b',
+    'section order|\\bheadings?\\b|\\bbullets?\\b|skills block|skills section|projects section',
+    'date format|\\bdates\\b|mm/yyyy|mmm yyyy',
+].join('|'), 'i');
+
+/** cvPlaybook's own closing guard rail — kept, but it is not a rule, so a block of nothing but it is empty. */
+const PLAYBOOK_CLOSER_RE = /habits of the place|never mention this guidance/i;
+const PLAYBOOK_RULES_MAX = 5;
+
+/**
+ * cvPlaybook's letter block, made letter-safe: the header, then the rules that carry no CV habit, capped.
+ * '' when nothing actionable survives — a header with no rule under it is tokens, not guidance.
+ * ⚠️ THIS FILTER IS THE POINT. cvPlaybook is a CV module: its letter variant is written to carry none of this
+ * today, and this lane still refuses to depend on that staying true through somebody else's future edit.
+ */
+function letterSafeBlock(raw) {
+    const lines = String(raw || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    const head = /^===/.test(lines[0]) ? lines[0] : '';
+    const rules = [];
+    let closer = '';
+    let dropped = 0;
+    for (const line of lines) {
+        if (!/^-\s/.test(line)) continue;
+        if (CV_HABIT_RE.test(line)) { dropped++; continue; }
+        // ⚠️ THE GUARD RAIL IS NOT A RULE AND NEVER COUNTS AGAINST THE CAP. "these are habits, not facts about
+        // the candidate" is the line that keeps the whole block honest: a block long enough to be trimmed is
+        // exactly the one that must keep it.
+        if (PLAYBOOK_CLOSER_RE.test(line)) { closer = closer || line; continue; }
+        if (rules.length >= PLAYBOOK_RULES_MAX) continue;
+        if (!rules.includes(line)) rules.push(line);
+    }
+    if (dropped) console.warn(`[employerLetter] ${dropped} CV line(s) dropped from the country letter block — a letter never carries them`);
+    if (!rules.length) return '';
+    return [head, ...rules, closer].filter(Boolean).join('\n');
+}
+
+/** The block for the prompt, or '' — never throws, and never a second resolution of the country. */
+function letterPlaybookBlockFor(playbook, company) {
+    if (!playbook) return '';
+    try {
+        const mod = playbookMod();
+        if (!mod || typeof mod.playbookPromptBlock !== 'function') return '';
+        return letterSafeBlock(mod.playbookPromptBlock(playbook, company, { forLetter: true }));
+    } catch (e) {
+        console.warn('[employerLetter] country letter block unavailable:', e.message);
+        return '';
+    }
+}
+
 /**
  * How THIS employer reads a cover letter: { words, register, notes[] } for the prompt's HOW TO WRITE IT.
  *
- * ⚠️ DETERMINISTIC, NOT A SECOND AI GUESS. The facts come from one grounded research call (conventions) and
- * the region; this maps them onto the three things a letter can honestly change — register, length band,
- * paragraph emphasis. The shape the templates depend on never moves: four paragraphs, no salutation, no
- * sign-off, English (see buildEmployerLetterPrompt). The band never goes below ~230 words: parseLetterOutput
- * refuses < 120 and the placeholder guard < 80, and a strip must not push a short letter under either.
- * Employer type leads (the PO's ask: the employer, not the candidate's seniority, decides the format);
- * the region adds its country's letter habit on top.
+ * ⚠️ DETERMINISTIC, NOT A SECOND AI GUESS. The facts come from one grounded research call (conventions), the
+ * country playbook and the region; this maps them onto the three things a letter can honestly change —
+ * register, length band, paragraph emphasis. The shape the templates depend on never moves: four paragraphs,
+ * no salutation, no sign-off, English (see buildEmployerLetterPrompt). The band never goes below ~230 words:
+ * parseLetterOutput refuses < 120 and the placeholder guard < 80, and a strip must not push a short letter
+ * under either.
+ *
+ * THE ORDER, and it is the same one every other merge in this lane uses — the more specific answer wins:
+ *   1. the EMPLOYER TYPE leads (contract 2: the employer, not the candidate's seniority, decides the format);
+ *   2. the COUNTRY, when the playbook resolved one, fills the register and the band the type left at their
+ *      defaults, and adds its one structure line either way (that line describes what the closing paragraph
+ *      DOES, never how formal it is, so it cannot fight the type's register);
+ *   3. the REGION switch — six broad habits — speaks only when no country did. ⚠️ NEVER BOTH: a Dutch letter
+ *      hearing continental Europe's "formal, no contractions" and the Netherlands' "direct and plain" in one
+ *      prompt is two instructions that disagree, which is worse than the one we had before the country knew.
+ * `playbook` is optional: a caller without one (an older path, an unavailable cvPlaybook) gets exactly the
+ * style this function returned before the country was known.
  */
-function letterStyleFor(conventions, region) {
+function letterStyleFor(conventions, region, playbook) {
     const c = conventions && typeof conventions === 'object' ? conventions : null;
     let words = '300-450';
     let register = LETTER_REGISTER_DEFAULT;
     const notes = [];
+    // Whether the EMPLOYER TYPE spoke — set inside each case, so a type the switch does not answer cannot
+    // silently read as one that did, however the cases are edited later.
+    let byType = false;
     switch (c && c.employerType) {
         case 'public_sector':
+            byType = true;
             words = '350-450';
             register = 'formal and measured — complete sentences, no contractions, no casual phrasing, no sales language.';
             notes.push('Public-sector hiring is criteria-led: in paragraphs 2 and 3 answer the requirements the posting states, in its own terms, one at a time — only with experience the candidate really has.');
             break;
         case 'academia':
+            byType = true;
             words = '350-450';
             register = 'formal and scholarly but readable — no contractions, no sales language.';
             notes.push('Where the candidate\'s material shows research, teaching, publications or grants, those lead paragraphs 2 and 3; never add any it does not contain.');
             break;
         case 'enterprise':
+            byType = true;
             words = '300-400';
             register = 'professional and polished — confident and specific, no hyperbole.';
             notes.push('Large employers screen fast: the strongest real match to the role opens paragraph 2.');
             break;
         case 'sme':
+            byType = true;
             words = '280-380';
             register = 'professional and personable — practical, showing breadth and hands-on ownership.';
             break;
         case 'startup':
+            byType = true;
             words = '230-320';
             register = 'direct and plain-spoken — short sentences, no corporate filler.';
             notes.push('Lead with what the candidate shipped and owned; keep every paragraph short.');
             break;
         case 'agency':
+            byType = true;
             words = '250-350';
             register = 'crisp and outcome-led — client-facing polish, no filler.';
             notes.push('Lead with delivered work and the results the candidate\'s material states.');
             break;
         case 'ngo':
+            byType = true;
             words = '300-400';
             register = 'warm but professional — sincere and concrete, no sales language.';
             notes.push('Connect to the organisation\'s mission only through facts in the research above.');
             break;
         default: break;
     }
-    switch (region) {
+    // THE COUNTRY, when one resolved — register and length only where the employer type left them alone.
+    const row = countryLetterRowOf(playbook);
+    if (row) {
+        if (!byType) { words = row.words; register = row.register; }
+        if (row.structure) notes.push(row.structure);
+    }
+    // …and the region only where it did not: one voice about where this letter is going, never two.
+    if (!row) switch (region) {
         case 'dach':
             notes.push('German-speaking employers expect a formal, structured letter: no contractions, no exclamation marks, no casual asides.');
             break;
@@ -622,13 +883,19 @@ function letterStyleFor(conventions, region) {
  * the posting and the candidate's material are the only facts it gets. No live search tool is attached.
  * ⚠️ Every input here must be in letterFingerprintOf, or be one of the documented exclusions there.
  */
-function buildEmployerLetterPrompt({ company, website, job, material, tailored, researchBlock, conventionsBlock, style, sector, correction }) {
+function buildEmployerLetterPrompt({ company, website, job, material, tailored, researchBlock, conventionsBlock, playbookBlock, style, sector, correction }) {
     const st = style && typeof style === 'object' ? style : letterStyleFor(null, 'generic');
     // The employer's sector (the conventions' sector, else the research's industry), so paragraph 1 opens
     // with the candidate's fit for THAT field in the employer's own vocabulary — the difference between a
     // letter written for this employer and one that could open a letter to anyone. '' = no sector known.
     const sec = typeof sector === 'string' ? sector.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
-    const styleNotes = Array.isArray(st.notes) && st.notes.length ? `\nFOR THIS EMPLOYER:\n${st.notes.map((n) => `- ${n}`).join('\n')}\n` : '';
+    // ⚠️ SAID ONCE. The country block and these notes are split by subject (register, length and the closing
+    // here; the opening and the emphasis there), so they do not collide today — but either table can gain a
+    // line later, and a rule the prompt states twice is a rule the model weighs twice. A note the block
+    // already carries word for word is therefore dropped rather than repeated.
+    const blockPlain = plainOf(playbookBlock);
+    const notes = (Array.isArray(st.notes) ? st.notes : []).filter((n) => !(blockPlain && blockPlain.includes(plainOf(n))));
+    const styleNotes = notes.length ? `\nFOR THIS EMPLOYER:\n${notes.map((n) => `- ${n}`).join('\n')}\n` : '';
     const posting = !!(job.title.trim() || job.description.trim());
     const tailoredJson = tailored ? (() => {
         // Contact details are the template's business, not the model's.
@@ -663,7 +930,7 @@ ${material.uploadText ? `--- Details parsed from their uploaded resume ---\n${ma
 Company: ${company}
 ${website ? `Website: ${website} (identifies the company only — it has not been opened)\n` : ''}
 ${researchBlock || noResearch}
-${conventionsBlock ? `\n${conventionsBlock}\n` : ''}
+${conventionsBlock ? `\n${conventionsBlock}\n` : ''}${playbookBlock ? `\n${playbookBlock}\n` : ''}
 ${roleBlock}
 
 === HOW TO WRITE IT ===
@@ -688,7 +955,7 @@ BOLD with **double asterisks**: ${company}'s name, the candidate's role titles, 
 - NO salutation ("Dear ...") and NO sign-off ("Sincerely", "Best regards", the candidate's name) inside cover_letter — the letter template adds both.
 - NO headings, bullet points or numbered lists inside cover_letter.
 - Internationally safe: never mention age, date of birth, marital status, religion, nationality, gender, a photo, family details or salary figures.
-- Hiring conventions (above) shape register, length, structure and emphasis ONLY — they never add a fact about the candidate or ${company}. CV conventions about photos, date of birth or personal details belong to the resume: never mention them in this letter.
+- Hiring conventions and the country's letter conventions (above) shape register, length, structure and emphasis ONLY — they never add a fact about the candidate or ${company}. CV conventions about photos, date of birth, personal details or how many pages a resume runs to belong to the resume: never mention them in this letter, and never write a date line, an address block or a signature into it.
 
 === OUTPUT — only this JSON object ===
 {
@@ -1376,6 +1643,10 @@ async function buildEmployerLetter(req, res) {
         }
         const conventions = conventionsOf(facts);
         const region = letterRegionFor(research, designFit, conventions, { country, website: site });
+        // How a letter READS where this application is going — resolved ONCE, from the same three inputs the
+        // region above is resolved from, and handed to the style and the block together (see letterPlaybookFor).
+        // Deterministic and local: no AI call, no read, nothing billable, and nothing in the fingerprint.
+        const playbook = letterPlaybookFor({ country, website: site, conventions, research: facts });
 
         const [tailored, sender] = await Promise.all([
             tailoredResumeFor(userId, { company, employerId, job, docJobUrl }, req),
@@ -1389,7 +1660,8 @@ async function buildEmployerLetter(req, res) {
             company, website: site, job, material, tailored,
             researchBlock: research.researchPromptBlock(facts, company, { forLetter: true }),
             conventionsBlock: conventionsBlockFor(research, conventions, company),
-            style: letterStyleFor(conventions, region),
+            playbookBlock: letterPlaybookBlockFor(playbook, company),
+            style: letterStyleFor(conventions, region, playbook),
             sector: (conventions && typeof conventions.sector === 'string' && conventions.sector)
                 || (facts && typeof facts.industry === 'string' && facts.industry) || '',
         };
@@ -1740,4 +2012,5 @@ module.exports = {
     // exported for tests only
     buildEmployerLetterPrompt, parseLetterOutput, findLetterPlaceholders, stripLetterPlaceholders, cleanPosition,
     passWouldCoverLetter, letterFingerprintOf, jobFieldsOf, uploadContextOf, letterStyleFor, usageAndPassFor,
+    letterPlaybookFor, letterPlaybookBlockFor, countryLetterRowOf, LETTER_PROFILES,
 };

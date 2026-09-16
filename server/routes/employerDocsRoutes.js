@@ -81,6 +81,22 @@ async function staleFor(userId, kind, doc, b, req) {
       website: strOrUndef(b.website),
     };
   try {
+    // ⚠️ THE COUNTRY IS NOT IN THE RESUME FINGERPRINT, AND MUST NOT BE — hashing it would turn every stored
+    // document stale and re-bill its owner. So the row's own marker answers what the hash cannot: an American
+    // résumé asked about from a German chip re-hashes to a PERFECT MATCH and would report fresh, and `stale` is
+    // the only thing that draws the Refresh pill (the Tailor button is drawn only when the chip has no document
+    // at all). The build already refuses to serve that row as a free hit; without this the user could neither
+    // see the right résumé nor pay to get it. Cheap, synchronous, hashes nothing — and never fatal: a throw here
+    // must not cost the fingerprint compare underneath it.
+    if (kind === 'resume') {
+      try {
+        const elsewhere = require('../controllers/resumeBuilderController').docWrittenElsewhere;
+        if (typeof elsewhere === 'function'
+          && elsewhere(doc, { employer: strOrUndef(b.employer), country: strOrUndef(b.country), job })) return true;
+      } catch (e) {
+        if (e && e.code !== 'MODULE_NOT_FOUND') console.warn('[employerDocs] written-elsewhere check failed:', e.message);
+      }
+    }
     let fp;
     if (kind === 'resume') {
       const fn = require('../controllers/resumeBuilderController').currentResumeFingerprint;

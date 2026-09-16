@@ -252,7 +252,11 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
 // research.industry: what the researcher names as the sector (null = it names none — the sameness guard then has
 // nothing to phrase a title for, S28).
 research.industry = 'E-commerce and cloud computing';
-stub('ai-employer-researcher.js', { researchEmployer: async (url) => { research.calls++; return { employer_name: 'Amazon', industry: research.industry, company_size: '10,001+ employees', brand_color: '#ff9900', font_name: 'Amazon Ember', technologies: [{ name: 'AWS' }], clients: [], recent_activity: [], key_contacts: [{ name: 'Jane' }] }; } });
+// research.size: the free text the researcher gives for the headcount. ⚠️ It is HALF of the employer-size reading
+// (cvPlaybook.tierFor): a 'giant' is only ever an employer whose conventions DECLARE employerType 'enterprise' and
+// whose size says household name or ≥ 20,000 people — the default below is a large employer, never a giant (S29c).
+research.size = '10,001+ employees';
+stub('ai-employer-researcher.js', { researchEmployer: async (url) => { research.calls++; return { employer_name: 'Amazon', industry: research.industry, company_size: research.size, brand_color: '#ff9900', font_name: 'Amazon Ember', technologies: [{ name: 'AWS' }], clients: [], recent_activity: [], key_contacts: [{ name: 'Jane' }] }; } });
 stub('server/services/resumeScorer.js', {
   narrativeFor: async () => ({ text: BASE_TEXT, source: 'builder' }),
   BASE_SNAPSHOT_FP: 'base-resume-before-tailoring:v1',
@@ -1280,6 +1284,305 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
       && (src28.match(/await callGemini\(prompt\);/g) || []).length === 1 && (src28.match(/await callGemini\(/g) || []).length === 3
       && (src28.match(/await correctDocDraft\(/g) || []).length === 1 && /Date\.now\(\) - startedAt < DOC_LANE_CORRECTION_BUDGET_MS/.test(src28),
       { passes: (src28.match(/await correctDocDraft\(/g) || []).length, calls: (src28.match(/await callGemini\(/g) || []).length });
+  }
+
+  console.log('── S29 · ⚠️ THE COUNTRY WRITES THE DOCUMENT: one playbook for the prompt, the page and the design (2026-09-16) ──');
+  {
+    // The owner's ask, in his words: "for India all the projects should be mentioned along with the experience …
+    // research for all the countries and put it in the prompts dynamically based on the country, and if it is a
+    // major/giant company then get more details". Until now `country` reached the prompt as a LABEL ("Applying in:
+    // India") and nothing else, and when the research found no conventions the prompt carried no formatting rule at
+    // all — so every country on earth got the Anglo habits the prompt never names out loud. cvPlaybook answers it for
+    // all ~200 of them; docPlaybookOf merges that answer UNDER this employer's own researched conventions and hands
+    // the one object to the prompt, the personal-details backstop and the design ranking.
+    // ⚠️ AND IT IS FREE. Every scenario below asserts its own AI call and charge, and (e) proves the new wording never
+    // reaches the fingerprint — no stored document turns stale, nobody is re-billed for a better prompt.
+    ent.consumeVia = 'plan'; ent.gate = { allowed: true, via: 'plan', remaining: 5 }; ent.gateSeq = []; conv.answer = null;
+    // The country block alone (the prompt also talks about photos in the DESIGN brief, which is not a writing rule).
+    const blockOf = (p) => { const i = p.indexOf('=== HOW A CV IS WRITTEN'); const j = p.indexOf('=== WRITTEN FOR'); return i < 0 ? '' : p.slice(i, j > i ? j : i + 3000); };
+
+    // (a) INDIA, with no researched conventions at all — the exact hole the playbook exists to fill.
+    s0 = snapshot();
+    const bIN = await call(RB.generateAI, buildBody({ country: 'India', job: { company: 'Infosys', website: 'https://infosys.com' } }));
+    const dIN = db.docs.find((d) => d.id === bIN.body.docId);
+    const pIN = ai.prompts[ai.prompts.length - 1];
+    ok('200 stored, ONE AI call, ONE charge — knowing the country costs nothing',
+      bIN.statusCode === 200 && !!dIN && ai.calls - s0.ai === 1 && ent.consumed.length - s0.consumed === 1,
+      { status: bIN.statusCode, ai: ai.calls - s0.ai, charged: ent.consumed.length - s0.consumed });
+    ok('⚠️ the research found no conventions, so there is no FORMATTING block — and the COUNTRY block carries the rules instead',
+      !/=== FORMATTING FOR Infosys/.test(pIN) && /=== HOW A CV IS WRITTEN IN INDIA ===/.test(pIN), pIN.slice(pIN.indexOf('=== HOW A CV'), pIN.indexOf('=== HOW A CV') + 240));
+    ok('⚠️ THE ASK ITSELF: an Indian résumé lists EVERY project — one entry each, with the client it ran for, the role and the stack',
+      /list EVERY project the material contains/.test(pIN) && /none merged, none summarised away, none left out/.test(pIN)
+      && /Nine projects in the material means nine entries/.test(pIN) && /the technology stack the material states for it/.test(pIN), blockOf(pIN).slice(0, 700));
+    ok('…and the SCHEMA and the ZERO-MISS rule widen to honour it instead of fighting it',
+      /"title": "the project's own name"/.test(pIN) && /"about": "1-2 sentences: what it is, and the technology stack the material states for it"/.test(pIN)
+      && /nine projects in the material means nine entries in `projects`/.test(pIN) && /Two PROJECTS are never merged into one/.test(pIN)
+      && /ONE entry per project in the material, in the order of importance the material gives them/.test(pIN),
+      pIN.slice(pIN.indexOf('"projects": ['), pIN.indexOf('"projects": [') + 500));
+    ok('…with the depth, the dates and the order India reads: full experience entries, MMM YYYY, skills above experience',
+      /Experience: full depth\./.test(pIN) && /Recent roles carry 4-8 highlights, older ones 3-5/.test(pIN)
+      && /write every start and end date as MMM YYYY/.test(pIN) && /- Dates: MMM YYYY, as the rules above say,/.test(pIN)
+      && /Section order read here: contact → summary → skills → experience → projects → education/.test(pIN)
+      && /categorised technical-skills block sits ABOVE experience/.test(pIN), blockOf(pIN));
+    const photoLines = blockOf(pIN).split('\n').filter((l) => /photo/i.test(l));
+    ok('⚠️ NOTHING IS INVENTED: the country block states no fact, asks for no photo, and never names the employer in the résumé',
+      photoLines.length === 1 && /NEVER add a fact/.test(photoLines[0])
+      && /They NEVER add a fact — no photo, no date of birth, no nationality, no project, no client, no technology, no date and no number/.test(pIN)
+      && /Never mention Infosys, this guidance or these conventions anywhere in the resume\./.test(pIN), photoLines);
+    ok('⚠️ "up to two pages is normal" is ROOM, not an order: the stored mode is still the model\'s own reading of the material',
+      dIN && dIN.design && dIN.design.mode === 'onepage'
+      && /"mode": "onepage" where one page is the norm or the real material is concise/.test(pIN), dIN && dIN.design && dIN.design.mode);
+
+    // (b) GERMANY: the same lane, a different document — the tabular Lebenslauf, not an Indian project inventory.
+    s0 = snapshot();
+    const bDE = await call(RB.generateAI, buildBody({ country: 'Germany', job: { company: 'Siemens', website: 'https://siemens.de' } }));
+    const pDE = ai.prompts[ai.prompts.length - 1];
+    ok('⚠️ a German build is written as a LEBENSLAUF: gapless MM/YYYY stations, duties under each role, personal details kept, read as a table',
+      bDE.statusCode === 200 && /=== HOW A CV IS WRITTEN IN GERMANY ===/.test(pDE) && /Antichronological and GAPLESS/.test(pDE)
+      && /write every start and end date as MM\/YYYY/.test(pDE) && /Duties carry the entry/.test(pDE)
+      && /Personal details: employers here expect them/.test(pDE) && /Tabular CV:/.test(pDE), blockOf(pDE));
+    ok('…and the schema follows the same answer: nationality and date of birth stay the material\'s to state',
+      /"nationality": "ONLY if the material states it, else empty string"/.test(pDE) && !/always an empty string for this employer/.test(pDE),
+      pDE.slice(pDE.indexOf('"nationality"'), pDE.indexOf('"nationality"') + 200));
+    ok('…and India\'s rule does NOT travel: a German CV keeps its projects inside the role that ran them',
+      !/list EVERY project the material contains/.test(pDE) && /name the projects that matter inside the experience entry that ran them/.test(pDE)
+      && !/nine entries in `projects`/.test(pDE), blockOf(pDE));
+    ok('ONE AI call and ONE charge for that one too', ai.calls - s0.ai === 1 && ent.consumed.length - s0.consumed === 1, { ai: ai.calls - s0.ai, charged: ent.consumed.length - s0.consumed });
+
+    // (b2) THE UNITED STATES, still with no researched conventions: the two decisions the prompt does NOT own.
+    // ⚠️ A one-page country wrote one page of content; a document stored as 'a4' would be a two-page shell around it.
+    // ⚠️ And 'avoid' has to be enforced in CODE — a prompt is advice, and the model here answers a date of birth anyway.
+    s0 = snapshot();
+    ai.queue.push(() => JSON.stringify(RESUME({
+      personal_info: { ...RESUME().personal_info, nationality: 'American', date_of_birth: '1988-04-02' },
+      design: { families: { exec_pro: { score: 95, reason: 'Senior look' } }, mode: 'a4', tone: 'Executive', headline: 'Executive Professional suits a senior career' },
+    })));
+    const bUS = await call(RB.generateAI, buildBody({ country: 'United States', job: { company: 'Acme US', website: 'https://acme-us-test.com' } }));
+    const dUS = db.docs.find((d) => d.id === bUS.body.docId);
+    const pUS = ai.prompts[ai.prompts.length - 1];
+    ok('⚠️ a US build with no research is a ONE-PAGE résumé with no personal details — from the country alone',
+      bUS.statusCode === 200 && !/=== FORMATTING FOR Acme US/.test(pUS) && /=== HOW A CV IS WRITTEN IN UNITED STATES ===/.test(pUS)
+      && /Length: ONE page\./.test(pUS) && /Personal details: leave the date of birth and nationality empty/.test(pUS)
+      && /"nationality": "always an empty string for this employer"/.test(pUS)
+      && /"mode": "onepage" — one page is the norm where this application is going\./.test(pUS), blockOf(pUS));
+    ok('⚠️ …and both reach the DOCUMENT, not just the prompt: stored as onepage (the model said a4), the date of birth blanked in code',
+      dUS && dUS.design && dUS.design.mode === 'onepage' && dUS.payload.personal_info.date_of_birth === '' && dUS.payload.personal_info.nationality === '',
+      dUS && { mode: dUS.design && dUS.design.mode, pi: dUS.payload.personal_info });
+    ok('one AI call, one charge for it', ai.calls - s0.ai === 1 && ent.consumed.length - s0.consumed === 1, { ai: ai.calls - s0.ai, charged: ent.consumed.length - s0.consumed });
+
+    // (c) THE EMPLOYER'S SIZE, read once (cvPlaybook.tierFor): a giant is parsed before it is read, an SME is read by
+    // the person the candidate would report to. ⚠️ 'giant' is never guessed from headcount alone — the conventions must
+    // DECLARE an enterprise and the size must say household name or ≥ 20,000 people.
+    conv.answer = { hq_country: 'India', role_country: 'India', employer_type: 'enterprise', sector: 'IT services' };
+    research.size = 'A Fortune 500 multinational with 300,000 employees worldwide';
+    s0 = snapshot();
+    const bBig = await call(RB.generateAI, buildBody({ country: 'India', job: { company: 'Giant Corp', website: 'https://giant-corp-test.com' } }));
+    const pBig = ai.prompts[ai.prompts.length - 1];
+    conv.answer = { hq_country: 'India', role_country: 'India', employer_type: 'sme', sector: 'IT services' };
+    research.size = 'A 60-person consultancy';
+    const bSme = await call(RB.generateAI, buildBody({ country: 'India', job: { company: 'Kleinwerk', website: 'https://kleinwerk-test.com' } }));
+    const pSme = ai.prompts[ai.prompts.length - 1];
+    ok('⚠️ a GIANT employer earns the deeper rules — the figure leads the bullet, one plain column for the parser, scope and scale first',
+      bBig.statusCode === 200 && /Numbers: lead the bullet with the figure the material already states/.test(pBig)
+      && /Plain single column for screening software/.test(pBig) && /Emphasis \(a large employer\)/.test(pBig), blockOf(pBig));
+    ok('…and an SME does NOT: no parser rules, and the emphasis is breadth and hands-on ownership',
+      bSme.statusCode === 200 && !/Plain single column for screening software/.test(pSme) && !/Numbers: lead the bullet with the figure/.test(pSme)
+      && /Numbers: keep every figure the material states and put it early/.test(pSme) && /Emphasis \(a smaller employer\)/.test(pSme), blockOf(pSme));
+    ok('⚠️ and the size never overrides the country: both are still Indian résumés, every project and all',
+      /=== HOW A CV IS WRITTEN IN INDIA ===/.test(pBig) && /=== HOW A CV IS WRITTEN IN INDIA ===/.test(pSme)
+      && /list EVERY project the material contains/.test(pBig) && /list EVERY project the material contains/.test(pSme),
+      [blockOf(pBig).slice(0, 120), blockOf(pSme).slice(0, 120)]);
+    ok('two builds, two AI calls, two charges — the size reading adds neither', ai.calls - s0.ai === 2 && ent.consumed.length - s0.consumed === 2, { ai: ai.calls - s0.ai, charged: ent.consumed.length - s0.consumed });
+    research.size = '10,001+ employees';
+
+    // (d) A FACT RESEARCHED ABOUT THIS EMPLOYER BEATS THE COUNTRY — and is said exactly once.
+    conv.answer = {
+      hq_country: 'India', role_country: 'India', employer_type: 'startup', sector: 'Fintech',
+      cv: { length: 'one page', personal_details: 'avoid', date_format: 'MM.YYYY' },
+    };
+    s0 = snapshot();
+    ai.queue.push(() => JSON.stringify(RESUME({
+      personal_info: { ...RESUME().personal_info, nationality: 'Indian', date_of_birth: '1990-01-01' },
+      design: { families: { exec_pro: { score: 95, reason: 'Senior look' } }, mode: 'a4', tone: 'Executive', headline: 'Executive Professional suits a senior career' },
+    })));
+    const bR = await call(RB.generateAI, buildBody({ country: 'India', job: { company: 'Zeta Pay', website: 'https://zeta-pay-test.com' } }));
+    const dR = db.docs.find((d) => d.id === bR.body.docId);
+    const pR = ai.prompts[ai.prompts.length - 1];
+    ok('⚠️ one page, MM.YYYY and no personal details — even though India says two pages, MMM YYYY and says nothing about them',
+      /=== FORMATTING FOR Zeta Pay \(from its hiring conventions\) ===/.test(pR) && /at most 3 highlights/.test(pR) && /as MM\.YYYY/.test(pR)
+      && /leave personal_info\.date_of_birth and personal_info\.nationality as ""/.test(pR)
+      && !/up to two pages is normal here/.test(pR) && !/write every start and end date as MMM YYYY/.test(pR),
+      pR.slice(pR.indexOf('=== FORMATTING FOR'), pR.indexOf('=== FORMATTING FOR') + 700));
+    ok('…and each rule is stated ONCE: the country block stays silent on every value the research supplied, and speaks on the rest',
+      !/\n- Length: /.test(blockOf(pR)) && !/\n- Dates: write every start and end date/.test(blockOf(pR)) && !/\n- Personal details: /.test(blockOf(pR))
+      && /list EVERY project the material contains/.test(blockOf(pR)), blockOf(pR));
+    ok('⚠️ the merged answer drives the CODE as well as the prose: the page mode is onepage (the model said a4) and the details are blanked',
+      dR && dR.design && dR.design.mode === 'onepage' && dR.payload.personal_info.date_of_birth === '' && dR.payload.personal_info.nationality === '',
+      dR && { mode: dR.design && dR.design.mode, pi: dR.payload.personal_info });
+    ok('one AI call, one charge', ai.calls - s0.ai === 1 && ent.consumed.length - s0.consumed === 1, { ai: ai.calls - s0.ai, charged: ent.consumed.length - s0.consumed });
+    conv.answer = null;
+
+    // (e) ⚠️ THE MONEY QUESTION. The prompt was rewritten for every country on earth. Not one stored document may
+    // become stale for it: the fingerprint hashes the base text, the four job fields and the research revision —
+    // never a prompt string, never the country. So a REBUILD of the same job for the same country is still free.
+    s0 = snapshot();
+    const bSame = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-29e1', country: 'India', job: { company: 'Infosys', website: 'https://infosys.com' } }));
+    ok('⚠️ the same job, the same country: a FREE hit on the SAME document — the wording is not a fingerprint input',
+      bSame.body.cached === true && bSame.body.docId === bIN.body.docId && JSON.stringify(snapshot()) === JSON.stringify(s0), { body: bSame.body, before: s0, after: snapshot() });
+    const src29 = fsSync.readFileSync(path.join(ROOT, 'server/controllers/resumeBuilderController.js'), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const fp29 = src29.slice(src29.indexOf('async function generationFingerprint'), src29.indexOf('function docResearchRev'));
+    ok('⚠️ …and in the source: the fingerprint hashes the base text, the job and the research revision — no prompt, no country, no playbook',
+      /employerDocs\.fingerprint\(\{/.test(fp29) && /baseText: \[baseText, uploaded\]/.test(fp29) && /researchRev,/.test(fp29)
+      && !/playbook|docPlaybookOf|country/.test(fp29), fp29.slice(-320));
+    ok('⚠️ ONE resolution per build: docPlaybookOf is called once and the SAME object reaches the prompt, the backstop and the design ranking',
+      (src29.match(/const plan = docPlaybookOf\(\{ country, website: researchSite \|\| job\.website, conventions, research \}\);/g) || []).length === 1
+      && /conventions, playbook: plan,$/m.test(src29) && /applyPersonalDetailsConvention\(resumeData, plan\.conv\);/.test(src29)
+      && /brand, playbook: plan \}\);/.test(src29) && !/const mode = conv && conv\.cv\.length === 'one_page'/.test(src29),
+      { resolved: (src29.match(/docPlaybookOf\(\{/g) || []).length });
+
+    // (f) ⚠️ AND THE OTHER HALF OF THE SAME MONEY QUESTION: the country is not hashed, so it must not be able to
+    // hand back the WRONG COUNTRY'S DOCUMENT for free. (a) built Infosys while the chip said India — one entry per
+    // project, MMM YYYY, skills above experience. Correct the chip to Germany and every input the fingerprint sees
+    // is identical, so the row is found; before the marker it was RETURNED, labelled fresh, with no Refresh to
+    // offer and no way to ever get a Lebenslauf. Now the document records the country it was written for
+    // (design.writtenFor) and is not a free hit for another one: a MISS, which is a path this lane already has.
+    s0 = snapshot();
+    const dInfosys = db.docs.find((d) => d.id === bIN.body.docId);
+    ok('the India document records the country it was written for, and nothing else about the build changed',
+      dInfosys && dInfosys.design && dInfosys.design.writtenFor === 'in' && dInfosys.design.mode === 'onepage',
+      dInfosys && dInfosys.design && { writtenFor: dInfosys.design.writtenFor, mode: dInfosys.design.mode });
+    // ⚠️ THE APP CONFIRMED IT AS FREE (contract C2, expectVia 'cache'): the refusal must come BEFORE every gate —
+    // 409 cache_miss, nothing bound, nothing charged, nothing stored — and Home asks on its sheet.
+    const bWrong = await call(RB.generateAI, buildBody({
+      clientBuildId: 'cb-29f', country: 'Germany', expectVia: 'cache', job: { company: 'Infosys', website: 'https://infosys.com' },
+    }));
+    ok('⚠️ the SAME job under a DIFFERENT country is NOT the India document served free — 409 cache_miss, nothing charged',
+      bWrong.statusCode === 409 && bWrong.body.reason === 'cache_miss' && !bWrong.body.docId
+      && JSON.stringify(snapshot()) === JSON.stringify(s0), { body: bWrong.body, before: s0, after: snapshot() });
+    // Answered on the sheet, the build runs for real: a GERMAN document, and the India one is replaced on its own
+    // row (the identity is the employer, not the country) — one document per employer, as Home has always held.
+    s0 = snapshot();
+    const bDE2 = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-29f2', country: 'Germany', job: { company: 'Infosys', website: 'https://infosys.com' } }));
+    const pDE2 = ai.prompts[ai.prompts.length - 1];
+    const dDE2 = db.docs.find((d) => d.id === bDE2.body.docId);
+    ok('…and the rebuild the user agreed to writes the GERMAN document, on the same row, for one charge',
+      bDE2.statusCode === 200 && !bDE2.body.cached && bDE2.body.docId === bIN.body.docId
+      && /=== HOW A CV IS WRITTEN IN GERMANY ===/.test(pDE2) && !/list EVERY project the material contains/.test(pDE2)
+      && dDE2 && dDE2.design.writtenFor === 'de' && db.docs.length === s0.docs
+      && ai.calls - s0.ai === 1 && ent.consumed.length - s0.consumed === 1,
+      { docId: bDE2.body.docId, writtenFor: dDE2 && dDE2.design.writtenFor, ai: ai.calls - s0.ai, charged: ent.consumed.length - s0.consumed });
+    ok('…and THAT one is now the free hit for Germany', (await call(RB.generateAI, buildBody({ clientBuildId: 'cb-29f3', country: 'Germany', job: { company: 'Infosys', website: 'https://infosys.com' } }))).body.cached === true);
+    // ⚠️ NOBODY IS RE-BILLED FOR THE MARKER. Every document stored before it exists has none, and a document with
+    // none is served for ANY country — exactly as it was yesterday. Proved on the row itself.
+    s0 = snapshot();
+    delete dDE2.design.writtenFor;
+    const bOld = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-29f4', country: 'United States', expectVia: 'cache', job: { company: 'Infosys', website: 'https://infosys.com' } }));
+    ok('⚠️ a document from BEFORE the marker is still a free hit for every country — no user is re-billed for this',
+      bOld.statusCode === 200 && bOld.body.cached === true && bOld.body.docId === bDE2.body.docId
+      && JSON.stringify(snapshot()) === JSON.stringify(s0), { body: bOld.body, before: s0, after: snapshot() });
+    // And a build that resolves NO country cannot tell whether the document suits it — "cannot tell" is never a
+    // reason to charge someone, so it is served.
+    dDE2.design.writtenFor = 'de';
+    const bBlank = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-29f5', country: '', expectVia: 'cache', job: { company: 'Infosys', website: 'https://infosys.com' } }));
+    ok('…and a build that names no country at all is served it too, rather than charged on an unanswerable question',
+      bBlank.statusCode === 200 && bBlank.body.cached === true && JSON.stringify(snapshot()) === JSON.stringify(s0), { body: bBlank.body, after: snapshot() });
+    ok('⚠️ and the gate answers the SAME question, so it cannot promise a free document the build would refuse',
+      (await call(RB.generationGate, { employer: 'Infosys', saveTo: 'employer_doc', country: 'Germany', job: { website: 'https://infosys.com' } })).body.via === 'cache'
+      && (await call(RB.generationGate, { employer: 'Infosys', saveTo: 'employer_doc', country: 'India', job: { website: 'https://infosys.com' } })).body.via !== 'cache'
+      && (await call(RB.generationGate, { employer: 'Infosys', saveTo: 'employer_doc', job: { website: 'https://infosys.com' } })).body.via === 'cache');
+    // ⚠️ AND THE SCREEN HAS TO BE ABLE TO SAY SO, or the refusal is the whole of what the user ever gets. Home
+    // draws its Refresh pill on `stale` and its Tailor button only on a chip with NO document, and the Add door
+    // stands down once one is saved — so a document that is no longer served for this chip and is still labelled
+    // fresh is a résumé the user can neither use nor replace. The fingerprint cannot light that pill: it is
+    // IDENTICAL for both countries, which is exactly why nobody is re-billed. So /api/employer-docs/current asks
+    // the MARKER beside it (docWrittenElsewhere), and this is that answer — the build's own, not a second copy.
+    const dNow = db.docs.find((d) => d.id === bDE2.body.docId);
+    const askedIn = (country) => ({ employer: 'Infosys', country, job: { website: 'https://infosys.com' } });
+    const fpNow = await RB.currentResumeFingerprint(UID, { job: { company: 'Infosys', ...dNow.job_input }, env: 'Production' });
+    ok('⚠️ the fingerprint alone calls the GERMAN document fresh for an India chip — identical, because the country is not hashed',
+      typeof fpNow === 'string' && fpNow !== '' && fpNow === dNow.input_fingerprint, { fp: fpNow, stored: dNow.input_fingerprint });
+    ok('⚠️ …so the label asks the marker: written for Germany, read for India → written ELSEWHERE (stale), and the row\'s fingerprint is untouched by the question',
+      RB.docWrittenElsewhere(dNow, askedIn('India')) === true && dNow.input_fingerprint === fpNow,
+      { writtenFor: dNow.design && dNow.design.writtenFor, fp: dNow.input_fingerprint });
+    ok('…and never stale for the country it WAS written for, nor for a chip that names none (the same "cannot tell" the cache keeps free)',
+      RB.docWrittenElsewhere(dNow, askedIn('Germany')) === false && RB.docWrittenElsewhere(dNow, askedIn('')) === false
+      && RB.docWrittenElsewhere(dNow, { employer: 'Infosys', job: { website: 'https://infosys.com' } }) === false);
+    ok('⚠️ …and a row from BEFORE the marker is never labelled stale by it — a pill on a document the build still serves free is a paid rebuild nobody needed',
+      RB.docWrittenElsewhere({ ...dNow, design: { ...dNow.design, writtenFor: null } }, askedIn('India')) === false
+      && RB.docWrittenElsewhere({ ...dNow, design: null }, askedIn('India')) === false
+      && RB.docWrittenElsewhere(null, askedIn('India')) === false);
+    // ⚠️ THE INVARIANT BETWEEN THEM: the label and the build answer the SAME question for the same chip. A pill
+    // that nags where the gate still says 'cache' charges for nothing; a chip the gate refuses and the pill
+    // leaves alone is the wrong-country document with no way out. Asked over the three chips that matter.
+    const agree = [];
+    for (const country of ['Germany', 'India', '']) {
+      const via = (await call(RB.generationGate, { employer: 'Infosys', saveTo: 'employer_doc', country, job: { website: 'https://infosys.com' } })).body.via;
+      agree.push({ country, free: via === 'cache', stale: RB.docWrittenElsewhere(dNow, askedIn(country)) });
+    }
+    ok('⚠️ the LABEL and the BUILD never disagree: every chip the gate still serves free is one the pill leaves alone, and the one it refuses is the one the pill offers',
+      agree.every((a) => a.free === !a.stale) && agree.filter((a) => a.stale).length === 1, agree);
+    // ⚠️ IN THE SOURCE TOO: the country is a test applied at EVERY place a stored document is handed over free —
+    // the cache step, the race read under the usage lock, and the gate that promises the hit — and at NONE of the
+    // places money is hashed. A reader added later that skips the test is the wrong-country document back again.
+    ok('⚠️ …and none of it is hashed: the country tests the cache READ, never the fingerprint',
+      !/country|writtenFor|placeKey/.test(fp29)
+      && /const placeKey = docPlaceKeyOf\(\{ country, website: researchSite \|\| job\.website \}\);/.test(src29)
+      && /const hit = await employerDocs\.get\(userId, 'resume', company, cacheFp, env\);\s*\n\s*if \(hit && hit\.id && hit\.payload && hit\.payload\.personal_info && docServesPlace\(hit, placeKey\)\)/.test(src29)
+      && /const landed = await employerDocs\.get\(userId, 'resume', company, cacheFp, env\);\s*\n\s*if \(landed && landed\.id && landed\.payload && landed\.payload\.personal_info && docServesPlace\(landed, placeKey\)\)/.test(src29)
+      && /if \(hit && hit\.payload && hit\.payload\.personal_info && docServesPlace\(hit, placeKey\)\) return answer\(true, 'cache'/.test(src29)
+      // …and the label is that same test EXPORTED, not a second reading of the marker living in the routes.
+      && /function docWrittenElsewhere\([\s\S]{0,500}?return !docServesPlace\(doc, docPlaceKeyOf\(/.test(src29)
+      && /^\s*docWrittenElsewhere,$/m.test(src29),
+      { fp: fp29.slice(-200) });
+
+    // (g) ⚠️ TWO BLOCKS, NEVER TWO ANSWERS. conventionsPromptBlock does not only LIST what the research found —
+    // under "HOW TO USE THESE CONVENTIONS" it turns personal details, length, dates and CV format into orders. Fed
+    // the raw conventions it gave them for the employer's HOME country while the country block gave the opposite
+    // ones for the country being applied to: a US-headquartered employer hiring in Germany was told "leave date of
+    // birth and nationality out" AND "keep the date of birth and nationality exactly as the material states them",
+    // "fit one page" AND "up to two pages is normal here", in one prompt. hqCountry alone triggers it, which makes
+    // every US multinational posting a European role the ordinary case.
+    conv.answer = {
+      hq_country: 'United States', employer_type: 'enterprise', sector: 'Cloud infrastructure',
+      cv: { length: 'one page', personal_details: 'avoid', photo: 'avoid', date_format: 'MM/YYYY', format: 'ats_plain' },
+    };
+    s0 = snapshot();
+    // A draft that ANSWERS a date of birth and a nationality, so "the code did not blank them" is a real answer
+    // and not the fixture's own empty strings.
+    const withPersonal = () => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, nationality: 'Indian', date_of_birth: '1990-01-01' } }));
+    ai.queue.push(withPersonal);
+    const bX = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-29g', country: 'Germany', job: { company: 'Cloudspan', website: 'https://cloudspan-test.com' } }));
+    const pX = ai.prompts[ai.prompts.length - 1];
+    const facts = (p) => { const i = p.indexOf('=== HOW Cloudspan HIRES'); return i < 0 ? '' : p.slice(i, p.indexOf('=== END OF HIRING CONVENTIONS ===') + 33); };
+    ok('⚠️ a US-headquartered employer hiring in GERMANY: not one rule in the prompt contradicts another',
+      bX.statusCode === 200
+      && !/leave date of birth, nationality and marital status out/.test(pX) && /Personal details: employers here expect them/.test(pX)
+      && !/Length: fit one page by keeping the most relevant roles/.test(pX) && /up to two pages is normal here/.test(pX)
+      && !/Plain ATS CV: standard section headings/.test(pX) && /Tabular CV: each entry is crisp and factual/.test(pX),
+      [facts(pX).slice(0, 400), blockOf(pX).split('\n').filter((l) => /^- (Length|Personal details|Tabular|Plain)/.test(l))]);
+    const dX = db.docs.find((d) => d.id === bX.body.docId);
+    ok('…and the code backstop agrees with the prompt it enforces: Germany expects them, so the draft\'s are KEPT',
+      dX && dX.payload.personal_info.date_of_birth === '1990-01-01' && dX.payload.personal_info.nationality === 'Indian'
+      && !/always an empty string for this employer/.test(pX) && /"nationality": "ONLY if the material states it, else empty string"/.test(pX),
+      dX && dX.payload.personal_info);
+    ok('⚠️ the FACTS the research found are untouched — only the cv rules it researched for ANOTHER country are dropped',
+      /Headquarters: United States/.test(pX) && /Employer type: large enterprise/.test(pX) && /Sector: Cloud infrastructure/.test(pX)
+      && !/CV conventions:/.test(facts(pX)), facts(pX));
+    ok('one AI call, one charge for it', ai.calls - s0.ai === 1 && ent.consumed.length - s0.consumed === 1, { ai: ai.calls - s0.ai, charged: ent.consumed.length - s0.consumed });
+    // The SAME research, for the country it was researched for: every rule stands, said by FORMATTING, and the
+    // country block stays silent on all three. The demotion must never cost a local employer its own conventions.
+    s0 = snapshot();
+    ai.queue.push(withPersonal);
+    const bLocal = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-29g2', country: 'United States', job: { company: 'Cloudspan US', website: 'https://cloudspan-us-test.com' } }));
+    const pLocal = ai.prompts[ai.prompts.length - 1];
+    ok('⚠️ …while the same employer hiring at HOME keeps every researched rule, stated once, by FORMATTING',
+      bLocal.statusCode === 200 && /leave date of birth, nationality and marital status out/.test(pLocal)
+      && /Length: ONE page of content/.test(pLocal) && /Plain text for screening software/.test(pLocal)
+      && !/\n- Length: /.test(blockOf(pLocal)) && !/\n- Personal details: /.test(blockOf(pLocal)) && !/\n- Dates: write every start and end date/.test(blockOf(pLocal)),
+      blockOf(pLocal));
+    ok('…and it is enforced in code there: the date of birth and the nationality are blanked on that document',
+      (db.docs.find((d) => d.id === bLocal.body.docId) || {}).payload.personal_info.date_of_birth === '', bLocal.body);
+    conv.answer = null;
   }
 
   // ── tidy ─────────────────────────────────────────────────────────────────────────────────────

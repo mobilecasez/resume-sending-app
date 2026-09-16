@@ -1228,6 +1228,53 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     Object.assign(docs, realDocs);
   }
 
+  // ⚠️ THE COUNTRY IS NOT IN THE FINGERPRINT — AND `stale` IS THE ONLY DOOR TO A REBUILD.
+  // The country must never be hashed (it would turn every stored document stale and re-bill its owner), so an
+  // American résumé asked about from a German chip re-hashes to a PERFECT match and reports fresh. The build
+  // already refuses to serve that row as a free hit; before 2026-09-17 nothing told the SCREEN, so the Refresh
+  // pill (drawn on `stale`) never appeared and the Tailor button (drawn only with no document at all) never did
+  // either — the user saw the wrong country's résumé and could not even pay to replace it. The route asks the
+  // document's own marker beside the hash: written elsewhere ⇒ stale.
+  {
+    const RBC = require(path.join(ROOT, 'server/controllers/resumeBuilderController.js'));
+    const realFp = RBC.currentResumeFingerprint;
+    RBC.currentResumeFingerprint = async () => 'fp-SAME';        // the hash ALWAYS matches: only the marker can speak
+    const rowFor = (writtenFor) => ({
+      id: 44, kind: 'resume', employer_name: 'Acme', employer_id: null, job_url: '', job_title: '',
+      created_at: new Date(), updated_at: new Date(), edited_at: null, input_fingerprint: 'fp-SAME',
+      payload: { personal_info: { title: 'Engineer' } }, research: null,
+      design: writtenFor ? { v: 1, kind: 'resume', ranked: [], writtenFor } : null, job_input: null,
+    });
+    const currentWith = async (writtenFor, body) => {
+      docs.currentFor = async () => rowFor(writtenFor);
+      const res = await callRoute('post', '/current', { body: { kind: 'resume', employer: 'Acme', jobUrl: '', ...body } });
+      return res.body && res.body.doc ? res.body.doc.stale : null;
+    };
+    ok('⚠️ a résumé written for the US, asked about from a German chip, is STALE — the hash alone says fresh',
+      (await currentWith('us', { country: 'Germany' })) === true);
+    ok('…the same document for its OWN country is not stale (no nag, no paid rebuild nobody needed)',
+      (await currentWith('us', { country: 'United States' })) === false);
+    ok('⚠️ a row with NO marker (every document built before this existed) is never stale on country grounds',
+      (await currentWith(null, { country: 'Germany' })) === false);
+    ok('⚠️ a request that names no country cannot tell, and "cannot tell" never bills anyone',
+      (await currentWith('us', {})) === false);
+    ok('…the website stands in for a missing country the same way the BUILD reads it (.de ⇒ Germany)',
+      (await currentWith('us', { website: 'https://acme.de' })) === true);
+    // The label must give the answer the BUILD gives — one implementation, one place (docWrittenElsewhere).
+    ok('⚠️ the route asks the controller\'s own predicate, never a second copy of the rule',
+      RBC.docWrittenElsewhere(rowFor('us'), { employer: 'Acme', country: 'Germany', job: {} }) === true
+      && RBC.docWrittenElsewhere(rowFor('us'), { employer: 'Acme', country: 'United States', job: {} }) === false);
+    {
+      const realPredicate = RBC.docWrittenElsewhere;
+      RBC.docWrittenElsewhere = () => { throw new Error('boom'); };
+      ok('⚠️ a throw in the marker check costs nothing — the fingerprint compare underneath it still answers',
+        (await currentWith('us', { country: 'Germany' })) === false);
+      RBC.docWrittenElsewhere = realPredicate;
+    }
+    RBC.currentResumeFingerprint = realFp;
+    Object.assign(docs, realDocs);
+  }
+
   // ⚠️ A STORED DESIGN IS RE-RANKED ON READ (rerankStoredDesign → designFit.rerankDesign), and that NEVER TOUCHES
   // `stale`. A document built when every employer got exec_pro first gets the employer-first order for free — never a
   // paid Refresh just to fix an ordering — and a better order is not a changed document.
