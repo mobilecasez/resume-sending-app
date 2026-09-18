@@ -2,7 +2,8 @@ const dbConfig = require('../../db-config');
 const path = require('path');
 const fs = require('fs').promises;
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
-const { generateCoverLetter: generateCoverLetterV2 } = require('../../ai-cover-letter-v2');
+// The legacy letter's PROMPT (buildPrompt) — its model call is this file's writeLegacyLetter, through aiText.
+const letterV2 = require('../../ai-cover-letter-v2');
 const { researchEmployer } = require('../../ai-employer-researcher');
 const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
 const jobService = require('../services/jobService');
@@ -395,143 +396,6 @@ async function saveEmployerResearch(data) {
     }
 }
 
-// Helper function: Generate additional details (hiring manager, locations, subject)
-async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position', userFullName = '') {
-    const geminiKey = process.env.GEMINI_API_KEY;
-    
-    if (!geminiKey) {
-        console.log('⚠️ No Gemini API key - using defaults');
-        const applicantName = userFullName || 'Applicant';
-        return {
-            hiringManager: 'Hiring Manager',
-            locations: [{ 
-                country: '', 
-                city: '', 
-                address: 'Address not available online',
-                isHeadquarters: true 
-            }],
-            subject: `Application for ${position} - ${applicantName}`
-        };
-    }
-
-    try {
-        const { GoogleGenerativeAI } = require('@google/generative-ai');
-        const genAI = new GoogleGenerativeAI(geminiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-        const applicantName = userFullName || 'Applicant';
-        const prompt = `You are extracting hiring manager information and company office locations from a company website.
-
-Company: ${companyName}
-Website: ${websiteUrl}
-Position: ${position}
-Applicant Name: ${applicantName}
-
-Extract the following information and return ONLY valid JSON:
-
-1. **Hiring Manager Name**: Look for HR contact, recruiter, or hiring manager name. If not found, return "Hiring Manager"
-2. **All Company Locations**: Extract ALL office locations (headquarters and branches) with complete street address, city, and country. Try multiple sources: About page, Contact page, footer, headquarters section.
-3. **Subject Line**: Generate a professional, concise email subject line for this job application using the applicant's name
-
-Return this EXACT JSON format (no markdown, no code blocks):
-{
-  "hiringManager": "Name or 'Hiring Manager'",
-  "locations": [
-    {"country": "Country", "city": "City", "address": "Complete Street Address with ZIP/Postal Code", "isHeadquarters": true},
-    {"country": "Country2", "city": "City2", "address": "Complete Street Address", "isHeadquarters": false}
-  ],
-  "subject": "Application for ${position} - ${applicantName}"
-}
-
-IMPORTANT: 
-- For subject line, use the format: "Application for [Position] - [Applicant Name]" or "[Position] Application - [Applicant Name]"
-- For each location, provide the MOST COMPLETE address you can find:
-  * First priority: Full street address with number, street name, city, state/province, ZIP/postal code, country
-  * Second priority: Building/Office name, city, state/province, country  
-  * Third priority: City, state/province, country
-  * Last resort: City, country
-- Search thoroughly: check Contact page, About page, footer, "Locations" page, "Find Us" page
-- If you cannot find ANY location information on the website, search Google for "${companyName} headquarters address" or "${companyName} office location"
-- DO NOT return "Not specified" unless you've exhausted all options including Google search
-
-Research thoroughly and extract real information.`;
-
-        const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            tools: [{ googleSearch: {} }]
-        });
-        
-        const response = await result.response;
-        let text = response.text();
-        
-        // Check if response is null or empty
-        if (!text || text.trim() === '') {
-            console.warn('⚠️ Gemini returned empty response, using defaults');
-            throw new Error('Gemini returned empty response');
-        }
-        
-        // Clean up response
-        text = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-        
-        // Extract JSON
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const data = JSON.parse(jsonMatch[0]);
-            
-            // Ensure each location has an address field
-            const locations = (data.locations || []).map(loc => {
-                const city = loc.city || '';
-                const country = loc.country || '';
-                let address = loc.address || '';
-                
-                // If no address provided, construct from city and country
-                if (!address && city && country) {
-                    address = `${city}, ${country}`;
-                } else if (!address && (city || country)) {
-                    address = city || country;
-                } else if (!address) {
-                    address = 'Address not available online';
-                }
-                
-                return {
-                    ...loc,
-                    address: address,
-                    city: city || 'Not specified',
-                    country: country || 'Not specified',
-                    isHeadquarters: loc.isHeadquarters !== undefined ? loc.isHeadquarters : true
-                };
-            });
-            
-            return {
-                hiringManager: data.hiringManager || 'Hiring Manager',
-                locations: locations.length > 0 ? locations : [{ 
-                    country: '', 
-                    city: '', 
-                    address: 'Address not available online',
-                    isHeadquarters: true 
-                }],
-                subject: data.subject || `Application for ${position} - ${userFullName || 'Applicant'}`
-            };
-        }
-        
-        throw new Error('Failed to parse AI response');
-        
-    } catch (error) {
-        console.error('Error generating additional details:', error.message);
-        const applicantName = userFullName || 'Applicant';
-        return {
-            hiringManager: 'Hiring Manager',
-            locations: [{ 
-                country: '', 
-                city: '', 
-                address: 'Address not available online',
-                isHeadquarters: true 
-            }],
-            subject: `Application for ${position} - ${applicantName}`
-        };
-    }
-}
-
 // ── ONE PAYMENT DECISION AT A TIME PER USER — the lock every generation lane takes ─────────────────────
 /**
  * Run `fn` holding this user's usage lock for `kind`: ONE payment decision at a time per (user, kind).
@@ -590,12 +454,13 @@ function letterQuotaRefusal() {
  * failJobWithReason, which is not exported: this worker creates its own job rows rather than running under
  * asJob. ⚠️ ONE statement, not updateJobPartialResult then failJob — between two writes a poller would read a
  * 'processing' row carrying { reason, error } as if it were progress. async_jobs has no reason column, so it
- * rides in `result`, which the job-status handlers return as `data`.
+ * rides in `result`, which the job-status handlers return as `data`. `extra` rides with it (an AI refusal's
+ * `retryable`, so a poller can tell "try again in a minute" from "nothing you can do").
  */
-async function failJobWithReason(jobId, message, reason) {
+async function failJobWithReason(jobId, message, reason, extra = null) {
     await dbConfig.run(
         `UPDATE async_jobs SET status = 'failed', error = $1, result = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
-        [message, JSON.stringify({ reason, error: message }), jobId]
+        [message, JSON.stringify({ reason, error: message, ...(extra || {}) }), jobId]
     );
 }
 
@@ -613,6 +478,247 @@ async function giveBackLedgerRow(userId, ledgerId, why) {
         console.error(`[coverLetter] ⚠️ USAGE ROW NOT GIVEN BACK — user ${userId}, usage_ledger ${ledgerId} (${why}) — support must make this good:`, e.message);
     }
 }
+
+// ── THE LEGACY LETTER'S AI CALL — through aiText, like every paid lane ──────────────────────────────────
+//
+// ⚠️ 2026-09-18. Home's letter lane asked gemini-2.5-flash twice, back to back, on a 503 "high demand" day and
+// Amazon's letter "didn't finish". The lanes in THIS file did the same thing worse: ai-cover-letter-v2's
+// callGemini asked the one hardcoded model three times with no pause and NO TIMEOUT AT ALL — a hung model held
+// a Letters-screen request, a Job Hub letter job or a batch slot for as long as Google cared to take. The call
+// now lives here and goes through aiText.generateText: a paused second try, the verified fallback models, a
+// per-attempt cap that really aborts, one budget for the whole letter. ai-cover-letter-v2 still owns the PROMPT
+// (buildPrompt, byte for byte what it sent) and this is its call and its parsing, kept as they were.
+//
+// ⚠️ MONEY. Every AI call here runs BEFORE the charge (withUsageLock → claimGeneration / consumeOnSuccess, after
+// the letter exists), so a letter no model could write charges NOTHING and hands nothing over. That is what makes
+// "Nothing was charged" in the two refusals below true. These lanes store no document and no model id; the
+// model that answered is logged.
+// Lazily, per use: a suite that reloads aiText (or shrinks its timing knobs) must be what the next call sees.
+const aiTextMod = () => require('../services/aiText');
+
+/** What ai-cover-letter-v2 always asked: the PRIMARY of the chain (aiText's fallbacks follow it). */
+const LEGACY_LETTER_MODEL = 'gemini-2.5-flash';
+/**
+ * ai-cover-letter-v2's generationConfig, unchanged, given to EVERY model of the chain. No responseMimeType: the
+ * letter is grounded (googleSearch), and the API refuses JSON mode and grounding together — the prompt asks for
+ * JSON and parseLegacyLetterJson digs it out. 32768 because 2.5-flash thinks out of the same budget.
+ */
+const legacyLetterConfig = () => ({ temperature: 1, topP: 0.95, maxOutputTokens: 32768 });
+/**
+ * The whole letter's AI time, every try and every bad-output retry included. Job Hub's poller gives a letter job 5
+ * minutes (the Letters screen polls with no deadline); the resume-metadata wait (≤ 20 s) comes first. A grounded letter
+ * researches before it writes (30–90 s on the primary), so its first try gets 90 s; every later try 60 s.
+ */
+const LEGACY_LETTER_BUDGET_MS = 4 * 60 * 1000;
+const LEGACY_LETTER_CAPS_MS = Object.freeze({ first: 90 * 1000, later: 60 * 1000 });
+/** Bad output (empty, no JSON, no letter in it) is retried like v2 retried it: three answers at most … */
+const LEGACY_LETTER_TRIES = 3;
+/** … and never one started with less than this left of the budget. */
+const LEGACY_LETTER_MIN_TRY_MS = 20 * 1000;
+
+/** v2's user-safe failure, word for word: the letter lanes and the pollers already show exactly this. */
+const LEGACY_LETTER_FAILED = 'We could not finish generating your cover letter. Please try again.';
+/**
+ * The two answers for "Google could not write this letter" — aiText's final AiUnavailableError, after it waited,
+ * retried and walked every fallback model. The same words as Home's letter lane (employerLetterController AI_BUSY
+ * / AI_DOWN), so a user sees one story whichever screen they wrote from.
+ *   ai_busy  every model busy, hung or out of time: a provider overload. retryable — Try again in a minute.
+ *   ai_down  quota or auth: the key itself is refused (aiHealth has paged the operator). Not retryable.
+ */
+const LEGACY_AI_BUSY = "Google's AI is overloaded right now, so your cover letter could not be written. Nothing was charged — please try again in a minute.";
+const LEGACY_AI_DOWN = 'Our AI provider is unavailable right now. Nothing was charged.';
+
+/**
+ * aiText's final failure → the lanes' refusal (userFacing, reason ai_busy | ai_down, retryable, status 503), or
+ * null for anything that is not an outage (kind 'other': every model truncated or refused the request — that keeps
+ * today's "could not finish" answer). Read by name, like aiText.isAiBusy, so a second copy of aiText in the
+ * require cache still answers.
+ */
+function legacyAiRefusal(e) {
+    if (!e || e.name !== 'AiUnavailableError') return null;
+    const busy = e.kind === 'busy';
+    if (!busy && e.kind !== 'quota' && e.kind !== 'auth') return null;
+    const refusal = new Error(busy ? LEGACY_AI_BUSY : LEGACY_AI_DOWN);
+    refusal.userFacing = true;
+    refusal.reason = busy ? 'ai_busy' : 'ai_down';
+    refusal.retryable = busy;
+    refusal.status = 503;
+    refusal.cause = e;
+    return refusal;
+}
+const isAiRefusal = (e) => !!e && (e.reason === 'ai_busy' || e.reason === 'ai_down');
+/** The HTTP body every lane answers an AI refusal with (HTTP 503). */
+const aiRefusalBody = (e) => ({ success: false, reason: e.reason, retryable: !!e.retryable, error: e.message });
+
+/** A retry, in the words the user reads: a model switch, an overload, or a second pass at a bad answer. */
+const legacyRetryLabel = ({ model, kind, nextModel }) => (nextModel && nextModel !== model ? 'Switching to a faster model'
+    : kind === 'transient' ? "Google's AI is busy — trying again" : 'Taking another pass at it');
+
+/**
+ * Walk a JSON string and escape the raw \n \r \t found INSIDE string literals — ai-cover-letter-v2's
+ * sanitiseJsonString, unchanged (the model writes the letter's paragraph breaks as real newlines).
+ */
+function escapeRawControlChars(raw) {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (escaped) { out += ch; escaped = false; continue; }
+        if (ch === '\\' && inString) { out += ch; escaped = true; continue; }
+        if (ch === '"') { inString = !inString; out += ch; continue; }
+        if (inString) {
+            if (ch === '\n') { out += '\\n'; continue; }
+            if (ch === '\r') { out += '\\r'; continue; }
+            if (ch === '\t') { out += '\\t'; continue; }
+        }
+        out += ch;
+    }
+    return out;
+}
+
+/**
+ * The last resort, ai-cover-letter-v2's extractJsonFields unchanged: each known field pulled out on its own, for
+ * the answer whose string values hold literal double quotes no parser can repair. cover_letter is always the last
+ * field, so it runs to the last `"` before the final `}`.
+ */
+function extractLetterFields(raw) {
+    const str = (key) => {
+        const m = raw.match(new RegExp(`"${key}"\\s*:\\s*"([\\s\\S]*?)"(?:\\s*,\\s*"[a-z_]+"\\s*:|\\s*\\})`, 'i'));
+        return m ? m[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t') : '';
+    };
+    const arr = (key) => {
+        const m = raw.match(new RegExp(`"${key}"\\s*:\\s*(\\[[\\s\\S]*?\\])`, 'i'));
+        if (!m) return [];
+        try { return JSON.parse(escapeRawControlChars(m[1])); } catch (_) {
+            return [...m[1].matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((x) => x[1]);
+        }
+    };
+    const letter = () => {
+        const start = raw.indexOf('"cover_letter"');
+        if (start === -1) return '';
+        const quote = raw.indexOf('"', raw.indexOf(':', start) + 1);
+        if (quote === -1) return '';
+        const close = raw.lastIndexOf('"', raw.lastIndexOf('}') - 1);
+        return raw.slice(quote + 1, close).replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"');
+    };
+    return { to: str('to'), employer_name: str('employer_name'), position: str('position'), addresses: arr('addresses'), subject: str('subject'), cover_letter: letter() };
+}
+
+/**
+ * The model's answer → { to, employer_name, position, addresses, subject, cover_letter }, or a throw (the retry).
+ * ai-cover-letter-v2's parsing, stage for stage: fences off, the outermost {…}, JSON.parse, then the same parse
+ * after escaping raw control characters, then the field extractor. ONE addition: an answer with no letter in it
+ * (every stage "succeeded" on an object with no cover_letter) is a throw too — v2 handed it on, and the lane then
+ * charged for an empty letter.
+ */
+function parseLegacyLetterJson(text) {
+    if (!text || String(text).trim() === '') throw new Error('Gemini returned an empty response');
+    const cleaned = String(text).replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start === -1 || end === -1) throw new Error('Gemini response did not contain a JSON object');
+    const json = cleaned.slice(start, end + 1);
+    let letter = null;
+    try { letter = JSON.parse(json); } catch (_) {
+        const sanitised = escapeRawControlChars(json);
+        try { letter = JSON.parse(sanitised); } catch (__) {
+            try { letter = extractLetterFields(sanitised); } catch (e3) {
+                throw new Error(`JSON parse failed after all recovery attempts: ${e3.message}`);
+            }
+        }
+    }
+    if (!letter || typeof letter !== 'object' || !String(letter.cover_letter || '').trim()) {
+        throw new Error('Gemini response carried no cover_letter');
+    }
+    return letter;
+}
+
+/**
+ * The legacy letter → { letter, model }: ai-cover-letter-v2's inputs and output shape, its prompt, its config, its
+ * parsing — with the model call on aiText (see the section header).
+ *
+ * TWO KINDS OF FAILURE, TWO RULES:
+ *   - the PROVIDER could not answer (aiText's AiUnavailableError: busy, quota, auth) → the ai_busy / ai_down refusal,
+ *     at once. aiText has already waited, retried and walked every model inside the budget; a second walk would only
+ *     outlive the poller. Kind 'other' (every model truncated or refused the request) is final too, as "could not
+ *     finish".
+ *   - the ANSWER was unusable (empty, no JSON, no letter) → asked again, up to LEGACY_LETTER_TRIES answers, like v2.
+ * `report(stage, label)` (optional) puts each retry on the job in plain words. It is awaited by aiText, and
+ * anything it throws is ignored there — a progress write can never break a letter.
+ *
+ * A v2 without buildPrompt (an older copy, or a suite's stub of the whole module) keeps the old call through its
+ * generateCoverLetter: the prompt is v2's to build, and there is nothing here to build it from.
+ */
+async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsibilities = null, jobLocation = null, listing = null, { report = null } = {}) {
+    if (typeof letterV2.buildPrompt !== 'function') {
+        return { letter: await letterV2.generateCoverLetter(resumeMetadata, employerUrl, position, responsibilities, jobLocation, listing), model: null };
+    }
+    // v2's own argument checks, message for message: a batch row with no position fails exactly as it did.
+    if (!resumeMetadata || typeof resumeMetadata !== 'object') throw new Error('userMetadata must be a non-null object');
+    if (!employerUrl || typeof employerUrl !== 'string') throw new Error('employerUrl must be a non-empty string');
+    if (!position || typeof position !== 'string') throw new Error('targetPosition must be a non-empty string');
+    let url = employerUrl.trim();
+    if (!url.startsWith('http')) url = 'https://' + url;
+    // Pass the URL itself: the model researches the employer through Google Search grounding.
+    const prompt = letterV2.buildPrompt(resumeMetadata, position, url, responsibilities, jobLocation, listing);
+
+    const aiText = aiTextMod();
+    const deadline = Date.now() + LEGACY_LETTER_BUDGET_MS;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= LEGACY_LETTER_TRIES; attempt++) {
+        const left = deadline - Date.now();
+        if (left < LEGACY_LETTER_MIN_TRY_MS) break;
+        if (attempt > 1 && report) {
+            try { await report('retry', 'Taking another pass at it'); } catch (_) { /* a progress write never breaks a letter */ }
+        }
+        console.log(`[coverLetter] writing the letter for ${url} (answer ${attempt}/${LEGACY_LETTER_TRIES}, prompt ${prompt.length} chars)`);
+        let out;
+        try {
+            out = await aiText.generateText({
+                lane: 'letter_legacy',
+                prompt: { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ googleSearch: {} }] },
+                config: legacyLetterConfig(),
+                models: [LEGACY_LETTER_MODEL, ...aiText.fallbackModels()],
+                budgetMs: left,
+                attemptCapsMs: LEGACY_LETTER_CAPS_MS,
+                onRetry: (info) => (report ? report('retry', legacyRetryLabel(info)) : undefined),
+            });
+        } catch (e) {
+            const refusal = legacyAiRefusal(e);
+            if (refusal) {
+                console.error(`[coverLetter] no model could write the letter for ${url} (${refusal.reason}): ${e.message}`);
+                throw refusal;
+            }
+            lastErr = e;
+            console.warn(`[coverLetter] letter for ${url}: every model failed (${e.message}) — not asked again`);
+            break;
+        }
+        try {
+            const letter = parseLegacyLetterJson(out.text);
+            console.log(`[coverLetter] letter for ${url} written by ${out.model}${out.fellBack ? ' (a fallback model)' : ''} ✅`);
+            return { letter, model: out.model };
+        } catch (e) {
+            lastErr = e;
+            console.warn(`[coverLetter] letter answer ${attempt}/${LEGACY_LETTER_TRIES} for ${url} unusable: ${e.message}`);
+        }
+    }
+    // Every answer unusable (or the budget spent on them): v2's user-safe message; the detail stays in the log.
+    console.error('[coverLetter] the letter could not be finished:', lastErr ? lastErr.message : 'the letter budget ran out');
+    const err = new Error(LEGACY_LETTER_FAILED);
+    err.userFacing = true;
+    err.cause = lastErr;
+    throw err;
+}
+
+/**
+ * The async job's retry reporter: the same { stage, label } partial result Home's lanes write, so a poller that
+ * reads labels shows "Google's AI is busy — trying again". Today's Letters and Job Hub pollers read only the bar
+ * and the final status, and ignore it. Never throws.
+ */
+const legacyJobReporter = (jobId) => async (stage, label) => {
+    try { await jobService.updateJobPartialResult(jobId, { stage, label }); } catch (_) { /* a progress write never breaks a letter */ }
+};
 
 // Generate cover letter (bulk)
 const generateCoverLetters = async (req, res) => {
@@ -695,12 +801,21 @@ const generateCoverLetters = async (req, res) => {
             // Point 6: add Builder-resume context (if present) for richer letters.
             resumeMetadata = await mergeBuilderResume(userId, resumeMetadata);
 
+            // ⚠️ ONE AI REFUSAL ENDS THE RUN (2026-09-18). aiText only gives up after it has waited, retried and walked
+            // every fallback model inside its budget, and quota / auth is the key itself: the next recipient, asked a
+            // second later, would get the same answer — after up to four more minutes of a request someone is holding
+            // open. The rest are recorded with the same reason, not asked, and not charged.
+            let aiRefused = null;
             for (const recipient of recipients) {
+                if (aiRefused) {
+                    results.push({ email: recipient.email, status: 'failed', reason: aiRefused.reason, retryable: !!aiRefused.retryable, error: aiRefused.message });
+                    continue;
+                }
                 let ledgerId = null;   // THIS letter's usage row — given back if the letter is not handed over
                 try {
                     console.log(`\n📤 Processing: ${recipient.email}`);
 
-                    const aiResult = await generateCoverLetterV2(
+                    const { letter: aiResult } = await writeLegacyLetter(
                         resumeMetadata,
                         recipient.website,
                         recipient.position || 'Position'
@@ -780,9 +895,11 @@ const generateCoverLetters = async (req, res) => {
                         await giveBackLedgerRow(userId, ledgerId, `bulk letter for ${recipient.email} was not produced`);
                         creditsDeducted--;
                     }
+                    if (isAiRefusal(error)) aiRefused = error;
                     results.push({
                         email: recipient.email,
                         status: 'failed',
+                        ...(isAiRefusal(error) ? { reason: error.reason, retryable: !!error.retryable } : {}),
                         error: error.message,
                     });
                 }
@@ -809,6 +926,16 @@ const generateCoverLetters = async (req, res) => {
                 return res.status(402).json({
                     error: LETTER_ALLOWANCE_USED_UP,
                     reason: 'quota_exhausted',
+                    results,
+                    creditsUsed: 0,
+                    creditsRemaining: creditCheck.remaining
+                });
+            }
+            // ⚠️ NO LETTER, AND THE AI WAS WHY → the 503 every lane answers (ai_busy: try again in a minute; ai_down:
+            // nothing the user can do). Nothing was paid for: every AI call runs before its letter's charge.
+            if (successCount === 0 && aiRefused) {
+                return res.status(503).json({
+                    ...aiRefusalBody(aiRefused),
                     results,
                     creditsUsed: 0,
                     creditsRemaining: creditCheck.remaining
@@ -971,9 +1098,10 @@ const generateCoverLetterDetails = async (req, res) => {
                     ? err.message
                     : 'Failed to generate the cover letter. Please try again.';
                 // ⚠️ A REFUSAL KEEPS ITS REASON. A letter nothing would pay for (quota_exhausted) must not read as
-                // "something broke, try again" — trying again is the loop that ends at the same refusal.
+                // "something broke, try again" — trying again is the loop that ends at the same refusal. An AI
+                // refusal (ai_busy / ai_down) carries whether trying again can help.
                 if (err.reason) {
-                    failJobWithReason(jobId, safeMsg, err.reason)
+                    failJobWithReason(jobId, safeMsg, err.reason, isAiRefusal(err) ? { retryable: !!err.retryable } : null)
                         .catch(() => jobService.failJob(jobId, safeMsg).catch(console.error));
                 } else {
                     jobService.failJob(jobId, safeMsg).catch(console.error);
@@ -998,6 +1126,8 @@ const generateCoverLetterDetails = async (req, res) => {
     } catch (error) {
         const duration = Date.now() - startTime;
         console.error(`❌ [${requestId}] Error (${duration}ms):`, error.message);
+        // No model could write it (aiText's final failure) → 503 ai_busy / ai_down, and it says nothing was charged.
+        if (isAiRefusal(error)) return res.status(503).json(aiRefusalBody(error));
         // Only deliberately user-facing messages may reach the client; raw internal
         // errors (JSON SyntaxError, DB, API) are logged above and replaced.
         const safeMessage = (error.userFacing || /^Resume not processed yet/.test(error.message || ''))
@@ -1016,7 +1146,8 @@ const generateCoverLetterDetails = async (req, res) => {
 // host, and researching THAT produced letters addressed to the job board instead of the company.
 const AGGREGATOR_HOST = /(instahyre|naukri|linkedin|indeed|glassdoor|monster|shine|timesjobs|foundit|wellfound|ziprecruiter|simplyhired|jooble|careerjet|adzuna|talent\.com|jobs?\.[a-z]+\.com)\b/i;
 
-async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null, passEmployer = null, passViaPass = false, passEnv = null }) {
+// `report(stage, label)` — the async job's retry reporter (legacyJobReporter); absent in sync mode and batch-process.
+async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null, passEmployer = null, passViaPass = false, passEnv = null, report = null }) {
     console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}, hasResponsibilities=${!!(responsibilities && responsibilities.length)}, jobLocation=${jobLocation || 'none'}, companyHint=${companyNameHint || 'none'}`);
     // Normalize URL
     const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
@@ -1057,20 +1188,22 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
 
     let brandColor, fontName, aiResult;
 
+    // ⚠️ A throw from writeLegacyLetter (an AI refusal, a letter that could not be finished) leaves BEFORE the charge
+    // below: nothing is paid for and nothing is handed over.
     if (cached) {
         // Cache hit — run cover letter generation alone at full speed
         console.log(`🎨 [employer] Cache hit → color=${cached.brand_color}, font=${cached.font_name}`);
-        aiResult = await generateCoverLetterV2(resumeMetadata, researchSubject, position, responsibilities, jobLocation, listing);
+        ({ letter: aiResult } = await writeLegacyLetter(resumeMetadata, researchSubject, position, responsibilities, jobLocation, listing, { report }));
         brandColor = cached.brand_color;
         fontName = cached.font_name;
     } else {
         // Cache miss — run cover letter generation + full employer research IN PARALLEL
         console.log(`🔍 [employer] Cache miss — running cover letter + employer research in parallel`);
         const [clResult, researchData] = await Promise.all([
-            generateCoverLetterV2(resumeMetadata, researchSubject, position, responsibilities, jobLocation, listing),
+            writeLegacyLetter(resumeMetadata, researchSubject, position, responsibilities, jobLocation, listing, { report }),
             researchEmployer(researchSubject),
         ]);
-        aiResult = clResult;
+        aiResult = clResult.letter;
         brandColor = researchData?.brand_color || '#262633';
         fontName   = researchData?.font_name   || 'Lato';
         // Persist all employer research tables (non-blocking)
@@ -1235,7 +1368,8 @@ async function processGenerationJob(jobId, userId, input) {
     const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
     await jobService.updateJobProgress(jobId, 20);
 
-    const result = await executeGenerationWork(userId, user, input);
+    // The retry reporter rides only here: the job row is where a poller would read "Google's AI is busy".
+    const result = await executeGenerationWork(userId, user, { ...input, report: legacyJobReporter(jobId) });
     await jobService.completeJob(jobId, result);
     console.log(`✅ Async job ${jobId} completed successfully`);
 }
@@ -1862,4 +1996,6 @@ module.exports = {
     // The shared per-(user, kind) usage lock, for a lane that has none of its own (aiHubController's Job Hub
     // letter) — so it serialises against every other lane's key instead of inventing a second spelling.
     withUsageLock,
+    // exposed for tests / diagnostics only: the legacy letter's AI call and its parsing
+    _internals: { writeLegacyLetter, parseLegacyLetterJson, legacyAiRefusal, LEGACY_LETTER_MODEL, legacyLetterConfig, LEGACY_LETTER_BUDGET_MS },
 };

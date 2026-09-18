@@ -18,6 +18,7 @@ const pageFetch = require('../utils/pageFetch');   // retry + bot-check detectio
 const employerFix = require('../services/employerFix');
 const detailRecipeStore = require('../services/detailRecipe');
 const aiJobExtractor = require('../services/aiJobExtractor');
+const aiText = require('../services/aiText');   // every paid letter's AI call: waits, retries, falls back (see there)
 const { applyOverride, investigate: investigateEmployer, learnDetailRecipe, validateExtraction } = require('../services/employerDiagnosticAgent');
 const { createFixRequest, recentDeadAttempt } = require('../services/employerFix');
 const expoPush = require('../services/expoPushService');
@@ -4561,6 +4562,14 @@ async function findRecruiterEmails(req, res) {
 async function generateJobCoverLetter(req, res) {
     const userId     = req.user.id;
     const { jobId }  = req.params;
+    // ⚠️ A LETTER NOBODY CAN RECEIVE IS NOT CHARGED FOR. This lane stores nothing: the letter lives only in this
+    // response. Since 2026-09-18 its AI call waits out a 503 spike and walks the fallback models (up to aiText's 180 s
+    // budget, where it used to be one ~10 s call), so a client with a shorter timeout — an older build — can be gone
+    // by the time the letter exists. Charging then would take a unit for a letter that was thrown away. Unlike the
+    // résumé builder (which SAVES its document, so a disconnect there is paid and shown on reopen — no waiver), there
+    // is no free-letter loophole here: a client that left receives nothing either way.
+    let clientGone = false;
+    res.on('close', () => { if (!res.writableEnded) clientGone = true; });
 
     try {
         // Load user + resume
@@ -4641,7 +4650,6 @@ async function generateJobCoverLetter(req, res) {
 
         // Build Gemini prompt
         const resumeText = resumeMeta.parsed_text || resumeMeta.raw_text || '';
-        const model = geminiModel(false, GEMINI_FLASH_MODEL);
 
         const prompt = `You are an expert cover letter writer. Write a tailored, professional cover letter for this job application.
 
@@ -4671,10 +4679,22 @@ INSTRUCTIONS:
 Return ONLY the cover letter text in English — no explanation, no markdown, no formatting tags.`;
 
         console.log(`[aiHub] Generating cover letter for job "${job.title}" at "${employer?.name}"`);
-        const result = await model.generateContent(prompt);
-        const coverLetterText = result.response.text().trim();
+        // ⚠️ THROUGH aiText, like every other paid letter (2026-09-18: a 503 "high demand" spike failed Home's
+        // Amazon letter on its one model). It waits, retries the primary once, then walks the verified fallback
+        // chain — all BEFORE the charge below, so a letter no model could write costs nothing. GEMINI_FLASH_MODEL
+        // stays the primary (it is env-overridable here, and the fallbacks follow it).
+        const { text: coverLetterText } = await aiText.generateText({
+            lane: 'job_hub_letter',
+            prompt,
+            config: {},
+            models: [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()],
+        });
         // An empty answer is not a letter, and must never be the thing a unit is spent on.
         if (!coverLetterText) throw new Error('AI_EMPTY_OUTPUT');
+        if (clientGone) {
+            console.warn(`[aiHub] user ${userId}'s client left before the job ${jobId} cover letter was ready — not charged, not delivered (nothing is stored)`);
+            return undefined;
+        }
 
         // ── THE CHARGE — only now that the letter exists, one payment decision at a time per user ────
         // ⚠️ Under the SAME usage lock as every other letter lane (coverLetterController.withUsageLock — the
@@ -4735,7 +4755,19 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
     } catch (error) {
         console.error('[aiHub] generateJobCoverLetter error:', error.message);
         // Nothing is charged before the letter exists (the charge follows the model call), so a throw here
-        // has nothing to give back.
+        // has nothing to give back — which is also what makes "Nothing was charged" true in the AI answers.
+        // Read by NAME, as the other lanes do, so a second copy of aiText in the require cache still answers.
+        if (error && error.name === 'AiUnavailableError' && (error.kind === 'busy' || error.kind === 'quota' || error.kind === 'auth')) {
+            const busy = error.kind === 'busy';
+            return res.status(503).json({
+                success: false,
+                reason: busy ? 'ai_busy' : 'ai_down',
+                retryable: busy,
+                error: busy
+                    ? "Google's AI is overloaded right now, so your cover letter could not be written. Nothing was charged — please try again in a minute."
+                    : 'Our AI provider is unavailable right now. Nothing was charged.',
+            });
+        }
         return res.status(500).json({ error: 'Failed to generate cover letter. Please try again.' });
     }
 }

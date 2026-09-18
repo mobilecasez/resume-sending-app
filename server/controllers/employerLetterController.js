@@ -51,8 +51,16 @@ const clMod = () => require('./coverLetterController');
 // older copy without the letter variant, must still write letters exactly as they were written before it
 // existed — so it is resolved here, defensively, and never at load.
 const playbookMod = () => require('../services/cvPlaybook');
+// Every letter's AI call goes through aiText (2026-09-18: the Amazon letter that died on two back-to-back 503s).
+// Lazy for the same reason as the rest: a half-deployed slice must fail a build, never the route table.
+const aiTextMod = () => require('../services/aiText');
 
-/** ⚠️ ≤ 48 chars — user_employer_documents.model is VARCHAR(48) and Postgres refuses, not truncates. */
+/**
+ * The letter lane's FIRST choice — the head of the chain aiText walks, followed by aiText.fallbackModels().
+ * ⚠️ NOT NECESSARILY THE MODEL THAT WROTE A STORED LETTER: since 2026-09-18 a busy primary hands the letter to a
+ * fallback, and the stored row records whoever actually answered (writeLetterText's `model`).
+ * ⚠️ ≤ 48 chars — user_employer_documents.model is VARCHAR(48) and Postgres refuses, not truncates.
+ */
 const LETTER_MODEL = 'gemini-2.5-flash';
 
 /**
@@ -77,11 +85,27 @@ const LETTER_MODEL = 'gemini-2.5-flash';
 const LETTER_REV = 'letter-v1';
 
 /**
- * One AI call. ⚠️ THE WHOLE BUILD HAS TO FIT INSIDE THE APP'S 6-MINUTE DEADLINE: research ≤ 25 s, at
- * most three calls (a retry on bad output or timeout, plus one corrective pass for placeholders) and
- * ≤ 20 s of thumbnails. 80 s × 3 + 45 s stays under it with room for the queue.
+ * ⚠️ ONE AI WINDOW FOR THE WHOLE BUILD, counted from the handler's first line. The app polls a build for 6 minutes
+ * (homeAddEmployer DEADLINE_MS), and after the AI this lane still ranks designs, waits on the usage lock (≤ 15 s)
+ * and lays out thumbnails (≤ 20 s). So research (≤ 25 s), every draft, every pause, every fallback model and the
+ * corrective pass must all END inside these 4 minutes — not each inside a cap of its own. The old lane gave each
+ * call 80 s and three calls could add up; a fallback chain that simply added its caps on top (60 + 40 + 40 + 40 s a
+ * draft, twice, plus a corrective pass) would outlive the app that is waiting for it. Worst case now:
+ * 240 s of research + AI, + 15 s lock + 20 s thumbs ≈ 275 s, with the rest of the 6 minutes left for the queue.
+ *   windowMs            the AI deadline, from the handler's first line. A joiner that waited on a leader has spent
+ *                       part of it waiting, so the chain it runs after that leader failed is short on purpose.
+ *   draftBudgetMs       one draft's whole chain (aiText's own caps inside it: 60 s the first try, 40 s each later one)
+ *   correctionBudgetMs  the placeholder pass. The first draft is already good enough to keep, so it gets less.
+ *   minCallMs           never START the lane's bad-output retry or the corrective pass with less than this left:
+ *                       a chain with no room would end as an "AI is busy" the provider never said.
+ * Read at call time; the suite shrinks them. Nothing in production writes them.
  */
-const AI_TIMEOUT_MS = 80 * 1000;
+const LETTER_AI = {
+    windowMs: 4 * 60 * 1000,
+    draftBudgetMs: 3 * 60 * 1000,
+    correctionBudgetMs: 90 * 1000,
+    minCallMs: 20 * 1000,
+};
 
 /** The parsed upload rides into the prompt AND the fingerprint capped at the same length — one string. */
 const UPLOAD_CONTEXT_MAX = 24000;
@@ -497,6 +521,42 @@ const LOST_COVER = Object.freeze({
         error: 'Your plan allowance was used up while this cover letter was being written. Open Plans & Usage to continue.',
     }),
 });
+
+/**
+ * The two answers for "Google could not write this letter" — aiText's final AiUnavailableError, after it waited,
+ * retried and walked every fallback model (2026-09-18: Amazon's letter answered "That cover letter didn't finish"
+ * on a 503 "high demand" day, and said nothing about what it cost).
+ *   AI_BUSY  every model busy, hung or out of time: a provider overload. Worth a Try again in a minute.
+ *   AI_DOWN  quota or auth: the key itself is refused (the operator is paged by aiHealth). No Try again can fix it.
+ * ⚠️ "NOTHING WAS CHARGED" IS A PROMISE, and it is true only because every AI call in this lane runs BEFORE
+ * withUsageLock. The build's catch answers these only while chargedAt is still 0 — never after a charge.
+ * ⚠️ 503, and a reason of its own: an older app maps an unknown reason to 'failed' and shows `error`, which says
+ * the same thing; the current one reads the reason and offers Try again only for ai_busy (useHomeBuilds RETRYABLE).
+ * Any OTHER failure — bad output twice, every model truncated — keeps the 500 / 504 it always had.
+ */
+const AI_BUSY = Object.freeze({
+    status: 503,
+    body: Object.freeze({
+        success: false, reason: 'ai_busy', retryable: true,
+        error: "Google's AI is overloaded right now, so your cover letter could not be written. Nothing was charged — please try again in a minute.",
+    }),
+});
+const AI_DOWN = Object.freeze({
+    status: 503,
+    body: Object.freeze({
+        success: false, reason: 'ai_down', retryable: false,
+        error: 'Our AI provider is unavailable right now. Nothing was charged.',
+    }),
+});
+
+/** AI_BUSY / AI_DOWN for aiText's final failure, or null for anything else (kind 'other' is not an outage). Read by
+ *  name, like aiText.isAiBusy, so a second copy of that module in the require cache still answers. */
+function aiEndingOf(e) {
+    if (!e || e.name !== 'AiUnavailableError') return null;
+    if (e.kind === 'busy') return AI_BUSY;
+    if (e.kind === 'quota' || e.kind === 'auth') return AI_DOWN;
+    return null;
+}
 
 // ── The letter itself ────────────────────────────────────────────────────────────────────────────
 
@@ -985,29 +1045,46 @@ const LETTER_SCHEMA = {
 };
 
 // ⚠️ maxOutputTokens stays generous: gemini-2.5-flash spends "thinking" tokens from the SAME budget, and a
-// tight cap truncates the JSON mid-object (the failure both existing lanes hit and documented).
-async function callLetterModel(prompt) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
-        model: LETTER_MODEL,
-        generationConfig: { temperature: 0.7, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: LETTER_SCHEMA },
+// tight cap truncates the JSON mid-object (the failure both existing lanes hit and documented). The same config
+// goes to EVERY model in the chain — the fallbacks were measured with exactly this one (2026-09-18: valid JSON,
+// 235-282 words, from gemini-2.5-flash-lite in 2.3 s).
+const letterGenerationConfig = () => ({ temperature: 0.7, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: LETTER_SCHEMA });
+
+/**
+ * One piece of letter text → { text, model }, through aiText.generateText. The pause before the primary's second
+ * try, the fallback chain, a per-attempt cap that really ABORTS a hung request, and one budget for the whole chain
+ * all live there (its header has the incident and the measurements).
+ *
+ * ⚠️ WHAT THIS REPLACED — 2026-09-18. callLetterModel asked LETTER_MODEL once, and the build loop asked it again
+ * the same millisecond: two 503 "high demand" answers 0 ms apart, and Amazon's letter "didn't finish".
+ *
+ * ⚠️ A THROW HERE IS FINAL FOR THE BUILD. aiText throws only AiUnavailableError, and only after it has waited,
+ * retried and walked every model it may use inside `budgetMs` — so the lane never retries one (a second chain
+ * would only outlive the app's deadline). busy / quota / auth become AI_BUSY / AI_DOWN in the build's catch; kind
+ * 'other' (every model truncated, or refused the request) keeps today's 500 and its own message.
+ * Output the LANE rejects (not JSON, too short, placeholders) is not a provider failure and never reaches aiText:
+ * the build loop keeps its own bad-output retry for that.
+ *
+ * `model` is the model that ANSWERED — what the stored letter records, and NEVER a fingerprint input: a letter a
+ * fallback wrote must be the same free cache hit next time as one the primary wrote (letterFingerprintOf).
+ * `deadline` is the build's AI deadline (LETTER_AI.windowMs from its first line); the chain gets the smaller of
+ * `budgetMs` and what is left of it. `report` / `pct` put each retry on the user's progress bar in plain words.
+ */
+async function writeLetterText(prompt, { deadline, budgetMs, report, pct }) {
+    const aiText = aiTextMod();
+    const { text, model } = await aiText.generateText({
+        lane: 'letter',
+        prompt,
+        config: letterGenerationConfig(),
+        models: [LETTER_MODEL, ...aiText.fallbackModels()],
+        budgetMs: Math.max(0, Math.min(budgetMs, deadline - Date.now())),
+        // Awaited by aiText, and anything it throws is ignored there — a progress write can never break a build.
+        onRetry: ({ model: was, kind, nextModel }) => (typeof report === 'function' ? report('retry',
+            nextModel !== was ? 'Switching to a faster model'
+                : kind === 'transient' ? "Google's AI is busy — trying again" : 'Taking another pass at it',
+            pct) : undefined),
     });
-    let timer = null;
-    const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('AI_TIMEOUT')), AI_TIMEOUT_MS);
-        if (timer && typeof timer.unref === 'function') timer.unref();
-    });
-    try {
-        const result = await Promise.race([model.generateContent(prompt), timeout]);
-        const cand = result.response.candidates && result.response.candidates[0];
-        const finishReason = (cand && cand.finishReason) || '';
-        if (finishReason === 'MAX_TOKENS') throw new Error('TRUNCATED_OUTPUT');
-        return result.response.text().trim();
-    } finally {
-        if (timer) clearTimeout(timer);
-    }
+    return { text, model };
 }
 
 const SIGN_OFF_WORDS = 'sincerely|yours sincerely|yours faithfully|yours truly|best regards|kind regards|warm regards|warmest regards|regards|respectfully|best wishes';
@@ -1470,6 +1547,8 @@ const FLIGHTS = new Map();
  *          job: { company, title?, url?, description?, website? } }
  *   200 { success:true, cached, docId, tailoredFor }
  *   400 { reason:'no_resume' | 'invalid_employer' }   402 { reason:'quota_exhausted' }   500/504 { reason:'failed' }
+ *   503 { reason:'ai_busy', retryable:true | 'ai_down', retryable:false }   (Google could not write it: said only from
+ *       before the charge, so nothing was charged or stored — see AI_BUSY / AI_DOWN)
  *   409 { reason:'payer_changed' | 'cache_miss' }   (contract C2 — only for a build that sent `expectVia`)
  *
  * `job` is what the letter is WRITTEN against (the fingerprint, the prompt, the research host);
@@ -1486,6 +1565,9 @@ const FLIGHTS = new Map();
  * behaves exactly as it always has.
  */
 async function buildEmployerLetter(req, res) {
+    // ⚠️ THE AI DEADLINE STARTS HERE, not at the first AI call: research, a wait on another build's flight and every
+    // AI attempt all spend the same 6 minutes the app is polling (LETTER_AI).
+    const aiDeadline = Date.now() + LETTER_AI.windowMs;
     const userId = req.user.id;
     const body = req.body || {};
     // ⚠️ coveredOnly: Home sends true for a build it AUTO-started from a gate answer taken seconds ago.
@@ -1527,6 +1609,7 @@ async function buildEmployerLetter(req, res) {
         const designFit = designFitMod();
         const research = researchMod();
         const cl = clMod();
+        aiTextMod();
 
         let material;
         try {
@@ -1666,32 +1749,53 @@ async function buildEmployerLetter(req, res) {
                 || (facts && typeof facts.industry === 'string' && facts.industry) || '',
         };
         const prompt = buildEmployerLetterPrompt(promptArgs);
+        // ⚠️ TWO DIFFERENT RETRIES, ON PURPOSE (2026-09-18). A busy, hung or vanished MODEL is aiText's business:
+        // it pauses, retries the primary once and walks the fallbacks inside ONE budget, and what it finally throws
+        // ends this build (AI_BUSY / AI_DOWN in the catch) — this loop never runs a second chain after a first one
+        // gave up. What stays here is the lane's own question, "is this a letter?": an answer that is not JSON, or
+        // too short, earns one more draft — while the window still has room for one.
         let out = null;
+        let outModel = LETTER_MODEL;   // the model that wrote `out` — what the stored letter records
         let lastErr = null;
         for (let attempt = 1; attempt <= 2 && !out; attempt++) {
-            if (attempt > 1) await report('retry', 'Taking another pass at it', 46);
+            if (attempt > 1) {
+                if (aiDeadline - Date.now() < LETTER_AI.minCallMs) {
+                    console.warn(`[employerLetter] no time left for a second draft of the "${company}" letter — giving up on it`);
+                    break;
+                }
+                await report('retry', 'Taking another pass at it', 46);
+            }
+            const written = await writeLetterText(prompt, { deadline: aiDeadline, budgetMs: LETTER_AI.draftBudgetMs, report, pct: 46 });
             try {
-                out = parseLetterOutput(await callLetterModel(prompt), { candidateName: sender.name });
+                out = parseLetterOutput(written.text, { candidateName: sender.name });
+                outModel = written.model;
             } catch (e) {
                 lastErr = e;
-                if (e.message === 'GEMINI_API_KEY not set') throw e;
-                console.warn(`[employerLetter] letter attempt ${attempt}/2 for "${company}" failed: ${e.message}`);
+                console.warn(`[employerLetter] letter attempt ${attempt}/2 for "${company}" failed (${written.model}): ${e.message}`);
             }
         }
         if (!out) throw lastErr || new Error('AI_BAD_OUTPUT');
 
         // ── PLACEHOLDER GUARD — one corrective pass, then remove what is left ───────────────────────
+        // ⚠️ THE FIRST DRAFT IS ALREADY A LETTER. The corrective pass only improves it, so NOTHING it meets may cost
+        // the user that letter: a busy provider, a dead key, bad output, or no time left in the window all keep the
+        // first draft (with its placeholders stripped). It runs through aiText like every draft, on a smaller budget.
         let tokens = findLetterPlaceholders(out.body);
         if (tokens.length) {
             console.warn(`[employerLetter] placeholders in the "${company}" letter (${tokens.join(', ')}) — one corrective pass`);
             await report('polishing', 'Polishing the wording', 70);
-            try {
-                const again = parseLetterOutput(
-                    await callLetterModel(buildEmployerLetterPrompt({ ...promptArgs, correction: tokens })),
-                    { candidateName: sender.name });
-                const left = findLetterPlaceholders(again.body);
-                if (left.length <= tokens.length) { out = again; tokens = left; }
-            } catch (e) { console.warn('[employerLetter] corrective pass failed, keeping the first draft:', e.message); }
+            const timeLeft = aiDeadline - Date.now();
+            if (timeLeft < LETTER_AI.minCallMs) {
+                console.warn(`[employerLetter] no time left for the corrective pass (${timeLeft}ms), keeping the first draft`);
+            } else {
+                try {
+                    const fixed = await writeLetterText(buildEmployerLetterPrompt({ ...promptArgs, correction: tokens }),
+                        { deadline: aiDeadline, budgetMs: LETTER_AI.correctionBudgetMs, report, pct: 72 });
+                    const again = parseLetterOutput(fixed.text, { candidateName: sender.name });
+                    const left = findLetterPlaceholders(again.body);
+                    if (left.length <= tokens.length) { out = again; outModel = fixed.model; tokens = left; }
+                } catch (e) { console.warn('[employerLetter] corrective pass failed, keeping the first draft:', e.message); }
+            }
             if (tokens.length) out.body = withoutPlaceholders(out.body);
         }
         if (out.body.split(/\s+/).filter(Boolean).length < 80) throw new Error('AI_BAD_OUTPUT: too short after the placeholder guard');
@@ -1904,7 +2008,8 @@ async function buildEmployerLetter(req, res) {
                 await report('saving', 'Saving your letter', 92);
                 const letterDoc = {
                     userId, kind: 'cover_letter', employer: company, jobUrl: docJobUrl, jobTitle: job.title,
-                    fingerprint: fp, model: LETTER_MODEL, payload, research: facts, env, employerId, design,
+                    // `model` is who WROTE it (a fallback on a busy day), in the non-key column — never in `fp`.
+                    fingerprint: fp, model: outModel, payload, research: facts, env, employerId, design,
                     // The exact job letterFingerprintOf hashed — what /employer-docs/current re-hashes to call it stale.
                     jobInput: { title: job.title, url: job.url, description: job.description, website: job.website },
                 };
@@ -1952,11 +2057,18 @@ async function buildEmployerLetter(req, res) {
             if (usableLetter(saved)) await letterCardsFor(userId, saved, topIds, design);
         })(), PRERENDER_BUDGET_MS);
 
-        console.log(`[employerLetter] ✅ "${company}" letter for user ${userId} → doc ${docId} (${paidWith})`);
+        console.log(`[employerLetter] ✅ "${company}" letter for user ${userId} → doc ${docId} (${paidWith}, written by ${outModel})`);
         return res.json({ success: true, cached: false, docId, tailoredFor: company });
     } catch (e) {
         if (chargedAt) console.error(`[employerLetter] ❌❌ failed AFTER charging user ${userId} for "${company}":`, e.message);
         else console.error('[employerLetter] build error:', e.message);
+        // The AI provider could not write it — busy through every retry and model, or refusing the key. Only from
+        // before the charge (every AI call is), because the answer promises that nothing was charged.
+        const ending = chargedAt ? null : aiEndingOf(e);
+        if (ending) {
+            console.warn(`[employerLetter] "${company}" letter for user ${userId} ended as ${ending.body.reason} after ${(e.attempts || []).length} AI attempts (${(e.attempts || []).map((a) => `${a.model} ${a.kind}`).join(', ') || 'none'}) — nothing charged, nothing stored`);
+            return res.status(ending.status).json(ending.body);
+        }
         const isTimeout = e && (e.message === 'AI_TIMEOUT' || /timeout|ETIMEDOUT/i.test(e.message || ''));
         return res.status(isTimeout ? 504 : 500).json({
             success: false, reason: 'failed', isTimeout,
@@ -2013,4 +2125,5 @@ module.exports = {
     buildEmployerLetterPrompt, parseLetterOutput, findLetterPlaceholders, stripLetterPlaceholders, cleanPosition,
     passWouldCoverLetter, letterFingerprintOf, jobFieldsOf, uploadContextOf, letterStyleFor, usageAndPassFor,
     letterPlaybookFor, letterPlaybookBlockFor, countryLetterRowOf, LETTER_PROFILES,
+    LETTER_AI, LETTER_MODEL,
 };

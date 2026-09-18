@@ -7,6 +7,9 @@
 // Since 2026-09-14 it also covers what Home's confirm sheet reads from the gate (usage + pass — display only, never
 // on a cache hit) and the employer's hiring CONVENTIONS (research.conventions): the prompt's facts and FORMATTING
 // rules, personal details blanked in code, the page mode, and the stored design's aiFamilies / conventionsSummary.
+// Since 2026-09-18 (S30) it covers Google's AI being BUSY, for both résumé lanes: a 503 storm is waited for and fallen back
+// from (aiText), the model that actually answered is stored, and a build no model can write is a 503 ai_busy / ai_down
+// that charged, stored and locked nothing — the Amazon "didn't finish" incident, in the résumé lanes.
 // ⚠️ WHY: this lane spends money. A cache hit must touch no billing; coveredOnly must refuse before research
 // (a grounded AI call) and again at the moment of payment; a document is stored only for a build that was
 // actually charged; and the lane must never read or write user_resumes (Home keeps one document PER EMPLOYER).
@@ -30,7 +33,12 @@ const THUMB_DIR = path.join(ROOT, 'uploads', '.thumb_cache', String(UID));
 const STARTED = Date.now();
 
 // ── counters ─────────────────────────────────────────────────────────────────────────────────────
-const ai = { calls: 0, prompts: [], queue: [], temps: [] };   // queue: functions (prompt) => text; temps: generationConfig.temperature per model
+// queue: functions (prompt) => text; temps: generationConfig.temperature per model.
+// ⚠️ SINCE 2026-09-18 A CALL NAMES ITS MODEL (S30): aiText walks a fallback chain, so `models` / `at` record which model
+// each call went to and when, and `down` makes a model fail EVERY call it gets ({ [model]: () => Error }) — a 503 storm
+// on the primary, a quota wall on all of them — before the queue is consulted, so the queue feeds whoever answers.
+// A `down` entry answering 'hang' never answers at all (gemini-flash-latest took 257 s): only a real cap ends that call.
+const ai = { calls: 0, prompts: [], queue: [], temps: [], models: [], at: [], down: {} };
 const research = { calls: 0 };
 // previewOpts / pdfOpts / docxOpts: the opts each render was handed — the brand a doc-mode render paints in is asserted
 // from these (contract 4: EVERY doc-mode render passes design.brand; the base paths pass none).
@@ -105,6 +113,12 @@ async function dbGet(sql, params = []) {
   if (/^DELETE FROM usage_ledger WHERE id = \$1 AND user_id = \$2/.test(q)) {
     const i = db.ledger.findIndex((r) => r.id === params[0] && r.user_id === params[1]);
     if (i >= 0) db.ledger.splice(i, 1);
+    return null;
+  }
+  // asJob's failJobWithReason (S30): the job a poller is waiting on, failed WITH the handler's reason in one write.
+  if (/^UPDATE async_jobs SET status = 'failed', error = \$1, result = \$2/.test(q)) {
+    db.failedJobs = db.failedJobs || [];
+    db.failedJobs.push({ id: params[2], error: params[0], result: JSON.parse(params[1]) });
     return null;
   }
   // download_passes (copied from test-single-purchase-flow.js)
@@ -238,9 +252,16 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
   GoogleGenerativeAI: class {
     getGenerativeModel(cfg) {
       ai.temps.push(cfg && cfg.generationConfig ? cfg.generationConfig.temperature : null);
+      const model = cfg && cfg.model;
       return { generateContent: async (prompt) => {
         ai.calls++;
+        ai.models.push(model); ai.at.push(Date.now());
         ai.prompts.push(typeof prompt === 'string' ? prompt : JSON.stringify(prompt));
+        if (ai.down[model]) {
+          const e = ai.down[model]();
+          if (e === 'hang') await new Promise(() => {});   // no timer: an abandoned call holds nothing open
+          throw e;
+        }
         const next = ai.queue.length ? ai.queue.shift() : (() => JSON.stringify(RESUME()));
         const text = next(prompt);
         return { response: { text: () => text, candidates: [{ finishReason: 'STOP' }] } };
@@ -256,15 +277,24 @@ research.industry = 'E-commerce and cloud computing';
 // (cvPlaybook.tierFor): a 'giant' is only ever an employer whose conventions DECLARE employerType 'enterprise' and
 // whose size says household name or ≥ 20,000 people — the default below is a large employer, never a giant (S29c).
 research.size = '10,001+ employees';
-stub('ai-employer-researcher.js', { researchEmployer: async (url) => { research.calls++; return { employer_name: 'Amazon', industry: research.industry, company_size: research.size, brand_color: '#ff9900', font_name: 'Amazon Ember', technologies: [{ name: 'AWS' }], clients: [], recent_activity: [], key_contacts: [{ name: 'Jane' }] }; } });
+// research.delayMs: how long "the research" takes (S30 — so the build's AI clock has visibly run before the first AI call).
+research.delayMs = 0;
+stub('ai-employer-researcher.js', { researchEmployer: async (url) => { research.calls++; if (research.delayMs) await new Promise((r) => setTimeout(r, research.delayMs)); return { employer_name: 'Amazon', industry: research.industry, company_size: research.size, brand_color: '#ff9900', font_name: 'Amazon Ember', technologies: [{ name: 'AWS' }], clients: [], recent_activity: [], key_contacts: [{ name: 'Jane' }] }; } });
 stub('server/services/resumeScorer.js', {
   narrativeFor: async () => ({ text: BASE_TEXT, source: 'builder' }),
   BASE_SNAPSHOT_FP: 'base-resume-before-tailoring:v1',
 });
+// startJob / failJob / completeJob are what the REAL asJob wrapper calls (S30 drives one build through it); `jobs` counts them.
+const jobs = { started: [], failed: [], completed: [] };
 stub('server/services/jobService.js', {
   updateJobProgress: async () => {}, updateJobPartialResult: async (id, r) => { stages.push(r); },
-  createJob: async () => 'job1', failJob: async () => {}, completeJob: async () => {},
+  createJob: async () => 'job1', startJob: async (id) => { jobs.started.push(id); },
+  failJob: async (id, msg) => { jobs.failed.push({ id, msg }); }, completeJob: async (id, body) => { jobs.completed.push({ id, body }); },
 });
+// ⚠️ THE OPERATOR'S PAGER (S30): aiText reports a quota / auth wall through the REAL aiHealth, which lazily requires
+// adminNotifier — unstubbed that is the push service and the database. `pages` counts what would have been sent.
+const pages = [];
+stub('server/services/adminNotifier.js', { notifyAdmins: async (category, title, body, data) => { pages.push({ title, data }); } });
 stub('server/services/eventCosts.js', { getEventCost: async () => 2, refundCredits: async (u, key, charge) => { refunds.push({ u, key, charge }); } });
 stub('server/services/downloadHistory.js', { record: async (u, entry) => { historyRows.push(entry); }, list: async () => ({ items: [] }) });
 // ⚠️ A REAL JPEG (2026-09-15). The shared page cache stores the renderer's 794-px page and DERIVES Home's 480-px card
@@ -1277,13 +1307,17 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const src28 = fsSync.readFileSync(path.join(ROOT, 'server/controllers/resumeBuilderController.js'), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
     // ⚠️ RETARGETED 2026-09-15: four lines (summary 0.6, opening 0.5, a highlight 0.9, 60% of them) and the doc lane's 0.55
     // over the builder's default 0.4 — the builder's one call passes no temperature, the doc lane's two pass the constant.
+    // ⚠️ RETARGETED 2026-09-18: the pass now runs inside the build's AI context (withResumeAi — its provider retries report
+    // on the bar and share the build's one clock), so it is counted as that call, still exactly one.
+    const passCalls = (src28.match(/await withResumeAi\(docAi, \(\) => correctDocDraft\(/g) || []).length;
     ok('⚠️ the guard\'s four lines, the two temperatures, and ONE pass in code: correctDocDraft is called once in the lane, inside the correction budget',
       /DOC_SUMMARY_SAME_MAX = 0\.6\b/.test(src28) && /DOC_OPENING_SAME_MAX = 0\.5\b/.test(src28) && /DOC_HIGHLIGHT_SAME_MIN = 0\.9\b/.test(src28) && /DOC_HIGHLIGHTS_SAME_SHARE = 0\.6\b/.test(src28)
       && /DOC_LANE_TEMPERATURE = 0\.55\b/.test(src28) && /async function callGemini\(prompt, \{ temperature = 0\.4 \} = \{\}\)/.test(src28)
       && (src28.match(/await callGemini\((?:prompt|fixPrompt), \{ temperature: DOC_LANE_TEMPERATURE \}\)/g) || []).length === 2
       && (src28.match(/await callGemini\(prompt\);/g) || []).length === 1 && (src28.match(/await callGemini\(/g) || []).length === 3
-      && (src28.match(/await correctDocDraft\(/g) || []).length === 1 && /Date\.now\(\) - startedAt < DOC_LANE_CORRECTION_BUDGET_MS/.test(src28),
-      { passes: (src28.match(/await correctDocDraft\(/g) || []).length, calls: (src28.match(/await callGemini\(/g) || []).length });
+      && passCalls === 1 && (src28.match(/correctDocDraft\(/g) || []).length === 2   // its definition, and that one call
+      && /Date\.now\(\) - startedAt < DOC_LANE_CORRECTION_BUDGET_MS/.test(src28),
+      { passes: passCalls, calls: (src28.match(/await callGemini\(/g) || []).length });
   }
 
   console.log('── S29 · ⚠️ THE COUNTRY WRITES THE DOCUMENT: one playbook for the prompt, the page and the design (2026-09-16) ──');
@@ -1583,6 +1617,285 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     ok('…and it is enforced in code there: the date of birth and the nationality are blanked on that document',
       (db.docs.find((d) => d.id === bLocal.body.docId) || {}).payload.personal_info.date_of_birth === '', bLocal.body);
     conv.answer = null;
+  }
+
+  console.log('── S30 · ⚠️ GOOGLE\'S AI IS BUSY: the build waits, falls back, and a build it still beats charges NOTHING (2026-09-18) ──');
+  {
+    // The incident, in the letter lane, and the same shape in both of these: user 1 built Amazon from Home and got
+    // "That cover letter didn't finish". gemini-2.5-flash answered 503 "This model is currently experiencing high
+    // demand" twice, back to back, and the lane gave up — the résumé lanes asked THREE times with no pause, on one model,
+    // and a hang (AI_TIMEOUT) failed the build outright. Since then every callGemini goes through aiText: ~2 s, the
+    // primary once more, then gemini-2.5-flash-lite, then gemini-3.1-flash-lite, all inside the build's ONE clock
+    // (withResumeAi), and a build no model can write answers 503 ai_busy / ai_down BEFORE the charge.
+    // ⚠️ WHAT MUST HOLD, and what each block below pins:
+    //   a  a 503 storm on the primary → the document all the same, from a fallback, charged ONCE, the fallback stored
+    //   b  the fingerprint does not know who wrote it → an identical request later is a FREE hit (no re-bill, ever)
+    //   c  every model busy → 503 ai_busy, nothing charged / stored / locked, and the job's poller released at once
+    //   d  quota / a missing key → 503 ai_down, one call at most, not retryable, the operator paged
+    //   e  a HUNG primary is capped and fallen back from — no longer a 504 after 90 s
+    //   i  the lane's OWN retry with no clock left is still the lane's failure (500), never blamed on Google
+    //   f  the corrective pass: a busy primary falls back; every model busy keeps the first draft (as before)
+    //   g  the builder lane (no saveTo) — the same, on user_resumes and its cached copy
+    //   h  the money constants and the order in code: AI before the lock, the model outside every fingerprint
+    const aiText = require(path.join(ROOT, 'server/services/aiText.js'));
+    const { asJob } = require(path.join(ROOT, 'server/middleware/asyncJob.js'));
+    const PRIMARY = 'gemini-2.5-flash', LITE = 'gemini-2.5-flash-lite', LITE3 = 'gemini-3.1-flash-lite';
+    const HIGH_DEMAND = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.'), { status: 503, statusText: 'Service Unavailable' });
+    const DEPLETED = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [429 Too Many Requests] Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. RESOURCE_EXHAUSTED'), { status: 429, statusText: 'Too Many Requests' });
+    const stormOn = (...models) => { ai.down = {}; for (const m of models) ai.down[m] = HIGH_DEMAND; };
+    // The pause before the primary's second try is ~2 s in production: asserted, then shrunk so the suite stays fast —
+    // and still MEASURED below, because "not back to back" is the whole bug.
+    ok('the pause before the primary is asked again is ~2 s in production (2000 ms + ≤ 800 ms jitter)',
+      aiText._internals.settings.retryWaitMs === 2000 && aiText._internals.settings.retryJitterMs === 800, aiText._internals.settings);
+    const WAIT = 40;
+    // ⚠️ Node's setTimeout can fire a millisecond EARLY by Date.now (measured: 4 of 300 40 ms sleeps landed under 40),
+    // which failed this suite once in six runs while aiText had paused correctly. "Paused" is proven with a few ms of
+    // slack — the same margin test-ai-text.js allows (>= 28 for its 30 ms wait) — never an exact equality with a timer.
+    const PAUSED = WAIT - 3;
+    aiText._internals.settings.retryWaitMs = WAIT; aiText._internals.settings.retryJitterMs = 0;
+    const envFallbacks = process.env.AI_TEXT_FALLBACK_MODELS;
+    delete process.env.AI_TEXT_FALLBACK_MODELS;
+    // What each build ASKED aiText for (its lane, its clock, its caps, its config) — the lane calls aiText.generateText
+    // through the module on every use, so it is wrapped here. `shrinkCaps` stands in for the 90 s / 45 s caps in (e) only;
+    // `spentFrom` is the aiText call (1-based, suite-wide) from which the build's clock reads as spent, in (i) only.
+    const asked = [];
+    let shrinkCaps = null, spentFrom = Infinity;
+    const realGenerate = aiText.generateText;
+    aiText.generateText = (o) => {
+      asked.push({ ...o, at: Date.now() });
+      let sent = shrinkCaps ? { ...o, attemptCapsMs: shrinkCaps } : o;
+      if (asked.length >= spentFrom) sent = { ...sent, budgetMs: 0 };
+      return realGenerate(sent);
+    };
+    ent.consumeVia = 'plan'; ent.gate = { allowed: true, via: 'plan', remaining: 5 }; ent.gateSeq = []; conv.answer = null; brandSite.answer = null;
+    // The research takes RESEARCH_MS here, so every doc build has spent that much of its clock before its first AI call —
+    // a lane that handed aiText a FRESH 4.5 min per call (not the build's) is then visible in the budget it passed.
+    const RESEARCH_MS = 80;
+    research.delayMs = RESEARCH_MS;
+    const lockCount = () => db.sql.filter((s) => /pg_advisory_xact_lock\(hashtext\('usage:'/.test(s)).length;
+    const retryTicks = () => stages.filter((s) => s.stage === 'retry').map((s) => `${s.label}@${s.pct}`);
+    const BUSY_WORDS = 'Google\'s AI is overloaded right now, so your resume could not be written. Nothing was charged — please try again in a minute.';
+    const DOWN_WORDS = 'Our AI provider is unavailable right now. Nothing was charged.';
+    const docFor = (company) => db.docs.find((d) => d.kind === 'resume' && d.employer_key === D.employerKeyOf(company));
+
+    // (a) the storm on the primary: the fallback writes it.
+    stormOn(PRIMARY);
+    let s0 = snapshot(); let m0 = ai.models.length; let lock0 = lockCount(); let a0 = asked.length; stages.length = 0;
+    const bA = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30a', job: { company: 'Storm Co', website: 'https://storm-test.com' } }));
+    const dA = docFor('Storm Co');
+    ok('⚠️ (a) a 503 storm on gemini-2.5-flash → 200 all the same, the document written by gemini-2.5-flash-lite',
+      bA.statusCode === 200 && bA.body.cached === false && !!dA && dA.id === bA.body.docId && dA.model === LITE, { status: bA.statusCode, body: bA.body, model: dA && dA.model });
+    ok('⚠️ …the primary asked TWICE with a real pause between (never back to back), then the first fallback: three calls',
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE]) && ai.at[m0 + 1] - ai.at[m0] >= PAUSED,
+      { models: ai.models.slice(m0), gapMs: ai.at[m0 + 1] - ai.at[m0] });
+    ok('⚠️ …charged EXACTLY once and stored exactly once — the AI\'s retries cost nothing extra',
+      ent.consumed.length - s0.consumed === 1 && db.docs.length - s0.docs === 1 && lockCount() - lock0 === 1 && refunds.length === s0.refunds,
+      { consumed: ent.consumed.length - s0.consumed, docs: db.docs.length - s0.docs, locks: lockCount() - lock0 });
+    ok('…every model was asked at the doc lane\'s 0.55, the fallback included', ai.temps.slice(-3).every((t) => t === 0.55), ai.temps.slice(-3));
+    ok('⚠️ the bar said so in plain words, at the writing stage, never walking backwards: busy → trying again, then switching',
+      JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a faster model@42'])
+      && stages.map((s) => s.stage).join() === 'reading,researching,writing,retry,retry,designing,saving,pages', { ticks: retryTicks(), stages: stages.map((s) => s.stage) });
+    const askA = asked.slice(a0);
+    ok('⚠️ one aiText call for the draft: lane resume_doc, the lane\'s own chain, 90 s / 90 s / 45 s caps, JSON at 0.55',
+      askA.length === 1 && askA[0].lane === 'resume_doc' && JSON.stringify(askA[0].models) === JSON.stringify([PRIMARY, LITE, LITE3])
+      && JSON.stringify(askA[0].attemptCapsMs) === JSON.stringify([90000, 90000, 45000]) && typeof askA[0].onRetry === 'function'
+      && askA[0].config.temperature === 0.55 && askA[0].config.responseMimeType === 'application/json' && askA[0].config.maxOutputTokens === 32768,
+      askA.map((o) => ({ lane: o.lane, models: o.models, caps: o.attemptCapsMs, config: o.config })));
+    ok('⚠️ …on the BUILD\'s clock: 4.5 min from the build\'s START, less the research it already waited for — not a fresh 4.5 min per call',
+      askA.length === 1 && askA[0].budgetMs <= 270000 - RESEARCH_MS + 5 && askA[0].budgetMs > 240000, { budget: askA.map((o) => o.budgetMs), research: RESEARCH_MS });
+
+    // (b) the fingerprint cannot see who wrote the document.
+    stormOn();
+    s0 = snapshot(); m0 = ai.models.length;
+    const bB = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30b', job: { company: 'Calm Co', website: 'https://storm-test.com' } }));
+    const dB = docFor('Calm Co');
+    ok('the same inputs with no storm: one call, written by the primary', bB.statusCode === 200 && !!dB && dB.model === PRIMARY && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY]), { model: dB && dB.model, models: ai.models.slice(m0) });
+    ok('⚠️ (b) the fallback-written document\'s fingerprint EQUALS the primary-written one (the model is in no fingerprint)',
+      !!dA && !!dB && dA.input_fingerprint === dB.input_fingerprint, { a: dA && dA.input_fingerprint.slice(0, 12), b: dB && dB.input_fingerprint.slice(0, 12) });
+    ok('…and it is the fingerprint the gate and /employer-docs/current compute for that job',
+      !!dA && dA.input_fingerprint === await RB.currentResumeFingerprint(UID, { job: { title: '', url: '', description: '', website: 'https://storm-test.com' }, env: 'Production' }));
+    stormOn(PRIMARY);   // still storming — a hit must not care
+    s0 = snapshot();
+    const bA2 = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30a2', job: { company: 'Storm Co', website: 'https://storm-test.com' } }));
+    ok('⚠️ …so the identical request later is a FREE cache hit: the same document, no AI, no gate, no charge, no store',
+      bA2.statusCode === 200 && bA2.body.cached === true && !!dA && bA2.body.docId === dA.id && JSON.stringify(snapshot()) === JSON.stringify(s0), { body: bA2.body, before: s0, after: snapshot() });
+
+    // (c) every model busy: 503 ai_busy, and nothing moved.
+    stormOn(PRIMARY, LITE, LITE3);
+    s0 = snapshot(); m0 = ai.models.length; lock0 = lockCount(); stages.length = 0;
+    const passes0 = JSON.stringify(db.passes), ledger0 = db.ledger.length, pages0 = pages.length;
+    const bC = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30c', job: { company: 'Gridlock Co', website: 'https://gridlock-test.com' } }));
+    ok('⚠️ (c) every model busy → HTTP 503 { success:false, reason:\'ai_busy\', retryable:true } saying nothing was charged',
+      bC.statusCode === 503 && JSON.stringify(bC.body) === JSON.stringify({ success: false, reason: 'ai_busy', retryable: true, error: BUSY_WORDS }), { status: bC.statusCode, body: bC.body });
+    ok('…after the whole chain: the primary twice, then each fallback once — four calls, then it stops',
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE, LITE3]), ai.models.slice(m0));
+    ok('⚠️ …NOTHING charged, NOTHING stored, NO usage lock taken, no pass stamped, no ledger row, nothing given back (nothing was taken)',
+      ent.consumed.length === s0.consumed && db.docs.length === s0.docs && lockCount() === lock0 && JSON.stringify(db.passes) === passes0
+      && db.ledger.length === ledger0 && refunds.length === s0.refunds && !docFor('Gridlock Co'),
+      { consumed: ent.consumed.length - s0.consumed, docs: db.docs.length - s0.docs, locks: lockCount() - lock0 });
+    ok('…a busy provider is not an outage: nobody paged', pages.length === pages0, pages.slice(pages0));
+    ok('…and the bar said what was happening, three times, before the answer', JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a faster model@42', 'Switching to a faster model@44']), retryTicks());
+    // The waiters. The résumé lanes keep no in-process FLIGHTS map (that is the letter lane's): what waits on a build is
+    // the job the app polls (asJob) and the usage lock's queue. The lock was never taken (above); the job must end NOW,
+    // failed WITH its reason, so the poller stops at once and the app can say what happened — not spin for six minutes.
+    const wrapped = asJob('resume_generate_ai')(RB.generateAI);
+    const failed0 = (db.failedJobs || []).length;
+    s0 = snapshot();
+    const accepted = await call(wrapped, buildBody({ __async: true, clientBuildId: 'cb-30c-async', job: { company: 'Gridlock Co', website: 'https://gridlock-test.com' } }));
+    const until = async (cond, ms = 5000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 10)); return cond(); };
+    const settled = await until(() => (db.failedJobs || []).length > failed0);
+    const fj = settled ? db.failedJobs[db.failedJobs.length - 1] : null;
+    ok('⚠️ through the real asJob: 202 at once, then the job FAILED with reason ai_busy and the same sentence — its poller released',
+      accepted.statusCode === 202 && accepted.body.jobId === 'job1' && !!fj && fj.id === 'job1' && fj.result.reason === 'ai_busy' && fj.error === BUSY_WORDS && fj.result.error === BUSY_WORDS,
+      { accepted: accepted.body, failed: fj });
+    ok('…and nothing charged or stored on that path either', ent.consumed.length === s0.consumed && db.docs.length === s0.docs && jobs.completed.length === 0, { consumed: ent.consumed.length - s0.consumed });
+
+    // (d) the key: out of credit, or missing. Every model shares it, so one call is all it takes to know.
+    ai.down = { [PRIMARY]: DEPLETED, [LITE]: DEPLETED, [LITE3]: DEPLETED };
+    s0 = snapshot(); m0 = ai.models.length; lock0 = lockCount();
+    const pagesQ = pages.length;
+    const bD = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30d', job: { company: 'Depleted Co', website: 'https://depleted-test.com' } }));
+    ok('⚠️ (d) quota → 503 { reason:\'ai_down\', retryable:false } — Try again cannot work until the operator acts',
+      bD.statusCode === 503 && JSON.stringify(bD.body) === JSON.stringify({ success: false, reason: 'ai_down', retryable: false, error: DOWN_WORDS }), { status: bD.statusCode, body: bD.body });
+    ok('…FAIL FAST: ONE call (no second model, no retry), nothing charged, stored or locked',
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY]) && ent.consumed.length === s0.consumed && db.docs.length === s0.docs && lockCount() === lock0,
+      { models: ai.models.slice(m0), consumed: ent.consumed.length - s0.consumed });
+    ok('…and the operator is PAGED (aiHealth → adminNotifier), kind quota', pages.length === pagesQ + 1 && pages[pages.length - 1].data && pages[pages.length - 1].data.kind === 'quota', pages.slice(pagesQ));
+    ai.down = {};
+    const realKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    s0 = snapshot();
+    let bKey;
+    try { bKey = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30d2', job: { company: 'Keyless Co', website: 'https://keyless-test.com' } })); }
+    finally { process.env.GEMINI_API_KEY = realKey; }
+    ok('a missing GEMINI_API_KEY is ai_down too — before any call, nothing charged or stored',
+      bKey.statusCode === 503 && bKey.body.reason === 'ai_down' && bKey.body.retryable === false && ai.calls === s0.ai && ent.consumed.length === s0.consumed && db.docs.length === s0.docs, bKey.body);
+
+    // (e) a model that HANGS: the cap aborts it and the next model answers (the caps shrunk from 90 s / 45 s to 60 ms).
+    ai.down = { [PRIMARY]: () => 'hang' };
+    shrinkCaps = [60, 60, 60];
+    s0 = snapshot(); m0 = ai.models.length;
+    const tE = Date.now();
+    const bE = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30e', job: { company: 'Hung Co', website: 'https://hung-test.com' } }));
+    shrinkCaps = null;
+    ok('⚠️ (e) a hung primary no longer fails the build (it was a 504 after 90 s): capped twice, the fallback writes it, charged once',
+      bE.statusCode === 200 && (docFor('Hung Co') || {}).model === LITE && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE])
+      && ent.consumed.length - s0.consumed === 1 && Date.now() - tE < 3000, { status: bE.statusCode, models: ai.models.slice(m0), ms: Date.now() - tE });
+
+    // (i) the lane's OWN retry (an answer that was not a résumé) finds the build's clock spent: aiText makes no call and
+    // throws busy with no attempts. What failed is the answer the lane rejected — so it is today's 500 'failed', never an
+    // "overloaded" story about a provider nobody asked.
+    ai.down = {};
+    ai.queue.push(() => JSON.stringify({ not: 'a resume' }));
+    spentFrom = asked.length + 2;
+    s0 = snapshot(); m0 = ai.models.length;
+    const bI = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30i', job: { company: 'Late Co', website: 'https://late-test.com' } }));
+    spentFrom = Infinity;
+    ok('(i) a rejected answer, then no clock left for the lane\'s own retry → 500 failed (the answer failed, not Google), nothing charged',
+      bI.statusCode === 500 && bI.body.reason === 'failed' && ai.models.length - m0 === 1 && ent.consumed.length === s0.consumed && db.docs.length === s0.docs,
+      { status: bI.statusCode, body: bI.body, calls: ai.models.length - m0 });
+
+    // (f) the corrective pass. A generic draft (the title unchanged, the sector known) earns the one pass; the storm starts
+    // as the draft is answered, so it is the PASS that meets it.
+    const GENERIC = () => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer' } }));
+    ai.down = {};
+    ai.queue.push(() => { stormOn(PRIMARY); return GENERIC(); });
+    ai.queue.push(() => JSON.stringify(RESUME({ personal_info: { ...RESUME().personal_info, title: 'Backend Engineer — Retail Platforms' } })));
+    s0 = snapshot(); m0 = ai.models.length; a0 = asked.length; stages.length = 0;
+    const bF = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30f', job: { company: 'Polish Co', website: 'https://polish-test.com' } }));
+    const dF = docFor('Polish Co');
+    ok('⚠️ (f) the pass meets the storm, falls back, and its answer is taken: stored as written BY THE FALLBACK, charged once',
+      bF.statusCode === 200 && !!dF && dF.payload.personal_info.title === 'Backend Engineer — Retail Platforms' && dF.model === LITE
+      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, PRIMARY, LITE]) && ent.consumed.length - s0.consumed === 1,
+      { title: dF && dF.payload.personal_info.title, model: dF && dF.model, models: ai.models.slice(m0) });
+    const askF = asked.slice(a0);
+    ok('⚠️ …the draft and the pass share ONE clock: the pass\'s budget is what the draft\'s had left',
+      askF.length === 2 && askF[1].budgetMs <= askF[0].budgetMs - (askF[1].at - askF[0].at) + 5 && askF[1].budgetMs <= 270000 - RESEARCH_MS + 5 && askF[1].lane === 'resume_doc',
+      askF.map((o) => ({ lane: o.lane, budget: o.budgetMs, at: o.at - askF[0].at })));
+    ok('…and the bar re-labelled the POLISHING stage, never behind it', JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@72', 'Switching to a faster model@74'])
+      && stages.map((s) => s.stage).join() === 'reading,researching,writing,polishing,retry,retry,designing,saving,pages', { ticks: retryTicks(), stages: stages.map((s) => s.stage) });
+    ai.down = {};
+    ai.queue.push(() => { stormOn(PRIMARY, LITE, LITE3); return GENERIC(); });
+    s0 = snapshot(); m0 = ai.models.length;
+    const bF2 = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30f2', job: { company: 'Keepsake Co', website: 'https://keepsake-test.com' } }));
+    const dF2 = docFor('Keepsake Co');
+    ok('⚠️ …and when EVERY model is busy for the pass, the first draft is delivered as before: 200, stored as the primary wrote it, charged once',
+      bF2.statusCode === 200 && !!dF2 && dF2.payload.personal_info.title === 'Backend Engineer' && dF2.model === PRIMARY
+      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, PRIMARY, LITE, LITE3]) && ent.consumed.length - s0.consumed === 1,
+      { status: bF2.statusCode, model: dF2 && dF2.model, models: ai.models.slice(m0) });
+    ai.down = {};
+
+    // (g) the builder lane — POST /generate-ai with no saveTo: the user's one resume row, and its cached copy per employer.
+    const builderBody = (company, over = {}) => ({ __async: false, coveredOnly: true, rawText: BASE_TEXT, name: 'Harness User', email: 'h@u.test', phone: '+91 1', location: 'Pune', includeUploadedResume: true, job: { company, website: 'https://builder-storm-test.com' }, ...over });
+    const savedRows = () => db.userResumesTouched.filter((q) => /^INSERT INTO user_resumes/.test(q)).length;
+    stormOn(PRIMARY);
+    s0 = snapshot(); m0 = ai.models.length; a0 = asked.length; lock0 = lockCount(); let saved0 = savedRows(); stages.length = 0;
+    const gA = await call(RB.generateAI, builderBody('Builder Storm Co'));
+    const gDoc = docFor('Builder Storm Co');
+    ok('⚠️ (g) builder lane, a 503 storm on the primary → 200 with the resume, saved, cached with the FALLBACK named, charged once',
+      gA.statusCode === 200 && gA.body.success === true && gA.body.cached === false && !!(gA.body.resumeData && gA.body.resumeData.personal_info)
+      && savedRows() - saved0 === 1 && !!gDoc && gDoc.model === LITE && ent.consumed.length - s0.consumed === 1 && lockCount() - lock0 === 1,
+      { status: gA.statusCode, model: gDoc && gDoc.model, consumed: ent.consumed.length - s0.consumed, saved: savedRows() - saved0 });
+    ok('…the primary twice (a real pause), then flash-lite, at the builder\'s own 0.4, reported as the builder\'s own retries',
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE]) && ai.at[m0 + 1] - ai.at[m0] >= PAUSED && ai.temps.slice(-3).every((t) => t === 0.4)
+      && JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a faster model@42'])
+      && asked.length - a0 === 1 && asked[a0].lane === 'resume_builder' && asked[a0].budgetMs <= 270000, { models: ai.models.slice(m0), ticks: retryTicks(), lane: asked[a0] && asked[a0].lane });
+    stormOn();
+    s0 = snapshot(); m0 = ai.models.length;
+    const gB = await call(RB.generateAI, builderBody('Builder Calm Co'));
+    ok('⚠️ …its cached copy\'s fingerprint equals the primary-written one, and the identical request is then a FREE hit',
+      gB.statusCode === 200 && (docFor('Builder Calm Co') || {}).model === PRIMARY && !!gDoc && (docFor('Builder Calm Co') || {}).input_fingerprint === gDoc.input_fingerprint, { model: (docFor('Builder Calm Co') || {}).model });
+    s0 = snapshot();
+    const gA2 = await call(RB.generateAI, builderBody('Builder Storm Co'));
+    ok('…(the hit: no AI, no charge, no new document)', gA2.statusCode === 200 && gA2.body.cached === true && ai.calls === s0.ai && ent.consumed.length === s0.consumed && db.docs.length === s0.docs, gA2.body);
+    stormOn(PRIMARY, LITE, LITE3);
+    s0 = snapshot(); m0 = ai.models.length; lock0 = lockCount(); saved0 = savedRows();
+    const gC = await call(RB.generateAI, builderBody('Builder Gridlock Co'));
+    ok('⚠️ …every model busy → 503 ai_busy with the same sentence; NOTHING charged, NOTHING saved or cached, no lock taken',
+      gC.statusCode === 503 && JSON.stringify(gC.body) === JSON.stringify({ success: false, reason: 'ai_busy', retryable: true, error: BUSY_WORDS })
+      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE, LITE3])
+      && ent.consumed.length === s0.consumed && savedRows() === saved0 && !docFor('Builder Gridlock Co') && lockCount() === lock0,
+      { status: gC.statusCode, body: gC.body, consumed: ent.consumed.length - s0.consumed, saved: savedRows() - saved0 });
+    // The operator's switch: AI_TEXT_FALLBACK_MODELS=none is "primary only" again, without a deploy — honoured by the lane.
+    process.env.AI_TEXT_FALLBACK_MODELS = 'none';
+    stormOn(PRIMARY);
+    m0 = ai.models.length;
+    const gOff = await call(RB.generateAI, builderBody('Builder Switch Co'));
+    delete process.env.AI_TEXT_FALLBACK_MODELS;
+    ok('…and AI_TEXT_FALLBACK_MODELS=none leaves the primary alone: asked twice, then 503 ai_busy', gOff.statusCode === 503 && gOff.body.reason === 'ai_busy' && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY]), ai.models.slice(m0));
+    ai.down = {};
+
+    // (h) the money, in code. ⚠️ A bump of any of these re-bills every saved document: the model id must not need one.
+    const letterSrc = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
+    ok('⚠️ (h) RESEARCH_REV r1, FP_VERSION v1, LETTER_REV letter-v1 — none moved (a fallback costs nobody a re-bill)',
+      ER.RESEARCH_REV === 'r1' && realDocs.FP_VERSION === 'v1' && /const LETTER_REV = 'letter-v1';/.test(letterSrc), { research: ER.RESEARCH_REV, fp: realDocs.FP_VERSION });
+    const src30 = fsSync.readFileSync(path.join(ROOT, 'server/controllers/resumeBuilderController.js'), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const fpFn = src30.slice(src30.indexOf('async function generationFingerprint'), src30.indexOf('function docResearchRev'));
+    ok('⚠️ …the fingerprint function names no model (builder RESEARCH_REV still \'none\')',
+      fpFn.length > 200 && !/model|RESUME_MODEL|writtenBy/i.test(fpFn) && /const RESEARCH_REV = 'none';/.test(src30), fpFn.length);
+    const docLane = src30.slice(src30.indexOf('async function generateEmployerDoc'), src30.indexOf('async function passWouldCoverResume'));
+    const builderLane = src30.slice(src30.indexOf('async function generateAI'), src30.indexOf('async function generateEmployerDoc'));
+    ok('⚠️ …every AI call sits BEFORE the usage lock and the charge, in both lanes, and the model that answered is what is stored',
+      docLane.indexOf('await withResumeAi(docAi, () => writeDocDraft(') > 0 && docLane.indexOf('await withResumeAi(docAi, () => correctDocDraft(') > 0
+      && docLane.indexOf('await withResumeAi(docAi, () => correctDocDraft(') < docLane.indexOf('await withUsageLock(')
+      && builderLane.indexOf("await withResumeAi({ lane: 'resume_builder'") > 0 && builderLane.indexOf("await withResumeAi({ lane: 'resume_builder'") < builderLane.indexOf('await withUsageLock(')
+      && /model: writtenBy \|\| RESUME_MODEL, payload: resumeData, research/.test(docLane) && /model: writtenBy \|\| RESUME_MODEL, payload: resumeData, env/.test(builderLane)
+      && !/model: RESUME_MODEL/.test(src30));
+    ok('⚠️ …and no résumé call reaches the SDK except through aiText (no getGenerativeModel of its own, no bare 90 s race)',
+      !/getGenerativeModel|generativelanguage|require\('@google\/generative-ai'\)/.test(src30) && /aiText\.generateText\(\{/.test(src30));
+    // "Nothing was charged" is a promise the catch makes. It holds because every AI call runs before the charge — and
+    // the catch now CHECKS that (paymentBegun, set as the payment step begins) instead of trusting it: an AI call
+    // someone later adds after the charge would fall to the plain 500, never to a sentence that is no longer true.
+    ok('⚠️ …and each lane\'s catch promises "Nothing was charged" ONLY while no payment step has begun (checked, not assumed)',
+      [builderLane, docLane].every((lane) => /let paymentBegun = false;/.test(lane)
+        && lane.indexOf('paymentBegun = true;') > 0 && lane.indexOf('paymentBegun = true;') < lane.indexOf('await withUsageLock(')
+        && /const unavailable = paymentBegun \? null : resumeAiUnavailableAnswer\(e\);/.test(lane)));
+
+    aiText.generateText = realGenerate;
+    research.delayMs = 0;
+    aiText._internals.settings.retryWaitMs = 2000; aiText._internals.settings.retryJitterMs = 800;
+    if (envFallbacks === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = envFallbacks;
+    ai.down = {};
   }
 
   // ── tidy ─────────────────────────────────────────────────────────────────────────────────────

@@ -200,8 +200,20 @@ const SWEEP_MS = 45 * 1000;
  * POST's answer (which itself can take a few); past that there is nothing left anywhere to collect.
  */
 const GIVE_UP_MS = 18 * 60 * 1000;
-/** Try again is honest only for these. The rest are a plan, a missing resume, or a build still running. */
-const RETRYABLE = new Set(['network', 'failed']);
+/**
+ * Try again is honest only for these. The rest are a plan, a missing resume, a build still running — or 'ai_down',
+ * an AI provider refusing our key, which another tap cannot fix.
+ */
+const RETRYABLE = new Set(['network', 'failed', 'ai_busy']);
+/**
+ * ⚠️ AN AI ENDING IS THE SERVER VOUCHING THAT NOTHING HAPPENED (2026-09-18: Amazon's letter, gemini-2.5-flash
+ * answering 503 "high demand" to every attempt). The lane runs every AI call — retries, fallback models — BEFORE
+ * its charge and gives up only then, so 'ai_busy' / 'ai_down' mean nothing was charged, stored or left running.
+ * Two things follow: the words say so (the overlay shows the server's sentence, the notice says it too), and Try
+ * again has no build to pick back up — it is a NEW build, gated and asked on the sheet like the first one, never a
+ * resend under the consent the first one had.
+ */
+const AI_ENDINGS = new Set(['ai_busy', 'ai_down']);
 /**
  * The service's own words when every slot is taken. ⚠️ It can say so AFTER our count said there was room:
  * it also counts remembered builds nothing on this phone is watching (the app was killed mid-build). That
@@ -259,7 +271,21 @@ const SHEET_COPY = {
   // what pays NOW, so the note has to say why it is being asked again.
   payerChanged: 'What pays for this changed, so nothing was charged. Here’s what covers it now.',
   cacheMiss: 'Your saved copy wasn’t there any more, so nothing was charged. Here’s what a new one uses.',
+  // Try again after 'ai_busy': the question is the same one the first build was asked, and the line under it says
+  // what became of the money last time — the only thing the user cannot see for themselves.
+  aiBusy: 'Google’s AI was busy last time, so nothing was charged.',
 };
+
+/**
+ * The line a build that ended on its AI provider is announced with when nobody is watching it. ⚠️ It says what
+ * happened AND what it cost (nothing) — "didn’t finish" alone left them guessing whether they had paid.
+ */
+function aiEndingNotice(reason: string, company: string, kind: DocKind): string {
+  const made = kind === 'cover_letter' ? 'written' : 'built';
+  return reason === 'ai_busy'
+    ? `Google’s AI was busy, so your ${company} ${nounOf(kind)} wasn’t ${made}. Nothing was charged.`
+    : `Our AI provider is unavailable, so your ${company} ${nounOf(kind)} wasn’t ${made}. Nothing was charged.`;
+}
 
 /* ── module state ─────────────────────────────────────────────────────────────────────────────── */
 
@@ -845,15 +871,24 @@ function settle(run: Run, r: BuildResult) {
     if (!watched) notify(`Your ${job.company} ${noun} is ready`, { label: 'View', kind: job.kind, rk: job.rk });
   } else {
     const reason = String(r.reason || 'failed');
-    const error = { reason, message: r.message || `We could not finish your ${job.company} ${noun}. Please try again.` };
+    const ai = AI_ENDINGS.has(reason);
+    const error = { reason, message: r.message || (ai ? aiEndingNotice(reason, job.company, job.kind) : `We could not finish your ${job.company} ${noun}. Please try again.`) };
     // ⚠️ The chip STAYS, and its record says why. Try again first picks up a build the service still holds
     // before it will start another (retryJob), and anything new goes back through the gate.
     for (const [k, rk] of entries) {
       const prev = getBuilds()[k];
       record(k, { kind: job.kind, rk, company: (prev && prev.company) || job.company }, 'error', run.startedAt, { error });
+      // 'ai_down' has no Try again to keep the record for: like a plan refusal, it clears once it has been seen,
+      // and the chip is free for a Tailor / Write later, when the provider is back.
+      if (reason === 'ai_down') refused.add(k);
     }
     track('home_build_fail', { kind: job.kind, reason });
-    if (!watched) notify(`Your ${job.company} ${noun} didn’t finish — tap its card to see why`, { label: 'See why', kind: job.kind, rk: job.rk });
+    if (!watched) {
+      notify(
+        ai ? aiEndingNotice(reason, job.company, job.kind) : `Your ${job.company} ${noun} didn’t finish — tap its card to see why`,
+        { label: 'See why', kind: job.kind, rk: job.rk },
+      );
+    }
   }
   void drain();
 }
@@ -1425,11 +1460,24 @@ function beginRequest(job: HomeBuildJob, how: RequestHow) {
  * only when nothing is held does a new request start — and that one goes back through the gate.
  * ⚠️ THIS IS THE ONE PLACE A LOST POST IS RESENT, and only this build's: the recovery below passes its own
  * build key as resendKey. Every other record with no job id — another chip's failure — is left alone.
+ * ⚠️ EXCEPT AFTER AN AI ENDING ('ai_busy'): the server said the build stopped before its charge, so nothing is
+ * held to pick up — and a record the service still happened to keep would be RESENT under the first build's
+ * consent, no question asked. So that Try again skips the look entirely and is a new request through the ONE
+ * door: the gate read again, the sheet (or the dialog) asked again, and only its Continue sends anything. The
+ * sheet carries one line saying the last try charged nothing.
  */
 async function retryJob(job: HomeBuildJob) {
   const key = keyOfJob(job);
   const bk = buildKeyOf(job.kind, job);
   const myEpoch = epoch;
+  const was = getBuilds()[key];
+  if (was && was.phase === 'error' && was.error && AI_ENDINGS.has(was.error.reason)) {
+    track('home_build_retry', { kind: job.kind, held: false, reason: was.error.reason });
+    beginRequest(jobs.get(key) || job, {
+      explicit: true, showOverlay: true, note: was.error.reason === 'ai_busy' ? SHEET_COPY.aiBusy : null,
+    });
+    return;
+  }
   const t0 = Date.now();
   refused.delete(key);
   record(key, job, 'checking', t0, { stage: { stage: 'checking', label: `Checking on your ${nounOf(job.kind)}…`, pct: 0 } });

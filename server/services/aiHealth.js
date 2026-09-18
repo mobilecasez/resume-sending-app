@@ -62,13 +62,20 @@ const HUMAN = {
  * Record an AI failure. Best-effort and NEVER throws — an alert must not be able to break the
  * request that was already failing.
  */
-function noteAiFailure(err, where) {
-    const kind = classifyAiError(err);
+function noteAiFailure(err, where, override = null) {
+    // `override` { kind, title, human } — a caller that KNOWS what failed says so, instead of this module guessing from
+    // the error text. aiText uses it for "every fallback model rate-limited": that 429's text reads as QUOTA here, so it
+    // would page "AI credits are exhausted — top up" while the credit was fine — or, as a bare "429 Too Many Requests",
+    // read as 'other' and page nobody. With an override the alert always fires, throttled per ITS kind, in its words.
+    // Without one, nothing below changes.
+    const forced = override && typeof override === 'object' && typeof override.kind === 'string' && override.kind ? override : null;
+    const kind = forced ? forced.kind : classifyAiError(err);
+    const pages = forced ? true : isOutage(kind);
     try {
         const msg = String((err && err.message) || err || '').slice(0, 300);
-        if (isOutage(kind)) console.error(`[aiHealth] ${kind.toUpperCase()} at ${where}: ${msg}`);
+        if (pages) console.error(`[aiHealth] ${kind.toUpperCase()} at ${where}: ${msg}`);
         else console.warn(`[aiHealth] ${kind} at ${where}: ${msg}`);
-        if (!isOutage(kind)) return kind;
+        if (!pages) return kind;
 
         const now = Date.now();
         if ((now - (_lastAlert.get(kind) || 0)) < ALERT_WINDOW_MS) return kind;
@@ -83,8 +90,8 @@ function noteAiFailure(err, where) {
             // growth notifications, and it must not be silenceable by an unrelated switch.
             Promise.resolve(admin.notifyAdmins(
                 null,
-                'AI service is down',
-                HUMAN[kind] || `AI failure (${kind}) at ${where}`,
+                (forced && forced.title) || 'AI service is down',
+                (forced && forced.human) || HUMAN[kind] || `AI failure (${kind}) at ${where}`,
                 { type: 'ai_outage', kind, where },
             )).catch(() => {});
         }

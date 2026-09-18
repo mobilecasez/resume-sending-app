@@ -55,10 +55,32 @@
 //
 // ⚠️ DO NOT MODIFY ai-employer-researcher.js FROM HERE. The cover letter lane shares it and its
 // output shape is also written by that lane into its own tables.
+//
+// ⚠️ A BUSY MODEL (2026-09-18). The day Amazon's letter "didn't finish", gemini-2.5-flash answered 503 "high
+// demand" to every call for minutes. The conventions call asked it ONCE, and a failure here is remembered for an
+// hour, so every build for that employer in the next hour was written without its hiring conventions — and,
+// research being outside the fingerprint, cached like that for good. The conventions call now goes through
+// aiText.generateText (a paused second try, then the verified fallback models, a real per-attempt abort, one
+// budget); and a failure that was only the provider being BUSY is remembered for BUSY_FAIL_MEMORY_MS, not an hour.
+// A research failure still never fails a build: it is "no research", exactly as before.
+//
+// ⚠️ THE BASE FACTS TOO (2026-09-18, review). They come from ai-employer-researcher.js (see above — not ours to
+// change), which asks gemini-2.5-flash ONCE, with no abort, and answers null for EVERY failure: a 503, prose instead
+// of JSON, a missing key. That null was the domain's verdict for an hour. During the spike Amazon's researcher got
+// one 503 and amazon.com lost its base facts for the hour — and since aiText now carries the doc lanes' OWN call
+// through a spike, each build in that hour SUCCEEDED: charged, and stored under a fingerprint that leaves the
+// research out, so a later identical request re-serves the thin document for free. Before aiText the spike failed
+// those builds uncharged; after it, they billed a quietly degraded document. So a null from the researcher is no
+// longer the verdict: researchBase asks for the same facts once more through aiText (lane 'research_base', the
+// verified FALLBACK models, a real abort per attempt, one budget inside the 25 s window a build waits), and the
+// RESCUE's verdict decides how long the domain is left alone — BUSY_FAIL_MEMORY_MS when the provider was busy, the
+// hour otherwise. The normal path is untouched: when the researcher answers, it is the one call it always was.
 'use strict';
 
 const regionUtil = require('../utils/regionFromCountry');
 const brandExtract = require('./brandExtract');
+// Lazily, per use: a suite that reloads aiText (or shrinks its timing knobs) must be what the next call sees.
+const aiTextMod = () => require('./aiText');
 
 /**
  * Folded into every employer document's fingerprint. ⚠️ Conventions did NOT bump it: a bump re-labels
@@ -70,14 +92,44 @@ const RESEARCH_REV = 'r1';
 
 const TTL_DAYS = 30;
 const FAIL_MEMORY_MS = 60 * 60 * 1000; // a failed domain is not retried for 1 hour (no retry storm)
+/**
+ * How long a failure that was only the provider being BUSY (aiText kind 'busy': every model 503'd, hung or ran out
+ * of its budget) keeps the key from being asked again. Long enough that a spike cannot turn every build into a
+ * fresh walk down the fallback chain (one walk per domain per window), short enough that the builds after the
+ * spike get their research: an hour of builds cached WITHOUT it was the real cost of the old rule.
+ */
+const BUSY_FAIL_MEMORY_MS = 2 * 60 * 1000;
 const STR_MAX = 400;
 
-/** ⚠️ ≤ 48 chars, like every model id this codebase stores. */
+/** ⚠️ ≤ 48 chars, like every model id this codebase stores. The PRIMARY of the conventions chain (aiText's fallbacks follow it). */
 const CONVENTIONS_MODEL = 'gemini-2.5-flash';
 /** How long a flight waits for the conventions call (contract: 25 s). The call itself keeps going. */
 const CONVENTIONS_WAIT_MS = 25000;
-/** The hard stop for a call nobody waits for any more (a hung socket must not live forever). */
+/**
+ * The hard stop for a call nobody waits for any more (a hung socket must not live forever). Since 2026-09-18 it is
+ * the budget of the WHOLE aiText chain (every try and every fallback inside it), not of one request.
+ */
 const CONVENTIONS_HARD_TIMEOUT_MS = 90000;
+/**
+ * ⚠️ ≤ 48 chars. The model ai-employer-researcher.js asks for the base facts (hard-wired there). The rescue never
+ * asks it again (see researchBase): the researcher's own call WAS its try.
+ */
+const BASE_MODEL = 'gemini-2.5-flash';
+/**
+ * The base facts' RESCUE (see researchBase). Read at call time, so a suite can shrink them the way aiText's own
+ * settings are shrunk; nothing in production writes them.
+ *   researcherWaitMs  how long the flight waits for the researcher's own call before asking the fallbacks instead.
+ *                     The researcher answers in ~10-25 s and cannot be aborted from here: past 45 s it is HANGING
+ *                     (gemini-flash-latest once took 257 s for one word), and a hang used to hold the domain's flight
+ *                     until the socket gave up — minutes of builds waiting on it, then the hour of memory.
+ *   rescueBudgetMs    the WHOLE aiText chain of the rescue, every attempt inside it, kept inside the 25 s a build
+ *                     waits for its research (getEmployerResearch's timeoutMs): a 503 comes back in about a second,
+ *                     so a rescue that starts then can still land in the SAME build — the one being charged.
+ *   rescueCapsMs      per attempt. aiText's defaults (60 s, then 40 s) are longer than this whole budget, so a first
+ *                     fallback that hung would spend all of it; at 16 s a hang still leaves the next model aiText's
+ *                     8 s floor, and a fast 503 leaves it a full 16 s (the fallbacks wrote the letter in 2-9 s).
+ */
+const baseTiming = { researcherWaitMs: 45000, rescueBudgetMs: 24000, rescueCapsMs: 16000 };
 /** How long a build waits for the website read (brandExtract bounds itself to this) plus a grace for the row write. */
 const BRAND_WAIT_MS = 8000;
 const BRAND_GRACE_MS = 1000;
@@ -705,57 +757,226 @@ function groundedHostsOf(response) {
 }
 
 /**
- * ONE grounded call about how `domain` hires → { answered: true, conventions } | { answered: false, why }.
+ * The conventions call's generationConfig — given to EVERY model of the chain exactly as it is.
+ * ⚠️ gemini-2.5-flash THINKS by default and its thinking tokens count against maxOutputTokens. With
+ * Google Search grounding the thoughts can run long, and at 4096 they could eat the whole budget:
+ * the answer arrived cut off mid-JSON → "no JSON object" → a paid call that taught us nothing. The
+ * budget is capped (the SDK passes generationConfig through verbatim, so thinkingConfig reaches the
+ * API) and the ceiling doubled, so the ~1 KB JSON always has room after the thoughts. A fallback that refuses
+ * thinkingBudget answers 400: aiText moves on to the next model, and the last one refusing is "no answer" here.
+ */
+const conventionsGenerationConfig = () => ({ temperature: 0.2, topP: 0.9, maxOutputTokens: 8192, thinkingConfig: { thinkingBudget: 1024 } });
+
+/**
+ * The SDK class aiText calls, with ONE thing added: every answer is kept in `sink` as { model, response }.
+ *
+ * ⚠️ WHY: aiText hands back the answer's TEXT, and the conventions need the RESPONSE too — its grounding metadata
+ * is what verifies `sources` (groundedHostsOf). Without it every fresh answer would store sources: [] (nothing
+ * verifiable), or worse, a wrapper that faked the metadata would store the model's recollection as sources. So
+ * the real class (or a suite's fake — it is required here, per call, exactly like aiText requires it) is wrapped,
+ * and aiText's `sdk` injection point takes the wrapper. Nothing else changes: same params, same request, same
+ * options (the per-attempt abort signal included), same result handed back untouched.
+ */
+function recordingSdk(sink) {
+  const { GoogleGenerativeAI } = require('@google/generative-ai');
+  return function RecordingGenAI(apiKey) {
+    const client = new GoogleGenerativeAI(apiKey);
+    return {
+      getGenerativeModel(params, requestOptions) {
+        const model = client.getGenerativeModel(params, requestOptions);
+        return {
+          async generateContent(request, options) {
+            const result = await model.generateContent(request, options);
+            sink.push({ model: params && params.model, response: result && result.response });
+            return result;
+          },
+        };
+      },
+    };
+  };
+}
+
+/**
+ * The response that wrote `out` (aiText's answer): the newest one recorded for the model that answered whose text
+ * is that answer. null when none matches — then groundedHostsOf(null) is "nothing verifiable", sources: [].
+ */
+function answeringResponse(sink, out) {
+  for (let i = sink.length - 1; i >= 0; i--) {
+    const e = sink[i];
+    if (!e || e.model !== out.model || !e.response) continue;
+    let text = '';
+    try { text = typeof e.response.text === 'function' ? e.response.text() : ''; } catch { text = ''; }
+    if (String(text == null ? '' : text).trim() === out.text) return e.response;
+  }
+  return null;
+}
+
+/**
+ * ONE grounded question about how `domain` hires → { answered: true, conventions, model } | { answered: false, why, busy }.
  * NEVER throws. `answered` means the model returned a JSON object — an object with nothing usable is
  * still an answer (conventions: null) and is cached as "checked"; a throw, a timeout or prose is not.
+ *
+ * ⚠️ THROUGH aiText (2026-09-18): a 503 on CONVENTIONS_MODEL gets a paused second try, then the fallback models;
+ * a hang is aborted at its per-attempt cap; and the whole chain lives inside CONVENTIONS_HARD_TIMEOUT_MS. `busy`
+ * says the chain ended on the provider being overloaded — conventionsCallFor remembers THAT for minutes, not an
+ * hour. quota / auth page the operator (aiHealth, throttled) and are remembered like any other failure.
+ * `model` is the model that answered: for the logs, never stored and never part of any fingerprint — conventions a
+ * fallback wrote are the same cache row, a free read for every later build, exactly like the primary's.
  *
  * ⚠️ Called through module.exports (see conventionsCallFor), so a test can stub it without the SDK.
  */
 async function researchConventions(domain, employerName) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { answered: false, why: 'GEMINI_API_KEY not set' };
+  const aiText = aiTextMod();
+  const sink = [];
   try {
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
-      model: CONVENTIONS_MODEL,
-      // ⚠️ gemini-2.5-flash THINKS by default and its thinking tokens count against maxOutputTokens. With
-      // Google Search grounding the thoughts can run long, and at 4096 they could eat the whole budget:
-      // the answer arrived cut off mid-JSON → "no JSON object" → a paid call that taught us nothing. The
-      // budget is capped (the SDK passes generationConfig through verbatim, so thinkingConfig reaches the
-      // API) and the ceiling doubled, so the ~1 KB JSON always has room after the thoughts.
-      generationConfig: { temperature: 0.2, topP: 0.9, maxOutputTokens: 8192, thinkingConfig: { thinkingBudget: 1024 } },
+    const out = await aiText.generateText({
+      lane: 'research',
+      prompt: { contents: [{ role: 'user', parts: [{ text: conventionsPrompt(domain, employerName) }] }], tools: [{ googleSearch: {} }] },
+      config: conventionsGenerationConfig(),
+      models: [CONVENTIONS_MODEL, ...aiText.fallbackModels()],
+      budgetMs: CONVENTIONS_HARD_TIMEOUT_MS,
+      sdk: recordingSdk(sink),
     });
-    const result = await model.generateContent(
-      { contents: [{ role: 'user', parts: [{ text: conventionsPrompt(domain, employerName) }] }], tools: [{ googleSearch: {} }] },
-      { timeout: CONVENTIONS_HARD_TIMEOUT_MS },
-    );
-    const response = result && result.response;
-    const parsed = parseModelJson(response && typeof response.text === 'function' ? response.text() : '');
+    const response = answeringResponse(sink, out);
+    const parsed = parseModelJson(out.text);
     if (!parsed) return { answered: false, why: 'no JSON object in the answer' };
-    return { answered: true, conventions: sanitiseConventions(parsed, { groundedHosts: groundedHostsOf(response), domain }) };
+    return { answered: true, conventions: sanitiseConventions(parsed, { groundedHosts: groundedHostsOf(response), domain }), model: out.model };
   } catch (err) {
-    return { answered: false, why: (err && err.message) || 'failed' };
+    return { answered: false, why: (err && err.message) || 'failed', busy: aiText.isAiBusy(err) };
+  }
+}
+
+// ── The base facts ────────────────────────────────────────────────────────────
+/**
+ * The base-facts question of the RESCUE (see researchBase): the facts ai-employer-researcher.js asks for, in the
+ * same JSON keys, so sanitiseResearch reads either answer the same way. Two differences, both on purpose: it asks for
+ * NO people (the sanitiser drops the researcher's key_contacts anyway — personal names have no place in a shared
+ * cache, so asking for them is paid output for a privacy risk), and it asks for null where the researcher is told
+ * to invent '#262633' / 'Lato' (which sanitiseResearch then has to undo).
+ * ⚠️ Takes the DOMAIN only, never a requester's input: its answer is cached for every user of the domain.
+ */
+function basePrompt(domain) {
+  return `You are an employer research analyst. Use Google Search on the website below and on the company behind it, and extract structured facts about this employer.
+
+Employer website: https://${domain}
+
+Rules:
+- Answer ONLY from what the search results support. Use null (or an empty list) for anything you cannot support — null is far better than a guess.
+- Never include the name, email address or phone number of any person.
+
+Return ONLY this JSON object, with nothing before or after it:
+{
+  "employer_name": "its full official name",
+  "founded_year": "the year it was founded (an integer), or null",
+  "company_size": "its headcount in words (e.g. \\"200-500 employees\\"), or null",
+  "industry": "its primary industry, or null",
+  "mission": "its core mission or tagline, or null",
+  "brand_color": "the main colour of its logo, header or buttons as \\"#rrggbb\\", or null",
+  "font_name": "the font family of its headings or body text, or null",
+  "technologies": [{ "name": "a product, platform, language, framework, cloud or database it uses or builds", "category": "product | language | framework | cloud | database | integration | other" }],
+  "clients": [{ "client_name": "a NAMED client company", "industry": "that client's industry", "notes": "e.g. \\"named case study\\"" }],
+  "recent_activity": [{ "activity_type": "launch | partnership | funding | award | acquisition | expansion", "description": "one sentence, from the last 2 years" }]
+}
+At most 20 technologies, 8 clients and 5 recent activities.`;
+}
+
+/**
+ * The researcher's own generationConfig, given to every model of the rescue as it is. Temperature 1 is what Google
+ * recommends for Search grounding, and it keeps a rescued answer the researcher's answer from another model — not a
+ * differently tuned question. No thinkingConfig, like the researcher: a fallback that refused a thinking budget would
+ * answer 400 and cost the rescue a model, and an answer cut off by long thoughts is a MAX_TOKENS finish, which aiText
+ * already retries once and then moves past.
+ */
+const baseGenerationConfig = () => ({ temperature: 1, topP: 0.95, maxOutputTokens: 8192 });
+
+/**
+ * The researcher's call → { raw } (its object, or null for any failure — a throw included) | { raw: null, waited }
+ * when it did not answer within `ms`. The call is not aborted (the researcher has no abort): its late answer is
+ * ignored, and it holds nothing open (the timer is unref'd, like every wait in this file).
+ */
+function researcherWithin(domain, ms) {
+  let timer = null;
+  const call = Promise.resolve()
+    .then(() => require('../../ai-employer-researcher').researchEmployer('https://' + domain))
+    .then((raw) => ({ raw: raw && typeof raw === 'object' ? raw : null }), (err) => ({ raw: null, why: (err && err.message) || 'threw' }));
+  const wait = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ raw: null, waited: true }), ms);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  });
+  return Promise.race([call, wait]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+/**
+ * The base facts about `domain` → { raw, via, model } | { raw: null, why, busy }. NEVER throws. `raw` is an answer
+ * object for sanitiseResearch (flightFor decides whether it holds a fact); `via` is 'researcher' or 'rescue'.
+ *
+ *   1. ai-employer-researcher.js, exactly as before — the one owner of the base prompt, shared with the legacy
+ *      letter lane — waited for up to baseTiming.researcherWaitMs. An object is its answer, and that is the whole
+ *      call on the normal path: one request, the same model, the same prompt, the same cost as before this rescue.
+ *   2. No object (its null — a 503, prose, anything — a throw, or the wait running out) → the same facts asked ONCE
+ *      more through aiText, lane 'research_base': a Google Search grounded request with the researcher's config, on
+ *      the verified FALLBACK models, a real abort per attempt, baseTiming.rescueBudgetMs for the whole chain.
+ *      ⚠️ NOT the researcher's model first: its call WAS that model's try, and the 2026-09-18 spike answered it 503 for
+ *      minutes — aiText's paused second try on it would spend ~3 s of a 25 s window on the model that just failed.
+ *      aiText gives that paused try to the first model it is handed, so here it goes to the first FALLBACK (a model
+ *      that has not failed yet in this build); a 503 there again moves to the next one. With
+ *      AI_TEXT_FALLBACK_MODELS=none (the operator's "primary only") the rescue is the researcher's model once more.
+ *   `busy` is aiText's verdict on the rescue: every model overloaded, hung or out of time. flightFor remembers THAT
+ *   for BUSY_FAIL_MEMORY_MS and anything else — prose from two models, quota, auth, no key — for the hour. quota and
+ *   auth also page the operator (aiText → aiHealth, throttled there).
+ *
+ * `model` names who answered, for the logs only: never stored and never in any fingerprint — the rescue's facts
+ * land in the same cache row as the researcher's, a free read for every later build.
+ * ⚠️ Called through module.exports (see flightFor), so a test can stub it; the researcher is looked up per call, so a
+ * suite that stubs ai-employer-researcher.js (the doc-lane and single-purchase suites) still controls step 1.
+ */
+async function researchBase(domain) {
+  const first = await researcherWithin(domain, baseTiming.researcherWaitMs);
+  if (first.raw) return { raw: first.raw, via: 'researcher', model: BASE_MODEL };
+
+  const aiText = aiTextMod();
+  const fallbacks = aiText.fallbackModels().filter((m) => m !== BASE_MODEL);
+  const chain = fallbacks.length ? fallbacks : [BASE_MODEL];
+  console.warn(`[employerResearch] base facts for ${domain}: the researcher ${first.waited ? `did not answer in ${baseTiming.researcherWaitMs}ms` : `gave nothing${first.why ? ` (${first.why})` : ''}`} -> asking ${chain.join(', ')} through aiText`);
+  try {
+    const out = await aiText.generateText({
+      lane: 'research_base',
+      prompt: { contents: [{ role: 'user', parts: [{ text: basePrompt(domain) }] }], tools: [{ googleSearch: {} }] },
+      config: baseGenerationConfig(),
+      models: chain,
+      budgetMs: baseTiming.rescueBudgetMs,
+      attemptCapsMs: baseTiming.rescueCapsMs,
+    });
+    const parsed = parseModelJson(out.text);
+    if (!parsed) return { raw: null, why: `no JSON object in ${out.model}'s answer`, busy: false };
+    console.log(`[employerResearch] base facts for ${domain} answered by ${out.model} (rescued: the researcher gave no answer)`);
+    return { raw: parsed, via: 'rescue', model: out.model };
+  } catch (err) {
+    return { raw: null, why: (err && err.message) || 'failed', busy: aiText.isAiBusy(err) };
   }
 }
 
 // ── getEmployerResearch ───────────────────────────────────────────────────────
 const inflight = new Map(); // domain → { base, full, baseSettled, baseValue }   (single-flight per process)
 const conventionsInflight = new Map(); // domain → Promise<answer> — may OUTLIVE the flight that started it
-const failedAt = new Map(); // key (domain | 'conventions:' + domain) → ms of the last failure
+const failedAt = new Map(); // key (domain | 'conventions:' + domain) → { at, forMs } of the last failure
 const conventionsKey = (domain) => `conventions:${domain}`;
 
 function recentlyFailed(key) {
-  const t = failedAt.get(key);
-  if (!t) return false;
-  if (Date.now() - t < FAIL_MEMORY_MS) return true;
+  const e = failedAt.get(key);
+  if (!e) return false;
+  if (Date.now() - e.at < e.forMs) return true;
   failedAt.delete(key);
   return false;
 }
 
-function rememberFailure(key) {
-  failedAt.set(key, Date.now());
+/** Remember a failure for `forMs` (an hour by default; BUSY_FAIL_MEMORY_MS when it was only the provider being busy). */
+function rememberFailure(key, forMs = FAIL_MEMORY_MS) {
+  failedAt.set(key, { at: Date.now(), forMs });
   if (failedAt.size > 5000) { // bounded: drop the oldest entries
-    const cut = [...failedAt.entries()].sort((a, b) => a[1] - b[1]).slice(0, failedAt.size - 4000);
+    const cut = [...failedAt.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, failedAt.size - 4000);
     for (const [k] of cut) failedAt.delete(k);
   }
 }
@@ -779,8 +1000,11 @@ function conventionsCallFor(domain, employerName) {
         if (!answer.conventions) rememberFailure(conventionsKey(domain));
         return { answered: true, conventions: answer.conventions || null };
       }
-      rememberFailure(conventionsKey(domain));
-      console.warn(`[employerResearch] conventions unavailable for ${domain}: ${(answer && answer.why) || 'no answer'}`);
+      // ⚠️ BUSY IS NOT BROKEN. Every model overloaded is a minutes-long state of Google's, not a fact about this
+      // domain: an hour of memory here wrote an hour of builds without their conventions (see the header).
+      const busy = !!(answer && answer.busy);
+      rememberFailure(conventionsKey(domain), busy ? BUSY_FAIL_MEMORY_MS : FAIL_MEMORY_MS);
+      console.warn(`[employerResearch] conventions unavailable for ${domain}: ${(answer && answer.why) || 'no answer'}${busy ? ` (AI busy: asked again in ${BUSY_FAIL_MEMORY_MS / 60000} min, not an hour)` : ''}`);
       return { answered: false };
     })
     .catch((err) => {
@@ -884,7 +1108,7 @@ function boundedBrand(domain) {
  * INSIDE the flight so two builds for the same new employer make one AI call, not two.
  *
  * THREE STAGES: `base` settles as soon as the researcher's facts are known (from the row, or the
- * researcher call); `full` settles when the conventions are in too (or stopped being waited for). A
+ * researcher call and its rescue — researchBase); `full` settles when the conventions are in too (or stopped being waited for). A
  * caller whose own timeout fires first still gets `base` if it is there — a cached employer never
  * loses its instant answer because its conventions are being fetched. `brand` (the website read)
  * settles on its own clock and `full` never waits for it — getEmployerResearch folds it in.
@@ -941,15 +1165,26 @@ function flightFor(domain) {
 
     let freshBase = null;
     if (needBase && !recentlyFailed(domain)) {
-      let baseRaw = null;
+      let base = null;
       try {
-        baseRaw = await require('../../ai-employer-researcher').researchEmployer('https://' + domain);
+        // The researcher, and when it gives nothing the rescue through aiText (see researchBase and the header).
+        base = await module.exports.researchBase(domain);
       } catch (err) {
-        console.warn(`[employerResearch] researcher threw for ${domain}: ${err && err.message}`);
-        baseRaw = null;
+        console.warn(`[employerResearch] base research threw for ${domain}: ${err && err.message}`);
+        base = null;
       }
-      freshBase = baseRaw ? sanitiseResearch(baseRaw, domain) : null; // no fallback name — cached for everyone
-      if (!hasBaseFact(freshBase)) { freshBase = null; rememberFailure(domain); }
+      freshBase = base && base.raw ? sanitiseResearch(base.raw, domain) : null; // no fallback name — cached for everyone
+      if (!hasBaseFact(freshBase)) {
+        freshBase = null;
+        // ⚠️ BUSY IS NOT BROKEN, for the base facts exactly as for the conventions: a provider overload is minutes of
+        // Google's, not a fact about this domain, and an hour of memory was an hour of charged builds without them.
+        // An answer that knew nothing, prose from two models, quota or auth keep the hour (no retry storm).
+        const busy = !!(base && base.busy);
+        rememberFailure(domain, busy ? BUSY_FAIL_MEMORY_MS : FAIL_MEMORY_MS);
+        if (base && !base.raw) {
+          console.warn(`[employerResearch] base facts unavailable for ${domain}: ${base.why || 'no answer'}${busy ? ` (AI busy: asked again in ${BUSY_FAIL_MEMORY_MS / 60000} min, not an hour)` : ''}`);
+        }
+      }
     }
 
     // The row as it was, the researcher's fresh facts over it, the conventions when they answer.
@@ -1356,6 +1591,8 @@ module.exports = {
   // The one grounded conventions call. Looked up through module.exports on every use, so a test can
   // replace it (like getEmployerResearch in test-employer-letter.js) without stubbing the Gemini SDK.
   researchConventions,
+  // The base facts: the researcher, then the aiText rescue when it gives nothing — stubbable the same way.
+  researchBase,
   // The website read and the Google Fonts yes/no — the same way, so a test needs no network.
   researchBrand,
   googleFontCheck,
@@ -1363,6 +1600,13 @@ module.exports = {
   sanitiseResearch,
   sanitiseConventions,
   sanitiseBrand,
-  _internals: { conventionsPrompt, parseModelJson, groundedHostsOf, sourcesOf, readCache, writeCache, patchConventions, patchBrand, flightFor, brandCallFor, withBrand, withResearcherFont },
+  _internals: {
+    conventionsPrompt, parseModelJson, groundedHostsOf, sourcesOf, readCache, writeCache, patchConventions, patchBrand, flightFor, brandCallFor, withBrand, withResearcherFont,
+    conventionsGenerationConfig, recordingSdk, answeringResponse, conventionsKey, CONVENTIONS_MODEL, FAIL_MEMORY_MS, BUSY_FAIL_MEMORY_MS,
+    // The base facts' rescue: its question, its config, its model and its timing (a suite shrinks baseTiming).
+    basePrompt, baseGenerationConfig, researcherWithin, BASE_MODEL, baseTiming,
+    // How long a key's failure is remembered for (ms), or null when none is — the busy-vs-broken rule, observable.
+    failureMemoryOf: (key) => (recentlyFailed(key) ? failedAt.get(key).forMs : null),
+  },
   _reset() { inflight.clear(); conventionsInflight.clear(); brandInflight.clear(); brandMemo.clear(); failedAt.clear(); lastDbWarnAt = 0; },
 };

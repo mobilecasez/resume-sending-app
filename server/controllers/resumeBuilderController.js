@@ -7,6 +7,7 @@ const cheerio      = require('cheerio');
 const path         = require('path');
 const fs           = require('fs').promises;
 const crypto       = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const { renderPdf, renderPreviews, warmPreviews } = require('../utils/resumeRenderer');
 const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion, brandedTemplate } = require('../utils/resumeTemplates');
 const { getEventCost } = require('../services/eventCosts');
@@ -15,6 +16,8 @@ const downloads = require('../services/downloads');
 const history = require('../services/downloadHistory');
 const jobService = require('../services/jobService');
 const employerDocs = require('../services/employerDocs');
+// ⚠️ Called as aiText.generateText on every use (never destructured), so a suite can wrap it and see what a build asked for.
+const aiText       = require('../services/aiText');
 
 /**
  * Tell the client where a long generation has actually got to.
@@ -35,12 +38,14 @@ const employerDocs = require('../services/employerDocs');
  * row untouched for five minutes) from killing a run that is merely slow.
  *
  * A no-op in synchronous mode, where there is no job to report against.
+ *
+ * `report.at()` is where the bar stands — the one thing a tick that only RE-LABELS the stage it happens in (an
+ * AI provider retry, resumeAiRetryNotice) needs, so it can report there and never behind it.
  */
 function makeReporter(req) {
     const jobId = req && req.__jobId;
-    if (!jobId) return async () => {};
     let last = 0;
-    return async (stage, label, pct) => {
+    const report = !jobId ? async () => {} : async (stage, label, pct) => {
         if (pct < last) return;                       // a bar must never walk backwards
         last = pct;
         try {
@@ -48,6 +53,8 @@ function makeReporter(req) {
             await jobService.updateJobPartialResult(jobId, { stage, label, pct: Math.round(pct) });
         } catch { /* progress is never worth failing the work for */ }
     };
+    report.at = () => last;
+    return report;
 }
 
 /** The design's human name, for the history card. Falls back to the id so a card is never blank. */
@@ -202,6 +209,9 @@ async function saveResumeRow(userId, resumeData, tailoredFor) {
 // its own prompt, so it folds employerResearch.RESEARCH_REV in instead — see docResearchRev. The two
 // lanes therefore never share a fingerprint, and a builder-lane document is never a doc-lane free hit.
 const RESEARCH_REV = 'none';
+// The résumé lanes' FIRST choice. Since 2026-09-18 it is not always the model that writes the document: aiText falls back
+// when it is busy, and the stored row names whoever actually answered (callGemini's `model`). ⚠️ Never hashed — see
+// generationFingerprint: a document a fallback wrote is the same free cache hit as one this model wrote.
 const RESUME_MODEL = 'gemini-2.5-flash';
 
 /**
@@ -417,35 +427,127 @@ async function scrapePage(url) {
     }
 }
 
-// ── Gemini call with 90-second hard timeout ───────────────────────────────────
+// ── The Gemini call: one per answer, through aiText (a busy model is waited for, then fallen back from) ────────
+//
+// ⚠️ 2026-09-18 — WHY THIS NO LONGER CALLS THE SDK ITSELF. Amazon's cover letter failed on a 503 "This model is
+// currently experiencing high demand": the letter lane asked the same model twice, back to back, and lost both times.
+// Both résumé lanes had the same shape, one worse — three tries on gemini-2.5-flash with no pause, and a 90 s race
+// that only stopped WAITING (the request ran on, the timer was never cleared), after which AI_TIMEOUT failed the
+// build outright. aiText.generateText is the house's one answer to a busy provider: it waits ~2 s and asks the
+// primary once more, then walks the verified fallbacks (gemini-2.5-flash-lite, gemini-3.1-flash-lite), skips a model
+// that is gone, fails fast on quota / a bad key (and pages the operator), and caps every attempt with a REAL abort.
+// It throws aiText.AiUnavailableError when no model could answer — see resumeAiUnavailableAnswer for what the lanes
+// say then. A MAX_TOKENS finish is its TRUNCATED_OUTPUT, retried there, so no caller reads finishReason any more.
+
+/**
+ * ONE CLOCK FOR A RÉSUMÉ BUILD'S AI. The app polls a build for six minutes (DEADLINE_MS in homeAddEmployer.ts and
+ * profileSetupService.ts). Before its first AI call a build spends up to ~30 s (research is capped at 25 s, a posting
+ * or link read at 6 s); after its last, up to ~40 s (the usage lock waits ≤ 15 s, the pre-render ≤ 20 s). So EVERY AI
+ * call of one build — the draft, the lane's own output retries, the corrective pass, and every provider retry and
+ * fallback inside them — must be over by the build's start + this, and generateText never starts an attempt that
+ * could not finish inside what is left. Per-attempt caps must never simply add up: this is the budget they share.
+ */
+const RESUME_AI_DEADLINE_MS = 4.5 * 60 * 1000;
+/**
+ * Per-attempt caps, by attempt number within one generateText call. The PRIMARY's two tries keep the 90 s callGemini
+ * always had (a full résumé takes about a minute on a good day — a shorter cap would abort answers that were on their
+ * way); every later attempt is a fallback (flash-lite wrote a whole letter in 2–9 s) and gets 45 s. Worst case, every
+ * model hanging: 90 + ~3 + 90 + 45 + the rest of the budget — which the deadline above, not the caps, bounds.
+ */
+const RESUME_AI_CAPS_MS = Object.freeze([90 * 1000, 90 * 1000, 45 * 1000]);
+
+/**
+ * THE BUILD EVERY callGemini BELONGS TO: its lane (for the logs), its progress reporter and its AI deadline.
+ * ⚠️ A CONTEXT, NOT A MODULE VARIABLE: Home runs several builds at once in this process, and a variable would hand one
+ * build's deadline and progress bar to another. AsyncLocalStorage follows each build's own async chain. It is also why
+ * callGemini keeps the one signature every caller (and the temperature pins in test-employer-docs) knows: what differs
+ * per BUILD rides here, what differs per CALL (the temperature) stays an argument. A call outside any build gets a
+ * fresh RESUME_AI_DEADLINE_MS and reports nothing.
+ */
+const resumeAiBuild = new AsyncLocalStorage();
+
+/** Run `fn` as one build's AI work: its lane, its `report`, and a deadline RESUME_AI_DEADLINE_MS after `startedAt`. */
+function withResumeAi({ lane, report, startedAt }, fn) {
+    return resumeAiBuild.run({ lane, report, deadline: startedAt + RESUME_AI_DEADLINE_MS }, fn);
+}
+
+/** Did the AI PROVIDER end this (aiText gave up), as opposed to an answer the lane rejected? By name, as aiText.isAiBusy reads it. */
+const isAiUnavailable = (e) => !!e && (e instanceof aiText.AiUnavailableError || e.name === 'AiUnavailableError');
+
+/**
+ * What a provider retry is shown as — aiText's onRetry, told through this build's own reporter, in plain words:
+ *   the primary was busy and is asked again after a pause → "Google's AI is busy — trying again"
+ *   the next model in the chain                            → "Switching to a faster model"
+ *   a cut-off answer asked for again (TRUNCATED_OUTPUT)    → "Taking another pass at it" (the lanes' own words for it)
+ * ⚠️ AT THE BAR'S CURRENT POSITION, NUDGED: a retry re-labels the stage it happens in, it is not a stage of its own. A pct
+ * behind the last tick is dropped (a bar never walks backwards), and one past 84 would claim the designing (86) or
+ * shaping (88) stage before it began.
+ */
+function resumeAiRetryNotice(report) {
+    return ({ model, nextModel, kind }) => {
+        const label = nextModel && nextModel !== model ? 'Switching to a faster model'
+            : kind === 'transient' ? 'Google\'s AI is busy — trying again' : 'Taking another pass at it';
+        const at = typeof report.at === 'function' ? report.at() : 0;
+        return report('retry', label, Math.max(at, Math.min(at + 2, 84)));
+    };
+}
+
+/**
+ * The answer a résumé build gives when Google's AI could not write it, or null for any other failure (today's shape).
+ *   busy          every model overloaded, hung or out of time → 503 ai_busy, retryable: "try again in a minute"
+ *   quota / auth  the key is out of credit, wrong or missing  → 503 ai_down, NOT retryable (aiText already paged the
+ *                 operator; a Try again cannot work until they act)
+ *   other         every model truncated or refused the request → null: the lane's 500 'failed' / 504, as before
+ * ⚠️ "NOTHING WAS CHARGED" IS A PROMISE, AND IT HOLDS BECAUSE EVERY AI CALL IN BOTH LANES RUNS BEFORE THE USAGE LOCK
+ * AND THE CHARGE UNDER IT — nothing is claimed, consumed or stored until the model has answered. (A pass the gate
+ * bound to this employer stays bound, unstamped, exactly as for any failed build: a reservation, never a charge.)
+ * An AI call added after the charge would make this sentence a lie: it must give back first (giveBackDocCharges).
+ * `log` is the support line: what failed and which models were asked.
+ */
+function resumeAiUnavailableAnswer(e) {
+    if (!isAiUnavailable(e)) return null;
+    const asked = Array.isArray(e.attempts) ? e.attempts.map((a) => `${a.model} ${a.kind}`).join(', ') : '';
+    // No attempt at all = it never reached Google (a missing key, a spent clock): the message says which.
+    const log = `Google's AI could not write it (${e.kind}: ${asked || e.message})`;
+    if (e.kind === 'busy') {
+        return { status: 503, log, body: {
+            success: false, reason: 'ai_busy', retryable: true,
+            error: 'Google\'s AI is overloaded right now, so your resume could not be written. Nothing was charged — please try again in a minute.',
+        } };
+    }
+    if (e.kind === 'quota' || e.kind === 'auth') {
+        return { status: 503, log, body: {
+            success: false, reason: 'ai_down', retryable: false,
+            error: 'Our AI provider is unavailable right now. Nothing was charged.',
+        } };
+    }
+    return null;
+}
+
 // responseMimeType forces valid-JSON decoding (prompt already demands raw JSON, so
 // the CONTENT is unchanged — this only guarantees the syntax). maxOutputTokens was
 // 8192, which big resumes (esp. with "include uploaded resume") overflowed — Gemini
 // then truncated mid-JSON and JSON.parse threw. 2.5-flash also spends "thinking"
 // tokens from the same budget, so the cap must be generous; it does NOT change the
-// output, only stops it being cut off.
+// output, only stops it being cut off. ⚠️ The SAME config goes to every fallback, so a lane's temperature holds whoever answers.
 // `temperature` is the builder lane's 0.4 unless the caller says otherwise — the employer-doc lane asks
 // for DOC_LANE_TEMPERATURE (see there); nothing else about the call differs between the lanes.
+// → { text, model }: `model` is the one that ANSWERED. The lanes store it on the document and nowhere else.
+// Throws aiText.AiUnavailableError when no model could answer; a lane never retries that (aiText already did).
 async function callGemini(prompt, { temperature = 0.4 } = {}) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-        model: RESUME_MODEL,
-        generationConfig: { temperature, maxOutputTokens: 32768, responseMimeType: 'application/json' },
+    const build = resumeAiBuild.getStore() || {};
+    const deadline = build.deadline || (Date.now() + RESUME_AI_DEADLINE_MS);
+    const out = await aiText.generateText({
+        lane: build.lane || 'resume',
+        prompt,
+        config: { temperature, maxOutputTokens: 32768, responseMimeType: 'application/json' },
+        // The lane's own first choice, then the operator's fallbacks (AI_TEXT_FALLBACK_MODELS, else the verified two).
+        models: [RESUME_MODEL, ...aiText.fallbackModels()],
+        budgetMs: deadline - Date.now(),
+        attemptCapsMs: RESUME_AI_CAPS_MS,
+        onRetry: build.report ? resumeAiRetryNotice(build.report) : undefined,
     });
-
-    const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('AI_TIMEOUT')), 90_000)
-    );
-
-    const result = await Promise.race([
-        model.generateContent(prompt),
-        timeoutPromise,
-    ]);
-    const finishReason = result.response.candidates?.[0]?.finishReason || '';
-    return { text: result.response.text().trim(), finishReason };
+    return { text: out.text, model: out.model };
 }
 
 // ── Build the structured Gemini prompt ───────────────────────────────────────
@@ -1787,6 +1889,11 @@ async function generateAI(req, res) {
     // generateEmployerDoc. Everything below this line is the builder lane, unchanged.
     if (req.body && req.body.saveTo === 'employer_doc') return generateEmployerDoc(req, res);
     const userId = req.user.id;
+    const startedAt = Date.now();   // the build's AI clock starts here — see RESUME_AI_DEADLINE_MS
+    // ⚠️ Set the moment the payment step BEGINS. The catch says "Nothing was charged" for an AI failure only while
+    // this is false: that sentence is true today because every AI call runs before the charge, and this flag keeps
+    // it true by CHECK rather than by convention — an AI call added after the charge falls to the plain 500.
+    let paymentBegun = false;
     const { name, email, phone, location, rawText, includeUploadedResume, isRegenerate, job } = req.body;
     // ⚠️ coveredOnly: Home sends true for a build it AUTO-started. Its gate answer is a snapshot taken
     // seconds before this request; without this flag, a build whose last plan unit was spent in between
@@ -1955,30 +2062,41 @@ async function generateAI(req, res) {
 
         const prompt = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext, promptJob);
 
-        // Up to 3 attempts: a truncated or malformed AI response is retried silently
+        // Up to 3 attempts: a malformed AI response is retried silently
         // (identical prompt — exactly what a user's manual "try again" did) instead of
         // surfacing a raw JSON SyntaxError to the user.
+        // ⚠️ THESE ARE THE LANE'S OWN RETRIES — for an answer it could not parse. A busy, hung or truncating model is
+        // aiText's business inside callGemini (a pause, the primary again, the fallbacks), and what it finally throws
+        // (AiUnavailableError) is never retried here: a second chain on top of the first would overrun the build's
+        // clock and ask a provider that just refused three models to do it all again.
         let resumeData = null;
         let lastErr = null;
-        for (let attempt = 1; attempt <= 3 && !resumeData; attempt++) {
-            // ⚠️ The retry loop used to be silent, which is exactly the case that overran the old
-            // client timeout: attempts two and three looked identical to the first from outside.
-            await report(
-                attempt === 1 ? 'writing' : 'retry',
-                attempt === 1 ? (passEmployer ? `Writing your ${passEmployer} resume` : 'Writing your resume') : 'Taking another pass at it',
-                attempt === 1 ? 38 : 38 + attempt * 6,
-            );
-            try {
-                const { text, finishReason } = await callGemini(prompt);
-                if (finishReason === 'MAX_TOKENS') throw new Error('TRUNCATED_OUTPUT');
-                const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-                resumeData = JSON.parse(cleaned);
-            } catch (e) {
-                lastErr = e;
-                if (e.message === 'AI_TIMEOUT' || e.message === 'GEMINI_API_KEY not set') throw e;
-                console.warn(`[resumeBuilder] generation attempt ${attempt}/3 failed: ${e.message}`);
+        let writtenBy = null;   // the model that ACTUALLY answered — stored on the cached copy, never hashed
+        await withResumeAi({ lane: 'resume_builder', report, startedAt }, async () => {
+            for (let attempt = 1; attempt <= 3 && !resumeData; attempt++) {
+                // ⚠️ The retry loop used to be silent, which is exactly the case that overran the old
+                // client timeout: attempts two and three looked identical to the first from outside.
+                await report(
+                    attempt === 1 ? 'writing' : 'retry',
+                    attempt === 1 ? (passEmployer ? `Writing your ${passEmployer} resume` : 'Writing your resume') : 'Taking another pass at it',
+                    attempt === 1 ? 38 : 38 + attempt * 6,
+                );
+                try {
+                    const { text, model } = await callGemini(prompt);
+                    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+                    resumeData = JSON.parse(cleaned);
+                    writtenBy = model;
+                } catch (e) {
+                    if (isAiUnavailable(e)) {
+                        // Out of time before Google was even asked: what failed is the answer this loop rejected, not Google.
+                        if (lastErr && Array.isArray(e.attempts) && !e.attempts.length) break;
+                        throw e;
+                    }
+                    lastErr = e;
+                    console.warn(`[resumeBuilder] generation attempt ${attempt}/3 failed: ${e.message}`);
+                }
             }
-        }
+        });
         if (!resumeData) {
             console.error('[resumeBuilder] all generation attempts failed:', lastErr?.message);
             throw new Error('AI_BAD_OUTPUT');
@@ -2142,6 +2260,7 @@ async function generateAI(req, res) {
         };
 
         await report('saving', 'Saving your resume', 95);
+        paymentBegun = true;
         try {
             await withUsageLock(userId, 'resume', async () => {
                 await settlePayment();
@@ -2153,7 +2272,7 @@ async function generateAI(req, res) {
                 if (passEmployer && cacheFp && charged) {
                     const stored = await employerDocs.put({
                         userId, kind: 'resume', employer: passEmployer, jobUrl: (job && job.url) || '', jobTitle: (job && job.title) || '',
-                        fingerprint: cacheFp, model: RESUME_MODEL, payload: resumeData, env,
+                        fingerprint: cacheFp, model: writtenBy || RESUME_MODEL, payload: resumeData, env,
                     });
                     // ⚠️ NOT A REASON TO REFUSE, unlike the doc lane: the resume is paid for, saved, and in the
                     // response this user is waiting on. An unwritten cache only costs the identical rebuild its free
@@ -2192,6 +2311,13 @@ async function generateAI(req, res) {
 
         return res.json({ success: true, resumeData, cached: false, tailoredFor: passEmployer });
     } catch (e) {
+        // Google's AI, not the build, is what failed — and before the charge: say so, honestly (resumeAiUnavailableAnswer).
+        // Only while no payment step has begun — past it, "Nothing was charged" is not ours to promise.
+        const unavailable = paymentBegun ? null : resumeAiUnavailableAnswer(e);
+        if (unavailable) {
+            console.error(`[resumeBuilder] generateAI for user ${userId}: ${unavailable.log} — ${unavailable.status} ${unavailable.body.reason}, nothing charged, nothing saved`);
+            return res.status(unavailable.status).json(unavailable.body);
+        }
         // Never forward internal error text (JSON SyntaxErrors, DB errors, API errors)
         // to the user — log it here, send a friendly message out.
         console.error('[resumeBuilder] generateAI error:', e.message);
@@ -2212,6 +2338,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * Past this much wall clock the one corrective pass is skipped and leftovers are stripped instead: the
  * app polls a build for six minutes, and three slow AI attempts plus research can already fill most of it.
+ * (Whatever it starts still ends by RESUME_AI_DEADLINE_MS — this only decides whether a pass is worth starting.)
  */
 const DOC_LANE_CORRECTION_BUDGET_MS = 3 * 60 * 1000;
 
@@ -2353,20 +2480,28 @@ function parseDocJson(text) {
     return pi && typeof pi === 'object' && !Array.isArray(pi) ? j : null;
 }
 
-/** Up to three attempts at one prompt, exactly like the builder lane's loop. Throws AI_TIMEOUT / AI_BAD_OUTPUT. */
+/**
+ * Up to three attempts at one prompt, exactly like the builder lane's loop → { resume, model } (`model` is the one
+ * that answered: stored on the document, never hashed). Throws AI_BAD_OUTPUT when three answers were not a résumé,
+ * and aiText's AiUnavailableError, untouched and never retried here, when Google could not answer at all — see the
+ * builder lane's loop for why. Run it inside withResumeAi so its provider retries report and share the build's clock.
+ */
 async function writeDocDraft(prompt, report) {
     let lastErr = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
         if (attempt > 1) await report('retry', 'Taking another pass at it', 38 + attempt * 6);
         try {
-            const { text, finishReason } = await callGemini(prompt, { temperature: DOC_LANE_TEMPERATURE });
-            if (finishReason === 'MAX_TOKENS') throw new Error('TRUNCATED_OUTPUT');
+            const { text, model } = await callGemini(prompt, { temperature: DOC_LANE_TEMPERATURE });
             const parsed = parseDocJson(text);
-            if (parsed) return parsed;
+            if (parsed) return { resume: parsed, model };
             throw new Error('NOT_A_RESUME');
         } catch (e) {
+            if (isAiUnavailable(e)) {
+                // Out of time before Google was even asked: what failed is the answer this loop rejected, not Google.
+                if (lastErr && Array.isArray(e.attempts) && !e.attempts.length) break;
+                throw e;
+            }
             lastErr = e;
-            if (e.message === 'AI_TIMEOUT' || e.message === 'GEMINI_API_KEY not set') throw e;
             console.warn(`[resumeBuilder] employer doc attempt ${attempt}/3 failed: ${e.message}`);
         }
     }
@@ -2398,8 +2533,10 @@ const problemCount = (p) => p.placeholders.length + p.leaks.length + (p.generic 
  * last one the pass quotes the base opening and the draft's back to the model — the model cannot see its own
  * sameness — and demands the opening's shape ("<real role> for <sector> — <the two or three real strengths that
  * matter here>"), the bullets rephrased in the sector's language with the relevant ones first, and, again, no
- * fact added. Returns the corrected resume, or null. Never throws — the first draft is still deliverable after
- * stripping.
+ * fact added. Returns { resume, model } (the corrected resume and the model that wrote it), or null. Never throws —
+ * the first draft is still deliverable after stripping. ⚠️ That includes Google being busy: aiText still waits and
+ * falls back for this pass (inside the build's one clock), and when no model answers the first draft stands, as for
+ * any other failed pass — a polish is never worth failing a paid build over.
  */
 async function correctDocDraft(prompt, draft, problems, company, { sector = null } = {}) {
     const lines = [];
@@ -2431,9 +2568,9 @@ ${lines.join('\n')}
 Here is that previous answer. Return the COMPLETE corrected JSON in the same schema (including "design"), changing only what the rules above require and keeping every entry:
 ${JSON.stringify(draft)}`;
     try {
-        const { text, finishReason } = await callGemini(fixPrompt, { temperature: DOC_LANE_TEMPERATURE });
-        if (finishReason === 'MAX_TOKENS') return null;
-        return parseDocJson(text);
+        const { text, model } = await callGemini(fixPrompt, { temperature: DOC_LANE_TEMPERATURE });
+        const resume = parseDocJson(text);
+        return resume ? { resume, model } : null;
     } catch (e) {
         console.warn('[resumeBuilder] employer doc correction failed — keeping the first draft:', e.message);
         return null;
@@ -2976,6 +3113,8 @@ const CACHE_MISS = Object.freeze({
  *   → { success, cached, docId, tailoredFor }
  *   400 { reason: 'no_resume' | 'no_employer' }   402 { reason: 'quota_exhausted' }   500/504 { reason: 'failed' }
  *   409 { reason: 'payer_changed' | 'cache_miss' }   (contract C2 — only for a build that sent `expectVia`)
+ *   503 { reason: 'ai_busy' | 'ai_down', retryable }   Google's AI could not write it — after aiText's pause, retry
+ *        and fallbacks — and BEFORE the charge: nothing charged, nothing stored (resumeAiUnavailableAnswer)
  *
  * `job` is the build's INPUT (the fingerprint, the posting scrape); `docJobUrl` is the stored document's
  * IDENTITY — the job_url Home looks the chip's document up by ('' for an employer chip). Old clients that
@@ -3024,6 +3163,8 @@ async function generateEmployerDoc(req, res) {
     // Every comparison against it happens BEFORE the thing it guards — see the gates and the charge below.
     const expectVia = downloads.expectedPayerOf(body);
     const startedAt = Date.now();
+    // ⚠️ Set the moment the payment step BEGINS — see generateAI: the catch promises "Nothing was charged" only while false.
+    let paymentBegun = false;
 
     if (typeof rawText !== 'string' || rawText.trim().length < 20) {
         return res.status(400).json({ error: 'Please provide more detail about your experience.', reason: 'no_resume' });
@@ -3186,7 +3327,12 @@ async function generateEmployerDoc(req, res) {
         const prompt = buildEmployerDocPrompt({
             name, email, phone, location, rawText, uploadedResumeContext, job: promptJob, research, familyBrief, country, conventions, playbook: plan,
         });
-        let draft = await writeDocDraft(prompt, report);
+        // ⚠️ ONE AI CLOCK FOR THE DRAFT AND THE PASS (withResumeAi): a busy model is waited for and fallen back from
+        // inside it, reported on the bar as it happens, and all of it ends by startedAt + RESUME_AI_DEADLINE_MS. When no
+        // model can answer the draft, the catch below answers 503 ai_busy / ai_down — before the charge, so nothing is.
+        // `writtenBy` follows the text that is delivered: the draft's model, or the pass's when its answer is taken.
+        const docAi = { lane: 'resume_doc', report, startedAt };
+        let { resume: draft, model: writtenBy } = await withResumeAi(docAi, () => writeDocDraft(prompt, report));
 
         // The placeholder guard, the employer's name kept out of the title and summary, and the résumé measured
         // against the base one (docSamenessOf — the summary, its opening, the title and the experience bullets; a
@@ -3200,15 +3346,16 @@ async function generateEmployerDoc(req, res) {
         if (problemCount(problems) && Date.now() - startedAt < DOC_LANE_CORRECTION_BUDGET_MS) {
             const onlyGeneric = problems.generic && !problems.placeholders.length && !problems.leaks.length;
             await report('polishing', onlyGeneric ? `Sharpening it for ${company}` : 'Polishing the wording', 70);
-            const fixed = await correctDocDraft(prompt, draft, problems, company, { sector });
+            const fixed = await withResumeAi(docAi, () => correctDocDraft(prompt, draft, problems, company, { sector }));
             if (fixed) {
-                const after = docProblemsOf(fixed, company, sourceText, { base, sector });
+                const after = docProblemsOf(fixed.resume, company, sourceText, { base, sector });
                 if (problems.generic) console.log(`[resumeBuilder] employer doc for "${company}" after the corrective pass: ${docSamenessText(after.sameness)}${after.generic ? ' — still generic, delivered as written' : ''}`);
                 if (problemCount(after) <= problemCount(problems)) {
                     // ⚠️ THE FIRST DRAFT'S DESIGN STANDS. The pass corrects wording; the family scores are the model's
                     // reading of the EMPLOYER, and a second answer would re-roll them for nothing the fix asked for.
-                    fixed.design = draft.design && typeof draft.design === 'object' ? draft.design : fixed.design;
-                    draft = fixed;
+                    fixed.resume.design = draft.design && typeof draft.design === 'object' ? draft.design : fixed.resume.design;
+                    draft = fixed.resume;
+                    writtenBy = fixed.model;
                     problems = after;
                 }
             }
@@ -3249,6 +3396,7 @@ async function generateEmployerDoc(req, res) {
         let served = null;       // a racing identical build's document, served free instead of ours
         let refusal = null;      // { status, body }, decided under the lock and answered after it
         let docId = null;
+        paymentBegun = true;
         try {
             await withUsageLock(userId, 'resume', async () => {
                 // ⚠️ A racing identical build (another device, same inputs) may have stored this exact document
@@ -3369,7 +3517,7 @@ async function generateEmployerDoc(req, res) {
                 await report('saving', `Saving your ${company} resume`, 92);
                 const doc = {
                     userId, kind: 'resume', employer: company, jobUrl: docJobUrl, jobTitle: job.title,
-                    fingerprint: cacheFp, model: RESUME_MODEL, payload: resumeData, research: research || null,
+                    fingerprint: cacheFp, model: writtenBy || RESUME_MODEL, payload: resumeData, research: research || null,
                     env, employerId, design,
                     // The exact job the fingerprint hashed — what /employer-docs/current re-hashes to call it stale.
                     jobInput: { title: job.title, url: job.url, description: job.description, website: job.website },
@@ -3413,6 +3561,13 @@ async function generateEmployerDoc(req, res) {
         await prerenderDocPages(userId, docId, resumeData, design, brand, 3, 20000);
         return res.json({ success: true, cached: false, docId: Number(docId), tailoredFor: company });
     } catch (e) {
+        // Google's AI, not the build, is what failed — thrown only by the draft, before the usage lock and the charge.
+        // Only while no payment step has begun — past it, "Nothing was charged" is not ours to promise.
+        const unavailable = paymentBegun ? null : resumeAiUnavailableAnswer(e);
+        if (unavailable) {
+            console.error(`[resumeBuilder] employer doc for user ${userId} / "${company}": ${unavailable.log} — ${unavailable.status} ${unavailable.body.reason}, nothing charged, nothing stored`);
+            return res.status(unavailable.status).json(unavailable.body);
+        }
         console.error('[resumeBuilder] employer doc error:', e.message);
         const isTimeout = e.message === 'AI_TIMEOUT' || e.message?.includes('timeout') || e.message?.includes('ETIMEDOUT');
         const userMessage = isTimeout

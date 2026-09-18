@@ -8,16 +8,25 @@
 // run (no reservation, no binding); coveredOnly must refuse before research and the AI and again at the
 // moment of payment; a letter is stored only when the charge is confirmed; and a download with a docId renders
 // the SAVED letter and bills the document's employer, whatever the body says.
+// ⚠️ AND (2026-09-18, Amazon's letter on a 503 "high demand" day): a busy Google must never cost a user a letter
+// or a charge. The lane asks through aiText — a pause, the primary once more, the verified fallbacks, one AI window —
+// a fallback's letter is stored as ITS letter under the same fingerprint, and when no model answers, nothing is
+// charged or stored and the answer says so (503 ai_busy / ai_down).
 'use strict';
 const path = require('path');
 const os = require('os');
 const fsSync = require('fs');
+const crypto = require('crypto');
 const ROOT = path.join(__dirname, '..', '..');
 const THUMBS = fsSync.mkdtempSync(path.join(os.tmpdir(), 'cva-letter-thumbs-'));
 process.env.DOC_THUMB_CACHE_DIR = THUMBS;   // ⚠️ before the controller is required — it reads this at load
 process.env.GEMINI_API_KEY = 'test-key-not-used';
+delete process.env.AI_TEXT_FALLBACK_MODELS;   // the VERIFIED chain (aiText's default), whatever the shell exports
 
 let pass = 0, fail = 0; const failures = [];
+// ⚠️ A build left waiting on a flight nobody settles holds no timer, so node would simply exit — code 0, no summary.
+let finished = false;
+process.on('exit', () => { if (!finished) { console.log('TEST ERROR: the suite never reached its summary (a build was left hanging)'); process.exitCode = 2; } });
 const ok = (n, c, x) => { if (c) pass++; else { fail++; failures.push(n); console.log('  ✗ ' + n + (x !== undefined ? '  → ' + JSON.stringify(x).slice(0, 400) : '')); } };
 
 // ── the world ───────────────────────────────────────────────────────────────────────────────────
@@ -77,11 +86,16 @@ stub('server/services/entitlements.js', {
 });
 
 // the AI
-const ai = { queue: [], calls: [] };
+// ai.fail(cfg, prompt) → an Error for THIS model (what Google answers it today), or null to fall through to the
+// queue. ⚠️ The queue is model-agnostic, so a scenario about WHICH model answered (2026-09-18: a busy primary, a
+// fallback that writes the letter) is written with ai.fail, keyed on cfg.model — never by queue position.
+const ai = { queue: [], calls: [], fail: null };
 const genaiPath = require.resolve('@google/generative-ai', { paths: [ROOT] });
 require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, exports: {
-  GoogleGenerativeAI: class { getGenerativeModel(cfg) { return { generateContent: async (prompt) => {
-    ai.calls.push({ prompt, cfg });
+  GoogleGenerativeAI: class { getGenerativeModel(cfg) { return { generateContent: async (prompt, opts) => {
+    ai.calls.push({ prompt, cfg, opts, t: Date.now() });
+    const down = typeof ai.fail === 'function' ? ai.fail(cfg, prompt) : null;
+    if (down) throw down;
     const next = ai.queue.length ? ai.queue.shift() : GOOD();
     if (next instanceof Error) throw next;
     if (next && next.slow) { await new Promise((r) => setTimeout(r, next.slow)); return { response: { text: () => next.text, candidates: [{ finishReason: 'STOP' }] } }; }
@@ -91,9 +105,22 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
 const PARA = (n) => `Paragraph ${n} about **Node.js** and **PostgreSQL** work the candidate did across payment systems, reliability, observability and careful delivery for teams that ship every week without drama or heroics, with clear ownership of services from design review through production support and steady mentoring.`;
 const GOOD = (over = {}) => JSON.stringify({ position: 'Senior Backend Engineer', to: 'Hiring Manager', addresses: [], cover_letter: [PARA(1), PARA(2), PARA(3), PARA(4)].join('\n\n'), ...over });
 
+// ⚠️ 2026-09-18 — what Google answered for Amazon's letter, and the answers around it. The SDK's fetch errors carry the
+// HTTP status as a number; the incident's own line is replayed message-only too, exactly as production logged it.
+const P = 'gemini-2.5-flash', F1 = 'gemini-2.5-flash-lite', F2 = 'gemini-3.1-flash-lite';
+const sdkErr = (model, status, statusText, text) => Object.assign(
+  new Error(`[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent: [${status} ${statusText}] ${text}`),
+  { status, statusText });
+const E503 = (m) => sdkErr(m, 503, 'Service Unavailable', 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.');
+const E429 = (m) => sdkErr(m, 429, 'Too Many Requests', 'Your prepayment credits are depleted. Please go to AI Studio to manage your project and billing. [RESOURCE_EXHAUSTED]');
+const INCIDENT_503 = () => new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.');
+
 stub('ai-cover-letter-v2.js', { generateCoverLetter: async () => { throw new Error('legacy v2 must not be called'); } });
 stub('ai-employer-researcher.js', { researchEmployer: async () => { throw new Error('researcher must not be called directly'); } });
 stub('server/controllers/notificationsController.js', { notifyCoverLetterGenerated: async () => {}, notifyError: async () => {} });
+// The operator's pager under the REAL aiHealth: a dead key (quota / auth) must page, and no push may leave this suite.
+const pages = [];
+stub('server/services/adminNotifier.js', { notifyAdmins: async (category, title, text, data) => { pages.push({ category, title, data }); } });
 const stages = [];
 stub('server/services/jobService.js', {
   createJob: async () => 'job1', failJob: async () => {}, completeJob: async () => {},
@@ -148,13 +175,19 @@ D.canDownload = async (u, o, r) => { dlSpy.can.push(o && o.employer); return rea
 D.claimDownload = async (u, o, r) => { dlSpy.claim.push(o && o.employer); return realClaim(u, o, r); };
 
 const EL = require(path.join(ROOT, 'server/controllers/employerLetterController.js'));
+// aiText, the one Gemini call the lane makes. Its ~2 s pause before the primary's second try is shrunk to 25 ms (no
+// jitter), so a scenario can still SEE the pause the incident lacked (the two 503s were 0 ms apart) without the
+// suite spending seconds on it. Its own suite (test-ai-text.js) pins the real 2 s and the rest of the policy.
+const AT = require(path.join(ROOT, 'server/services/aiText.js'));
+AT._internals.settings.retryWaitMs = 25;
+AT._internals.settings.retryJitterMs = 0;
 const CL = require(path.join(ROOT, 'server/controllers/coverLetterController.js'));
 const routes = require(path.join(ROOT, 'server/routes/coverLetterRoutes.js'));
 
 function mkRes() { const r = { statusCode: 200, body: null }; r.status = (c) => { r.statusCode = c; return r; }; r.json = (b) => { r.body = b; return r; }; return r; }
 const mkReq = (userId, body, extra = {}) => ({ user: { id: userId }, body, query: {}, headers: {}, ...extra });
 const call = async (fn, userId, body, extra) => { const res = mkRes(); await fn(mkReq(userId, body, extra), res); return res; };
-const reset = () => { ent.usageCalls = []; ent.usageThrows = false; passState.calls = []; passState.answer = { available: false, forThisEmployer: false }; researchConv = null; ai.queue = []; ai.calls = []; ent.consumed = []; ent.gateCalls = 0; ent.quota = { allowed: true, via: 'plan', remaining: 5 }; ent.quotaSeq = null; ent.used = { via: 'plan' }; ent.legacyEntitlements = false; passSpy.cover = false; passSpy.coverCalls = []; passSpy.claim = { charged: false }; passSpy.claimCalls = []; store.puts = []; store.failPut = false; researchCalls.length = 0; stages.length = 0; narr.throwIt = null; world.metaThrow = null; world.creditHistory = { n: 0, cost: 0 }; world.ledgerCredits = { n: 0 }; world.refunds = []; rendered.previews = []; resumeDocs.doc = null; rbFp.value = null; };
+const reset = () => { ent.usageCalls = []; ent.usageThrows = false; passState.calls = []; passState.answer = { available: false, forThisEmployer: false }; researchConv = null; ai.queue = []; ai.calls = []; ai.fail = null; ent.consumed = []; ent.gateCalls = 0; ent.quota = { allowed: true, via: 'plan', remaining: 5 }; ent.quotaSeq = null; ent.used = { via: 'plan' }; ent.legacyEntitlements = false; passSpy.cover = false; passSpy.coverCalls = []; passSpy.claim = { charged: false }; passSpy.claimCalls = []; store.puts = []; store.failPut = false; researchCalls.length = 0; stages.length = 0; narr.throwIt = null; world.metaThrow = null; world.creditHistory = { n: 0, cost: 0 }; world.ledgerCredits = { n: 0 }; world.refunds = []; rendered.previews = []; resumeDocs.doc = null; rbFp.value = null; };
 const JOB = { company: 'Acme', title: '', url: '', description: '', website: 'acme.test' };
 const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employerId: '0f8fad5b-d9cb-469f-a165-70867728950e', country: 'United States', job: { ...JOB }, ...over });
 
@@ -423,9 +456,186 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'QA Lead' } }));
   ok('two bad outputs → 500 failed', r.statusCode === 500 && r.body.reason === 'failed', r.body);
   ok('⚠️ no consume, no put', ent.consumed.length === 0 && store.puts.length === 0);
+  // ADDED 2026-09-18: output the LANE rejects is the lane's own retry — never a provider failure. The second draft is
+  // asked of the same primary; the fallback chain is for a BUSY model and is never walked for bad output.
+  ok('⚠️ …both drafts asked of the primary: bad output is not an overload, so no fallback is walked for it',
+    ai.calls.length === 2 && ai.calls.every((c) => c.cfg.model === P), ai.calls.map((c) => c.cfg.model));
+  // ⚠️ RETARGETED 2026-09-18 (was "two timeouts → 504"): a timeout is a hung model, and a hung model is exactly what the
+  // fallback chain is for. The primary is tried twice, with a pause, and then the next model writes the letter.
   reset(); ai.queue = [new Error('AI_TIMEOUT'), new Error('AI_TIMEOUT')];
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'QA Lead' } }));
-  ok('two timeouts → 504', r.statusCode === 504 && r.body.isTimeout === true, r.body);
+  ok('two timeouts on the primary → the first fallback writes it: 200, charged once, the fallback stored as its writer',
+    r.statusCode === 200 && ai.calls.map((c) => c.cfg.model).join() === [P, P, F1].join() && ent.consumed.length === 1 && store.puts.length === 1 && store.puts[0].model === F1,
+    { status: r.statusCode, models: ai.calls.map((c) => c.cfg.model), model: store.puts[0] && store.puts[0].model });
+
+  console.log('── ⚠️ 2026-09-18: GOOGLE BUSY (Amazon\'s letter: two 503s, 0 ms apart, "That cover letter didn\'t finish") ──');
+  {
+    // Production, user 1, Home → Cover letters → Amazon: gemini-2.5-flash answered 503 "high demand" twice, back to back,
+    // and the letter died. The lane now asks through aiText — a pause, the primary once more, then the verified fallbacks
+    // — all inside ONE AI window, all before the charge. A fallback's letter is stored as ITS letter, under the same
+    // fingerprint (a later identical request is a free hit); when no model can answer, nothing is charged or stored,
+    // the answer is an honest 503 ai_busy / ai_down, and any build waiting on this one is released.
+    const LA = EL.LETTER_AI || {};   // the lane's AI window (its absence is a failure below, not a crash here)
+    const modelsOf = () => ai.calls.map((c) => c.cfg.model);
+    const cfgOf = (c) => JSON.stringify(c.cfg.generationConfig);
+    const runsSince = (mark) => world.sql.slice(mark).filter((q) => /^RUN /.test(q));
+    const labelsOf = (stage) => stages.filter((s) => s.stage === stage).map((s) => s.label);
+    const gt = [];   // every generateText call the lane makes, exactly as it made it
+    const realGT = AT.generateText;
+    AT.generateText = (o) => { gt.push(o); return realGT(o); };
+    const STORM_JOB = { company: 'Amazon', title: 'Storm Role', url: '', description: '', website: 'amazon.test' };
+    const storm = (title) => buildBody({ employer: 'Amazon', job: { ...STORM_JOB, title } });
+    const PLACEHOLDER_DRAFT = GOOD({ cover_letter: [PARA(1), 'Improved settlement speed by [X%] for merchants and reduced disputes by XX% across regions over two years of steady work on the platform and its tooling.', PARA(3), PARA(4)].join('\n\n') });
+
+    // 1. the incident, replayed: the primary answers exactly what production logged, every time it is asked
+    reset(); gt.length = 0; ai.fail = (cfg) => (cfg.model === P ? INCIDENT_503() : null);
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role'), { __jobId: 'job-storm' });
+    const putS = store.puts[0] || {};
+    const stormDocId = r.body && r.body.docId;
+    ok('⚠️ a 503 storm on the primary still writes the letter: 200, a docId', r.statusCode === 200 && r.body.success === true && r.body.cached === false && Number.isInteger(stormDocId), r.body);
+    ok('…the primary twice, then the first fallback — three calls, and never a second chain on top', modelsOf().join() === [P, P, F1].join(), modelsOf());
+    ok('⚠️ …with a PAUSE before the primary\'s second try (the incident\'s two 503s were 0 ms apart)',
+      ai.calls.length >= 2 && ai.calls[1].t - ai.calls[0].t >= 20, ai.calls.map((c) => c.t - ai.calls[0].t));
+    ok('…the fallback asked with the lane\'s OWN config — JSON mime + schema, 0.7, 32768 tokens — identical on every call',
+      ai.calls.length === 3 && ai.calls.every((c) => cfgOf(c) === cfgOf(ai.calls[0])) && ai.calls[2].cfg.generationConfig.responseMimeType === 'application/json'
+      && !!ai.calls[2].cfg.generationConfig.responseSchema && ai.calls[2].cfg.generationConfig.temperature === 0.7 && ai.calls[2].cfg.generationConfig.maxOutputTokens === 32768,
+      ai.calls.map(cfgOf));
+    ok('…every attempt carries an abort signal: a hung model is CANCELLED at its cap, not merely stopped waiting for',
+      ai.calls.every((c) => c.opts && c.opts.signal && typeof c.opts.signal.aborted === 'boolean'));
+    ok('⚠️ charged EXACTLY once, stored once', ent.consumed.length === 1 && store.puts.length === 1, { consumed: ent.consumed.length, puts: store.puts.length });
+    ok('⚠️ the stored letter records the model that WROTE it (the fallback), not the lane\'s first choice', putS.model === F1, putS.model);
+    ok('the user is told in plain words: "busy — trying again", then "switching to a faster model"',
+      JSON.stringify(labelsOf('retry')) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a faster model']), stages);
+    ok('the lane asks through aiText ONCE, as "letter", with [primary, …the verified fallbacks] and a budget inside its AI window',
+      gt.length === 1 && gt[0].lane === 'letter' && JSON.stringify(gt[0].models) === JSON.stringify([P, F1, F2])
+      && gt[0].budgetMs > 0 && gt[0].budgetMs <= LA.draftBudgetMs && typeof gt[0].onRetry === 'function',
+      gt.map((g) => ({ lane: g.lane, models: g.models, budgetMs: g.budgetMs })));
+
+    // 2. ⚠️ THE MONEY LINE: who wrote a letter is not an input. The fallback's letter carries the fingerprint the gate, the
+    // build and the stale label compute, so the next identical request is FREE — exactly as a primary-written one is.
+    ok('⚠️ the fallback-written letter\'s fingerprint is the one the gate and the stale label compute',
+      !!putS.fingerprint && putS.fingerprint === await EL.currentLetterFingerprint(7, { job: STORM_JOB, env: mkReq(7, {}) }), putS.fingerprint);
+    reset(); gt.length = 0;   // Google is healthy again
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role'));
+    ok('⚠️ the same request again is a FREE cache hit on the fallback\'s letter: no AI, no gate, no charge, no new row',
+      r.statusCode === 200 && r.body.cached === true && r.body.docId === stormDocId && ai.calls.length === 0 && gt.length === 0
+      && ent.gateCalls === 0 && ent.consumed.length === 0 && store.puts.length === 0, r.body);
+    r = await call(EL.employerLetterGate, 7, { employer: 'Amazon', job: { ...STORM_JOB } });
+    ok('…and the confirm-sheet gate calls it a saved letter too (via cache)', r.body.covered === true && r.body.via === 'cache', r.body);
+    reset();
+    r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Storm Primary Co', job: { ...STORM_JOB, company: 'Storm Primary Co' } }));
+    const putP = store.puts[0] || {};
+    ok('⚠️ the same inputs written by the PRIMARY hash to the SAME fingerprint as the fallback\'s letter',
+      r.statusCode === 200 && putP.model === P && putP.fingerprint === putS.fingerprint, { status: r.statusCode, model: putP.model, same: putP.fingerprint === putS.fingerprint });
+
+    // 3. every model busy: NOTHING charged, NOTHING stored — and an answer that says so
+    reset(); gt.length = 0; ai.fail = (cfg) => E503(cfg.model);
+    const sqlBusy = world.sql.length;
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role B'), { __jobId: 'job-busy' });
+    ok('⚠️ every model busy → 503 ai_busy, retryable', r.statusCode === 503 && r.body.success === false && r.body.reason === 'ai_busy' && r.body.retryable === true, r.body);
+    ok('…in a sentence that names the cover letter and says NOTHING was charged', /cover letter/.test(r.body.error || '') && /Nothing was charged/.test(r.body.error || ''), r.body.error);
+    ok('…after the chain ran ONCE: the primary twice, then each fallback — four calls, never a second chain from the lane',
+      modelsOf().join() === [P, P, F1, F2].join() && gt.length === 1, { models: modelsOf(), chains: gt.length });
+    ok('⚠️ NOTHING consumed, stored, claimed, refunded or written',
+      ent.consumed.length === 0 && store.puts.length === 0 && passSpy.claimCalls.length === 0 && (world.refunds || []).length === 0 && runsSince(sqlBusy).length === 0,
+      { consumed: ent.consumed.length, puts: store.puts.length, runs: runsSince(sqlBusy) });
+    ok('…and it never reached the payment stages', !stages.some((s) => ['designing', 'saving', 'pages'].includes(s.stage)), stages.map((s) => s.stage));
+    reset(); ai.fail = () => new Error('AI_TIMEOUT');
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role F'));
+    ok('every model hung (timed out) is the same overload → 503 ai_busy, no longer a 504', r.statusCode === 503 && r.body.reason === 'ai_busy' && !r.body.isTimeout
+      && modelsOf().join() === [P, P, F1, F2].join() && ent.consumed.length === 0 && store.puts.length === 0, { status: r.statusCode, body: r.body, models: modelsOf() });
+
+    // 4. ⚠️ THE WAITERS. A second identical build that joined the first is RELEASED when the first ends ai_busy (the
+    // finally), then runs its own gates and its own chain and gets its own honest answer. Nobody waits on a build that
+    // will never land; the calls come in two whole chains, one after the other, because the second WAITED.
+    reset(); ai.fail = (cfg) => E503(cfg.model);
+    const bodyW = storm('Storm Role C');
+    let wd = null;
+    const hung = new Promise((resolve) => { wd = setTimeout(() => resolve('HUNG'), 5000); });
+    const both = await Promise.race([Promise.all([call(EL.buildEmployerLetter, 7, bodyW), call(EL.buildEmployerLetter, 7, bodyW)]), hung]);
+    clearTimeout(wd);
+    ok('⚠️ a build waiting on this one is RELEASED when it ends ai_busy (no hang)', Array.isArray(both), both);
+    const [wa, wb] = Array.isArray(both) ? both : [{ body: {} }, { body: {} }];
+    ok('…both answered 503 ai_busy, the joiner after running every gate itself', wa.statusCode === 503 && wb.statusCode === 503 && wa.body.reason === 'ai_busy' && wb.body.reason === 'ai_busy' && ent.gateCalls === 2,
+      { a: wa.body, b: wb.body, gates: ent.gateCalls });
+    ok('…the joiner really waited: two whole chains, one AFTER the other', modelsOf().join() === [P, P, F1, F2, P, P, F1, F2].join(), modelsOf());
+    ok('…nothing charged or stored for either', ent.consumed.length === 0 && store.puts.length === 0);
+    ai.fail = null; ai.calls = [];
+    // (Only when nothing hung: a flight that was never settled would swallow this build too, and the suite with it.)
+    if (Array.isArray(both)) r = await call(EL.buildEmployerLetter, 7, bodyW);
+    ok('…and the flight is gone: the next identical build runs at once, charged once', Array.isArray(both) && r.statusCode === 200 && r.body.cached === false && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1,
+      { status: r.statusCode, ai: ai.calls.length });
+
+    // 5. a dead key: quota fails FAST (one call — every model shares the key) and pages the operator
+    reset(); ai.fail = (cfg) => E429(cfg.model);
+    const pages0 = pages.length;
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role D'));
+    ok('⚠️ quota → 503 ai_down, NOT retryable, and it says nothing was charged', r.statusCode === 503 && r.body.success === false && r.body.reason === 'ai_down' && r.body.retryable === false && /Nothing was charged/.test(r.body.error || ''), r.body);
+    ok('…after ONE call: every model shares the key, so a second one is wasted time', ai.calls.length === 1, modelsOf());
+    ok('⚠️ …nothing charged, nothing stored', ent.consumed.length === 0 && store.puts.length === 0);
+    ok('…and the operator is paged (aiHealth: category null, an alarm no toggle can silence)',
+      pages.length === pages0 + 1 && pages[pages.length - 1].category === null && pages[pages.length - 1].data && pages[pages.length - 1].data.kind === 'quota', pages.slice(pages0));
+    reset();
+    const key = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try { r = await call(EL.buildEmployerLetter, 7, storm('Storm Role E')); } finally { process.env.GEMINI_API_KEY = key; }
+    ok('no key on the server → 503 ai_down before any AI call, nothing charged or stored (was a 500 "failed")',
+      r.statusCode === 503 && r.body.reason === 'ai_down' && ai.calls.length === 0 && ent.consumed.length === 0 && store.puts.length === 0, r.body);
+
+    // 6. the corrective pass rides the same chain — and NOTHING it meets may cost the user the letter they already have
+    reset(); ai.queue = [PLACEHOLDER_DRAFT]; ai.fail = (cfg, prompt) => (/CORRECTION/.test(prompt) && cfg.model === P ? E503(P) : null);
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role G'), { __jobId: 'job-fix' });
+    ok('the corrective pass goes through the chain too: the primary busy → the fallback rewrites it',
+      r.statusCode === 200 && modelsOf().join() === [P, P, P, F1].join() && /CORRECTION/.test((ai.calls[3] || {}).prompt || ''), modelsOf());
+    ok('⚠️ …and the stored letter records the model whose draft was KEPT (the fallback\'s rewrite), placeholders gone',
+      !!store.puts[0] && store.puts[0].model === F1 && !/\[X%\]|XX%/.test(store.puts[0].payload.coverLetterHtml), store.puts[0] && store.puts[0].model);
+    ok('…its retries reported after "Polishing the wording", never behind it on the bar',
+      (() => { const i = stages.findIndex((s) => s.stage === 'polishing'); return i >= 0 && stages.slice(i + 1).some((s) => s.stage === 'retry' && s.pct >= 70); })(), stages.map((s) => `${s.stage}:${s.pct}`));
+    ok('…charged once', ent.consumed.length === 1 && store.puts.length === 1);
+    reset(); ai.queue = [PLACEHOLDER_DRAFT]; ai.fail = (cfg, prompt) => (/CORRECTION/.test(prompt) ? E503(cfg.model) : null);
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role H'));
+    const htmlH = (store.puts[0] || { payload: {} }).payload.coverLetterHtml || '';
+    ok('⚠️ every model busy on the CORRECTIVE pass: the first draft is kept (placeholders stripped), stored and charged once',
+      r.statusCode === 200 && ent.consumed.length === 1 && store.puts.length === 1 && store.puts[0].model === P && !/\[X%\]|XX%/.test(htmlH) && /Improved settlement speed for merchants/.test(htmlH),
+      { status: r.statusCode, body: r.body, model: store.puts[0] && store.puts[0].model });
+    ok('…after one draft and ONE corrective chain (primary twice, each fallback)', modelsOf().join() === [P, P, P, F1, F2].join(), modelsOf());
+
+    // 7. bad output is the LANE's retry: a second draft from the primary, told as a second pass — not as Google being busy
+    reset(); ai.queue = ['not json'];
+    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role I'), { __jobId: 'job-bad' });
+    ok('bad output → the lane\'s own second draft, from the primary (200, two calls, both the primary)',
+      r.statusCode === 200 && modelsOf().join() === [P, P].join() && !!store.puts[0] && store.puts[0].model === P, modelsOf());
+    ok('…reported as "Taking another pass at it", never as a busy provider', JSON.stringify(labelsOf('retry')) === JSON.stringify(['Taking another pass at it']), labelsOf('retry'));
+
+    // 8. ⚠️ ONE AI WINDOW (LETTER_AI): no second draft and no corrective pass is STARTED without room to finish it.
+    const realWindow = { ...LA };
+    try {
+      LA.windowMs = 30 * 1000; LA.minCallMs = 60 * 1000;   // room for one draft, none for another call
+      reset(); gt.length = 0; ai.queue = ['not json'];
+      r = await call(EL.buildEmployerLetter, 7, storm('Storm Role J'));
+      ok('⚠️ bad output with no room left → 500 failed after ONE call — never an "AI is busy" the provider never said',
+        r.statusCode === 500 && r.body.reason === 'failed' && ai.calls.length === 1 && ent.consumed.length === 0 && store.puts.length === 0, { status: r.statusCode, body: r.body, calls: ai.calls.length });
+      ok('…and its one chain was given what was LEFT of the window, not a budget of its own', gt.length === 1 && gt[0].budgetMs > 0 && gt[0].budgetMs <= 30 * 1000, gt.map((g) => g.budgetMs));
+      reset(); ai.queue = [PLACEHOLDER_DRAFT];
+      r = await call(EL.buildEmployerLetter, 7, storm('Storm Role K'));
+      ok('placeholders with no room for the corrective pass → the first draft kept (stripped) after ONE call, charged once',
+        r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1 && !/\[X%\]|XX%/.test(store.puts[0].payload.coverLetterHtml),
+        { status: r.statusCode, calls: ai.calls.length });
+    } finally { Object.assign(LA, realWindow); }
+    // 240 s of research + AI, + ≤ 15 s of lock + ≤ 20 s of thumbs, inside the app's 6 minutes with room for the queue.
+    ok('the production window: 4 min for research + every AI call, 3 min a draft, 90 s a correction, 20 s the least a call starts with',
+      LA.windowMs === 240000 && LA.draftBudgetMs === 180000 && LA.correctionBudgetMs === 90000 && LA.minCallMs === 20000
+      && LA.windowMs + 35 * 1000 < 6 * 60 * 1000, EL.LETTER_AI);
+
+    // 9. ⚠️ THE MONEY CONSTANTS. A bump of any of them re-bills every saved document; a fallback model moves none of them.
+    const elSrc = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
+    ok('⚠️ LETTER_REV stays letter-v1 through the fallback round', /const LETTER_REV = 'letter-v1';/.test(elSrc) && !/LETTER_REV = 'letter-v[2-9]'/.test(elSrc));
+    ok('⚠️ RESEARCH_REV stays r1', research.RESEARCH_REV === 'r1', research.RESEARCH_REV);
+    ok('⚠️ FP_VERSION stays v1 (the hash of a known input is exactly what it was)',
+      docs.fingerprint({ baseText: 'a', jobText: 'b', researchRev: 'c' }) === crypto.createHash('sha256').update(['v1', 'a', 'b', 'c'].join('\0')).digest('hex'));
+    ok('⚠️ no model id anywhere in the letter\'s fingerprint', (() => { const b = (elSrc.match(/function letterFingerprintOf\([\s\S]*?\n\}/) || [''])[0]; return b.length > 50 && !/model/i.test(b); })());
+    AT.generateText = realGT;
+  }
 
   console.log('── build: money at the moment of payment ──');
   reset(); ent.quotaSeq = [{ allowed: true, via: 'plan' }, { allowed: true, via: 'credits' }];
@@ -961,6 +1171,7 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   }
 
   fsSync.rmSync(THUMBS, { recursive: true, force: true });
+  finished = true;
   console.log(`\nemployer letter lane: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
-})().catch((e) => { console.error('TEST ERROR:', e); fsSync.rmSync(THUMBS, { recursive: true, force: true }); process.exit(2); });
+})().catch((e) => { finished = true; console.error('TEST ERROR:', e); fsSync.rmSync(THUMBS, { recursive: true, force: true }); process.exit(2); });

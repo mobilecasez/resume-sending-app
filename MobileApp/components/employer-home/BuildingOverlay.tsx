@@ -644,9 +644,10 @@ function Secondary({ label, onPress }: { label: string; onPress: () => void }) {
 
 /**
  * Which footer a non-running state gets. `wait` and `unknown` never offer a rebuild; `built` retries
- * the page refresh, never the build.
+ * the page refresh, never the build; `down` (the AI provider refusing our key) is Close alone — a Try
+ * again there could only fail the same way.
  */
-type Outcome = 'plans' | 'upload' | 'retry' | 'wait' | 'built' | 'unknown';
+type Outcome = 'plans' | 'upload' | 'retry' | 'wait' | 'built' | 'unknown' | 'down';
 
 /**
  * Which allowance a 'quota_exhausted' / 'regen_limit' refusal ran out of: the FREE one (one time, never
@@ -672,9 +673,13 @@ function allowanceOf(reason: string, message: string, isPaid?: boolean): 'free' 
  * running on the server and would be charged when it landed. Try again there was an invitation to pay
  * twice. The polling deadline is now 'pending' (still running, never a rebuild), and anything else we
  * cannot name gets a neutral title, no Try again, and no red.
+ *
+ * ⚠️ `calm` = NOTHING WENT WRONG ON THE USER'S SIDE, AND NOTHING WAS SPENT: the AI provider was busy or down,
+ * before any charge. The core waits instead of showing an error and the page is not dimmed — the screen must
+ * not read as the user's mistake or their loss. Exported for the behavioural test only.
  */
-function errorCopy(reason: string, message: string, company: string, kind: DocKind, isPaid?: boolean): {
-  title: string; body: string; icon: IconName; tint: string; outcome: Outcome;
+export function errorCopy(reason: string, message: string, company: string, kind: DocKind, isPaid?: boolean): {
+  title: string; body: string; icon: IconName; tint: string; outcome: Outcome; calm?: boolean;
 } {
   const forWho = company ? `for ${company}` : 'for this employer';
   // Only the WORDS switch on kind. The outcome (and so the footer, and whether a rebuild is ever
@@ -730,6 +735,22 @@ function errorCopy(reason: string, message: string, company: string, kind: DocKi
         title: letter ? "That cover letter didn't finish" : "That build didn't finish",
         body: message || 'Something went wrong on our side. Try again in a moment.',
         icon: 'alert-circle-outline', tint: '#FCA5A5', outcome: 'retry',
+      };
+    // ⚠️ THE AI PROVIDER, NOT THE BUILD AND NOT THE USER — and in both cases BEFORE the charge. The body is the
+    // server's own sentence (it says nothing was charged and what to do); the title never blames anyone. A busy
+    // provider is worth another try in a minute (Try again — through the gate and the sheet, like the first
+    // build); one refusing our key is not, so that one is Close alone.
+    case 'ai_busy':
+      return {
+        title: "Google's AI is busy",
+        body: message || `Google’s AI is overloaded right now, so your ${noun} could not be ${letter ? 'written' : 'built'}. Nothing was charged — please try again in a minute.`,
+        icon: 'time-outline', tint: '#C7D2FE', outcome: 'retry', calm: true,
+      };
+    case 'ai_down':
+      return {
+        title: 'Our AI provider is unavailable',
+        body: message || 'Our AI provider is unavailable right now. Nothing was charged.',
+        icon: 'cloud-offline-outline', tint: '#C7D2FE', outcome: 'down', calm: true,
       };
     case 'pending':
       // ⚠️ The job may still finish AND CHARGE. The only honest action is to let it; no rebuild.
@@ -811,9 +832,10 @@ function Scene({ kind, company, stage, mode, error, buildKey, isPaid, dismiss, o
   const paperMode: PaperMode = mode === 'run' ? 'run' : mode === 'done' ? 'done' : outcome === 'built' ? 'built' : 'hold';
   const look: CoreLook = mode === 'run' ? 'run'
     : mode === 'done' || outcome === 'built' ? 'done'
-      : outcome === 'wait' || outcome === 'unknown' ? 'wait' : 'error';
-  // Dimmed only for a real refusal or failure — never for a build that is still going or already built.
-  const dim = outcome === 'plans' || outcome === 'upload' || outcome === 'retry';
+      : outcome === 'wait' || outcome === 'unknown' || (fail && fail.calm) ? 'wait' : 'error';
+  // Dimmed only for a real refusal or failure — never for a build that is still going or already built, nor
+  // for an AI provider that was busy (calm): that page was never the user's to lose.
+  const dim = !(fail && fail.calm) && (outcome === 'plans' || outcome === 'upload' || outcome === 'retry');
   const core: { icon: IconName; tint: string } = fail
     ? { icon: fail.icon, tint: fail.tint }
     : mode === 'done' ? { icon: 'sparkles', tint: '#FFFFFF' } : { icon: 'hardware-chip-outline', tint: '#FFFFFF' };
@@ -942,6 +964,8 @@ function Scene({ kind, company, stage, mode, error, buildKey, isPaid, dismiss, o
               </>
             )}
             {outcome === 'unknown' && <Secondary label="Close" onPress={dismiss} />}
+            {/* ⚠️ NO Try again: the provider refused our key, and another tap would only fail the same way. */}
+            {outcome === 'down' && <Secondary label="Close" onPress={dismiss} />}
           </View>
         </ScrollView>
       </Pressable>

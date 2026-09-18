@@ -10,7 +10,8 @@
 // (buyDownloadPass(company)), reads the gate again and builds only on via 'pass' (or a free cache hit); an unreadable gate asks first (and its Build tap is the only consent
 // coveredOnly:false ever gets); a gate that still says 'credits' asks in plan words and is built coveredOnly:true
 // (no credits lane exists for generation since 2026-09-13); a quota refusal builds nothing; a recovered build lands exactly once;
-// and nothing of one account survives into the next.
+// nothing of one account survives into the next; and a build the AI provider could not write ('ai_busy' / 'ai_down', always
+// before the charge) says so in the server's own words, never re-sends itself, and retries only through the sheet (AI1..AI7).
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -24,7 +25,8 @@ const OUT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cva-home-buil
 
 function transpile(src, name) {
   const js = ts.transpileModule(fs.readFileSync(src, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+    // jsx: the AI-ending scenarios load BuildingOverlay and EmployerChip for their words (nothing is rendered).
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true, jsx: ts.JsxEmit.React },
     fileName: name,
   }).outputText;
   const p = path.join(OUT, name.replace(/\.tsx?$/, '.js'));
@@ -1499,6 +1501,320 @@ async function startThree(c) {
     ok('no credit wording in the sheet', lits.length > 20 && !lits.some((l) => /credit/i.test(l)), lits.filter((l) => /credit/i.test(l)));
     ok('no useNativeDriver:false in the sheet', !/useNativeDriver:\s*false/.test(code));
     ok('header', /^\/\/ AI Hub — new feature\. Safe to delete/.test(code));
+  }
+
+  /* ── the AI provider's endings (2026-09-18) ──
+   * Production, user 1, Home → Cover letters → Amazon: gemini-2.5-flash answered 503 "high demand" to both attempts,
+   * the lane gave up BEFORE its charge, and the app said "That cover letter didn't finish" — nothing about whose
+   * fault, nothing about the money. The lanes now answer 503 { reason: 'ai_busy' | 'ai_down', retryable, error },
+   * and asJob keeps only the reason and the sentence on their way to the phone. What is pinned here: the sentence
+   * reaches the record and the overlay; Try again after 'ai_busy' is the first build's own path (gate → sheet →
+   * Continue) and sends nothing by itself; 'ai_down' offers no Try again; an ordinary failure reads exactly as before. */
+  const BUSY_S = 'Google’s AI is overloaded right now, so your cover letter could not be written. Nothing was charged — please try again in a minute.';
+  const BUSY_R = 'Google’s AI is overloaded right now, so your resume could not be built. Nothing was charged — please try again in a minute.';
+  const DOWN_S = 'Our AI provider is unavailable right now. Nothing was charged.';
+  const noResend = () => svc.calls.recoverOpts.every((o) => !o || !o.resendKey);
+
+  console.log('── AI1. ai_busy, watched: the server’s sentence reaches the record and the overlay; Try again is offered, and nothing goes by itself ──');
+  {
+    const { c, store, notices } = await fresh();
+    c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true });
+    await advance(0);
+    await tapContinue(c, 'the first build was asked on the sheet');
+    await advance(GAP);
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'ai_busy', message: BUSY_S });
+    await flush();
+    const r = rec(store, 'cover_letter|emp_1');
+    ok('the record keeps the reason AND the server’s sentence', r?.phase === 'error' && r?.error?.reason === 'ai_busy' && r?.error?.message === BUSY_S, r && r.error);
+    ok('⚠️ the overlay shows that sentence — not a bare "didn’t finish" — with Try again', c.r.overlay.visible && c.r.overlay.error?.reason === 'ai_busy'
+      && c.r.overlay.error?.message === BUSY_S && c.r.overlay.canRetry === true, c.r.overlay);
+    ok('watched: no notice on top of it', notices.length === 0);
+    ok('tracked as the AI’s ending, not a bare failure', tracked.some(([e, p]) => e === 'home_build_fail' && p.reason === 'ai_busy'));
+    const gates = svc.calls.gate.length;
+    await advance(10 * 60 * 1000);
+    ok('⚠️ ten minutes on, nothing went by itself: one build, no gate read, no resend', svc.calls.build.length === 1 && svc.calls.gate.length === gates && noResend(),
+      { builds: svc.calls.build.length, gates: svc.calls.gate.length, recover: svc.calls.recoverOpts });
+    ok('…and the chip still says why', rec(store, 'cover_letter|emp_1')?.error?.reason === 'ai_busy');
+  }
+
+  console.log('── AI2. ⚠️ Try again after ai_busy: the gate and the sheet again, exactly the first build’s path — never a resend under the old consent ──');
+  {
+    const { c, store } = await fresh({ svc: (s) => { s.gateImpl = async () => ({ covered: true, via: 'free', usage: { ...USAGE_FREE, kind: 'cover_letter' } }); } });
+    c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true });
+    await advance(0);
+    await tapContinue(c, 'first build: the sheet');
+    const first = svc.calls.build[0];
+    ok('the first build went out covered-only, naming the pool the sheet showed', first.coveredOnly === true && first.expectVia === 'free', first);
+    await advance(GAP);
+    svc.finish(first.key, { ok: false, reason: 'ai_busy', message: BUSY_S });
+    await flush();
+    // The service still LISTS a record for this very build (a clear that did not stick, say). For 'failed' Try again
+    // picks that up and resends it under the FIRST build's consent (resendKey) — right for a lost POST, wrong here:
+    // the server said this build stopped before its charge, so there is nothing to pick up.
+    svc.peekImpl = async () => [{ key: first.key, kind: 'cover_letter', company: 'Amazon', employerId: JOB().employerId, jobUrl: '', startedAt: now }];
+    const gates = svc.calls.gate.length;
+    c.r.retryOverlay();
+    await advance(0);
+    ok('⚠️ nothing picked up and nothing sent: no resend, no build', noResend() && svc.calls.build.length === 1, svc.calls.recoverOpts);
+    ok('…the gate is read again, for the same letter', svc.calls.gate.length === gates + 1 && svc.calls.gate[gates].kind === 'cover_letter' && svc.calls.gate[gates].employer === 'Amazon');
+    ok('…and the overlay steps aside for the question', !c.r.overlay.visible);
+    await advance(GAP);
+    ok('⚠️ the SAME sheet asks — and says the last try charged nothing', c.r.confirm.visible && c.r.confirm.mode === 'confirm' && c.r.confirm.kind === 'cover_letter'
+      && c.r.confirm.usage?.pool === 'free' && /nothing was charged/i.test(String(c.r.confirm.error)), c.r.confirm);
+    await advance(60 * 1000);
+    ok('⚠️ …and a sheet left up sends nothing', svc.calls.build.length === 1 && noResend());
+    c.r.confirm.onContinue();
+    await flush();
+    const again = svc.calls.build[1];
+    ok('only its Continue sends — covered-only, on the pool it names, like the first', svc.calls.build.length === 2 && again.coveredOnly === true
+      && again.expectVia === 'free' && again.kind === 'cover_letter' && again.key === first.key, again);
+    ok('…and the chip is building again', rec(store, 'cover_letter|emp_1')?.phase === 'building');
+  }
+  {
+    // Cancel on that second question: nothing is sent, ever, and the chip goes quiet.
+    const { c, store } = await fresh();
+    c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true });
+    await advance(0);
+    await tapContinue(c);
+    await advance(GAP);
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'ai_busy', message: BUSY_S });
+    await flush();
+    c.r.retryOverlay();
+    await advance(GAP);
+    c.r.confirm.onCancel();
+    await advance(10 * 60 * 1000);
+    ok('Cancel on the retry question: nothing sent, the record goes', svc.calls.build.length === 1 && noResend() && !rec(store, 'cover_letter|emp_1'));
+  }
+
+  console.log('── AI3. ai_busy, unwatched: the notice says what happened and that nothing was charged; the card opens the sentence ──');
+  {
+    const { c, notices } = await fresh();
+    c.r.request(JOB(), { explicit: true, showOverlay: false });
+    await advance(0);
+    await tapContinue(c);
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'ai_busy', message: BUSY_R });
+    await flush();
+    const n = notices[notices.length - 1];
+    ok('⚠️ the notice names the cause and the money, never a bare "didn’t finish"', !!n && /Google’s AI was busy/.test(n.text) && /Amazon resume wasn’t built/.test(n.text)
+      && /Nothing was charged/.test(n.text) && !/didn’t finish/.test(n.text), n);
+    ok('…and it opens this build’s own explanation', !!n && n.action?.label === 'See why' && n.action?.rk === 'emp_1' && n.action?.kind === 'resume', n);
+    c.r.openOverlayFor('resume', 'emp_1');
+    await advance(GAP);
+    ok('the card opens the overlay on the server’s sentence, with Try again', c.r.overlay.visible && c.r.overlay.error?.message === BUSY_R && c.r.overlay.canRetry);
+  }
+
+  console.log('── AI4. ai_down: the provider is unavailable and nothing was charged — no Try again, nothing read or sent ──');
+  {
+    const { c, store } = await fresh();
+    c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true });
+    await advance(0);
+    await tapContinue(c);
+    await advance(GAP);
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'ai_down', message: DOWN_S });
+    await flush();
+    ok('the overlay shows the down sentence', c.r.overlay.visible && c.r.overlay.error?.reason === 'ai_down' && c.r.overlay.error?.message === DOWN_S, c.r.overlay);
+    ok('⚠️ …and offers NO Try again: another tap could only fail the same way', c.r.overlay.canRetry === false);
+    const gates = svc.calls.gate.length;
+    c.r.retryOverlay();
+    await advance(5000);
+    ok('a stray retry does nothing: no look, no gate, no build', svc.calls.peek === 0 && svc.calls.gate.length === gates && svc.calls.build.length === 1 && noResend());
+    c.r.dismissOverlay();
+    await flush();
+    ok('seen once, it clears — the chip is free for a Write when the provider is back', !rec(store, 'cover_letter|emp_1'));
+  }
+  {
+    const { c, store, notices } = await fresh();
+    c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true, showOverlay: false });
+    await advance(0);
+    await tapContinue(c);
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'ai_down', message: DOWN_S });
+    await flush();
+    const n = notices[notices.length - 1];
+    ok('unwatched: the notice says the provider is unavailable and nothing was charged', !!n && /AI provider is unavailable/.test(n.text) && /Amazon cover letter wasn’t written/.test(n.text)
+      && /Nothing was charged/.test(n.text) && !/didn’t finish/.test(n.text), n);
+    ok('…and the chip keeps saying so until it is seen', rec(store, 'cover_letter|emp_1')?.phase === 'error' && rec(store, 'cover_letter|emp_1')?.error?.reason === 'ai_down');
+  }
+
+  console.log('── AI5. an ordinary failure is unchanged: its own words, "didn’t finish", Try again that looks for a held build first ──');
+  {
+    const { c, store, notices } = await fresh();
+    c.r.request(JOB({ kind: 'cover_letter' }), { explicit: true, showOverlay: false });
+    await advance(0);
+    await tapContinue(c);
+    const S = 'We could not finish writing your cover letter. Please try again.';
+    svc.finish(svc.calls.build[0].key, { ok: false, reason: 'failed', message: S });
+    await flush();
+    ok('the notice is today’s, word for word', notices.some((n) => n.text === 'Your Amazon cover letter didn’t finish — tap its card to see why' && n.action?.label === 'See why'), notices);
+    ok('the record: failed, its own message', rec(store, 'cover_letter|emp_1')?.error?.reason === 'failed' && rec(store, 'cover_letter|emp_1')?.error?.message === S);
+    c.r.openOverlayFor('cover_letter', 'emp_1');
+    await advance(GAP);
+    ok('the overlay: failed, retryable', c.r.overlay.error?.reason === 'failed' && c.r.overlay.error?.message === S && c.r.overlay.canRetry);
+    c.r.retryOverlay();
+    await advance(0);
+    ok('…and its Try again still looks for a held build first (a lost 202 may still be running)', svc.calls.peek === 1);
+  }
+
+  console.log('── AI6. BuildingOverlay + EmployerChip, for real: the words each ending is shown with ──');
+  {
+    const OV = transpile(path.join(APP, 'components/employer-home/BuildingOverlay.tsx'), 'BuildingOverlay.tsx');
+    const CHIP = transpile(path.join(APP, 'components/employer-home/EmployerChip.tsx'), 'EmployerChip.tsx');
+    const anim = () => ({ start() {}, stop() {} });
+    const RN = {
+      View: 'View', Text: 'Text', Pressable: 'Pressable', TouchableOpacity: 'TouchableOpacity', ScrollView: 'ScrollView', Modal: 'Modal',
+      StyleSheet: { create: (o) => o, absoluteFill: {} }, Easing: { out: () => 0, in: () => 0, inOut: () => 0, cubic: 0, quad: 0 },
+      Animated: { View: 'Animated.View', Value: function Value() {}, timing: anim, spring: anim, parallel: anim, sequence: anim, delay: anim, loop: anim },
+      Platform: { OS: 'ios', select: (o) => (o.ios !== undefined ? o.ios : o.default) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }), AccessibilityInfo: {},
+    };
+    const prevLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+      if (request === 'react') return { ...FakeReact, memo: (f) => f };
+      if (request === 'react-native') return RN;
+      if (request === 'expo-linear-gradient') return { LinearGradient: 'LinearGradient' };
+      if (request === '@expo/vector-icons') return { Ionicons: 'Ionicons' };
+      if (request === 'react-native-safe-area-context') return { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) };
+      if (request === './MeshStage') return { __esModule: true, default: () => null };
+      if (request === './theme') return { E: new Proxy({}, { get: () => '#123456' }), SERIF: 'serif', sweepWords: () => [] };
+      return prevLoad.apply(this, arguments);
+    };
+    try {
+      delete require.cache[OV]; delete require.cache[CHIP];
+      const { errorCopy } = require(OV);
+      const { errorLineFor } = require(CHIP);
+      ok('errorCopy is reachable', typeof errorCopy === 'function');
+      ok('errorLineFor is reachable', typeof errorLineFor === 'function');
+      if (typeof errorCopy === 'function') {
+        let e = errorCopy('ai_busy', BUSY_S, 'Amazon', 'cover_letter');
+        ok('⚠️ busy: a title that blames nobody, the server’s sentence as the body, Try again', e.title === "Google's AI is busy" && e.body === BUSY_S && e.outcome === 'retry'
+          && e.calm === true && !/didn.t finish|fail|error|wrong/i.test(e.title), e);
+        e = errorCopy('ai_busy', '', 'Amazon', 'resume');
+        ok('busy with no sentence: ours, the resume’s words, and it still says nothing was charged', /resume could not be built/.test(e.body) && /Nothing was charged/.test(e.body) && e.outcome === 'retry', e);
+        e = errorCopy('ai_down', DOWN_S, 'Amazon', 'cover_letter');
+        ok('⚠️ down: the provider is unavailable, nothing was charged, and NO Try again', /unavailable/i.test(e.title) && e.body === DOWN_S && e.outcome === 'down' && e.calm === true, e);
+        e = errorCopy('ai_down', '', 'Amazon', 'resume');
+        ok('down with no sentence still says nothing was charged', /Nothing was charged/.test(e.body), e);
+        e = errorCopy('failed', 'boom', 'Amazon', 'cover_letter');
+        ok('failed is unchanged', e.title === "That cover letter didn't finish" && e.body === 'boom' && e.outcome === 'retry' && !e.calm, e);
+        e = errorCopy('failed', '', 'Amazon', 'resume');
+        ok('…for the resume too', e.title === "That build didn't finish" && e.outcome === 'retry' && !e.calm, e);
+        e = errorCopy('something_new', 'x', 'Amazon', 'resume');
+        ok('a reason nobody named is still the neutral one, with no rebuild', /couldn't confirm/.test(e.title) && e.outcome === 'unknown', e);
+      }
+      const ovSrc = fs.readFileSync(path.join(APP, 'components/employer-home/BuildingOverlay.tsx'), 'utf8').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+      ok('⚠️ the down footer is Close alone', /\{outcome === 'down' && <Secondary label="Close" onPress=\{dismiss\} \/>\}/.test(ovSrc)
+        && !/outcome === 'down' && \(?\s*<>?\s*[^}]*Primary/.test(ovSrc));
+      if (typeof errorLineFor === 'function') {
+        ok('the chip: busy and down say so, calmly; anything else keeps "Didn’t finish"',
+          errorLineFor('ai_busy').text === 'AI was busy' && errorLineFor('ai_busy').calm === true
+          && errorLineFor('ai_down').text === 'AI unavailable' && errorLineFor('ai_down').calm === true
+          && errorLineFor('failed').text === 'Didn’t finish' && errorLineFor('failed').calm === false
+          && errorLineFor('network').text === 'Didn’t finish' && errorLineFor(null).text === 'Didn’t finish');
+      }
+    } finally {
+      Module._load = prevLoad;
+    }
+  }
+
+  console.log('── AI7. services/homeAddEmployer.ts, for real: what each lane’s AI ending reaches the app as ──');
+  {
+    // The REAL service against a stubbed fetch and an in-memory AsyncStorage (the remembered builds), driven by the
+    // fake clock (the poll's sleep and each request's abort timer are its timers).
+    for (const id of timers.keys()) timers.delete(id);   // nothing of the hook scenarios above ticks in here
+    const SVC = transpile(path.join(APP, 'services/homeAddEmployer.ts'), 'homeAddEmployer.ts');
+    const mem = new Map();
+    let posts = [];
+    let route = async () => ({ status: 404, json: {} });
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => {
+      const method = (init && init.method) || 'GET';
+      if (method === 'POST') posts.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
+      const a = await route(url, method);
+      return { status: a.status, ok: a.status >= 200 && a.status < 300, json: async () => a.json };
+    };
+    const prevLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+      if (request === 'expo-secure-store') return { getItemAsync: async () => JSON.stringify({ token: 'T', id: 1 }), setItemAsync: async () => {}, deleteItemAsync: async () => {} };
+      if (request === '@react-native-async-storage/async-storage') {
+        return { __esModule: true, default: { getItem: async (k) => (mem.has(k) ? mem.get(k) : null), setItem: async (k, v) => { mem.set(k, v); }, removeItem: async (k) => { mem.delete(k); } } };
+      }
+      if (request === '../config') return { API_BASE: 'https://api.test' };
+      if (request === './employerHomeService') return { gradFor: () => ['#000', '#111'], cleanJobUrl: (u) => u, deviceHeaders: async () => ({}) };
+      return prevLoad.apply(this, arguments);
+    };
+    const held = () => { try { return JSON.parse(mem.get('home_build_inflight_v2') || '[]'); } catch { return ['unreadable']; } };
+    const LETTER = { company: 'Amazon', website: 'https://amazon.jobs', kind: 'cover_letter', coveredOnly: true, expectVia: 'free' };
+    const RESUME = { company: 'Amazon', website: 'https://amazon.jobs', kind: 'resume', coveredOnly: true, expectVia: 'plan' };
+    const asyncLane = (job) => async (url, method) => {
+      if (method === 'POST') return { status: 202, json: { jobId: 'J1', status: 'pending' } };
+      if (/\/job-status\/J1$/.test(url)) return { status: 200, json: job };
+      return { status: 404, json: {} };
+    };
+    const syncLane = (status, json) => async (url, method) => {
+      if (method === 'POST') return { status, json };
+      if (/\/resume-score\/source-text/.test(url)) return { status: 200, json: { hasText: true, text: 'Ten years shipping payments software at scale.' } };
+      if (/\/users\/profile$/.test(url)) return { status: 200, json: { fullName: 'R', email: 'r@x.io', resume: 'r.pdf' } };
+      return { status: 404, json: {} };
+    };
+    const build = async (i, ms = 5000) => { const p = S.buildForEmployer(i, () => {}); await advance(ms); return p; };
+    const reset = () => { mem.clear(); posts = []; };
+    let S;
+    try {
+      delete require.cache[SVC];
+      S = require(SVC);
+      reset();
+      route = asyncLane({ jobId: 'J1', status: 'failed', error: BUSY_S, reason: 'ai_busy', data: { reason: 'ai_busy', error: BUSY_S } });
+      let r = await build(LETTER);
+      ok('⚠️ async lane: the failed job’s reason AND sentence arrive intact (not collapsed into "failed")', r.ok === false && r.reason === 'ai_busy' && r.message === BUSY_S, r);
+      ok('…one POST, and no remembered record left to resend', posts.length === 1 && held().length === 0, { posts: posts.length, held: held() });
+
+      reset();
+      route = asyncLane({ jobId: 'J1', status: 'failed', error: DOWN_S, reason: 'ai_down', data: { reason: 'ai_down', error: DOWN_S } });
+      r = await build(LETTER);
+      ok('async lane: ai_down arrives as itself', r.ok === false && r.reason === 'ai_down' && r.message === DOWN_S, r);
+
+      reset();
+      route = asyncLane({ jobId: 'J1', status: 'failed', error: null, reason: 'ai_busy', data: { reason: 'ai_busy' } });
+      r = await build(LETTER);
+      ok('a busy job with no sentence: ours, which says nothing was charged', r.reason === 'ai_busy' && /cover letter could not be written/.test(r.message) && /Nothing was charged/.test(r.message), r);
+
+      reset();
+      route = asyncLane({ jobId: 'J1', status: 'failed', error: 'Google’s AI is overloaded right now.', reason: 'ai_busy', data: { reason: 'ai_busy' } });
+      r = await build(LETTER);
+      ok('⚠️ a server sentence that forgot the money gets it said', r.message === 'Google’s AI is overloaded right now. Nothing was charged.', r);
+
+      reset();
+      const F = 'We could not finish writing your cover letter. Please try again.';
+      route = asyncLane({ jobId: 'J1', status: 'failed', error: F, reason: null, data: { stage: 'writing', pct: 46 } });
+      r = await build(LETTER);
+      ok('async lane: an ordinary failure is unchanged — "failed", its own words', r.reason === 'failed' && r.message === F, r);
+
+      // The SYNC fallback (asJob could not create a job row): the handler answers this very POST.
+      reset();
+      route = syncLane(503, { success: false, reason: 'ai_busy', retryable: true, error: BUSY_S });
+      r = await build(LETTER, 10 * 60 * 1000);
+      ok('⚠️ sync lane: a 503 carrying ai_busy is an ANSWER, not a lost POST — the sentence arrives', r.ok === false && r.reason === 'ai_busy' && r.message === BUSY_S, r);
+      ok('⚠️ …sent ONCE (no resend into the same spike), and nothing remembered for a silent resend later', posts.length === 1 && held().length === 0, { posts: posts.length, held: held() });
+
+      reset();
+      route = syncLane(503, { success: false, reason: 'ai_down', retryable: false, error: DOWN_S });
+      r = await build(LETTER);
+      ok('sync lane: ai_down arrives as itself, sent once', r.reason === 'ai_down' && r.message === DOWN_S && posts.length === 1, { r, posts: posts.length });
+
+      reset();
+      route = syncLane(503, { success: false, reason: 'ai_busy', retryable: true });
+      r = await build(RESUME);
+      ok('sync lane, resume, no sentence: the resume’s own words, nothing charged', r.reason === 'ai_busy' && /resume could not be built/.test(r.message) && /Nothing was charged/.test(r.message) && posts.length === 1, { r, posts: posts.length });
+
+      reset();
+      route = syncLane(503, { error: 'Service Unavailable' });
+      r = await build(LETTER);
+      ok('a 5xx with no AI reason is still "lost": resent once with the SAME id, then "could not start"', posts.length === 2 && posts[0].body.clientBuildId === posts[1].body.clientBuildId
+        && r.reason === 'failed' && /could not start writing your cover letter/.test(r.message), { r, posts: posts.length });
+      ok('…and its record is KEPT for its own Try again (a lost POST may exist on the server)', held().length === 1 && held()[0].jobId === null, held());
+    } finally {
+      Module._load = prevLoad;
+      global.fetch = realFetch;
+    }
   }
 
   console.log('── G. checkBuildGate (services/homeAddEmployer.ts): usage + pass parsed STRICTLY, never able to change the answer ──');

@@ -652,7 +652,11 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
           // a paid call that taught us nothing. The ceiling is doubled and the thinking is capped BELOW it.
           ok('⚠️ the grounded call has room to answer: maxOutputTokens ≥ 8192, thinkingBudget a positive integer below it',
             cfg.maxOutputTokens >= 8192 && cfg.thinkingConfig && Number.isInteger(cfg.thinkingConfig.thinkingBudget) && cfg.thinkingConfig.thinkingBudget > 0 && cfg.thinkingConfig.thinkingBudget < cfg.maxOutputTokens, cfg);
-          ok('…it is a Google Search grounded call with a hard timeout', seen[0] && JSON.stringify(seen[0].req.tools) === JSON.stringify([{ googleSearch: {} }]) && seen[0].opts && seen[0].opts.timeout > 0, seen[0] && seen[0].req && seen[0].req.tools);
+          // ⚠️ RETARGETED 2026-09-18: the hard stop used to be the SDK's own { timeout } (whose timer the SDK never
+          // clears). The call now goes through aiText, whose per-attempt cap aborts the request through { signal }.
+          ok('…it is a Google Search grounded call with a real abort (aiText\'s per-attempt signal)',
+            seen[0] && JSON.stringify(seen[0].req.tools) === JSON.stringify([{ googleSearch: {} }]) && seen[0].opts && seen[0].opts.signal && typeof seen[0].opts.signal.aborted === 'boolean',
+            seen[0] && { tools: seen[0].req && seen[0].req.tools, opts: seen[0].opts && Object.keys(seen[0].opts) });
           ok('⚠️ grounding metadata with NO chunks → answered, and sources: [] (nothing verifiable is stored as a source)',
             a.answered === true && a.conventions && Array.isArray(a.conventions.sources) && a.conventions.sources.length === 0 && a.conventions.employerType === 'sme', a);
           reply = { response: { text: () => CONV, candidates: 'not-an-array' } };
@@ -993,10 +997,12 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   const build = fnBody(lctl, 'buildEmployerLetter');
   const lHit = build.indexOf("employerDocs.get(userId, 'cover_letter', company, fp, env)");
   const lHitReturn = build.indexOf('cached: true', lHit);
-  const lFirstPaid = Math.min(...['canConsumeMany(', 'passCoversGeneration(', 'claimGeneration(', 'consumeOnSuccess(', 'getEmployerResearch(', 'callLetterModel('].map((t) => build.indexOf(t)).filter((i) => i >= 0));
+  // The lane's AI call: callLetterModel until 2026-09-18, writeLetterText (through aiText) since. One of them must be there.
+  const lAi = Math.min(...['writeLetterText(', 'callLetterModel('].map((t) => build.indexOf(t)).filter((i) => i >= 0));
+  const lFirstPaid = Math.min(...['canConsumeMany(', 'passCoversGeneration(', 'claimGeneration(', 'consumeOnSuccess(', 'getEmployerResearch(', 'writeLetterText(', 'callLetterModel('].map((t) => build.indexOf(t)).filter((i) => i >= 0));
   ok('⚠️ the cache hit returns BEFORE any gate, research, AI or charge', lHit > 0 && lHitReturn > lHit && lHitReturn < lFirstPaid, { lHit, lHitReturn, lFirstPaid });
   const lCovered = build.indexOf('if (coveredOnly && !viaPass && !quotaCovers)');
-  ok('⚠️ the coveredOnly refusal precedes research AND the AI', lCovered > 0 && lCovered < build.indexOf('getEmployerResearch(') && lCovered < build.indexOf('callLetterModel('));
+  ok('⚠️ the coveredOnly refusal precedes research AND the AI', lCovered > 0 && Number.isFinite(lAi) && lCovered < build.indexOf('getEmployerResearch(') && lCovered < lAi, { lCovered, lAi });
   // The refunds moved out of the build body into ONE helper, because a refused build now has three
   // things to give back (credits, the pass's generation, the plan/trial ledger row), not just credits.
   ok('…re-asked at payment, and a credits slip gives THIS build\'s charge back',
@@ -1619,6 +1625,466 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   const trackFn = fnBody(hubC, 'trackEmployer');
   ok('⚠️ trackEmployer still never renames a shared row itself or starts the paid pipeline', !/upsertEmployer|processJobSearch|createJob/.test(trackFn));
   ok('discoverController exports ownsHost', typeof require(path.join(ROOT, 'server/controllers/discoverController.js')).ownsHost === 'function');
+
+  // ════════════════════════════════════════════════════════════════════════════════════════════════════
+  // ⚠️ 2026-09-18 — A BUSY MODEL. User 1 built Amazon's letter from Home → Cover letters and production logged two
+  // 503 "This model is currently experiencing high demand" from gemini-2.5-flash, 0 ms apart, then "That cover
+  // letter didn't finish". Every lane asked ONE model, back to back. The research and the LEGACY letter lanes (the
+  // Letters screen, Job Hub, batch-process, bulk) now go through aiText.generateText: a paused second try, the
+  // verified fallback chain, a per-attempt cap that aborts, one budget. What is pinned here:
+  //   - a 503 storm on the primary still produces the letter / the conventions, via a FALLBACK, charged once;
+  //   - every model busy → HTTP 503 ai_busy, NOTHING charged, nothing handed over, the job and the flight released;
+  //   - quota → ai_down, nothing charged, one call (every model shares the key), the operator paged;
+  //   - what a fallback wrote is the same cache row as what the primary wrote (a later build reads it for free),
+  //     and no model id reaches anything stored; RESEARCH_REV / LETTER_REV / FP_VERSION unchanged;
+  //   - a research failure is still "no research", never a failed build — and BUSY is remembered for minutes.
+  // No network: the SDK is a fake keyed on the MODEL (require.cache, which aiText reads on every call), the
+  // researcher, the website read, the push and the admin pager are stubbed, and aiText's pause is shrunk to 0.
+  // ════════════════════════════════════════════════════════════════════════════════════════════════════
+  console.log('── ⚠️ 2026-09-18: a BUSY model — research and the LEGACY letter lanes survive it through aiText ──');
+  {
+    const aiText = require(path.join(ROOT, 'server/services/aiText.js'));
+    const CL = require(path.join(ROOT, 'server/controllers/coverLetterController.js'));
+    const v2 = require(path.join(ROOT, 'ai-cover-letter-v2.js'));
+    const researcher = require(path.join(ROOT, 'ai-employer-researcher.js'));
+    const entM = require(path.join(ROOT, 'server/services/entitlements.js'));
+    const jobM = require(path.join(ROOT, 'server/services/jobService.js'));
+    const pushM = require(path.join(ROOT, 'server/services/expoPushService.js'));
+    const CLI = CL._internals || {};
+    const PRIMARY = 'gemini-2.5-flash', LITE = 'gemini-2.5-flash-lite', LITE3 = 'gemini-3.1-flash-lite';
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // ── the world, saved so every stub can be put back ──
+    const saved = {
+      settings: { ...aiText._internals.settings }, fallbackEnv: process.env.AI_TEXT_FALLBACK_MODELS, asyncEnv: process.env.USE_ASYNC_JOBS,
+      rc: er.researchConventions, rb: er.researchBrand, gf: er.googleFontCheck, re: researcher.researchEmployer,
+      canConsumeMany: entM.canConsumeMany, consumeOnSuccess: entM.consumeOnSuccess,
+      resolveEmployer: downloads.resolveEmployer, passCoversGeneration: downloads.passCoversGeneration, claimGeneration: downloads.claimGeneration,
+      job: { createJob: jobM.createJob, startJob: jobM.startJob, updateJobProgress: jobM.updateJobProgress, updateJobPartialResult: jobM.updateJobPartialResult, completeJob: jobM.completeJob, failJob: jobM.failJob },
+      push: pushM.sendPushNotification,
+    };
+    const genaiPath = require.resolve('@google/generative-ai', { paths: [ROOT] });
+    const hadGenai = require.cache[genaiPath];
+    const anPath = require.resolve(path.join(ROOT, 'server/services/adminNotifier.js'));
+    const hadAn = require.cache[anPath];
+    const keepAlive = setInterval(() => {}, 1000);   // employerResearch unref()s its timers (see the flight blocks above)
+
+    // ── THE FAKE SDK, keyed on the model. plan[model] = answers in order (an Error is thrown; a string is the text;
+    // an object is a whole { response }); `busy` = models that answer 503 for ever; otherwise the model writes. ──
+    const E503 = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.'), { status: 503, statusText: 'Service Unavailable' });
+    const E503_TEXT_ONLY = () => new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.');
+    const E429 = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [429 Too Many Requests] Your prepayment credits are depleted. RESOURCE_EXHAUSTED'), { status: 429, statusText: 'Too Many Requests' });
+    const LETTER = (who) => JSON.stringify({ to: 'Hiring Manager', employer_name: 'Acme Legacy GmbH', position: 'Backend Engineer', addresses: ['Hauptstraße 12, 45128 Essen, Germany'], subject: 'Application for Backend Engineer — Ada', cover_letter: `With **8 Years** in payments, this letter was written by ${who}.\n\nParagraph two about **Node.js**.\n\nParagraph three about **PostgreSQL**.\n\nParagraph four, thank you.` });
+    const fake = { calls: [], plan: {}, busy: new Set(), answer: (model) => LETTER(model) };
+    class FakeGenAI {
+      constructor(key) { this.key = key; }
+      getGenerativeModel(params) {
+        return { generateContent: async (req, opts) => {
+          fake.calls.push({ model: params.model, cfg: params.generationConfig, req, opts });
+          const q = fake.plan[params.model];
+          const a = q && q.length ? q.shift() : (fake.busy.has(params.model) ? E503() : fake.answer(params.model));
+          if (a instanceof Error) throw a;
+          if (typeof a === 'string') return { response: { text: () => a, candidates: [{ finishReason: 'STOP' }] } };
+          return a;
+        } };
+      }
+    }
+    const pages = [];
+    const pushes = [];
+    const money = { gates: 0, consumed: [], claims: 0 };
+    const jobs = { partials: [], completed: [], failed: [] };
+    const world = () => { fake.calls.length = 0; fake.plan = {}; fake.busy = new Set(); fake.answer = (m) => LETTER(m); money.gates = 0; money.consumed.length = 0; money.claims = 0; jobs.partials.length = 0; jobs.completed.length = 0; jobs.failed.length = 0; txLog.length = 0; reset(); er._reset(); };
+    const models = () => fake.calls.map((c) => c.model);
+    const locks = () => txLog.filter((e) => /pg_advisory_xact_lock/.test(e.sql)).length;
+    const mkR = () => { const r = { statusCode: 200, body: null }; r.status = (c) => { r.statusCode = c; return r; }; r.json = (b) => { r.body = b; return r; }; return r; };
+
+    try {
+      require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, exports: { GoogleGenerativeAI: FakeGenAI } };
+      require.cache[anPath] = { id: anPath, filename: anPath, loaded: true, exports: { notifyAdmins: async (...a) => { pages.push(a); } } };
+      // The ~2 s pause before the primary's second try is aiText's (its own suite pins it); 0 here keeps this fast.
+      aiText._internals.settings.retryWaitMs = 0; aiText._internals.settings.retryJitterMs = 0;
+      delete process.env.AI_TEXT_FALLBACK_MODELS;   // the VERIFIED default chain
+      er.researchBrand = async () => null; er.googleFontCheck = async () => false;
+      pushM.sendPushNotification = async (...a) => { pushes.push(a); return false; };
+      ok('the chain under test is the verified default: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-3.1-flash-lite',
+        JSON.stringify(aiText.fallbackModels()) === JSON.stringify([LITE, LITE3]), aiText.fallbackModels());
+
+      // ── RESEARCH: the conventions call ─────────────────────────────────────────────────────────────────
+      const CONV = JSON.stringify({ employer_type: 'enterprise', hq_country: 'Germany', ats_vendor: 'Workday', cv: { photo: 'optional', length: 'two_pages' }, sources: ['https://acme-conv-test.com/careers', 'https://elsewhere.test/cv-tips'] });
+      const grounded = (text) => ({ response: { text: () => text, candidates: [{ finishReason: 'STOP', groundingMetadata: { groundingChunks: [{ web: { uri: 'https://vertexaisearch.cloud.google.com/x', title: 'acme-conv-test.com' } }] } }] } });
+      // The REAL researchConventions (every block above put it back). It must never throw; if it ever does, that is a
+      // clean ✗ below ({ threw }), not a crash of the whole suite.
+      const rc = async (...args) => { try { return await saved.rc(...args); } catch (e) { return { threw: (e && e.message) || String(e) }; } };
+
+      world();
+      fake.plan[PRIMARY] = [E503(), E503_TEXT_ONLY()];
+      fake.answer = () => grounded(CONV);
+      let a = await rc('acme-conv-test.com', 'Acme');
+      ok('⚠️ research: a 503 storm on the primary (twice, as in prod) → the conventions come from the FIRST FALLBACK',
+        a.answered === true && a.model === LITE && a.conventions && a.conventions.employerType === 'enterprise', a);
+      ok('…asking the primary twice (the paused second try) and then gemini-2.5-flash-lite, nothing more',
+        JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY, LITE]), models());
+      ok('…with the SAME grounded request and config on every model (thinkingBudget, 8192, Google Search) and a real abort signal on each',
+        fake.calls.every((c) => c.cfg && c.cfg.maxOutputTokens === 8192 && c.cfg.thinkingConfig && c.cfg.thinkingConfig.thinkingBudget === 1024 && c.cfg.temperature === 0.2
+          && JSON.stringify(c.req.tools) === JSON.stringify([{ googleSearch: {} }]) && c.req.contents[0].parts[0].text === fake.calls[0].req.contents[0].parts[0].text
+          && c.opts && c.opts.signal && typeof c.opts.signal.aborted === 'boolean'), fake.calls.map((c) => ({ m: c.model, cfg: c.cfg })));
+      ok('⚠️ …and its sources are verified against the FALLBACK\'s own grounding (the response is kept, not only the text)',
+        !!a.conventions && JSON.stringify(a.conventions.sources) === JSON.stringify(['https://acme-conv-test.com/careers']), a.conventions && a.conventions.sources);
+      const fromFallback = a.conventions;
+      world();
+      fake.answer = () => grounded(CONV);
+      a = await rc('acme-conv-test.com', 'Acme');
+      ok('⚠️ what a fallback wrote is byte-for-byte what the primary writes for the same answer (no model id inside)',
+        a.answered === true && a.model === PRIMARY && models().length === 1 && !!fromFallback && JSON.stringify(a.conventions) === JSON.stringify(fromFallback) && !/gemini/i.test(JSON.stringify(fromFallback)), { primary: a.conventions, fromFallback });
+
+      // Through the flight: the fallback's conventions are PERSISTED to the same cache row, and a later build reads them free.
+      world();
+      let reCalls = 0;
+      researcher.researchEmployer = async () => { reCalls++; return { employer_name: 'Acme Conv', industry: 'Logistics' }; };
+      fake.plan[PRIMARY] = [E503(), E503()];
+      fake.answer = () => grounded(CONV);
+      const f1 = await er.getEmployerResearch({ website: 'https://acme-conv-test.com' }, { timeoutMs: 2000 });
+      ok('⚠️ getEmployerResearch during a 503 storm: base + the FALLBACK\'s conventions, on time',
+        f1 && f1.industry === 'Logistics' && f1.conventions && f1.conventions.employerType === 'enterprise' && JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY, LITE]), { f1, models: models() });
+      const rowWrites = db.log.filter((e) => /^INSERT INTO employer_research_cache/.test(e.sql));
+      const stored = rowWrites.length ? JSON.parse(rowWrites[rowWrites.length - 1].params[1]) : { domain: 'acme-conv-test.com' };
+      ok('…persisted under the DOMAIN (the one cache key) with the conventions in it, and no model id anywhere in what was written',
+        !!stored && stored.conventions && stored.conventions.employerType === 'enterprise' && rowWrites.every((e) => e.params[0] === 'acme-conv-test.com' && !/gemini/i.test(String(e.params[1]))), rowWrites.map((e) => [e.params[0], String(e.params[1]).slice(0, 120)]));
+      world(); reCalls = 0;
+      db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: stored, fetched_at: new Date() } : null);
+      const f2 = await er.getEmployerResearch({ website: 'https://www.acme-conv-test.com/jobs' }, { timeoutMs: 2000 });
+      ok('⚠️ …so the NEXT build for that employer is a FREE cache hit: zero AI calls, zero researcher calls, the same conventions',
+        f2 && f1 && f1.conventions && fake.calls.length === 0 && reCalls === 0 && JSON.stringify(f2.conventions) === JSON.stringify(f1.conventions), { calls: models(), reCalls });
+
+      // Every model busy: "no research", never a failed build — and remembered for MINUTES, not the hour.
+      world(); reCalls = 0;
+      fake.busy = new Set([PRIMARY, LITE, LITE3]);
+      a = await rc('busy-conv-test.com', 'Busy');
+      ok('⚠️ research: every model busy → { answered: false, busy: true } (never a throw), after the primary twice and each fallback once',
+        a.answered === false && a.busy === true && JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY, LITE, LITE3]), { a, models: models() });
+      world(); reCalls = 0;
+      fake.busy = new Set([PRIMARY, LITE, LITE3]);
+      const b1 = await er.getEmployerResearch({ website: 'https://busy-conv-test.com' }, { timeoutMs: 2000 });
+      const convKey = er._internals.conventionsKey ? er._internals.conventionsKey('busy-conv-test.com') : 'conventions:busy-conv-test.com';
+      const mem = er._internals.failureMemoryOf ? er._internals.failureMemoryOf(convKey) : undefined;
+      ok('⚠️ …getEmployerResearch still answers the base facts with conventions null — a research failure never fails a build',
+        b1 && b1.industry === 'Logistics' && b1.conventions === null && reCalls === 1, b1);
+      ok('⚠️ …and the BUSY failure is remembered for BUSY_FAIL_MEMORY_MS (2 min), not the hour an hour of builds used to lose',
+        er._internals.BUSY_FAIL_MEMORY_MS === 2 * 60 * 1000 && mem === er._internals.BUSY_FAIL_MEMORY_MS && mem < er._internals.FAIL_MEMORY_MS, { mem });
+      const callsBefore = fake.calls.length;
+      const b2 = await er.getEmployerResearch({ website: 'https://busy-conv-test.com' }, { timeoutMs: 2000 });
+      ok('…inside that window a second build walks no chain again (the flight was released: a NEW flight ran, base researched again, no conventions call)',
+        b2 && b2.conventions === null && fake.calls.length === callsBefore && reCalls === 2, { calls: fake.calls.length - callsBefore, reCalls });
+
+      // Quota: fail fast, page, and remembered for the hour (a key out of credit is not a spike).
+      world(); pages.length = 0;
+      fake.plan[PRIMARY] = [E429()];
+      a = await rc('quota-conv-test.com', 'Quota');
+      ok('⚠️ research: quota → ONE call (every model shares the key), answered false, NOT busy', a.answered === false && a.busy === false && fake.calls.length === 1, { a, models: models() });
+      ok('…and the operator is paged through aiHealth (ai_outage, quota)', pages.length === 1 && pages[0][3] && pages[0][3].type === 'ai_outage' && pages[0][3].kind === 'quota', pages);
+      world();
+      fake.plan[PRIMARY] = [E429()];
+      await er.getEmployerResearch({ website: 'https://quota-conv-test.com' }, { timeoutMs: 2000 });
+      ok('…remembered for the full hour', er._internals.failureMemoryOf && er._internals.failureMemoryOf('conventions:quota-conv-test.com') === er._internals.FAIL_MEMORY_MS);
+
+      // ── RESEARCH: the BASE facts (2026-09-18, review) ──────────────────────────────────────────────────────
+      // ⚠️ THE FINDING: ai-employer-researcher.js asks gemini-2.5-flash ONCE and answers null for a 503, and that null
+      // was the domain's verdict for an HOUR — while the doc lanes, carried through the spike by aiText, SUCCEEDED and
+      // were charged for documents written without the employer's facts, and cached like that (research is not in
+      // their fingerprint). Driven with the REAL researcher module, loaded fresh against this block's fake Google, so
+      // "the researcher answers null for a 503" is that module's own behaviour here, not a stub's claim about it.
+      {
+        const rePath = require.resolve(path.join(ROOT, 'ai-employer-researcher.js'));
+        const hadRe = require.cache[rePath];
+        const aiH = require(path.join(ROOT, 'server/services/aiHealth.js'));
+        const realNote = aiH.noteAiFailure, realGen = aiText.generateText, realRC = er.researchConventions;
+        const T = er._internals.baseTiming || {};
+        const savedT = { ...T };
+        const notes = [], asks = [];
+        const I = er._internals;
+        const mem = (d) => (I.failureMemoryOf ? I.failureMemoryOf(d) : undefined);
+        const BASE = JSON.stringify({ employer_name: 'Amazon', industry: 'E-commerce and cloud computing', company_size: '10,001+ employees', technologies: [{ name: 'AWS' }], key_contacts: [{ name: 'Jane Doe', role: 'CEO' }] });
+        const baseWrites = () => db.log.filter((e) => /^INSERT INTO employer_research_cache/.test(e.sql) && /fetched_at = NOW\(\)$/.test(e.sql));
+        const fresh = () => { world(); asks.length = 0; notes.length = 0; };
+        try {
+          ok('the rescue\'s timing is inside the 25 s a build waits for its research, and one attempt cannot spend all of it',
+            savedT.researcherWaitMs === 45000 && savedT.rescueBudgetMs > 0 && savedT.rescueBudgetMs < 25000 && savedT.rescueCapsMs < savedT.rescueBudgetMs
+              && /async function getEmployerResearch\(\{ website, name, country \} = \{\}, \{ timeoutMs = 25000 \} = \{\}\)/.test(R('server/services/employerResearch.js')), savedT);
+          delete require.cache[rePath];
+          require(rePath);   // the real researcher, bound to FakeGenAI (it takes the SDK class at load)
+          aiH.noteAiFailure = (e, where) => { notes.push(where); return realNote(e, where); };
+          aiText.generateText = (o) => { asks.push(o); return realGen(o); };
+          er.researchConventions = async () => ({ answered: true, conventions: null });   // this part is about the base facts only
+
+          // 1. A normal day: the researcher answers, and that is the whole call — exactly as before the rescue existed.
+          fresh();
+          fake.answer = () => BASE;
+          const n1 = await er.getEmployerResearch({ website: 'https://amazon-normal-test.com' }, { timeoutMs: 2000 });
+          ok('base facts on a normal day: the researcher answers → ONE call (its own request, gemini-2.5-flash), no rescue, no aiText',
+            n1 && n1.industry === 'E-commerce and cloud computing' && JSON.stringify(models()) === JSON.stringify([PRIMARY]) && asks.length === 0
+              && /Visit the company website/.test(fake.calls[0].req.contents[0].parts[0].text), { n1, models: models(), asks: asks.length });
+
+          // 2. The 2026-09-18 spike: gemini-2.5-flash 503s every call; the fallbacks answer.
+          fresh();
+          fake.busy = new Set([PRIMARY]);
+          fake.answer = () => BASE;
+          const s1 = await er.getEmployerResearch({ website: 'https://amazon-spike-test.com' }, { timeoutMs: 2000 });
+          ok('⚠️ base facts during the spike: the researcher\'s 503 → the facts come from the FIRST FALLBACK, in the SAME build',
+            s1 && s1.employerName === 'Amazon' && s1.industry === 'E-commerce and cloud computing' && JSON.stringify(models()) === JSON.stringify([PRIMARY, LITE]), { s1, models: models() });
+          const ask = asks[0] || {};
+          ok('⚠️ …ONE aiText call: lane research_base, the FALLBACKS only (never the model that just failed), inside the build\'s window',
+            asks.length === 1 && ask.lane === 'research_base' && JSON.stringify(ask.models) === JSON.stringify([LITE, LITE3])
+              && ask.budgetMs === savedT.rescueBudgetMs && ask.attemptCapsMs === savedT.rescueCapsMs, asks.map((o) => ({ lane: o.lane, models: o.models, budgetMs: o.budgetMs, caps: o.attemptCapsMs })));
+          const rescueCall = fake.calls[1] || {};
+          const rescueText = rescueCall.req && rescueCall.req.contents ? rescueCall.req.contents[0].parts[0].text : '';
+          ok('…a Google Search grounded request with the researcher\'s own config, and a real abort signal',
+            JSON.stringify(rescueCall.req && rescueCall.req.tools) === JSON.stringify([{ googleSearch: {} }]) && JSON.stringify(rescueCall.cfg) === JSON.stringify({ temperature: 1, topP: 0.95, maxOutputTokens: 8192 })
+              && rescueCall.opts && rescueCall.opts.signal && typeof rescueCall.opts.signal.aborted === 'boolean', { cfg: rescueCall.cfg, tools: rescueCall.req && rescueCall.req.tools });
+          ok('…whose question names the DOMAIN only, asks for no people and asks for null instead of invented defaults',
+            /Employer website: https:\/\/amazon-spike-test\.com\n/.test(rescueText) && /Never include the name, email address or phone number of any person/.test(rescueText)
+              && !/key_contacts|KEY CONTACTS|#262633|"Lato"/.test(rescueText), rescueText.slice(0, 200));
+          const sw = baseWrites();
+          ok('⚠️ …written to the domain\'s row exactly like the researcher\'s facts (no people, no model id), and NO failure remembered',
+            sw.length === 1 && sw[0].params[0] === 'amazon-spike-test.com' && JSON.parse(sw[0].params[1]).industry === 'E-commerce and cloud computing'
+              && !/gemini|Jane/i.test(String(sw[0].params[1])) && mem('amazon-spike-test.com') === null, { writes: sw.map((e) => String(e.params[1]).slice(0, 160)), mem: mem('amazon-spike-test.com') });
+          const spikeRow = sw.length ? JSON.parse(sw[0].params[1]) : {};
+          fresh();
+          db.answer = (q) => (/FROM employer_research_cache/.test(q) ? { research: { ...spikeRow, conventions: null, conventionsAt: new Date().toISOString() }, fetched_at: new Date() } : null);
+          const s2 = await er.getEmployerResearch({ website: 'https://www.amazon-spike-test.com/jobs' }, { timeoutMs: 2000 });
+          ok('…so the NEXT build reads them for free: zero AI calls, the same facts',
+            s2 && s1 && s2.industry === s1.industry && s2.employerName === 'Amazon' && fake.calls.length === 0 && asks.length === 0, { calls: models(), s2 });
+
+          // 3. Every model busy: no base facts (never a failed build), remembered for MINUTES.
+          fresh();
+          fake.busy = new Set([PRIMARY, LITE, LITE3]);
+          const b1 = await er.getEmployerResearch({ website: 'https://amazon-allbusy-test.com' }, { timeoutMs: 2000 });
+          // aiText's paused second try belongs to the first model it is handed — the first fallback here, never the
+          // researcher's model again (its call already was that model's try).
+          ok('⚠️ every model busy → no base facts (null, never a throw), after the researcher once, the first fallback twice (the paused try) and the last once',
+            b1 === null && JSON.stringify(models()) === JSON.stringify([PRIMARY, LITE, LITE, LITE3]), { b1, models: models() });
+          ok('⚠️ …and remembered for BUSY_FAIL_MEMORY_MS (2 min), NOT the hour that cost Amazon its facts',
+            mem('amazon-allbusy-test.com') === I.BUSY_FAIL_MEMORY_MS && I.BUSY_FAIL_MEMORY_MS < I.FAIL_MEMORY_MS, { mem: mem('amazon-allbusy-test.com') });
+          const before = fake.calls.length;
+          await er.getEmployerResearch({ website: 'https://amazon-allbusy-test.com' }, { timeoutMs: 2000 });
+          ok('…inside that window a second build asks nobody (no researcher call, no chain): one walk per domain per window',
+            fake.calls.length === before, { calls: fake.calls.length - before });
+
+          // 4. Prose from both: nothing to learn is not busy.
+          fresh();
+          fake.answer = () => 'I could not find anything about this company.';
+          const p1 = await er.getEmployerResearch({ website: 'https://prose-base-test.com' }, { timeoutMs: 2000 });
+          ok('prose from the researcher AND the rescue → no facts, the hour; two calls — the rescue never re-walks the chain for an answer IT rejected',
+            p1 === null && JSON.stringify(models()) === JSON.stringify([PRIMARY, LITE]) && mem('prose-base-test.com') === I.FAIL_MEMORY_MS, { models: models(), mem: mem('prose-base-test.com') });
+
+          // 5. Quota: fail fast, the hour, the operator paged (aiHealth throttles the push itself; the report is what is pinned).
+          fresh();
+          fake.plan[PRIMARY] = [E429()];
+          fake.plan[LITE] = [E429()];
+          await er.getEmployerResearch({ website: 'https://quota-base-test.com' }, { timeoutMs: 2000 });
+          ok('quota: the researcher\'s 429, then ONE rescue call (every model shares the key), the hour, reported to aiHealth',
+            JSON.stringify(models()) === JSON.stringify([PRIMARY, LITE]) && mem('quota-base-test.com') === I.FAIL_MEMORY_MS && notes.includes('aiText.research_base'), { models: models(), mem: mem('quota-base-test.com'), notes });
+
+          // 6. A researcher that HANGS (no abort of its own): stopped being waited for, and the fallback answers.
+          fresh();
+          T.researcherWaitMs = 60;
+          fake.plan[PRIMARY] = [new Promise(() => {})];   // never settles; holds no handle
+          fake.answer = () => BASE;
+          const t0 = Date.now();
+          const h1 = await er.getEmployerResearch({ website: 'https://hang-base-test.com' }, { timeoutMs: 2000 });
+          ok('⚠️ a HUNG researcher is left after researcherWaitMs and the first fallback answers the same build',
+            h1 && h1.industry === 'E-commerce and cloud computing' && JSON.stringify(models()) === JSON.stringify([PRIMARY, LITE]) && Date.now() - t0 < 1500, { h1, models: models(), ms: Date.now() - t0 });
+          T.researcherWaitMs = savedT.researcherWaitMs;
+
+          // 7. The operator's "primary only" switch: the rescue is the researcher's model once more (aiText's paused retry).
+          fresh();
+          process.env.AI_TEXT_FALLBACK_MODELS = 'none';
+          fake.busy = new Set([PRIMARY]);
+          await er.getEmployerResearch({ website: 'https://nofallback-base-test.com' }, { timeoutMs: 2000 });
+          ok('AI_TEXT_FALLBACK_MODELS=none: the rescue asks gemini-2.5-flash alone (its one paused retry), busy → minutes',
+            asks.length === 1 && JSON.stringify(asks[0].models) === JSON.stringify([PRIMARY]) && JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY, PRIMARY])
+              && mem('nofallback-base-test.com') === I.BUSY_FAIL_MEMORY_MS, { asks: asks.map((o) => o.models), models: models() });
+          delete process.env.AI_TEXT_FALLBACK_MODELS;
+
+          // The code rules behind it.
+          const erNow = strip(R('server/services/employerResearch.js'));
+          ok('⚠️ flightFor asks researchBase through module.exports and never calls the researcher bare any more',
+            /module\.exports\.researchBase\(domain\)/.test(fnBody(erNow, 'flightFor')) && !/researchEmployer\(/.test(fnBody(erNow, 'flightFor')));
+          ok('⚠️ …researchBase\'s rescue goes through aiText.generateText (lane research_base) and makes no SDK call of its own',
+            /aiText\.generateText\(\{[\s\S]{0,120}lane: 'research_base'/.test(fnBody(erNow, 'researchBase')) && !/getGenerativeModel|GoogleGenerativeAI/.test(fnBody(erNow, 'researchBase')));
+          ok('…and the busy-vs-broken rule is the flight\'s, on the DOMAIN key',
+            /rememberFailure\(domain, busy \? BUSY_FAIL_MEMORY_MS : FAIL_MEMORY_MS\)/.test(fnBody(erNow, 'flightFor')));
+        } finally {
+          if (hadRe) require.cache[rePath] = hadRe; else delete require.cache[rePath];
+          aiH.noteAiFailure = realNote; aiText.generateText = realGen; er.researchConventions = realRC;
+          Object.assign(T, savedT);
+          delete process.env.AI_TEXT_FALLBACK_MODELS;
+          er._reset(); reset();
+        }
+      }
+      researcher.researchEmployer = saved.re;
+
+      // ── THE LEGACY LETTER (Letters screen / Job Hub → POST /generate-cover-letter-details) ──────────────────
+      const USER = { id: 77, full_name: 'Ada Lovelace', email: 'ada@example.test', resume_path: 'uploads/user_77/resume.pdf' };
+      const META = { user_id: 77, parse_status: 'done', full_name: 'Ada Lovelace', skills: '["Node.js","PostgreSQL"]' };
+      const legacyWorld = () => {
+        world();
+        db.answer = (q) => {
+          if (/^SELECT \* FROM users WHERE id = \?/.test(q)) return { ...USER };
+          if (/^SELECT \* FROM resume_metadata WHERE user_id = \?/.test(q)) return { ...META };
+          if (/^SELECT brand_color, font_name FROM employer_brand_profiles/.test(q)) return { brand_color: '#123456', font_name: 'Lato' };   // a brand-cache HIT: no researcher call
+          return null;
+        };
+      };
+      entM.canConsumeMany = async () => { money.gates++; return { allowed: true, remaining: 5 }; };
+      entM.consumeOnSuccess = async (u, kind, detail) => { money.consumed.push({ u, kind, detail }); return { via: 'plan', ledgerId: 900 + money.consumed.length }; };
+      downloads.resolveEmployer = async (u, cands) => (cands.find((c) => c && String(c).trim()) || null);
+      downloads.passCoversGeneration = async () => false;
+      downloads.claimGeneration = async () => { money.claims++; return { charged: false }; };
+      jobM.createJob = async () => 'job-legacy-1';
+      jobM.startJob = async () => {}; jobM.updateJobProgress = async () => {};
+      jobM.updateJobPartialResult = async (id, r) => { jobs.partials.push(r); };
+      jobM.completeJob = async (id, r) => { jobs.completed.push({ id, r }); };
+      jobM.failJob = async (id, msg) => { jobs.failed.push({ id, msg }); };
+      const BODY = { recipientEmail: 'hr@acme-legacy.test', websiteUrl: 'https://acme-legacy.test', position: 'Backend Engineer' };
+      const details = async (body, { asyncMode = false } = {}) => {
+        process.env.USE_ASYNC_JOBS = asyncMode ? 'true' : 'false';
+        const res = mkR();
+        await CL.generateCoverLetterDetails({ user: { id: 77 }, body, headers: {}, ip: '1.1.1.1' }, res);
+        return res;
+      };
+      const failedJobRow = () => db.log.find((e) => /^UPDATE async_jobs SET status = 'failed'/.test(e.sql)) || null;
+      const settled = async () => { for (let i = 0; i < 300 && !jobs.completed.length && !jobs.failed.length && !failedJobRow(); i++) await sleep(10); };
+      const EXPECTED_PROMPT = v2.buildPrompt({ ...META }, 'Backend Engineer', 'https://acme-legacy.test', null, null, null);
+
+      legacyWorld();
+      fake.plan[PRIMARY] = [E503(), E503_TEXT_ONLY()];
+      let r = await details(BODY);
+      ok('⚠️ LEGACY letter (sync): the prod 503 storm on the primary → 200, the letter written by the FALLBACK',
+        r.statusCode === 200 && r.body && r.body.success === true && /written by gemini-2\.5-flash-lite\./.test(r.body.coverLetterHtml || ''), { status: r.statusCode, body: r.body && (r.body.error || String(r.body.coverLetterHtml).slice(0, 120)) });
+      ok('…after the primary twice (the paused retry) and then gemini-2.5-flash-lite — not three blind tries on one model',
+        JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY, LITE]), models());
+      ok('⚠️ …charged EXACTLY ONCE, under the usage lock, after the letter existed', money.consumed.length === 1 && locks() === 1 && money.consumed[0].kind === 'cover_letter', { consumed: money.consumed.length, locks: locks() });
+      ok('…every model got v2\'s prompt byte for byte, v2\'s config (temperature 1, topP 0.95, 32768), Google Search grounding and an abort signal',
+        fake.calls.every((c) => c.req.contents[0].parts[0].text === EXPECTED_PROMPT && JSON.stringify(c.cfg) === JSON.stringify({ temperature: 1, topP: 0.95, maxOutputTokens: 32768 })
+          && JSON.stringify(c.req.tools) === JSON.stringify([{ googleSearch: {} }]) && c.opts && c.opts.signal), fake.calls.map((c) => ({ m: c.model, cfg: c.cfg, same: c.req.contents[0].parts[0].text === EXPECTED_PROMPT })));
+      ok('the lane\'s own parsing is kept: the addresses and the employer name come from the fallback\'s JSON',
+        !!r.body && r.body.companyName === 'Acme Legacy GmbH' && Array.isArray(r.body.locations) && r.body.locations[0].address === 'Hauptstraße 12, 45128 Essen, Germany', r.body && { companyName: r.body.companyName, locations: r.body.locations });
+
+      legacyWorld();
+      fake.plan[PRIMARY] = [E503(), E503()];
+      r = await details(BODY, { asyncMode: true });
+      await settled();
+      const labels = jobs.partials.filter((p) => p && p.stage === 'retry').map((p) => p.label);
+      ok('⚠️ LEGACY letter (async job): the storm still completes the job, charged once',
+        r.statusCode === 202 && jobs.completed.length === 1 && /written by gemini-2\.5-flash-lite\./.test(jobs.completed[0].r.coverLetterHtml || '') && money.consumed.length === 1 && !failedJobRow(),
+        { status: r.statusCode, completed: jobs.completed.length, consumed: money.consumed.length, failed: failedJobRow() && failedJobRow().params });
+      ok('…and each retry was put on the job in plain words ("Google\'s AI is busy — trying again", "Switching to a faster model")',
+        JSON.stringify(labels) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a faster model']), labels);
+
+      legacyWorld();
+      fake.busy = new Set([PRIMARY, LITE, LITE3]);
+      r = await details(BODY);
+      ok('⚠️ LEGACY letter: EVERY model busy → HTTP 503 { success:false, reason:"ai_busy", retryable:true } saying nothing was charged',
+        r.statusCode === 503 && r.body && r.body.success === false && r.body.reason === 'ai_busy' && r.body.retryable === true
+          && r.body.error === "Google's AI is overloaded right now, so your cover letter could not be written. Nothing was charged — please try again in a minute.", { status: r.statusCode, body: r.body });
+      ok('⚠️ …NOTHING charged: no usage lock taken, no consumeOnSuccess, no pass claimed, no notification written',
+        money.consumed.length === 0 && locks() === 0 && money.claims === 0 && !db.log.some((e) => /INSERT INTO notifications/.test(e.sql)), { consumed: money.consumed.length, locks: locks(), claims: money.claims });
+      ok('…after exactly one walk of the chain (primary twice, each fallback once) — the lane never re-walks a refusal',
+        JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY, LITE, LITE3]), models());
+
+      legacyWorld();
+      fake.busy = new Set([PRIMARY, LITE, LITE3]);
+      r = await details(BODY, { asyncMode: true });
+      await settled();
+      const fr = failedJobRow();
+      const frResult = fr ? JSON.parse(fr.params[1]) : null;
+      ok('⚠️ LEGACY letter (async job): every model busy → the job FAILS (the poller is released) in ONE UPDATE carrying reason ai_busy + retryable',
+        !!fr && fr.params[2] === 'job-legacy-1' && frResult && frResult.reason === 'ai_busy' && frResult.retryable === true && /Nothing was charged/.test(fr.params[0]) && fr.params[0] === frResult.error,
+        { row: fr && fr.params, failJob: jobs.failed });
+      ok('…never completed, never charged', jobs.completed.length === 0 && money.consumed.length === 0 && locks() === 0, { completed: jobs.completed.length, consumed: money.consumed.length });
+
+      legacyWorld(); pages.length = 0;
+      fake.plan[PRIMARY] = [E429()];
+      r = await details(BODY);
+      ok('⚠️ LEGACY letter: quota → HTTP 503 { reason:"ai_down", retryable:false }, "Nothing was charged"',
+        r.statusCode === 503 && r.body && r.body.success === false && r.body.reason === 'ai_down' && r.body.retryable === false && r.body.error === 'Our AI provider is unavailable right now. Nothing was charged.', { status: r.statusCode, body: r.body });
+      ok('…after ONE call (fail fast: every model shares the key), nothing charged, no lock', fake.calls.length === 1 && money.consumed.length === 0 && locks() === 0, { calls: models(), consumed: money.consumed.length });
+
+      legacyWorld();
+      fake.plan[PRIMARY] = ['I could not find enough about this company to write a letter.'];
+      r = await details(BODY, { asyncMode: true });
+      await settled();
+      ok('the lane\'s OWN bad-output retry is kept: prose, then a letter → completed, two answers from the SAME model (not a model switch), charged once',
+        jobs.completed.length === 1 && JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY]) && money.consumed.length === 1
+          && JSON.stringify(jobs.partials.filter((p) => p && p.stage === 'retry').map((p) => p.label)) === JSON.stringify(['Taking another pass at it']),
+        { models: models(), partials: jobs.partials, consumed: money.consumed.length });
+
+      legacyWorld();
+      fake.busy = new Set([PRIMARY, LITE, LITE3]);
+      let thrown = null;
+      try { await CL.executeGenerationWork(77, { ...USER }, { recipientEmail: 'a@x.test', websiteUrl: 'acme-legacy.test', position: 'Backend Engineer' }); } catch (e) { thrown = e; }
+      ok('batch-process (executeGenerationWork): every model busy → a user-facing refusal with reason ai_busy, nothing charged',
+        !!thrown && thrown.userFacing === true && thrown.reason === 'ai_busy' && thrown.retryable === true && /Nothing was charged/.test(thrown.message) && money.consumed.length === 0 && locks() === 0, thrown && { m: thrown.message, reason: thrown.reason });
+
+      legacyWorld();
+      fake.busy = new Set([PRIMARY, LITE, LITE3]);
+      process.env.USE_ASYNC_JOBS = 'false';
+      r = mkR();
+      await CL.generateCoverLetters({ user: { id: 77 }, body: { recipients: [{ email: 'one@a.test', website: 'a-legacy.test', position: 'Dev' }, { email: 'two@b.test', website: 'b-legacy.test', position: 'Dev' }] }, headers: {} }, r);
+      ok('⚠️ LEGACY bulk: the first letter meets a busy chain → HTTP 503 ai_busy, both letters failed with that reason, nothing charged',
+        r.statusCode === 503 && r.body && r.body.reason === 'ai_busy' && r.body.retryable === true && r.body.creditsUsed === 0 && money.consumed.length === 0
+          && Array.isArray(r.body.results) && r.body.results.length === 2 && r.body.results.every((x) => x.status === 'failed' && x.reason === 'ai_busy'), { status: r.statusCode, body: r.body });
+      ok('…and the second recipient was NOT asked (one refusal ends the run: the same answer, minutes later)',
+        JSON.stringify(models()) === JSON.stringify([PRIMARY, PRIMARY, LITE, LITE3]), models());
+
+      // The lane's parsing, ported from ai-cover-letter-v2 stage for stage.
+      const P = CLI.parseLegacyLetterJson;
+      ok('parseLegacyLetterJson is exposed for this suite', typeof P === 'function');
+      if (typeof P === 'function') {
+        const rawNl = '```json\n{"to":"HR","employer_name":"Acme","position":"Dev","addresses":["1 Road"],"subject":"S","cover_letter":"Para one.\n\nPara two."}\n```';
+        ok('…fences off, raw newlines inside a string repaired (stage 2)', P(rawNl).cover_letter === 'Para one.\n\nPara two.' && P(rawNl).employer_name === 'Acme');
+        const quoted = '{"to": "HR", "employer_name": "Acme", "position": "Dev", "addresses": ["1 Road"], "subject": "S", "cover_letter": "He said "ship it" and we did.\\n\\nPara two."}';
+        ok('…a literal double quote no parser can repair → the field extractor (stage 3)', P(quoted).cover_letter === 'He said "ship it" and we did.\n\nPara two.' && P(quoted).employer_name === 'Acme', P(quoted));
+        let e1 = null; try { P('Sorry, I cannot help.'); } catch (e) { e1 = e; }
+        let e2 = null; try { P('{"to":"HR","cover_letter":"   "}'); } catch (e) { e2 = e; }
+        ok('…prose is a throw (the retry), and so is an answer with NO letter in it (v2 used to hand that on and charge for it)',
+          !!e1 && /did not contain a JSON object/.test(e1.message) && !!e2 && /no cover_letter/.test(e2.message), { e1: e1 && e1.message, e2: e2 && e2.message });
+      }
+
+      // ── the code rules behind all of that ──
+      const clSrc = strip(R('server/controllers/coverLetterController.js'));
+      const erSrc = strip(R('server/services/employerResearch.js'));
+      const work = fnBody(clSrc, 'executeGenerationWork');
+      const bulk = (clSrc.match(/const generateCoverLetters = async[\s\S]*?\nconst generateCoverLetterDetails = async/) || [''])[0];
+      ok('⚠️ coverLetterController makes NO direct model call any more (no getGenerativeModel / generateContent / GoogleGenerativeAI)',
+        !/getGenerativeModel|generateContent\(|GoogleGenerativeAI/.test(clSrc));
+      ok('⚠️ …its letter goes through aiText.generateText with the fallback chain after the v2 primary',
+        /aiText\.generateText\(\{[\s\S]{0,400}models: \[LEGACY_LETTER_MODEL, \.\.\.aiText\.fallbackModels\(\)\]/.test(fnBody(clSrc, 'writeLegacyLetter')));
+      ok('⚠️ …and the AI runs BEFORE the charge in the worker and in bulk (writeLegacyLetter before withUsageLock)',
+        work.indexOf('writeLegacyLetter(') > 0 && work.indexOf('writeLegacyLetter(') < work.indexOf('withUsageLock(')
+          && bulk.indexOf('writeLegacyLetter(') > 0 && bulk.indexOf('writeLegacyLetter(') < bulk.indexOf('withUsageLock('), { work: [work.indexOf('writeLegacyLetter('), work.indexOf('withUsageLock(')], bulk: [bulk.indexOf('writeLegacyLetter('), bulk.indexOf('withUsageLock(')] });
+      ok('⚠️ researchConventions goes through aiText (CONVENTIONS_MODEL first, then the fallbacks) and makes no SDK call of its own',
+        /aiText\.generateText\(\{[\s\S]{0,500}models: \[CONVENTIONS_MODEL, \.\.\.aiText\.fallbackModels\(\)\]/.test(fnBody(erSrc, 'researchConventions')) && !/getGenerativeModel|timeout: CONVENTIONS_HARD_TIMEOUT_MS/.test(fnBody(erSrc, 'researchConventions')));
+      ok('⚠️ RESEARCH_REV / LETTER_REV / FP_VERSION are untouched by the fallback round (a bump would re-bill every saved document)',
+        er.RESEARCH_REV === 'r1' && /const RESEARCH_REV = 'r1';/.test(erSrc) && /const LETTER_REV = 'letter-v1';/.test(R('server/controllers/employerLetterController.js')) && docs.FP_VERSION === 'v1' && /const FP_VERSION = 'v1';/.test(R('server/services/employerDocs.js')));
+      ok('…and no model id is folded into the research the doc lanes fingerprint (docResearchRev stays the bare RESEARCH_REV)',
+        !/CONVENTIONS_MODEL|model/.test((erSrc.match(/const RESEARCH_REV = [^;]*;/) || [''])[0]));
+      ok('no push was sent and nothing reached the network', pushes.length === 0);
+    } finally {
+      clearInterval(keepAlive);
+      Object.assign(aiText._internals.settings, saved.settings);
+      if (saved.fallbackEnv === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = saved.fallbackEnv;
+      if (saved.asyncEnv === undefined) delete process.env.USE_ASYNC_JOBS; else process.env.USE_ASYNC_JOBS = saved.asyncEnv;
+      if (hadGenai) require.cache[genaiPath] = hadGenai; else delete require.cache[genaiPath];
+      if (hadAn) require.cache[anPath] = hadAn; else delete require.cache[anPath];
+      er.researchConventions = saved.rc; er.researchBrand = saved.rb; er.googleFontCheck = saved.gf; researcher.researchEmployer = saved.re;
+      entM.canConsumeMany = saved.canConsumeMany; entM.consumeOnSuccess = saved.consumeOnSuccess;
+      downloads.resolveEmployer = saved.resolveEmployer; downloads.passCoversGeneration = saved.passCoversGeneration; downloads.claimGeneration = saved.claimGeneration;
+      Object.assign(jobM, saved.job);
+      pushM.sendPushNotification = saved.push;
+      er._reset(); reset(); txLog.length = 0;
+    }
+  }
 
   console.log(`\nemployer docs: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

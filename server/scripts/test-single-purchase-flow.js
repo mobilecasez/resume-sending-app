@@ -30,7 +30,7 @@ process.env.USE_ASYNC_JOBS = 'false';               // drive the synchronous lan
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
 // What the AI was asked to do. Every counter here must stay flat across downloads.
-const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null };
+const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null, models: [], failModel: null };
 
 // What was actually rendered — "bytes exist" is asserted with these, not with the HTTP status.
 const rendered = { pdf: 0, docx: 0, clPdf: 0, clDocx: 0 };
@@ -177,9 +177,13 @@ require.cache[entPath] = { id: entPath, filename: entPath, loaded: true, exports
 const genaiPath = require.resolve('@google/generative-ai');
 require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, exports: {
   GoogleGenerativeAI: class {
-    getGenerativeModel() {
+    getGenerativeModel(params) {
       return { generateContent: async () => {
         ai.resumeCalls++;
+        // T16b: which model was asked, and a scripted failure for it (a 503 storm, a depleted key).
+        ai.models.push(params && params.model);
+        const scripted = ai.failModel ? ai.failModel(params && params.model) : null;
+        if (scripted) throw scripted;
         if (ai.onModelCall) ai.onModelCall();   // T12: the phone gives up while the model is still writing
         const text = JSON.stringify({ personal_info: { full_name: '', email: '', phone: '', location: '' }, summary: 'x', experience: [], education: [], skills: [], projects: [], certifications: [], languages: [], achievements: [] });
         return { response: { text: () => text, candidates: [{ finishReason: 'STOP' }] } };
@@ -709,6 +713,68 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
     const brSrc = stripC(fs2.readFileSync(path.join(ROOT, 'server', 'routes', 'batchRoutes.js'), 'utf8'));
     ok('batch-process hands the gate\'s environment to every letter', /const passEnv = entitlements\.requestEnvironment\(req\)/.test(brSrc)
       && /executeGenerationWork\(userId, user, \{[\s\S]{0,200}passEnv,/.test(brSrc));
+  }
+
+  // ── T16b ─────────────────────────────────────────────────────────────────────────────────────
+  console.log('\n── T16b · ⚠️ the Job Hub letter rides out a Gemini 503 spike — and says so honestly when it cannot ──');
+  {
+    // 2026-09-18: Home's Amazon letter died on two back-to-back 503 "high demand" answers from ONE model. This lane
+    // made ONE call to ONE model — the same failure, with nothing to fall back on. It now goes through aiText.
+    const AH = require(path.join(ROOT, 'server', 'controllers', 'aiHubController.js'));
+    const AT = require(path.join(ROOT, 'server', 'services', 'aiText.js'));
+    const saved = { wait: AT._internals.settings.retryWaitMs, jitter: AT._internals.settings.retryJitterMs };
+    AT._internals.settings.retryWaitMs = 20; AT._internals.settings.retryJitterMs = 0;   // the 2 s pause, shrunk
+    const [P, F1] = [process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash', AT.fallbackModels()[0]];
+    const e503 = () => Object.assign(new Error('[GoogleGenerativeAI Error]: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.'), { status: 503 });
+    const eDry = () => Object.assign(new Error('[GoogleGenerativeAI Error]: [429 Too Many Requests] Your prepayment credits are depleted. [RESOURCE_EXHAUSTED]'), { status: 429 });
+    db.hubJob = { id: 'hub-1', title: 'Backend Engineer', employer_id: null, location: 'Pune', responsibilities: 'Build APIs' };
+    const hub = async (userId) => {
+      const res = mkRes();
+      await AH.generateJobCoverLetter({ user: { id: userId }, params: { jobId: 'hub-1' }, body: {}, headers: {}, ip: '1.1.1.1' }, res);
+      return res;
+    };
+    ent.sub = null; ent.gate = { allowed: true, remaining: 3 }; ent.consumeFor = () => 'plan';
+
+    ai.models.length = 0; ai.failModel = (m) => (m === P ? e503() : null);
+    let c0 = ent.consumed.length;
+    const rode = await hub(16);
+    ok('the primary 503s twice → the first fallback writes it → 200 with the letter',
+      rode.statusCode === 200 && !!rode.body.coverLetter && JSON.stringify(ai.models) === JSON.stringify([P, P, F1]), { status: rode.statusCode, models: ai.models });
+    ok('…charged exactly ONE unit, once the letter existed', ent.consumed.length === c0 + 1, ent.consumed.slice(c0));
+
+    ai.models.length = 0; ai.failModel = () => e503();
+    c0 = ent.consumed.length; let att0 = ent.attempts.length; let logMark = db.log.length;
+    const busy = await hub(16);
+    ok('⚠️ every model busy → 503 reason ai_busy, retryable, and the sentence says nothing was charged',
+      busy.statusCode === 503 && busy.body.reason === 'ai_busy' && busy.body.retryable === true && /Nothing was charged/.test(busy.body.error || ''), { status: busy.statusCode, body: busy.body });
+    ok('…and it is TRUE: no unit consumed, no charge attempted, no usage lock taken',
+      ent.consumed.length === c0 && ent.attempts.length === att0 && lockTakenSince(logMark) === 0, { consumed: ent.consumed.slice(c0), attempts: ent.attempts.slice(att0) });
+    ok('…after the whole verified chain was tried (primary twice, then every fallback)',
+      ai.models.length === 2 + AT.fallbackModels().length && ai.models[0] === P && ai.models[1] === P, ai.models);
+
+    ai.models.length = 0; ai.failModel = () => eDry();
+    c0 = ent.consumed.length;
+    const down = await hub(16);
+    ok('a key with no credit left → 503 ai_down, NOT retryable, after ONE call (every model shares the key)',
+      down.statusCode === 503 && down.body.reason === 'ai_down' && down.body.retryable === false && ai.models.length === 1, { status: down.statusCode, body: down.body, models: ai.models });
+    ok('…and nothing was charged', ent.consumed.length === c0);
+
+    // ⚠️ The client LEAVES while the model is still writing (an older build with a shorter timeout, during a spike).
+    // This lane stores nothing, so the letter would be thrown away: it must not be charged for.
+    ai.failModel = null; ai.models.length = 0; ent.consumeFor = () => 'plan';
+    const gone = mkRes();
+    ai.onModelCall = () => { gone.emit('close'); };
+    c0 = ent.consumed.length; att0 = ent.attempts.length; logMark = db.log.length;
+    await AH.generateJobCoverLetter({ user: { id: 16 }, params: { jobId: 'hub-1' }, body: {}, headers: {}, ip: '1.1.1.1' }, gone);
+    ai.onModelCall = null;
+    ok('⚠️ the client left before the letter existed → NOT charged: no unit, no charge attempt, no lock',
+      ent.consumed.length === c0 && ent.attempts.length === att0 && lockTakenSince(logMark) === 0, { consumed: ent.consumed.slice(c0), attempts: ent.attempts.slice(att0) });
+    ok('…and nothing was sent to a socket that is gone', gone.sent === false, { status: gone.statusCode, body: gone.body });
+    const stayed = await hub(16);
+    ok('…while a client that stays is served and charged as before', stayed.statusCode === 200 && !!stayed.body.coverLetter && ent.consumed.length === c0 + 1);
+
+    ai.failModel = null; ai.models.length = 0; ent.consumeFor = null;
+    AT._internals.settings.retryWaitMs = saved.wait; AT._internals.settings.retryJitterMs = saved.jitter;
   }
 
   // ── tidy: the handlers are real, so they wrote real files. Remove everything THIS RUN created

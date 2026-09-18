@@ -7,7 +7,8 @@
 //   · an X (top-right, INSIDE the chip) that asks the parent to soft-remove it — the parent does the
 //     optimistic exit + undo; the chip only plays the exit when `exiting` flips on;
 //   · the live state of THIS target's build (services/homeBuilds) — a thin track + '<pct>%' while it
-//     checks or builds, 'Queued', 'Didn’t finish', or a mint check for a few seconds after it lands;
+//     checks or builds, 'Queued', 'Didn’t finish' (or 'AI was busy' / 'AI unavailable' — see errorLineFor),
+//     or a mint check for a few seconds after it lands;
 //   · a tiny mint dot when a tailored document already exists for it (`hasDoc`).
 //
 // ⚠️ ANIMATION DRIVER RULE (the b126-128 fatal crash): this chip lives inside the hero's native tree.
@@ -45,6 +46,20 @@ export type EmployerChipProps = {
 
 /** How long a landed build keeps its mint check on the chip. */
 const DONE_FRESH_MS = 6000;
+
+/**
+ * The chip's second line for a build that ended without a document. ⚠️ A BUSY OR DOWN AI PROVIDER IS NOT "DIDN’T
+ * FINISH" (2026-09-18): the server stopped before any charge, and a red "Didn’t finish" read as the build — or the
+ * user — having failed. Those two say what happened, in the room a 48pt chip has, with a dot that is not red; the
+ * whole sentence (nothing was charged, try again in a minute) is one tap away in the overlay. Every other reason
+ * keeps the line it always had. Exported for the behavioural test only.
+ */
+export function errorLineFor(reason: string | null | undefined): { text: string; calm: boolean } {
+  if (reason === 'ai_busy') return { text: 'AI was busy', calm: true };
+  if (reason === 'ai_down') return { text: 'AI unavailable', calm: true };
+  return { text: 'Didn’t finish', calm: false };
+}
+
 /** Width of the progress track — fixed, because the grow-from-left trick needs a known width. */
 const TRACK_W = 44;
 /** The X's touch slop. Module-level so the memoised chip never hands the touchable a fresh object. */
@@ -117,6 +132,7 @@ function EmployerChipImpl({
   const phase: BuildPhase | null = build ? build.phase : null;
   const running = phase === 'checking' || phase === 'building';
   const doneFresh = useFreshSince(phase === 'done' && build ? build.updatedAt : null, DONE_FRESH_MS);
+  const errLine = errorLineFor(phase === 'error' && build && build.error ? build.error.reason : null);
 
   // ⚠️ NATIVE DRIVER, transform + opacity ONLY: this chip lives inside the hero's native tree
   // (see ANIMATION DRIVER RULE). A chip that is not new starts at rest and never animates.
@@ -200,8 +216,8 @@ function EmployerChipImpl({
               </View>
             ) : phase === 'error' ? (
               <View style={s.statusRow}>
-                <View style={s.errDot} />
-                <Text style={[s.statusTx, on && s.statusTxOn]} numberOfLines={1}>Didn’t finish</Text>
+                <View style={[s.errDot, errLine.calm && s.calmDot]} />
+                <Text style={[s.statusTx, on && s.statusTxOn]} numberOfLines={1}>{errLine.text}</Text>
               </View>
             ) : (
               !!t.role && <Text style={[s.chipRole, on && s.chipRoleOn]} numberOfLines={1}>{t.role}</Text>
@@ -314,4 +330,6 @@ const s = StyleSheet.create({
   statusTx: { fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,0.62)' },
   statusTxOn: { color: 'rgba(255,255,255,0.85)' },
   errDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FF6B81' },
+  // The AI provider's ending — not the user's, and nothing was spent: the overlay's calm indigo, never red.
+  calmDot: { backgroundColor: '#C7D2FE' },
 });

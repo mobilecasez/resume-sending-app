@@ -114,13 +114,20 @@ export type BuildStage = { stage: string; label: string; pct: number };
  * anything (contract C2): what would really pay is not what the user confirmed, or the cache the gate
  * promised is not there. ⚠️ NEITHER IS A FAILURE AND NEITHER MAY BE RESENT AS IT WAS — nothing was spent,
  * reserved or stored, and the honest answer is to read the gate again and ask about what is true now.
+ * 'ai_busy' / 'ai_down' = the lane's AI provider could not write it: overloaded through every retry and every
+ * fallback model ('busy' — worth another try in a minute), or refusing our key outright ('down' — quota or auth,
+ * which no retry fixes). ⚠️ THE SERVER ONLY SAYS EITHER FROM BEFORE ITS CHARGE (every AI attempt runs first), so
+ * both mean nothing was charged, stored or left running: there is no job to pick back up, and Try again is a NEW
+ * build that goes through the gate and the sheet exactly as the first one did. `message` is the server's own
+ * sentence, which says so; ours (aiEndingMessage) stands in only when it sent none.
  * `docId` = the user_employer_documents row the build produced (or found, on a cache hit); null only
  * from a legacy lane that answered with resumeData and no doc.
  */
 export type BuildResult = { ok: true; cached: boolean; docId: number | null }
   | {
     ok: false;
-    reason: 'quota_exhausted' | 'regen_limit' | 'no_resume' | 'network' | 'failed' | 'pending' | 'payer_changed' | 'cache_miss';
+    reason: 'quota_exhausted' | 'regen_limit' | 'no_resume' | 'network' | 'failed' | 'pending' | 'payer_changed' | 'cache_miss'
+      | 'ai_busy' | 'ai_down';
     message: string;
   };
 
@@ -152,6 +159,7 @@ const MAX_RECORDS = 12;
 
 const nounOf = (kind: DocKind) => (kind === 'cover_letter' ? 'cover letter' : 'resume');
 const verbOf = (kind: DocKind) => (kind === 'cover_letter' ? 'writing' : 'building');
+const madeOf = (kind: DocKind) => (kind === 'cover_letter' ? 'written' : 'built');
 
 /**
  * Who is signed in, as a stable string: the user id, or a token hash for a session without one.
@@ -793,9 +801,32 @@ export function activeBuildCount(): number {
 // ⚠️ 'payer_changed' and 'cache_miss' are here too because the async lane answers through a FAILED JOB: the
 // handler's 409 is stored as the job's reason, so a refusal that spent nothing must be readable from both
 // the POST's own status and the job that carried it.
-const FAIL_REASONS = ['quota_exhausted', 'regen_limit', 'no_resume', 'payer_changed', 'cache_miss'] as const;
-const failReason = (r: any): 'quota_exhausted' | 'regen_limit' | 'no_resume' | 'payer_changed' | 'cache_miss' | 'failed' =>
+// ⚠️ AND 'ai_busy' / 'ai_down' (2026-09-18, Amazon's letter on a 503 "high demand" day). Collapsed into 'failed'
+// here, the server's sentence survived but the one fact the app needs to say it honestly did not: that this was
+// the AI provider, BEFORE the charge — so the overlay read "That cover letter didn't finish", the notice said
+// nothing about money, and 'down' offered a Try again that cannot work.
+const FAIL_REASONS = ['quota_exhausted', 'regen_limit', 'no_resume', 'payer_changed', 'cache_miss', 'ai_busy', 'ai_down'] as const;
+type FailReason = typeof FAIL_REASONS[number];
+const failReason = (r: any): FailReason | 'failed' =>
   (FAIL_REASONS as readonly string[]).includes(r) ? r : 'failed';
+
+/** The two answers a lane gives when its AI provider (not the build, not the plan) is what failed. */
+const isAiEnding = (r: any): r is 'ai_busy' | 'ai_down' => r === 'ai_busy' || r === 'ai_down';
+
+/**
+ * The sentence an AI ending is shown with: the server's own when it sent one (it names the document and says
+ * nothing was charged), else ours in the same words.
+ * ⚠️ NEVER ONE THAT LEAVES THE MONEY UNSAID. "Was I charged?" is the first thing someone asks when a build they
+ * confirmed does not arrive, and both reasons are only ever sent from before the charge — so a server sentence
+ * that forgot to say so gets it said, rather than leave them guessing.
+ */
+function aiEndingMessage(kind: DocKind, reason: 'ai_busy' | 'ai_down', said: any): string {
+  const s = typeof said === 'string' ? said.trim() : '';
+  if (s) return /\bcharged\b/i.test(s) ? s : `${s} Nothing was charged.`;
+  return reason === 'ai_busy'
+    ? `Google’s AI is overloaded right now, so your ${nounOf(kind)} could not be ${madeOf(kind)}. Nothing was charged — please try again in a minute.`
+    : 'Our AI provider is unavailable right now. Nothing was charged.';
+}
 
 /**
  * One status read: a terminal outcome, 'running', 'auth' (signed out — the job itself runs on), or
@@ -824,10 +855,16 @@ async function readJob(jobId: string, kind: DocKind, onStage: ((s: BuildStage) =
     return { ok: false, reason: 'failed', message: d.error || `The ${nounOf(kind)} finished but came back empty. Please try again.` };
   }
   if (j.status === 'failed') {
+    // ⚠️ THE REASON AND THE SENTENCE ARE ALL THAT CROSS asJob. Its capturing res keeps a failed handler's body.error
+    // and a string body.reason, and drops the rest — the 503 itself, `retryable`, `success` — so whether Try again
+    // can work is read from the reason ('ai_busy' yes, 'ai_down' no), never from a flag that never arrives.
+    const reason = failReason(j.reason ?? (j.data && j.data.reason));
     return {
       ok: false,
-      reason: failReason(j.reason ?? (j.data && j.data.reason)),
-      message: j.error || `We could not finish ${verbOf(kind)} your ${nounOf(kind)}. Please try again.`,
+      reason,
+      message: isAiEnding(reason)
+        ? aiEndingMessage(kind, reason, j.error ?? (j.data && j.data.error))
+        : j.error || `We could not finish ${verbOf(kind)} your ${nounOf(kind)}. Please try again.`,
     };
   }
   return 'running';
@@ -946,13 +983,26 @@ async function prepareBuild(
 
 type Sent = { jobId: string } | { result: BuildResult } | { lost: true; status: number };
 
-/** One POST. `lost` = no answer we can trust (no response, or a 5xx a proxy may have sent after the job was made). */
+/**
+ * One POST. `lost` = no answer we can trust (no response, or a 5xx a proxy may have sent after the job was made).
+ * ⚠️ EXCEPT THE LANE'S OWN AI ENDING. When asJob cannot create a job row it runs the handler on this very request,
+ * and a lane whose AI stayed overloaded answers 503 { reason: 'ai_busy' | 'ai_down', error }. No proxy writes that
+ * body: it is the handler saying it stopped BEFORE its charge. Read as 'lost', it was resent at once — the sync
+ * lane is not deduped, so every AI attempt ran again into the same spike — then reported as "We could not
+ * start…", with the record kept for a Try again that resent it under the old consent, no sheet. Now it is the
+ * answer it is: shown with the server's sentence, its record cleared (like any answer the server gave), so Try
+ * again is a new build through the gate and the sheet.
+ */
 async function sendBuild(kind: DocKind, body: Record<string, any>, ctx: Session): Promise<Sent> {
   const path = kind === 'cover_letter' ? '/cover-letter/employer-build' : '/resume-builder/generate-ai';
   const noun = nounOf(kind);
   const r = await call(path, { method: 'POST', ms: 90000, body }, ctx);
-  if (!r || r.status >= 500) return { lost: true, status: r ? r.status : 0 };
+  if (!r) return { lost: true, status: 0 };
   const s = r.json;
+  if (!r.ok && isAiEnding(s.reason)) {
+    return { result: { ok: false, reason: s.reason, message: aiEndingMessage(kind, s.reason, s.error) } };
+  }
+  if (r.status >= 500) return { lost: true, status: r.status };
   if (r.status === 401) return { result: { ok: false, reason: 'failed', message: 'Please sign in again.' } };
   if (r.status === 402) return { result: { ok: false, reason: 'quota_exhausted', message: s.error || 'You have used your plan allowance.' } };
   if (r.status === 403) {
