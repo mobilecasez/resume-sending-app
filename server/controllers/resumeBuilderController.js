@@ -8,7 +8,9 @@ const path         = require('path');
 const fs           = require('fs').promises;
 const crypto       = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
-const { renderPdf, renderPreviews, warmPreviews } = require('../utils/resumeRenderer');
+// PREVIEW_REV names the preview render (density + format): it is in every key that stores a rendered page or a card
+// derived from one (previewFile, cachedThumb, docPageNameOf), so a page from before a render change is never served.
+const { renderPdf, renderPreviews, warmPreviews, PREVIEW_REV } = require('../utils/resumeRenderer');
 const { TEMPLATES, TEMPLATE_IDS, FAMILIES, REGIONS, templatesForRegion, brandedTemplate } = require('../utils/resumeTemplates');
 const { getEventCost } = require('../services/eventCosts');
 const entitlements = require('../services/entitlements');
@@ -4531,12 +4533,14 @@ async function photoVersion(userId) {
 // in the list also paid the browser cold start on top. That is why one particular design always
 // looked slow: nothing was ever reused.
 //
-// Same key as the Home thumbnails (resume version + photo version + template), different prefix and
-// no downscale, because the gallery wants the full 794px page. Stored as JSON so the page HEIGHT
+// Same key as the Home thumbnails (resume version + photo version + template + PREVIEW_REV), different
+// prefix and no downscale, because the gallery wants the full page. Stored as JSON so the page HEIGHT
 // travels with the image — it varies per design, and the client lays out against it.
+// ⚠️ PREVIEW_REV (hd1 = 3x WebP, 2026-09-18): a 1x JPEG written before it is under a key nothing asks for
+// any more — never served, and dropped by prunePreviews like any other old entry (same prefix).
 const PREVIEW_KEEP = 150;
 function previewFile(userId, row, tplId, pver) {
-    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tplId;
+    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tplId + ':' + PREVIEW_REV;
     return path.join(__dirname, '../../temp', `resume_prev_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.json`);
 }
 async function readPreviewCache(userId, row, tplId, pver) {
@@ -4649,19 +4653,22 @@ async function listTemplates(req, res) {
 // One template → a downscaled JPEG data URI, cached on disk per (user, resume version,
 // template). The Home carousel shows several of these, and Home loads on every app open —
 // so a cache MISS must be the rare case, never the norm.
+// The card is DERIVED from the renderer's full page (PREVIEW_REV: 3x WebP since hd1) and stays a
+// small 480-px JPEG — the big page is never shipped where a card is enough. PREVIEW_REV is in the
+// key, so a card cut from a 1x page is never served again; the old files age out through pruneThumbs.
 const THUMB_W = 480;
 async function cachedThumb(userId, row, tplId, tag = '') {
     // ⚠️ The profile photo is rendered INTO the card but used to be absent from the key, so
     // replacing a photo never invalidated anything — Home kept serving the old face until the
     // resume itself was next saved. Its mtime is part of the version now.
     const pver = await photoVersion(userId);
-    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tag + ':' + tplId;
+    const ver = new Date(row.updated_at || Date.now()).getTime() + ':' + pver + ':' + tag + ':' + tplId + ':' + PREVIEW_REV;
     const tDir = path.join(__dirname, '../../temp');
     await fs.mkdir(tDir, { recursive: true });
     const file = path.join(tDir, `resume_thumb_${userId}_${String(ver).replace(/[^a-zA-Z0-9_]/g, '-')}.jpg`);
     try {
         const buf = await fs.readFile(file);
-        return { id: tplId, image: `data:image/jpeg;base64,${buf.toString('base64')}`, cached: true, file: path.basename(file) };
+        return { id: tplId, image: `data:${imageMimeOf(buf)};base64,${buf.toString('base64')}`, cached: true, file: path.basename(file) };
     } catch {}
     const { photo, photoRect } = await photosFor(userId);
     const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === tplId));
@@ -4672,7 +4679,7 @@ async function cachedThumb(userId, row, tplId, tag = '') {
         thumb = await sharp(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer();
     } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
     await fs.writeFile(file, thumb).catch(() => {});
-    return { id: tplId, image: `data:image/jpeg;base64,${thumb.toString('base64')}`,
+    return { id: tplId, image: `data:${imageMimeOf(thumb)};base64,${thumb.toString('base64')}`,
              width: pv.width, height: pv.height, cached: false, file: path.basename(file) };
 }
 
@@ -4879,8 +4886,9 @@ async function homeCards(req, res) {
 // ⚠️ ONE CACHE FOR THE GALLERY AND THE CARDS (2026-09-15). The gallery's doc-mode previews used to live in
 // temp/ as JSON while Home's cards lived here as 480-px thumbs, so the build's pre-render warmed the cards
 // and the gallery's first (visible) design still paid a cold chromium render, its neighbours arriving after
-// a scroll. What is stored now is the FULL-SIZE 794-px page (docPages), per (user, document, its updated_at,
-// the photo's version, the design, the brand it renders in — brandKeyOf); the 480-px card (docThumb) is
+// a scroll. What is stored now is the FULL-SIZE page (docPages; 3x since PREVIEW_REV hd1 — below), per (user,
+// document, its updated_at, the photo's version, the design, the brand it renders in — brandKeyOf, and the
+// PREVIEW_REV it was rendered under); the 480-px card (docThumb) is
 // DERIVED from it with sharp on first read and stored alongside under the page's name suffixed .w480. The
 // build's pre-render of the top designs is therefore the gallery's first previews, and a design the gallery
 // renders is Home's next card.
@@ -4892,9 +4900,17 @@ async function homeCards(req, res) {
 // and res.sendFile refuses it the same way. File names are sha256 hashes, so nothing in a name is
 // guessable either. ⚠️ Do not rename this directory to one without the leading dot.
 //
-// An edit, a rebuild, a new photo or a brand that changed is a different file, never a stale image. Letter
-// thumbs (cl_ prefix) share the directory; this LRU only ever counts and deletes its own names (64 hex
+// An edit, a rebuild, a new photo, a brand that changed or a new PREVIEW_REV is a different file, never a stale
+// image. Letter thumbs (cl_ prefix) share the directory; this LRU only ever counts and deletes its own names (64 hex
 // characters, with or without the card suffix).
+//
+// ⚠️ PREVIEW_REV (2026-09-18, hd1): the page is the renderer's 3x WebP now (2382 px across — resumeRenderer's
+// PREVIEW_REV block), because the gallery's zoom dissolved the 1x page. The rev is hashed into docPageNameOf, and the
+// card's name is the page's, so neither a 1x page nor a card cut from one is ever asked for again; those files keep
+// their names, still match DOC_THUMB_NAME and leave through pruneDocThumbs' LRU like any other unused file — nothing
+// mass-deletes the cache. ⚠️ The ".jpg" on a page's name is this cache's NAMING SCHEME, not its format: the bytes are
+// whatever the renderer produced (WebP; its JPEG when sharp is unavailable), and every reader takes the type and the
+// size from the bytes (imageMimeOf / imageSizeOf), never from the name. The card is a real 480-px JPEG.
 const DOC_THUMB_ROOT = path.join(__dirname, '../../uploads/.thumb_cache');
 const DOC_THUMB_KEEP = 240;
 const DOC_CARD_SUFFIX = `.w${THUMB_W}`;                                            // "<page>.w480.jpg" is the card of "<page>.jpg"
@@ -4904,15 +4920,34 @@ const DOC_PAGE_H = 1123;
 const docThumbDirOf = (userId) => path.join(DOC_THUMB_ROOT, String(parseInt(userId, 10) || 0));
 const docThumbFlights = new Map();   // absolute path of a page → Promise<page> — one render per file, however many ask
 
-/** The page file of one design of one stored document. v3: the file IS the full-size page (v2 files were cards). */
+/** The page file of one design of one stored document. v3: the file IS the full-size page (v2 files were cards); + PREVIEW_REV. */
 function docPageNameOf(userId, doc, pver, tplId, brand) {
     const ms = new Date(doc.updated_at || 0).getTime() || 0;
     return crypto.createHash('sha256')
-        .update(['resume-doc-page:v3', userId, doc.id, ms, pver, tplId, brandKeyOf(brand)].join('|'))
+        .update(['resume-doc-page:v3', userId, doc.id, ms, pver, tplId, brandKeyOf(brand), PREVIEW_REV].join('|'))
         .digest('hex') + '.jpg';
 }
 /** The card derived from a page: the page's name, suffixed. */
 const docCardNameOf = (pageName) => pageName.replace(/\.jpg$/, `${DOC_CARD_SUFFIX}.jpg`);
+
+/** The pixel size of a WebP from its RIFF header (VP8 lossy, VP8L lossless, VP8X extended), or null when the bytes are not one. */
+function webpSizeOf(buf) {
+    if (!Buffer.isBuffer(buf) || buf.length < 30 || buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WEBP') return null;
+    const chunk = buf.toString('latin1', 12, 16);
+    if (chunk === 'VP8 ' && buf[23] === 0x9d && buf[24] === 0x01 && buf[25] === 0x2a) {
+        return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+    }
+    if (chunk === 'VP8L' && buf[20] === 0x2f) {
+        const bits = buf.readUInt32LE(21);
+        return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+    }
+    if (chunk === 'VP8X') return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
+    return null;
+}
+/** The pixel size of a cached page or card, whatever the renderer wrote (a JPEG or a WebP) — or null. */
+const imageSizeOf = (buf) => jpegSizeOf(buf) || webpSizeOf(buf);
+/** The data-URI type of cached bytes, from the bytes (a page named .jpg holds a WebP since PREVIEW_REV hd1). */
+const imageMimeOf = (buf) => (webpSizeOf(buf) ? 'image/webp' : 'image/jpeg');
 
 /** The pixel size of a JPEG from its frame header, { width, height } — or null when the bytes are not one. */
 function jpegSizeOf(buf) {
@@ -4955,17 +4990,17 @@ async function writeDocFile(dir, name, buf) {
 
 /**
  * A page answer from its bytes: the catalogue's name and ats, the accent the page shows (brandedTemplate — every
- * variant is re-hued to the brand, so the catalogue swatch would promise a colour that never arrives), the size from
- * the JPEG header (the renderer's A4 width and height when the bytes are not a JPEG the parser reads), and `file` —
- * the name the LRU keeps alive.
+ * variant is re-hued to the brand, so the catalogue swatch would promise a colour that never arrives), the type and
+ * the pixel size from the image header — JPEG or WebP (the renderer's A4 width and height when neither parser reads
+ * it; the client only uses their ratio) — and `file`, the name the LRU keeps alive.
  */
 function docPageOf(tpl, brand, name, buf, cached) {
-    const size = jpegSizeOf(buf) || { width: DOC_PAGE_W, height: DOC_PAGE_H };
+    const size = imageSizeOf(buf) || { width: DOC_PAGE_W, height: DOC_PAGE_H };
     let accent = (brand && brand.accent) || tpl.accent;
     try { accent = brandedTemplate(tpl, brand).accent || accent; } catch { /* an unreadable brand: the accent it names */ }
     return {
         id: tpl.id, name: tpl.name, accent, ats: tpl.ats || null,
-        image: `data:image/jpeg;base64,${buf.toString('base64')}`, width: size.width, height: size.height, file: name, cached,
+        image: `data:${imageMimeOf(buf)};base64,${buf.toString('base64')}`, width: size.width, height: size.height, file: name, cached,
     };
 }
 
@@ -5189,7 +5224,11 @@ async function buildResumePdfForRegion(userId, region, mode) {
 }
 
 module.exports = {
-    previewFile, readPreviewCache, writePreviewCache, generateAI, generationGate, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt,   // buildParsePrompt exported for tests only
+    previewFile, readPreviewCache, writePreviewCache,
+    // The employer-doc page cache's names, its header reader and its page reader/renderer (exported for tests only:
+    // test-preview-sharpness.js pins PREVIEW_REV into every key and reads a 3x WebP page back through them).
+    docPageNameOf, docCardNameOf, imageSizeOf, docPages, docThumb,
+    generateAI, generationGate, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards, buildResumePdfForRegion, buildParsePrompt,   // buildParsePrompt exported for tests only
     // The employer-doc lane: the fingerprint /api/employer-docs/current labels staleness with, and the
     // prompt + placeholder guard + the sameness measure (exported for tests).
     currentResumeFingerprint, buildEmployerDocPrompt, findPlaceholders, stripPlaceholders, tokenJaccard,

@@ -997,12 +997,16 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   const build = fnBody(lctl, 'buildEmployerLetter');
   const lHit = build.indexOf("employerDocs.get(userId, 'cover_letter', company, fp, env)");
   const lHitReturn = build.indexOf('cached: true', lHit);
-  // The lane's AI call: callLetterModel until 2026-09-18, writeLetterText (through aiText) since. One of them must be there.
-  const lAi = Math.min(...['writeLetterText(', 'callLetterModel('].map((t) => build.indexOf(t)).filter((i) => i >= 0));
-  const lFirstPaid = Math.min(...['canConsumeMany(', 'passCoversGeneration(', 'claimGeneration(', 'consumeOnSuccess(', 'getEmployerResearch(', 'writeLetterText(', 'callLetterModel('].map((t) => build.indexOf(t)).filter((i) => i >= 0));
+  // The lane's AI call: callLetterModel until 2026-09-18, then writeLetterText (its own prompt, through aiText), and since
+  // the owner's decision the same day the Jobs section's writer, cl.writeLegacyLetter. Exactly that one must be there now.
+  const lAi = build.indexOf('cl.writeLegacyLetter(');
+  const lFirstPaid = Math.min(...['canConsumeMany(', 'passCoversGeneration(', 'claimGeneration(', 'consumeOnSuccess(', 'getEmployerResearch(', 'writeLegacyLetter(', 'writeLetterText(', 'callLetterModel('].map((t) => build.indexOf(t)).filter((i) => i >= 0));
   ok('⚠️ the cache hit returns BEFORE any gate, research, AI or charge', lHit > 0 && lHitReturn > lHit && lHitReturn < lFirstPaid, { lHit, lHitReturn, lFirstPaid });
   const lCovered = build.indexOf('if (coveredOnly && !viaPass && !quotaCovers)');
-  ok('⚠️ the coveredOnly refusal precedes research AND the AI', lCovered > 0 && Number.isFinite(lAi) && lCovered < build.indexOf('getEmployerResearch(') && lCovered < lAi, { lCovered, lAi });
+  ok('⚠️ the coveredOnly refusal precedes research AND the AI', lCovered > 0 && lAi > 0 && lCovered < build.indexOf('getEmployerResearch(') && lCovered < lAi, { lCovered, lAi });
+  ok('⚠️ …and the AI (the Jobs writer) precedes the charge: every AI call before withUsageLock, no letter AI of the lane\'s own',
+    lAi > 0 && lAi < build.indexOf("await withUsageLock(userId, 'cover_letter'") && !/writeLetterText\(|callLetterModel\(|buildEmployerLetterPrompt\(/.test(lctl),
+    { lAi, lock: build.indexOf("await withUsageLock(userId, 'cover_letter'") });
   // The refunds moved out of the build body into ONE helper, because a refused build now has three
   // things to give back (credits, the pass's generation, the plan/trial ledger row), not just credits.
   ok('…re-asked at payment, and a credits slip gives THIS build\'s charge back',
@@ -1037,7 +1041,13 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     /SELECT pg_advisory_xact_lock\(hashtext\('usage:' \|\| \$1::text\), \$2::int\)/.test(fnBody(lctl, 'withUsageLock'))
     && /SET LOCAL lock_timeout/.test(fnBody(lctl, 'withUsageLock'))
     && /await withUsageLock\(userId, 'cover_letter', async \(\) => \{/.test(build));
-  ok('never the legacy generator (its prompt researches and names clients live)', !/generateCoverLetter\(/.test(lctl) && !/googleSearch/.test(lctl));
+  // ⚠️ REVERSED BY DESIGN 2026-09-18 (the owner's decision). This pin used to say "never the legacy generator (its prompt
+  // researches and names clients live)" — and that live research is exactly why the owner finalized it. The Home lane now
+  // writes through the Jobs lane's own writer (coverLetterController.writeLegacyLetter → v2's buildPrompt, Google Search
+  // grounding), called — never copied: no prompt, no grounding tool and no model call of its own in this file.
+  ok('⚠️ the Home letter is written by the Jobs section\'s writer (cl.writeLegacyLetter), with no prompt, grounding or model call of its own',
+    /cl\.writeLegacyLetter\(resumeMetadata, researchSubject, targetPosition, null, jobLocation, listing,/.test(build)
+    && !/generateCoverLetter\(|googleSearch|getGenerativeModel|aiText\.generateText|buildPrompt\(/.test(lctl));
   const routesSrc = strip(R('server/routes/coverLetterRoutes.js'));
   ok('the three letter routes are behind auth, and the build runs as an async job',
     /router\.post\('\/cover-letter\/employer-gate',\s+authenticateToken, employerLetterGate\)/.test(routesSrc)
@@ -1055,8 +1065,10 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     // newRoutedPage, and EVERY page in the file must come from it — a second newPage( anywhere would be a
     // page with scripts on and the network open.
     const routed = fnBody(rndC, 'newRoutedPage');
+    // RETARGETED 2026-09-18 (PREVIEW_REV hd1): the page now carries the preview's density (deviceScaleFactor: dpr — 3x for
+    // previews, 1 for the vector PDF). The fence is the same: scripts OFF on every page, however dense.
     ok('⚠️ fence 1: pages are created with javaScriptEnabled FALSE',
-      /newPage\(\{ viewport: \{ width: A4_W, height: A4_H \}, javaScriptEnabled: false \}\)/.test(routed));
+      /newPage\(\{ viewport: \{ width: A4_W, height: A4_H \},(?: deviceScaleFactor: dpr,)? javaScriptEnabled: false \}\)/.test(routed));
     ok('⚠️ fence 2: a route installed BEFORE any content aborts everything the allowlist does not name',
       /await page\.route\('\*\*\/\*', \(route\) => \(isAllowedRequest\(route\.request\(\)\.url\(\)\)\s*\? route\.continue\(\)\s*: route\.abort\('blockedbyclient'\)\)/.test(routed)
       && routed.indexOf('page.route(') < routed.indexOf('return page'));
@@ -1064,7 +1076,7 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       (rndC.match(/\.newPage\(/g) || []).length === 1
       && /await newRoutedPage\(browser\)/.test(fnBody(rndC, 'preparePage'))
       && /await preparePage\(browser, html\)/.test(fnBody(rndC, 'renderPdf'))
-      && /page = await newRoutedPage\(browser\)/.test(fnBody(rndC, 'renderPreviews')));
+      && /page = await newRoutedPage\(browser(?:, PREVIEW_DPR)?\)/.test(fnBody(rndC, 'renderPreviews')));
     const allowed = ['data:image/png;base64,AAAA', 'https://fonts.googleapis.com/css2?family=Lato', 'https://fonts.gstatic.com/s/lato/x.woff2'];
     const blocked = ['http://127.0.0.1:9/admin', 'http://169.254.169.254/latest/meta-data/', 'http://fonts.googleapis.com/css2', 'https://evil.example.com/fonts.googleapis.com/x',
       'https://localhost/x', 'file:///etc/passwd', 'https://fonts.googleapis.com.evil.example.com/x', '', 'not a url'];
@@ -1638,12 +1650,15 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   //   - what a fallback wrote is the same cache row as what the primary wrote (a later build reads it for free),
   //     and no model id reaches anything stored; RESEARCH_REV / LETTER_REV / FP_VERSION unchanged;
   //   - a research failure is still "no research", never a failed build — and BUSY is remembered for minutes.
-  // TWO CHAINS (since the measured writing chain, 2026-09-18 — aiText WRITING_PRIMARY):
+  // ONE CHAIN FOR THIS BLOCK (reverted 2026-09-18 — see coverLetterController LEGACY_LETTER_MODEL):
   //   - RESEARCH (conventions, base facts) keeps its own model + aiText.fallbackModels():
   //     gemini-2.5-flash → gemini-2.5-flash-lite → gemini-3.1-flash-lite (PRIMARY / LITE / LITE3 below).
-  //   - the LEGACY LETTER is a document lane: it walks aiText.writing() — models aiText.writingChain() (W_PRIMARY /
-  //     W_FB1 / W_FB2 below, read from the module, never re-typed here) plus modelConfig, which turns thinking OFF
-  //     for gemini-2.5-flash only. LEGACY_LETTER_MODEL (gemini-2.5-flash) is no longer that lane's first model.
+  //   - the LEGACY LETTER — the one letter writer, which Home's employer letter now writes through too — walks its OWN
+  //     measured backups: LEGACY_LETTER_MODEL (gemini-2.5-flash), then CL._internals.letterFallbacks() (gemini-3.1-flash-lite
+  //     → gemini-2.5-flash-lite, measured on v2's grounded prompt), v2's config on every model and no per-model config.
+  //     AI_TEXT_FALLBACK_MODELS (a list, or "none") still overrides those backups. For one afternoon it spread
+  //     aiText.writing() (3.1-flash-lite first); that chain was measured on Home's OLD prompt only, never on v2's grounded
+  //     one, so the letters went back. The résumé lanes keep it. Job Hub's per-job letter stays on fallbackModels().
   // No network: the SDK is a fake keyed on the MODEL (require.cache, which aiText reads on every call), the
   // researcher, the website read, the push and the admin pager are stubbed, and aiText's pause is shrunk to 0.
   // ════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1663,7 +1678,7 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     // ── the world, saved so every stub can be put back ──
     const saved = {
       settings: { ...aiText._internals.settings }, fallbackEnv: process.env.AI_TEXT_FALLBACK_MODELS, asyncEnv: process.env.USE_ASYNC_JOBS,
-      writingEnv: process.env.AI_WRITING_MODEL, writingFbEnv: process.env.AI_WRITING_FALLBACK_MODELS, gen: aiText.generateText,
+      gen: aiText.generateText,
       rc: er.researchConventions, rb: er.researchBrand, gf: er.googleFontCheck, re: researcher.researchEmployer,
       canConsumeMany: entM.canConsumeMany, consumeOnSuccess: entM.consumeOnSuccess,
       resolveEmployer: downloads.resolveEmployer, passCoversGeneration: downloads.passCoversGeneration, claimGeneration: downloads.claimGeneration,
@@ -1711,7 +1726,6 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       // The ~2 s pause before the primary's second try is aiText's (its own suite pins it); 0 here keeps this fast.
       aiText._internals.settings.retryWaitMs = 0; aiText._internals.settings.retryJitterMs = 0;
       delete process.env.AI_TEXT_FALLBACK_MODELS;   // the VERIFIED default chain
-      delete process.env.AI_WRITING_MODEL; delete process.env.AI_WRITING_FALLBACK_MODELS;   // the MEASURED writing chain
       er.researchBrand = async () => null; er.googleFontCheck = async () => false;
       pushM.sendPushNotification = async (...a) => { pushes.push(a); return false; };
       ok('the RESEARCH chain under test is the verified default: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-3.1-flash-lite',
@@ -1932,26 +1946,62 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       researcher.researchEmployer = saved.re;
 
       // ── THE LEGACY LETTER (Letters screen / Job Hub → POST /generate-cover-letter-details) ──────────────────
-      // ⚠️ RETARGETED 2026-09-18: this lane walks aiText.writing() now, not [LEGACY_LETTER_MODEL, ...fallbackModels()].
-      // Its models are read from the SAME aiText instance the controller calls (coverLetterController requires
-      // '../services/aiText' lazily, per call — the file this block required above; the spy below proves it), so a
-      // storm "on the primary" is scripted on W_PRIMARY, "the first fallback wrote it" expects W_FB1, and "every
-      // model busy" scripts the whole writing chain. The research scenarios above stay on PRIMARY / LITE / LITE3.
-      const WCHAIN = aiText.writingChain();
+      // ⚠️ RETARGETED 2026-09-18 (the letter's MEASURED backups): the lane walks [LEGACY_LETTER_MODEL, ...letterFallbacks()]
+      // — gemini-2.5-flash, then gemini-3.1-flash-lite, then gemini-2.5-flash-lite — with v2's config on EVERY model and no
+      // per-model config. The chain is read from the controller (LEGACY_LETTER_MODEL and letterFallbacks() off
+      // CL._internals), so a storm "on the primary" lands on the model this lane really asks first and "the first fallback"
+      // is the one it really asks second. The literal order is pinned ONCE, just below, and nowhere else.
+      const letterFallbacksOf = () => (typeof CLI.letterFallbacks === 'function' ? CLI.letterFallbacks() : []);
+      const WCHAIN = [CLI.LEGACY_LETTER_MODEL, ...letterFallbacksOf()];
       const [W_PRIMARY, W_FB1, W_FB2] = WCHAIN;
-      const LANE_CFG = { temperature: 1, topP: 0.95, maxOutputTokens: 32768 };   // v2's config, the lane's own
-      const LANE_CFG_THINKING_OFF = { ...LANE_CFG, thinkingConfig: { thinkingBudget: 0 } };   // what W_FB1 must receive
-      // The config one call must have received: thinking OFF (merged over the lane's config) for W_FB1 only; every
-      // other model gets the lane's config untouched — NO thinkingConfig at all.
-      const expectedCfg = (model) => (model === W_FB1 ? LANE_CFG_THINKING_OFF : LANE_CFG);
-      const cfgRight = (c) => !!c.cfg && JSON.stringify(c.cfg) === JSON.stringify(expectedCfg(c.model))
-        && (c.model === W_FB1 ? c.cfg.thinkingConfig.thinkingBudget === 0 : !('thinkingConfig' in c.cfg));
-      ok('the LEGACY letter chain under test is aiText\'s measured writing default: three distinct models, and the FIRST FALLBACK is the one model with a config of its own (thinking off)',
-        WCHAIN.length === 3 && new Set(WCHAIN).size === 3 && JSON.stringify(WCHAIN) === JSON.stringify([aiText._internals.WRITING_PRIMARY, ...aiText._internals.WRITING_FALLBACKS])
-          && JSON.stringify(Object.keys(aiText._internals.WRITING_MODEL_CONFIG)) === JSON.stringify([W_FB1]), { chain: WCHAIN, modelConfig: aiText._internals.WRITING_MODEL_CONFIG });
-      ok('…and it is NOT the research chain, nor headed by LEGACY_LETTER_MODEL any more (a storm scripted on either would never reach this lane\'s first model)',
-        W_PRIMARY !== PRIMARY && JSON.stringify(WCHAIN) !== JSON.stringify([PRIMARY, LITE, LITE3]) && typeof CLI.LEGACY_LETTER_MODEL === 'string' && CLI.LEGACY_LETTER_MODEL !== W_PRIMARY,
-        { writing: WCHAIN, research: [PRIMARY, LITE, LITE3], LEGACY_LETTER_MODEL: CLI.LEGACY_LETTER_MODEL });
+      // Why this order: on v2's grounded prompt gemini-3.1-flash-lite wrote 3/3 usable letters, gemini-2.5-flash-lite broke 2 of 3.
+      const LETTER_ORDER = ['gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'];
+      const LANE_CFG = { temperature: 1, topP: 0.95, maxOutputTokens: 32768 };   // v2's config, the lane's own — every model's
+      const cfgRight = (c) => !!c.cfg && JSON.stringify(c.cfg) === JSON.stringify(LANE_CFG) && !('thinkingConfig' in c.cfg);
+      ok('the LEGACY letter chain under test is LEGACY_LETTER_MODEL then the MEASURED letter backups: gemini-2.5-flash → gemini-3.1-flash-lite → gemini-2.5-flash-lite, three distinct models',
+        WCHAIN.length === 3 && new Set(WCHAIN).size === 3 && JSON.stringify(WCHAIN) === JSON.stringify(LETTER_ORDER)
+          && Array.isArray(CLI.LETTER_FALLBACKS) && JSON.stringify(CLI.LETTER_FALLBACKS) === JSON.stringify(WCHAIN.slice(1)),
+        { chain: WCHAIN, LEGACY_LETTER_MODEL: CLI.LEGACY_LETTER_MODEL, LETTER_FALLBACKS: CLI.LETTER_FALLBACKS });
+      ok('…and it is NOT aiText\'s writing chain (the résumé lanes\' — measured for them, never for a grounded letter)',
+        JSON.stringify(WCHAIN) !== JSON.stringify(aiText.writingChain()) && W_PRIMARY !== aiText.writingChain()[0], { letter: WCHAIN, writing: aiText.writingChain() });
+      ok('…nor the research chain\'s backup order: the letter\'s first backup is not aiText.fallbackModels()[0] (2.5-flash-lite broke grounded letters)',
+        W_FB1 !== aiText.fallbackModels()[0] && JSON.stringify(WCHAIN.slice(1)) !== JSON.stringify(aiText.fallbackModels()), { letter: WCHAIN.slice(1), research: aiText.fallbackModels() });
+
+      // letterFallbacks(): the measured backups, a FRESH array on every call, unless the operator set AI_TEXT_FALLBACK_MODELS
+      // — then exactly aiText.fallbackModels() (a list, or "none" = primary only), as the letter lanes always honoured.
+      {
+        const envBefore = process.env.AI_TEXT_FALLBACK_MODELS;
+        try {
+          delete process.env.AI_TEXT_FALLBACK_MODELS;
+          const measured = JSON.stringify(WCHAIN.slice(1));
+          const f1 = letterFallbacksOf(), f2 = letterFallbacksOf();
+          ok('letterFallbacks() is exported on CL._internals, and LETTER_FALLBACKS is frozen',
+            typeof CLI.letterFallbacks === 'function' && Object.isFrozen(CLI.LETTER_FALLBACKS), { fn: typeof CLI.letterFallbacks, frozen: Object.isFrozen(CLI.LETTER_FALLBACKS) });
+          const fresh = Array.isArray(f1) && f1 !== f2 && f1 !== CLI.LETTER_FALLBACKS && !Object.isFrozen(f1);
+          if (fresh) { f1.push('gemini-mutated-by-a-caller'); f1.reverse(); f2.length = 0; }   // a caller editing what it was handed
+          ok('⚠️ letterFallbacks() returns a FRESH array: never LETTER_FALLBACKS itself, never the same array twice, and editing one changes nothing',
+            fresh && JSON.stringify(letterFallbacksOf()) === measured && JSON.stringify(CLI.LETTER_FALLBACKS) === measured,
+            { fresh, after: letterFallbacksOf(), frozen: CLI.LETTER_FALLBACKS });
+          process.env.AI_TEXT_FALLBACK_MODELS = '   ';
+          ok('…a blank AI_TEXT_FALLBACK_MODELS is "unset": the measured letter backups',
+            JSON.stringify(letterFallbacksOf()) === measured, letterFallbacksOf());
+          // The operator's own list — one of the letter's backups plus an id of their own, in THEIR order, distinct from
+          // both the measured letter order and aiText's research default — written with the noise an env var carries.
+          const opList = [W_FB2, 'gemini-operator-pick'];
+          process.env.AI_TEXT_FALLBACK_MODELS = ` models/${opList[0].toUpperCase()} , ${opList[1]}, ${opList[0]} `;
+          const fl = letterFallbacksOf();
+          ok('⚠️ AI_TEXT_FALLBACK_MODELS as a LIST wins over the measured order: exactly aiText.fallbackModels() (cleaned, deduped, in the operator\'s order), still a fresh array',
+            JSON.stringify(fl) === JSON.stringify(opList) && JSON.stringify(fl) === JSON.stringify(aiText.fallbackModels()) && JSON.stringify(fl) !== measured && fl !== letterFallbacksOf(),
+            { letter: fl, research: aiText.fallbackModels(), env: process.env.AI_TEXT_FALLBACK_MODELS });
+          for (const v of ['none', ' NONE ', 'off']) {
+            process.env.AI_TEXT_FALLBACK_MODELS = v;
+            ok(`⚠️ AI_TEXT_FALLBACK_MODELS=${JSON.stringify(v)} → NO letter backups ([]): the operator's "primary only" switch`,
+              Array.isArray(letterFallbacksOf()) && letterFallbacksOf().length === 0 && JSON.stringify(letterFallbacksOf()) === JSON.stringify(aiText.fallbackModels()), letterFallbacksOf());
+          }
+        } finally {
+          if (envBefore === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = envBefore;
+        }
+      }
       // Every aiText.generateText call the lane makes, recorded (the real call still runs). Put back in the finally.
       const legacyAsks = [];
       aiText.generateText = (o) => { legacyAsks.push(o); return saved.gen(o); };
@@ -1990,23 +2040,24 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       legacyWorld(); legacyAsks.length = 0;
       fake.plan[W_PRIMARY] = [E503(), E503_TEXT_ONLY()];
       let r = await details(BODY);
-      ok('⚠️ LEGACY letter (sync): the prod 503 storm on the primary → 200, the letter written by the FALLBACK',
+      // RETARGETED 2026-09-18: "the first fallback" is letterFallbacks()[0] — gemini-3.1-flash-lite (pinned above), no longer 2.5-flash-lite.
+      ok('⚠️ LEGACY letter (sync): the prod 503 storm on the primary → 200, the letter written by the FIRST letter fallback (gemini-3.1-flash-lite)',
         r.statusCode === 200 && r.body && r.body.success === true && String(r.body.coverLetterHtml || '').includes(`written by ${W_FB1}.`), { status: r.statusCode, want: W_FB1, body: r.body && (r.body.error || String(r.body.coverLetterHtml).slice(0, 120)) });
       ok('…after the primary twice (the paused retry) and then the first fallback — not three blind tries on one model',
         JSON.stringify(models()) === JSON.stringify([W_PRIMARY, W_PRIMARY, W_FB1]), models());
       ok('⚠️ …charged EXACTLY ONCE, under the usage lock, after the letter existed', money.consumed.length === 1 && locks() === 1 && money.consumed[0].kind === 'cover_letter', { consumed: money.consumed.length, locks: locks() });
-      // ⚠️ RETARGETED 2026-09-18: "v2's config on every model" is no longer the design. The first fallback
-      // (gemini-2.5-flash) gets thinking OFF laid over v2's config; every other model gets v2's config exactly.
-      ok('…every model got v2\'s prompt byte for byte, Google Search grounding, an abort signal and v2\'s config (temperature 1, topP 0.95, 32768) — with thinkingConfig { thinkingBudget: 0 } merged in for the first fallback ONLY',
+      // ⚠️ RETARGETED BACK 2026-09-18: v2's config on EVERY model again — the primary's two tries and the fallback's —
+      // and no thinkingConfig on any of them (the writing chain's per-model config is not this lane's).
+      ok('…every model got v2\'s prompt byte for byte, Google Search grounding, an abort signal and v2\'s config (temperature 1, topP 0.95, 32768) — and NO thinkingConfig, on any model',
         fake.calls.some((c) => c.model === W_PRIMARY) && fake.calls.some((c) => c.model === W_FB1)
           && fake.calls.every((c) => c.req.contents[0].parts[0].text === EXPECTED_PROMPT && cfgRight(c)
-          && JSON.stringify(c.req.tools) === JSON.stringify([{ googleSearch: {} }]) && c.opts && c.opts.signal), fake.calls.map((c) => ({ m: c.model, cfg: c.cfg, want: expectedCfg(c.model), same: c.req.contents[0].parts[0].text === EXPECTED_PROMPT })));
-      // ⚠️ REWRITTEN BY DESIGN 2026-09-18: the lane used to pass models: [LEGACY_LETTER_MODEL, ...fallbackModels()].
-      // It now spreads aiText.writing(): the measured chain AND its per-model config — both, from THIS aiText.
+          && JSON.stringify(c.req.tools) === JSON.stringify([{ googleSearch: {} }]) && c.opts && c.opts.signal), fake.calls.map((c) => ({ m: c.model, cfg: c.cfg, same: c.req.contents[0].parts[0].text === EXPECTED_PROMPT })));
+      // ⚠️ RETARGETED 2026-09-18: the lane passes models: [LEGACY_LETTER_MODEL, ...letterFallbacks()] (the measured letter
+      // backups) and no modelConfig at all — v2's primary, v2's config.
       const la = legacyAsks[0] || {};
-      ok('⚠️ …ONE aiText call, lane letter_legacy, carrying aiText.writing()\'s models AND its modelConfig (the same object), v2\'s config as the lane config',
-        legacyAsks.length === 1 && la.lane === 'letter_legacy' && JSON.stringify(la.models) === JSON.stringify(aiText.writing().models) && JSON.stringify(la.models) === JSON.stringify(WCHAIN)
-          && la.modelConfig === aiText._internals.WRITING_MODEL_CONFIG && la.modelConfig === aiText.writing().modelConfig && JSON.stringify(la.config) === JSON.stringify(LANE_CFG),
+      ok('⚠️ …ONE aiText call, lane letter_legacy, models [LEGACY_LETTER_MODEL, ...letterFallbacks()] and NO modelConfig, v2\'s config as the lane config',
+        legacyAsks.length === 1 && la.lane === 'letter_legacy' && JSON.stringify(la.models) === JSON.stringify(WCHAIN)
+          && !('modelConfig' in la) && JSON.stringify(la.config) === JSON.stringify(LANE_CFG),
         legacyAsks.map((o) => ({ lane: o.lane, models: o.models, modelConfig: o.modelConfig, config: o.config })));
       ok('the lane\'s own parsing is kept: the addresses and the employer name come from the fallback\'s JSON',
         !!r.body && r.body.companyName === 'Acme Legacy GmbH' && Array.isArray(r.body.locations) && r.body.locations[0].address === 'Hauptstraße 12, 45128 Essen, Germany', r.body && { companyName: r.body.companyName, locations: r.body.locations });
@@ -2016,25 +2067,26 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       r = await details(BODY, { asyncMode: true });
       await settled();
       const labels = jobs.partials.filter((p) => p && p.stage === 'retry').map((p) => p.label);
-      ok('⚠️ LEGACY letter (async job): the storm still completes the job, charged once',
+      ok('⚠️ LEGACY letter (async job): the storm still completes the job — written by the first letter fallback — charged once',
         r.statusCode === 202 && jobs.completed.length === 1 && String(jobs.completed[0].r.coverLetterHtml || '').includes(`written by ${W_FB1}.`) && money.consumed.length === 1 && !failedJobRow()
           && JSON.stringify(models()) === JSON.stringify([W_PRIMARY, W_PRIMARY, W_FB1]),
         { status: r.statusCode, completed: jobs.completed.length, consumed: money.consumed.length, models: models(), failed: failedJobRow() && failedJobRow().params });
-      ok('…and each retry was put on the job in plain words ("Google\'s AI is busy — trying again", "Switching to a backup model")',
-        JSON.stringify(labels) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a backup model']), labels);
+      // ⚠️ RETARGETED BACK 2026-09-18: "faster" is TRUE again — after gemini-2.5-flash come the flash-lites (3.1, then 2.5).
+      ok('…and each retry was put on the job in plain words ("Google\'s AI is busy — trying again", "Switching to a faster model")',
+        JSON.stringify(labels) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a faster model']), labels);
 
       legacyWorld();
-      fake.busy = new Set(WCHAIN);   // every model of the WRITING chain
+      fake.busy = new Set(WCHAIN);   // every model of the LETTER chain
       r = await details(BODY);
       ok('⚠️ LEGACY letter: EVERY model busy → HTTP 503 { success:false, reason:"ai_busy", retryable:true } saying nothing was charged',
         r.statusCode === 503 && r.body && r.body.success === false && r.body.reason === 'ai_busy' && r.body.retryable === true
           && r.body.error === "Google's AI is overloaded right now, so your cover letter could not be written. Nothing was charged — please try again in a minute.", { status: r.statusCode, body: r.body });
       ok('⚠️ …NOTHING charged: no usage lock taken, no consumeOnSuccess, no pass claimed, no notification written',
         money.consumed.length === 0 && locks() === 0 && money.claims === 0 && !db.log.some((e) => /INSERT INTO notifications/.test(e.sql)), { consumed: money.consumed.length, locks: locks(), claims: money.claims });
-      ok('…after exactly one walk of the chain (primary twice, each fallback once) — the lane never re-walks a refusal',
+      ok('…after exactly one walk of the LETTER chain (primary twice, gemini-3.1-flash-lite once, gemini-2.5-flash-lite once) — the lane never re-walks a refusal',
         JSON.stringify(models()) === JSON.stringify([W_PRIMARY, W_PRIMARY, W_FB1, W_FB2]), models());
-      ok('…and on that walk thinking was OFF for the first fallback only: the primary and the last fallback got v2\'s config with NO thinkingConfig',
-        fake.calls.length === 4 && fake.calls.every(cfgRight), fake.calls.map((c) => ({ m: c.model, cfg: c.cfg, want: expectedCfg(c.model) })));
+      ok('…and on that walk every model got v2\'s config exactly, with NO thinkingConfig',
+        fake.calls.length === 4 && fake.calls.every(cfgRight), fake.calls.map((c) => ({ m: c.model, cfg: c.cfg })));
 
       legacyWorld();
       fake.busy = new Set(WCHAIN);
@@ -2082,6 +2134,29 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       ok('…and the second recipient was NOT asked (one refusal ends the run: the same answer, minutes later)',
         JSON.stringify(models()) === JSON.stringify([W_PRIMARY, W_PRIMARY, W_FB1, W_FB2]), models());
 
+      // The operator's switch, THROUGH the lane (not only the helper): AI_TEXT_FALLBACK_MODELS replaces the measured backups.
+      try {
+        legacyWorld(); legacyAsks.length = 0;
+        process.env.AI_TEXT_FALLBACK_MODELS = 'none';
+        fake.busy = new Set([W_PRIMARY]);
+        r = await details(BODY);
+        ok('⚠️ LEGACY letter with AI_TEXT_FALLBACK_MODELS=none: the primary alone (its one paused retry), busy → 503 ai_busy, nothing charged',
+          r.statusCode === 503 && r.body && r.body.reason === 'ai_busy' && JSON.stringify(models()) === JSON.stringify([W_PRIMARY, W_PRIMARY])
+            && legacyAsks.length === 1 && JSON.stringify(legacyAsks[0].models) === JSON.stringify([W_PRIMARY]) && money.consumed.length === 0,
+          { status: r.statusCode, models: models(), asked: legacyAsks.map((o) => o.models) });
+
+        legacyWorld(); legacyAsks.length = 0;
+        process.env.AI_TEXT_FALLBACK_MODELS = `${W_FB2}`;   // the operator's list: only the model the measured order puts LAST
+        fake.plan[W_PRIMARY] = [E503(), E503()];
+        r = await details(BODY);
+        ok('⚠️ LEGACY letter with AI_TEXT_FALLBACK_MODELS set to a list: the storm lands on the OPERATOR\'s first backup, not the measured one',
+          r.statusCode === 200 && String((r.body && r.body.coverLetterHtml) || '').includes(`written by ${W_FB2}.`)
+            && JSON.stringify(models()) === JSON.stringify([W_PRIMARY, W_PRIMARY, W_FB2]) && JSON.stringify(legacyAsks[0] && legacyAsks[0].models) === JSON.stringify([W_PRIMARY, ...aiText.fallbackModels()]),
+          { status: r.statusCode, models: models(), asked: legacyAsks.map((o) => o.models) });
+      } finally {
+        delete process.env.AI_TEXT_FALLBACK_MODELS;   // every block after this one runs on the measured default
+      }
+
       // The lane's parsing, ported from ai-cover-letter-v2 stage for stage.
       const P = CLI.parseLegacyLetterJson;
       ok('parseLegacyLetterJson is exposed for this suite', typeof P === 'function');
@@ -2103,14 +2178,20 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       const bulk = (clSrc.match(/const generateCoverLetters = async[\s\S]*?\nconst generateCoverLetterDetails = async/) || [''])[0];
       ok('⚠️ coverLetterController makes NO direct model call any more (no getGenerativeModel / generateContent / GoogleGenerativeAI)',
         !/getGenerativeModel|generateContent\(|GoogleGenerativeAI/.test(clSrc));
-      // ⚠️ REWRITTEN BY DESIGN 2026-09-18: it used to pin models: [LEGACY_LETTER_MODEL, ...aiText.fallbackModels()].
-      // The lane now spreads aiText.writing() (the measured chain + its per-model config), and must name no models /
-      // modelConfig of its own in that call — either key would override (or be overridden by) the spread.
+      // ⚠️ RETARGETED 2026-09-18: it pins models: [LEGACY_LETTER_MODEL, ...letterFallbacks()] (the measured letter backups),
+      // and NO writing() spread or modelConfig in that call (the one afternoon it spread writing() is exactly what this catches).
       const wll = fnBody(clSrc, 'writeLegacyLetter');
       const genCall = (wll.match(/aiText\.generateText\(\{[\s\S]*?\n\s*\}\);/) || [''])[0];
-      ok('⚠️ …its letter goes through aiText.generateText spreading aiText.writing() (models AND modelConfig), with no chain or model config of its own',
-        /lane: 'letter_legacy'/.test(genCall) && /\.\.\.aiText\.writing\(\)/.test(genCall) && !/\bmodels\s*:|\bmodelConfig\s*:/.test(genCall)
-          && !/LEGACY_LETTER_MODEL|fallbackModels\(/.test(genCall), genCall.slice(0, 600));
+      ok('⚠️ …its letter goes through aiText.generateText on [LEGACY_LETTER_MODEL, ...letterFallbacks()], with no writing() and no modelConfig',
+        /lane: 'letter_legacy'/.test(genCall) && /models: \[LEGACY_LETTER_MODEL, \.\.\.letterFallbacks\(\)\]/.test(genCall)
+          && !/writing\(\)|\bmodelConfig\s*:|fallbackModels\(\)/.test(genCall), genCall.slice(0, 600));
+      // ⚠️ The Job Hub per-job letter is a DIFFERENT prompt (no v2 grounding measurement behind it): it stays on
+      // [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()] and must not pick up the letter lanes' measured backups.
+      const hubLetter = fnBody(hubC, 'generateJobCoverLetter');
+      const hubGen = (hubLetter.match(/aiText\.generateText\(\{[\s\S]*?\n\s*\}\);/) || [''])[0];
+      ok('⚠️ the Job Hub per-job letter (generateJobCoverLetter) is still on [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()] — not letterFallbacks()',
+        /lane: 'job_hub_letter'/.test(hubGen) && /models: \[GEMINI_FLASH_MODEL, \.\.\.aiText\.fallbackModels\(\)\]/.test(hubGen)
+          && !/letterFallbacks|LETTER_FALLBACKS/.test(hubC) && !/writing\(\)|\bmodelConfig\s*:/.test(hubGen), hubGen.slice(0, 400));
       ok('⚠️ …and the AI runs BEFORE the charge in the worker and in bulk (writeLegacyLetter before withUsageLock)',
         work.indexOf('writeLegacyLetter(') > 0 && work.indexOf('writeLegacyLetter(') < work.indexOf('withUsageLock(')
           && bulk.indexOf('writeLegacyLetter(') > 0 && bulk.indexOf('writeLegacyLetter(') < bulk.indexOf('withUsageLock('), { work: [work.indexOf('writeLegacyLetter('), work.indexOf('withUsageLock(')], bulk: [bulk.indexOf('writeLegacyLetter('), bulk.indexOf('withUsageLock(')] });
@@ -2126,8 +2207,6 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
       Object.assign(aiText._internals.settings, saved.settings);
       aiText.generateText = saved.gen;
       if (saved.fallbackEnv === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = saved.fallbackEnv;
-      if (saved.writingEnv === undefined) delete process.env.AI_WRITING_MODEL; else process.env.AI_WRITING_MODEL = saved.writingEnv;
-      if (saved.writingFbEnv === undefined) delete process.env.AI_WRITING_FALLBACK_MODELS; else process.env.AI_WRITING_FALLBACK_MODELS = saved.writingFbEnv;
       if (saved.asyncEnv === undefined) delete process.env.USE_ASYNC_JOBS; else process.env.USE_ASYNC_JOBS = saved.asyncEnv;
       if (hadGenai) require.cache[genaiPath] = hadGenai; else delete require.cache[genaiPath];
       if (hadAn) require.cache[anPath] = hadAn; else delete require.cache[anPath];

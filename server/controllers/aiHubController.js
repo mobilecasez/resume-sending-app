@@ -4680,14 +4680,17 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
 
         console.log(`[aiHub] Generating cover letter for job "${job.title}" at "${employer?.name}"`);
         // ⚠️ THROUGH aiText, like every other paid letter (2026-09-18: a 503 "high demand" spike failed Home's
-        // Amazon letter on its one model). It waits, retries the primary once, then walks the measured document
-        // chain (aiText.writing — cost first at equal quality) — all BEFORE the charge below, so a letter no model
-        // could write costs nothing.
+        // Amazon letter on its one model). It waits, retries the primary once, then walks the verified fallback
+        // chain — all BEFORE the charge below, so a letter no model could write costs nothing. GEMINI_FLASH_MODEL
+        // stays the primary (it is env-overridable here, and the fallbacks follow it).
+        // ⚠️ THE LETTER CHAIN, NOT aiText.writing() (reverted 2026-09-18, the same day): the measured writing chain was
+        // evaluated on Home's old letter prompt only. Every letter lane stays on [its gemini-2.5-flash, ...fallbackModels()]
+        // until letters are measured on it; the résumé lanes keep writing() (see coverLetterController LEGACY_LETTER_MODEL).
         const { text: coverLetterText, model: writtenBy } = await aiText.generateText({
             lane: 'job_hub_letter',
             prompt,
             config: {},
-            ...aiText.writing(),
+            models: [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()],
         });
         // An empty answer is not a letter, and must never be the thing a unit is spent on.
         if (!coverLetterText) throw new Error('AI_EMPTY_OUTPUT');
@@ -4744,7 +4747,7 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
             // What the letter was actually written FROM. An admin checking "is this working" needs
             // to see the inputs, because a bland letter is usually a thin résumé, not a bad prompt.
             inputs: adminTest ? {
-                // Which model actually wrote it — the one way to confirm, in production and for free, what the document
+                // Which model actually wrote it — the one way to confirm, in production and for free, what the letter
                 // chain is using right now (aiText logs only retries and fallbacks). Admin tests only.
                 model: writtenBy || null,
                 resume_chars: resumeText.length,

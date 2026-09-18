@@ -10,6 +10,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext, useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { API_BASE } from '../config';
+// The shared bottom-menu fill + inactive ink (FloatingTabBar's header says why: translucent, and darker ink to stay legible).
+import { TAB_BAR_FILL, TAB_BAR_INK } from './FloatingTabBar';
 import { regionFromCountry, bestRegion, employerAddress, fmtLocation, REGION_OPTIONS, RESUME_REGION_OPTIONS, regionLabel } from '../regionUtils';
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
@@ -954,12 +956,12 @@ export default function ReviewScreen({
         <View style={rStyles.tabBar}>
           {/* Home */}
           <TouchableOpacity style={rStyles.tab} onPress={() => setScreen('dashboard')} activeOpacity={0.7}>
-            <Ionicons name="home-outline" size={20} color={T.textFaint} />
+            <Ionicons name="home-outline" size={20} color={TAB_BAR_INK} />
             <Text style={rStyles.tabLabel}>Home</Text>
           </TouchableOpacity>
           {/* Jobs */}
           <TouchableOpacity style={rStyles.tab} onPress={() => { try { require('expo-router').router?.push?.('/(ai-hub)'); } catch (_) {} }} activeOpacity={0.7}>
-            <Ionicons name="briefcase-outline" size={20} color={T.textFaint} />
+            <Ionicons name="briefcase-outline" size={20} color={TAB_BAR_INK} />
             <Text style={rStyles.tabLabel}>Jobs</Text>
           </TouchableOpacity>
           {/* Letters — ACTIVE */}
@@ -971,7 +973,7 @@ export default function ReviewScreen({
           </LinearGradient>
           {/* Me */}
           <TouchableOpacity style={rStyles.tab} onPress={() => setScreen('profile')} activeOpacity={0.7}>
-            <Ionicons name="person-outline" size={20} color={T.textFaint} />
+            <Ionicons name="person-outline" size={20} color={TAB_BAR_INK} />
             <Text style={rStyles.tabLabel}>Me</Text>
           </TouchableOpacity>
         </View>
@@ -1505,9 +1507,10 @@ const rStyles = StyleSheet.create({
 
   // Tab bar
   tabWrapper:     { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 20, paddingBottom: 28, paddingTop: 8, backgroundColor: 'transparent' },
-  tabBar:         { flexDirection: 'row', alignItems: 'center', backgroundColor: T.surface, borderRadius: 28, paddingVertical: 8, paddingHorizontal: 8, gap: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.14, shadowRadius: 24, elevation: 12 },
+  // A little translucent, like FloatingTabBar: the page shows through faintly under the menu.
+  tabBar:         { flexDirection: 'row', alignItems: 'center', backgroundColor: TAB_BAR_FILL, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.9)', borderRadius: 28, paddingVertical: 8, paddingHorizontal: 8, gap: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.14, shadowRadius: 24, elevation: 12 },
   tab:            { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, paddingVertical: 6 },
-  tabLabel:       { fontSize: 10, fontWeight: '600', color: T.textFaint, letterSpacing: -0.1 },
+  tabLabel:       { fontSize: 10, fontWeight: '600', color: TAB_BAR_INK, letterSpacing: -0.1 },
   tabActive:      { flex: 1, borderRadius: 22 },
   tabActiveInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 12 },
   tabActiveLabel: { fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },

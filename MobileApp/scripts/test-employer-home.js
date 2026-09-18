@@ -623,6 +623,112 @@ ok('everything is inside the backdrop — library, dashboard link and the tab ba
 // gradient starts from — so a sibling at the foot would be a hard step back to dark.
 ok('…and the root is that same starting colour, for the bounce at the top',
   /root: \{ flex: 1, backgroundColor: E\.stage \}/.test(homeC));
+
+// ⚠️ THE HOME-INDICATOR STRIP (2026-09-18): "why there is a bottom white small area on the home page".
+// HomeScreen keeps its BOTTOM safe-area edge for Home (pinned above), so the last insets.bottom points of
+// the screen were that wrapper's light padding under the menu — and the page stopped dead on top of it,
+// slicing the Tailor button so its blue and violet ends peeked out either side of the pill. The page now
+// hangs into that strip instead; these pin the pairing and that nothing measured from the top moved.
+console.log('── ⚠️ THE PAGE RUNS TO THE BOTTOM EDGE: no light band under the menu (2026-09-18) ──');
+ok('the bleed is exactly the bottom inset the wrapper pads with', /const footBleed = insets\.bottom;/.test(homeC));
+ok('⚠️ …and it is PAIRED with that padding: HomeScreen still pads the bottom for Home, and the scroll view hangs into it',
+  /: \['left', 'right', 'bottom'\]\}/.test(hsC) && /style=\{\[s\.scroll, \{ marginBottom: -footBleed \}\]\}/.test(homeC));
+ok('…the ROOT does not move, so the fold, the Tailor hint and the pinned header keep their geometry',
+  /root: \{ flex: 1, backgroundColor: E\.stage \}/.test(homeC) && /const foldY = \(rootH \|\| 0\) - FOLD_ALLOW;/.test(homeC)
+  && /<View style=\{s\.root\} onLayout=/.test(homeC));
+ok('the scroll view paints the stage itself, so a bounce at the foot never shows the wrapper\'s grey in the strip',
+  /scroll: \{ flex: 1, backgroundColor: E\.stage \}/.test(homeC));
+ok('a short page still fills the strip: the stage is at least the viewport plus the bleed',
+  /const stageMinH = Math\.max\(stageH, \(rootH \|\| 700\) \+ footBleed\);/.test(homeC)
+  && /<MeshStage style=\{\{ minHeight: stageMinH, paddingTop: headerH \}\}/.test(homeC));
+ok('⚠️ the page still ENDS where it did: a bleed-high spacer under the tail, inside the backdrop — counted once',
+  homeC.indexOf('style={s.tail}') > 0
+  && homeC.indexOf('style={s.tail}') < homeC.indexOf('style={{ height: footBleed }}')
+  && homeC.indexOf('style={{ height: footBleed }}') < homeC.indexOf('</MeshStage>')
+  && !/minHeight: stageH \+ footBleed/.test(homeC));
+
+console.log('── ⚠️ THE MENU IS A LITTLE TRANSLUCENT, AND ITS LABELS GOT DARKER TO PAY FOR IT (2026-09-18) ──');
+{
+  const tabBar = R('../components/FloatingTabBar.js');
+  const tabC = strip(tabBar);
+  const fill = (tabC.match(/export const TAB_BAR_FILL = 'rgba\(255,255,255,(0?\.\d+)\)'/) || [])[1];
+  const ink = (tabC.match(/export const TAB_BAR_INK = '#([0-9A-Fa-f]{6})'/) || [])[1];
+  const a = Number(fill);
+  // 2026-09-18, on the simulator: at 86% the page's own TEXT read clearly through the pill, behind the labels. A little
+  // transparent means a faint tint — so the band is 91-95%: see-through, not a slab, and never text-through.
+  ok('the pill is white at 91-95%: a faint tint, not a slab, and not so thin the page\'s text reads through', a >= 0.91 && a <= 0.95, fill);
+  ok('…drawn with that fill', /surface:\s+TAB_BAR_FILL/.test(tabC) && /backgroundColor: T\.surface/.test(tabC));
+  ok('…and not with a BlurView (it samples badly over a scrolling page on Android)', !/expo-blur|BlurView/.test(tabC));
+  // WCAG contrast of the inactive label on the fill, composited over the darkest page it floats on and over white.
+  const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const L = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  const ratio = (x, y) => { const p = L(x), q = L(y); return (Math.max(p, q) + 0.05) / (Math.min(p, q) + 0.05); };
+  const over = (bg) => bg.map((c) => Math.round(a * 255 + (1 - a) * c));
+  const inkRgb = ink ? [0, 2, 4].map((i) => parseInt(ink.slice(i, i + 2), 16)) : [255, 255, 255];
+  const onDark = ratio(inkRgb, over([7, 10, 24]));        // E.stage, the near-black Home
+  const onLight = ratio(inkRgb, over([248, 250, 252]));   // the light screens
+  const before = ratio([136, 150, 176], [255, 255, 255]); // the old #8896B0 on the old OPAQUE white
+  ok('⚠️ every inactive label is MORE legible than before, even on the fill over the near-black Home',
+    onDark >= 3.5 && onDark > before && onLight > before, { onDark: onDark.toFixed(2), onLight: onLight.toFixed(2), before: before.toFixed(2) });
+  ok('the active tab is still the opaque blue gradient with white on it',
+    /colors=\{\[T\.blue, T\.blueDeep\]\}/.test(tabC) && /activeLabel: \{[^}]*color: '#fff'/.test(tabC));
+}
+
+// ⚠️ A SHARP PAGE THAT STILL ZOOMED SOFT (2026-09-18). The server now ships 3x pages (2382 px, PREVIEW_REV hd1),
+// but expo-image cuts every bitmap to its FRAME × screen scale unless told not to (allowDownscaling, default
+// true) — CARD_W on a 3x phone is 1107 px — and the pinch is a ScrollView transform on that frame, so the
+// zoom enlarged the cut copy exactly as it had enlarged the old 1x page. Read from the AST, not a regex: EVERY
+// Image inside a zoomable ScrollView must carry the prop, and the prop is evaluated for the page on screen,
+// its neighbour and Android — an Image added to a zoomed pager later without it fails here by construction.
+console.log('── ⚠️ THE LETTER PAGE BEING ZOOMED IS DECODED AT FULL SIZE, ITS NEIGHBOURS ARE NOT (2026-09-18) ──');
+{
+  const letterGal = R('../app/(cover-letter)/templates.tsx');
+  const ast = parser.parse(letterGal, { sourceType: 'module', plugins: ['jsx', 'typescript'] });
+  const tag = (el) => el.openingElement.name && el.openingElement.name.name;
+  const attrOf = (el, n) => el.openingElement.attributes.find((a) => a.type === 'JSXAttribute' && a.name.name === n);
+  const zoomed = [];                   // { el, index } — every Image under a ScrollView with maximumZoomScale
+  const walk = (node, inZoom, index) => {
+    if (Array.isArray(node)) { node.forEach((n) => walk(n, inZoom, index)); return; }
+    if (!node || typeof node.type !== 'string') return;
+    // The pager's `.map((slot, i) => …)` names the page index the prop must compare with `active`.
+    if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.property.name === 'map'
+      && node.arguments[0] && /Function/.test(node.arguments[0].type)) {
+      const p = node.arguments[0].params[1];
+      index = p && p.type === 'Identifier' ? p.name : null;
+    }
+    if (node.type === 'JSXElement') {
+      if (tag(node) === 'ScrollView' && attrOf(node, 'maximumZoomScale')) inZoom = true;
+      if (tag(node) === 'Image' && inZoom) zoomed.push({ el: node, index });
+    }
+    for (const k of Object.keys(node)) {
+      if (k === 'loc' || k === 'leadingComments' || k === 'trailingComments' || k === 'innerComments') continue;
+      const v = node[k];
+      if (v && typeof v === 'object') walk(v, inZoom, index);
+    }
+  };
+  walk(ast.program, false, null);
+  ok('both pagers are found: the doc pager and the classic one each zoom exactly one Image', zoomed.length === 2, zoomed.length);
+  const exprs = zoomed.map(({ el, index }) => {
+    const a = attrOf(el, 'allowDownscaling');
+    const e = a && a.value && a.value.type === 'JSXExpressionContainer' ? a.value.expression : null;
+    return { index, src: e ? letterGal.slice(e.start, e.end) : null };
+  });
+  ok('⚠️ every zoomable Image says allowDownscaling (the default cut the 3x page to the frame)',
+    exprs.length === 2 && exprs.every((x) => !!x.src), exprs);
+  // The prop as a function of the page index, `active` and the platform switch — run, not pattern-matched.
+  const run = (x, idx, active, ios) => {
+    try { return new Function(x.index || 'i', 'active', 'FULL_RES_ZOOM', 'return (' + x.src + ');')(idx, active, ios); }
+    catch (e) { return 'threw: ' + e.message; }
+  };
+  ok('⚠️ iOS: the page on screen keeps every pixel (allowDownscaling false)',
+    exprs.length === 2 && exprs.every((x) => x.src && x.index && run(x, 3, 3, true) === false), exprs.map((x) => x.src && run(x, 3, 3, true)));
+  ok('…and its neighbours are still cut to the frame, so a gallery of pages is not a gallery of 32 MB bitmaps',
+    exprs.length === 2 && exprs.every((x) => x.src && run(x, 2, 3, true) === true && run(x, 4, 3, true) === true && run(x, 0, 3, true) === true));
+  ok('Android (no pinch there — maximumZoomScale is iOS-only) keeps the default on every page',
+    exprs.length === 2 && exprs.every((x) => x.src && run(x, 3, 3, false) === true && run(x, 2, 3, false) === true));
+  ok('the switch is the platform, read once at module scope', /\nconst FULL_RES_ZOOM = Platform\.OS === 'ios';/.test(strip(letterGal)));
+  ok('the reason is written where the constant lives', /THE PAGE BEING LOOKED AT DECODES AT FULL SIZE/.test(letterGal));
+}
 ok('the page opens toward a lighter navy instead of ending on white', /const LIFT = /.test(meshC) && /lift\(0\)/.test(meshC));
 // ⚠️ `transparent` is transparent BLACK. Interpolating to it drags the midpoint toward dark and
 // leaves a muddy band — the artefact that made the old seam visible in the first place.
@@ -2001,6 +2107,248 @@ console.log('── ⚠️ THE LIBRARY IS A SHELF OF PAPER CARDS, TINTED LIKE TH
     /brand: \{ accent: '#00205b', font: \{ family: 'Inter', google: true \} \}/.test(previewSrc) && /brand: \{ accent: '#e4003a', font: null \}/.test(previewSrc));
 }
 
+// ⚠️ THE RÉSUMÉ GALLERY ZOOMED SOFT FOR THE SAME REASON THE LETTER GALLERY DID (2026-09-18). Its pager pinch-zooms
+// a 3x page too, and expo-image cut that page to the frame (allowDownscaling defaults to true) before the zoom ever
+// saw it. The fix is the letter gallery's rule, so it is pinned the same way — read from the AST, the prop RUN over
+// the page on screen, its neighbours and Android — and then held against both letter pagers, cell for cell: two
+// galleries that zoom the same kind of page must not disagree about which page is decoded at full size.
+console.log('── ⚠️ THE RÉSUMÉ PAGE BEING ZOOMED IS DECODED AT FULL SIZE, ITS NEIGHBOURS ARE NOT — THE LETTER RULE (2026-09-18) ──');
+{
+  const SKIP = new Set(['loc', 'start', 'end', 'extra', 'leadingComments', 'trailingComments', 'innerComments']);
+  // Every Image under a ScrollView that pinch-zooms, with the list and the index of the nearest `.map` that draws it.
+  const zoomables = (src) => {
+    const out = [];
+    let ast = null;
+    try { ast = parser.parse(src, { sourceType: 'module', plugins: ['jsx', 'typescript'] }); } catch { return out; }
+    const walk = (node, inZoom, loop) => {
+      if (Array.isArray(node)) { node.forEach((n) => walk(n, inZoom, loop)); return; }
+      if (!node || typeof node.type !== 'string') return;
+      if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && !node.callee.computed
+        && node.callee.property.name === 'map' && node.arguments[0] && /Function/.test(node.arguments[0].type)) {
+        const p = node.arguments[0].params[1];
+        loop = { list: src.slice(node.callee.object.start, node.callee.object.end), index: p && p.type === 'Identifier' ? p.name : null };
+      }
+      if (node.type === 'JSXElement') {
+        const name = node.openingElement.name.name;
+        const attrs = node.openingElement.attributes.filter((a) => a.type === 'JSXAttribute');
+        if (name === 'ScrollView' && attrs.some((a) => a.name.name === 'maximumZoomScale')) inZoom = true;
+        if (name === 'Image' && inZoom) {
+          const a = attrs.find((x) => x.name.name === 'allowDownscaling');
+          const e = a && a.value && a.value.type === 'JSXExpressionContainer' ? a.value.expression : null;
+          out.push({ list: loop ? loop.list : null, index: loop ? loop.index : null, expr: e ? src.slice(e.start, e.end) : null });
+        }
+      }
+      for (const k of Object.keys(node)) if (!SKIP.has(k) && node[k] && typeof node[k] === 'object') walk(node[k], inZoom, loop);
+    };
+    walk(ast.program, false, null);
+    return out;
+  };
+  // The prop as a function of (page index, active page, the platform switch), over one fixed table of cases:
+  // [the page on screen · iOS, the page before it, the page after it, the first page while page 3 is on screen,
+  //  the page on screen · Android, a neighbour · Android]. Run, never pattern-matched.
+  const CASES = [[3, 3, true], [2, 3, true], [4, 3, true], [0, 3, true], [3, 3, false], [2, 3, false]];
+  const tableOf = (z) => CASES.map(([idx, act, ios]) => {
+    if (!z || !z.expr) return 'no prop';
+    try { return new Function(z.index || '__noIndex', 'active', 'FULL_RES_ZOOM', 'return (' + z.expr + ');')(idx, act, ios); }
+    catch (e) { return 'threw: ' + e.message; }
+  });
+  const resumeGal = R('../app/(resume-builder)/templates.tsx');
+  const resumeGalC = strip(resumeGal);
+  const zr = zoomables(resumeGal);
+  const z = zr[0];
+  const t = tableOf(z);
+  ok('the résumé gallery zooms exactly one Image: the page inside its pager', zr.length === 1, zr);
+  ok('⚠️ …and that Image says allowDownscaling (the default cut the 3x page to the frame before the pinch saw it)', !!(z && z.expr), z);
+  const scrollEnd = fnBodyOf(resumeGalC, 'onScrollEnd');
+  ok('…compared against the page\'s OWN index: the (f, i) of visibleFams.map — the very list `active` is clamped to on every swipe',
+    !!z && z.list === 'visibleFams' && !!z.index
+    && /Math\.min\(raw, visibleFams\.length - 1\)/.test(scrollEnd) && /setActive\(idx\);/.test(scrollEnd), { list: z && z.list, index: z && z.index });
+  ok('⚠️ iOS: the résumé page on screen keeps every pixel (allowDownscaling false)', t[0] === false, t);
+  ok('…the pages either side of it, and one far away, are still cut to the frame (a 32 MB bitmap per page is not free)',
+    t[1] === true && t[2] === true && t[3] === true, t);
+  ok('Android (maximumZoomScale is iOS-only — nothing to zoom into) keeps the default on the page on screen and its neighbours',
+    t[4] === true && t[5] === true, t);
+  ok('the switch is the platform, read once at module scope, exactly as the letter gallery reads it',
+    /\nconst FULL_RES_ZOOM = Platform\.OS === 'ios';/.test(resumeGalC)
+    && /\nconst FULL_RES_ZOOM = Platform\.OS === 'ios';/.test(strip(R('../app/(cover-letter)/templates.tsx'))));
+  const zl = zoomables(R('../app/(cover-letter)/templates.tsx'));
+  ok('⚠️ …and it is the SAME rule as both letter pagers, case for case (one gallery sharp where the other is soft is the bug again)',
+    zl.length === 2 && zl.every((x) => JSON.stringify(tableOf(x)) === JSON.stringify(t)) && t[0] === false,
+    { resume: t, letters: zl.map(tableOf) });
+}
+
+// ⚠️ EVERY BOTTOM MENU IS THE SAME SEE-THROUGH PILL (2026-09-18). The menu is drawn in FOUR places: FloatingTabBar,
+// and three inline copies of it — Home's own, the Letters screen's (ReviewScreen) and the Jobs tab's JobHubTabBar.
+// Making only FloatingTabBar translucent left three tabs with the old opaque white slab and the old pale ink: the
+// menu visibly changed as you moved between tabs. So every colour is RESOLVED, not grepped: followed from the
+// element through its style sheet, its token object (T.surface, T.textFaint) and its import to the value it
+// paints with — and it must arrive THROUGH FloatingTabBar's exported TAB_BAR_FILL / TAB_BAR_INK. A copied hex, a
+// file's own T.surface, or an opaque white all fail, whatever a comment beside them says.
+console.log('── ⚠️ ALL FOUR BOTTOM MENUS WEAR THE SAME SEE-THROUGH PILL AND THE SAME DARKER INK (2026-09-18) ──');
+{
+  const SKIP = new Set(['loc', 'start', 'end', 'extra', 'leadingComments', 'trailingComments', 'innerComments']);
+  const loaded = new Map();
+  // A file's top-level bindings (plain, exported, functions) and its named imports.
+  const load = (abs) => {
+    if (loaded.has(abs)) return loaded.get(abs);
+    let f = null;
+    try {
+      const src = fs.readFileSync(abs, 'utf8');
+      const ast = parser.parse(src, { sourceType: 'module', plugins: ['jsx', 'typescript'] });
+      const top = new Map(), imports = new Map(), exported = new Set();
+      for (let st of ast.program.body) {
+        if (st.type === 'ImportDeclaration') {
+          for (const sp of st.specifiers) if (sp.type === 'ImportSpecifier') imports.set(sp.local.name, { from: st.source.value, name: sp.imported.name });
+          continue;
+        }
+        const isExport = st.type === 'ExportNamedDeclaration' && !!st.declaration;
+        if (isExport) st = st.declaration;
+        if (st.type === 'VariableDeclaration') {
+          for (const d of st.declarations) if (d.id.type === 'Identifier' && d.init) { top.set(d.id.name, d.init); if (isExport) exported.add(d.id.name); }
+        }
+        if (st.type === 'FunctionDeclaration' && st.id) top.set(st.id.name, st);
+      }
+      f = { abs, src, ast, top, imports, exported };
+    } catch { f = null; }
+    loaded.set(abs, f);
+    return f;
+  };
+  // A name → the node bound to it, in this file or across a relative import; every binding crossed goes on the trail.
+  const bind = (f, name, trail) => {
+    if (f.top.has(name)) { trail.push(f.abs + '#' + name); return { f, node: f.top.get(name) }; }
+    const im = f.imports.get(name);
+    if (!im || !im.from.startsWith('.')) return null;
+    const base = path.resolve(path.dirname(f.abs), im.from);
+    const file = ['', '.js', '.ts', '.tsx'].map((x) => base + x).find((p) => fs.existsSync(p) && fs.statSync(p).isFile());
+    const g = file && load(file);
+    if (!g || !g.exported.has(im.name)) return null;       // an import of something that file does not export binds to nothing
+    trail.push(g.abs + '#' + im.name);
+    return { f: g, node: g.top.get(im.name) };
+  };
+  const unwrap = (n) => { while (n && /^(TSAsExpression|TSSatisfiesExpression|TSNonNullExpression|ParenthesizedExpression)$/.test(n.type)) n = n.expression; return n; };
+  // The LAST property of a name wins, as it does at runtime.
+  const propOf = (obj, key) => {
+    let v = null;
+    for (const p of obj.properties) {
+      if (p.type === 'ObjectProperty' && !p.computed && ((p.key.type === 'Identifier' && p.key.name === key) || (p.key.type === 'StringLiteral' && p.key.value === key))) v = p.value;
+    }
+    return v;
+  };
+  // The object literal an expression names: a token object, StyleSheet.create({…}), or one entry of either.
+  const objOf = (f, n, trail) => {
+    n = unwrap(n);
+    if (!n) return null;
+    if (n.type === 'ObjectExpression') return { f, node: n };
+    if (n.type === 'Identifier') { const b = bind(f, n.name, trail); return b ? objOf(b.f, b.node, trail) : null; }
+    if (n.type === 'CallExpression' && n.callee.type === 'MemberExpression' && n.callee.object.name === 'StyleSheet' && n.callee.property.name === 'create') return objOf(f, n.arguments[0], trail);
+    if (n.type === 'MemberExpression' && !n.computed) { const o = objOf(f, n.object, trail); const p = o && propOf(o.node, n.property.name); return p ? objOf(o.f, p, trail) : null; }
+    return null;
+  };
+  // An expression → the colour string it paints with, and the trail of bindings it came through.
+  const valueOf = (f, n, trail) => {
+    n = unwrap(n);
+    if (n && n.type === 'StringLiteral') return { value: n.value, trail };
+    if (n && n.type === 'TemplateLiteral' && !n.expressions.length) return { value: n.quasis[0].value.cooked, trail };
+    if (n && n.type === 'Identifier') { const b = bind(f, n.name, trail); return b ? valueOf(b.f, b.node, trail) : { value: undefined, trail }; }
+    if (n && n.type === 'MemberExpression' && !n.computed) { const o = objOf(f, n.object, trail); const p = o && propOf(o.node, n.property.name); return p ? valueOf(o.f, p, trail) : { value: undefined, trail }; }
+    return { value: undefined, trail };
+  };
+  // One key of a `style={…}`: a sheet entry, an inline object, or an array of them — the last one that sets it wins.
+  const styleOf = (f, expr, key) => {
+    expr = unwrap(expr);
+    let out = { value: undefined, trail: [], node: null, f: null };
+    for (const part of (expr && expr.type === 'ArrayExpression' ? expr.elements : [expr])) {
+      const trail = [];
+      const o = objOf(f, part, trail);
+      const p = o && propOf(o.node, key);
+      if (p) out = { ...valueOf(o.f, p, trail), node: p, f: o.f };
+    }
+    return out;
+  };
+  const attrOf = (el, n) => {
+    const a = el.openingElement.attributes.find((x) => x.type === 'JSXAttribute' && x.name.name === n);
+    return !a || !a.value ? null : a.value.type === 'JSXExpressionContainer' ? a.value.expression : a.value;
+  };
+  const tagOf = (el) => (el.openingElement.name.type === 'JSXIdentifier' ? el.openingElement.name.name : null);
+  const walk = (node, visit, ctx) => {
+    if (Array.isArray(node)) { for (const x of node) walk(x, visit, ctx); return; }
+    if (!node || typeof node.type !== 'string') return;
+    const next = visit(node, ctx);
+    for (const k of Object.keys(node)) if (!SKIP.has(k) && node[k] && typeof node[k] === 'object') walk(node[k], visit, next);
+  };
+  // How much of the page a colour lets through: 1 = opaque. Anything this cannot read counts as OPAQUE.
+  const alphaOf = (c) => {
+    const s = String(c || '').trim().toLowerCase();
+    let m;
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(s)) return 1;
+    if ((m = s.match(/^#[0-9a-f]{6}([0-9a-f]{2})$/))) return parseInt(m[1], 16) / 255;
+    if ((m = s.match(/^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(\d*\.?\d+)\s*\)$/))) return Number(m[1]);
+    if (s === 'transparent') return 0;
+    return 1;
+  };
+
+  const TAB = path.join(__dirname, '../components/FloatingTabBar.js');
+  const tabF = load(TAB);
+  const FILL = tabF ? valueOf(tabF, tabF.top.get('TAB_BAR_FILL'), []).value : undefined;
+  const INK = tabF ? valueOf(tabF, tabF.top.get('TAB_BAR_INK'), []).value : undefined;
+  ok('FloatingTabBar EXPORTS the two values every other menu takes (TAB_BAR_FILL, TAB_BAR_INK)',
+    !!tabF && tabF.exported.has('TAB_BAR_FILL') && tabF.exported.has('TAB_BAR_INK') && !!FILL && !!INK, { FILL, INK });
+  const through = (r, name) => r.trail.includes(TAB + '#' + name);
+
+  const MENUS = [
+    { name: 'FloatingTabBar', file: '../components/FloatingTabBar.js', pill: 'styles.bar', inactive: 1 },
+    { name: 'HomeScreen (Home\'s own menu)', file: '../components/HomeScreen.js', pill: 'tabStyles.bar', inactive: 3 },
+    { name: 'ReviewScreen (the Letters menu)', file: '../components/ReviewScreen.js', pill: 'rStyles.tabBar', inactive: 3 },
+    { name: 'JobHubTabBar (the Jobs menu)', file: '../app/(ai-hub)/index.tsx', pill: 'tabStyles.bar', inactive: 1, inFn: 'JobHubTabBar' },
+  ];
+  const opaque = [];
+  for (const M of MENUS) {
+    const f = load(path.join(__dirname, M.file));
+    const scope = f && (M.inFn ? f.top.get(M.inFn) : f.ast.program);
+    if (!scope) { ok(M.name + ': the file parses and the menu is where it was', false, M.file); opaque.push(M.name); continue; }
+    // The pill: the one View whose style is that sheet entry.
+    const pills = [];
+    walk(scope, (n) => {
+      if (n.type === 'JSXElement' && tagOf(n) === 'View') {
+        const e = unwrap(attrOf(n, 'style'));
+        const parts = e && e.type === 'ArrayExpression' ? e.elements : [e];
+        if (parts.some((p) => p && f.src.slice(p.start, p.end) === M.pill)) pills.push(n);
+      }
+      return null;
+    }, null);
+    const pill = pills.length === 1 ? pills[0] : null;
+    const fill = pill ? styleOf(f, attrOf(pill, 'style'), 'backgroundColor') : { value: undefined, trail: [] };
+    ok(`${M.name}: its pill (${M.pill}) is painted with FloatingTabBar's TAB_BAR_FILL`,
+      !!pill && through(fill, 'TAB_BAR_FILL') && fill.value === FILL, { pills: pills.length, value: fill.value });
+    if (!pill || !(alphaOf(fill.value) < 1)) opaque.push(`${M.name} → ${fill.value}`);
+    // The hairline white rim that keeps the see-through pill's edge crisp over the dark Home.
+    const rimW = pill ? styleOf(f, attrOf(pill, 'style'), 'borderWidth') : {};
+    const rimC = pill ? styleOf(f, attrOf(pill, 'style'), 'borderColor') : {};
+    ok(`${M.name}: …with the hairline white rim that keeps its edge on a dark page`,
+      !!rimW.node && rimW.f.src.slice(rimW.node.start, rimW.node.end) === 'StyleSheet.hairlineWidth'
+      && /^rgba\(255,\s*255,\s*255,\s*0?\.\d+\)$/.test(String(rimC.value)), { width: rimW.node && rimW.f.src.slice(rimW.node.start, rimW.node.end), color: rimC.value });
+    // Inactive tabs: every icon and label in the pill that is NOT inside the active tab's gradient.
+    const icons = [], labels = [];
+    if (pill) {
+      walk(pill, (n, inActive) => {
+        if (n.type !== 'JSXElement') return inActive;
+        if (tagOf(n) === 'LinearGradient') return true;
+        if (!inActive && tagOf(n) === 'Ionicons') icons.push(n);
+        if (!inActive && tagOf(n) === 'Text') labels.push(n);
+        return inActive;
+      }, false);
+    }
+    const iconInk = icons.map((el) => valueOf(f, attrOf(el, 'color'), []));
+    const labelInk = labels.map((el) => styleOf(f, attrOf(el, 'style'), 'color'));
+    ok(`${M.name}: every inactive icon (${M.inactive}) is TAB_BAR_INK`,
+      icons.length === M.inactive && iconInk.every((r) => through(r, 'TAB_BAR_INK') && r.value === INK), iconInk.map((r) => r.value));
+    ok(`${M.name}: …and so is every inactive label (${M.inactive})`,
+      labels.length === M.inactive && labelInk.every((r) => through(r, 'TAB_BAR_INK') && r.value === INK), labelInk.map((r) => r.value));
+  }
+  ok('⚠️ none of the four still paints its pill with an opaque surface colour (every pill lets the page through)',
+    opaque.length === 0 && alphaOf(FILL) < 1, opaque);
+}
+
 /**
  * The image cache readers run for real: useTargetDoc.ts transpiled with a fake require — react's hooks as plain
  * functions (a deck built once, no re-render), the account fixed, fetchDocCards a spy. Proves the contract the
@@ -2067,6 +2415,113 @@ async function libraryPhase() {
   ok('…and the catalogue accent when the document has no brand', plain && plain[0].accent === '#0a7aa6' && plain[1].accent === '#111111', plain);
 }
 
+/**
+ * fetchDocCards, run for real (2026-09-18): employerDocs.ts transpiled with a fake require and a fetch SPY — the
+ * URL it builds is the whole contract. The letter gallery pinch-zooms to 3x, so it must get the full rendered page
+ * (size=page); a 480-px card zoomed 3x was the "very much blurry" report. Every other caller must still get the
+ * card — the page is several times the bytes, and Home's shelf and deck never zoom. And the gallery's OWN call is
+ * replayed through the real function, so "the gallery asks for it" is proven by the request, not by a regex.
+ */
+async function pageSizePhase() {
+  console.log('── ⚠️ THE LETTER GALLERY GETS THE FULL PAGE (size=page); EVERY OTHER CALLER STILL GETS THE CARD (2026-09-18) ──');
+  const urls = [];
+  const spyFetch = async (url) => {
+    urls.push(String(url));
+    return { status: 200, ok: true, json: async () => ({ cards: [{ id: 'ats_pro', name: 'ATS Pro', image: 'https://img.test/ats_pro.webp' }] }) };
+  };
+  const fakeReq = (id) => {
+    if (id === 'expo-secure-store') return { getItemAsync: async () => JSON.stringify({ token: 'tok-1' }) };
+    if (/(^|\/)config$/.test(id)) return { API_BASE: 'https://api.test' };
+    if (/homeAddEmployer/.test(id)) return { signedInAccount: async () => 'acct-1' };
+    if (/employerHomeService/.test(id)) return { deviceHeaders: async () => ({}), cachedJobListing: () => null, cleanJobUrl: (u) => u, keepJobListings: () => {} };
+    return {};
+  };
+  let D = null;
+  try {
+    const js = ts.transpileModule(docSvcSrc, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText;
+    const m = { exports: {} };
+    // `fetch` is a parameter, so the module's global fetch is the spy — nothing here can reach a real network.
+    new Function('module', 'exports', 'require', 'fetch', js)(m, m.exports, fakeReq, spyFetch);
+    D = m.exports;
+  } catch (e) { ok('employerDocs.ts loads under a fake require and a fetch spy', false, String(e.message).split('\n')[0]); return; }
+  ok('employerDocs.ts loads under a fake require and a fetch spy', typeof D.fetchDocCards === 'function');
+  if (typeof D.fetchDocCards !== 'function') return;
+  // One call → the single request it made (path + query), and what it answered.
+  const ask = async (...args) => {
+    urls.length = 0;
+    let r = null;
+    try { r = await D.fetchDocCards(...args); } catch (e) { r = 'threw: ' + e.message; }
+    const u = urls.length === 1 ? new URL(urls[0]) : null;
+    return { n: urls.length, path: u && u.pathname, q: u ? u.searchParams : new URLSearchParams(), r };
+  };
+  const brief = (x) => ({ n: x.n, path: x.path, query: String(x.q) });
+
+  const page = await ask('cover_letter', 42, ['ats_pro', 'german'], { size: 'page' });
+  ok('⚠️ a letter asked for the page: ONE request to /cover-letter/employer-cards carrying size=page, once',
+    page.n === 1 && page.path === '/cover-letter/employer-cards' && page.q.getAll('size').join() === 'page', brief(page));
+  ok('…the document and the ids ride with it unchanged, and the page comes back as cards',
+    page.q.get('doc') === '42' && page.q.get('ids') === 'ats_pro,german'
+    && page.r && Array.isArray(page.r.cards) && page.r.cards[0].id === 'ats_pro' && page.r.cards[0].image === 'https://img.test/ats_pro.webp',
+    { query: String(page.q), r: page.r });
+  const plain = await ask('cover_letter', 42, ['ats_pro']);
+  const empty = await ask('cover_letter', 42, ['ats_pro'], {});
+  const card = await ask('cover_letter', 42, ['ats_pro'], { size: 'card' });
+  ok('⚠️ a letter NOT asking (no options, empty options, size: \'card\') gets the 480-px card: no size in the query at all',
+    [plain, empty, card].every((x) => x.n === 1 && x.path === '/cover-letter/employer-cards' && !x.q.has('size') && x.q.get('doc') === '42'),
+    [plain, empty, card].map(brief));
+  const resume = await ask('resume', 42, ['classic'], { size: 'page' });
+  ok('⚠️ a RÉSUMÉ asking for the page gets no size=page (only letters have a page/card split on the server)',
+    resume.n === 1 && resume.path === '/resume-builder/home-cards' && !resume.q.has('size') && resume.q.get('ids') === 'classic', brief(resume));
+
+  // The letter gallery's own call, replayed: its kind and its options object, exactly as written, into the real function.
+  const galSrc = R('../app/(cover-letter)/templates.tsx');
+  const calls = [];
+  try {
+    const ast = parser.parse(galSrc, { sourceType: 'module', plugins: ['jsx', 'typescript'] });
+    const SKIP = new Set(['loc', 'start', 'end', 'extra', 'leadingComments', 'trailingComments', 'innerComments']);
+    const walk = (node) => {
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+      if (!node || typeof node.type !== 'string') return;
+      if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'fetchDocCards') calls.push(node);
+      for (const k of Object.keys(node)) if (!SKIP.has(k) && node[k] && typeof node[k] === 'object') walk(node[k]);
+    };
+    walk(ast.program);
+  } catch {}
+  const replays = [];
+  for (const c of calls) {
+    const kind = c.arguments[0] && c.arguments[0].type === 'StringLiteral' ? c.arguments[0].value : null;
+    let opts;
+    try { opts = c.arguments[3] ? new Function('return (' + galSrc.slice(c.arguments[3].start, c.arguments[3].end) + ');')() : undefined; }
+    catch (e) { opts = 'unreadable: ' + e.message; }
+    const x = await ask(kind, 42, ['ats_pro'], opts);
+    replays.push({ kind, opts, ...brief(x), size: x.q.get('size') });
+  }
+  ok('⚠️ the letter gallery\'s every fetchDocCards call, replayed through the real function, reaches the server with size=page',
+    calls.length >= 1 && replays.every((x) => x.kind === 'cover_letter' && x.n === 1 && x.path === '/cover-letter/employer-cards' && x.size === 'page'),
+    { calls: calls.length, replays });
+
+  // …and nobody else: the app's own sources, comments stripped. `size: 'page'` only in the letter gallery, and the
+  // literal `size=page` only where fetchDocCards builds it.
+  const ROOTS = ['app', 'components', 'services', 'hooks', 'utils', 'constants'];
+  const sources = [];
+  const collect = (dir) => {
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== 'node_modules') collect(p); }
+      else if (/\.(js|jsx|ts|tsx)$/.test(e.name)) sources.push(p);
+    }
+  };
+  for (const r of ROOTS) collect(path.join(__dirname, '..', r));
+  const rel = (p) => path.relative(path.join(__dirname, '..'), p);
+  const asksPage = sources.filter((p) => /\bsize\s*:\s*['"]page['"]/.test(strip(fs.readFileSync(p, 'utf8')))).map(rel);
+  const buildsPage = sources.filter((p) => /size=page/.test(strip(fs.readFileSync(p, 'utf8')))).map(rel);
+  ok('⚠️ only the letter gallery asks for the page — Home\'s deck, shelf and warm (which never zoom) still get the card',
+    sources.length > 20 && asksPage.length === 1 && asksPage[0] === path.join('app', '(cover-letter)', 'templates.tsx'), asksPage);
+  ok('…and size=page is built in exactly one place: fetchDocCards', buildsPage.length === 1 && buildsPage[0] === path.join('services', 'employerDocs.ts'), buildsPage);
+}
+
 let deviceDone = false;
 function devicePhaseDone() { deviceDone = true; }
 (async () => {
@@ -2074,6 +2529,7 @@ function devicePhaseDone() { deviceDone = true; }
   if (!deviceDone) ok('the device harness finished', false);
   await reportPhase();
   await libraryPhase();
+  await pageSizePhase();
   console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

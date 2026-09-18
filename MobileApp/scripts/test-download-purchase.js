@@ -179,7 +179,7 @@ ok('the letter gallery sends the docId in doc mode (and exactly the classic body
 ok('…a 410 in doc mode is "no longer saved"', /if \(docId && res\.status === 410\)/.test(let_) && /no longer saved/.test(letSrc));
 ok('⚠️ a stashed picker context is trusted only when it is THIS document\'s', /if \(c && docIdOf\(c\.docId\) === did\) setCtx\(c\);/.test(let_));
 ok('…and once the document loads, the billed employer IS the document\'s', /employer: d\.employer \|\| undefined, docId: did/.test(let_));
-ok('the saved letter\'s pages come from its own cards endpoint', /fetchDocCards\('cover_letter', did, batch\)/.test(let_));
+ok('the saved letter\'s pages come from its own cards endpoint — the FULL page, since the pager zooms', /fetchDocCards\('cover_letter', did, batch, \{ size: 'page' \}\)/.test(let_));
 ok('Home hands the letter picker the saved letter with its docId, and stops if the write fails',
   /AsyncStorage\.setItem\('coverLetterPickerContext', JSON\.stringify\(\{[\s\S]{0,300}docId: full\.docId,/.test(home)
   && /params: \{ \.\.\.\(templateId \? \{ template: templateId \} : \{\}\), docId: String\(full\.docId\) \}/.test(home));

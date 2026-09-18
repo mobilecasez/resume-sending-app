@@ -518,15 +518,20 @@ export function matchDocToTarget(list: DocListItem[], t: Target, kind: DocKind):
  * Rendered pages for some designs of one document. 'gone' = the server says the document no longer
  * exists; null = no usable answer (keep what is shown, try again later).
  * ⚠️ Rendering is serial on the server — callers ask for a few ids at a time, never the catalogue.
+ * `size: 'page'` asks for the FULL rendered page (a letter: 794 px x 3 density, WebP) instead of the 480-px card.
+ * ⚠️ A screen that lets the user ZOOM must ask for the page (2026-09-18: the letter gallery pinch-zoomed a 480-px card
+ * to 3x — "very much blurry"). A screen that only shows a card must not: the page is several times the bytes.
  */
-export async function fetchDocCards(kind: DocKind, docId: number, ids: string[]):
+export async function fetchDocCards(kind: DocKind, docId: number, ids: string[], opts: { size?: 'page' | 'card' } = {}):
   Promise<{ cards: DocCard[] } | 'gone' | null> {
   const id = docIdOf(docId);
   if (!id || !kindOf(kind)) return null;
   const owner = await claimDocs();
   if (!owner.who) return null;
   const want = (Array.isArray(ids) ? ids : []).map((x) => String(x || '').trim()).filter(Boolean);
-  const q = `doc=${id}${want.length ? `&ids=${encodeURIComponent(want.join(','))}` : ''}`;
+  // Only letters have a page/card split on the server today (the résumé gallery reads its pages elsewhere).
+  const size = kind === 'cover_letter' && opts && opts.size === 'page' ? '&size=page' : '';
+  const q = `doc=${id}${want.length ? `&ids=${encodeURIComponent(want.join(','))}` : ''}${size}`;
   const path = kind === 'cover_letter' ? `/cover-letter/employer-cards?${q}` : `/resume-builder/home-cards?${q}`;
   const r = await call(path, { ms: 60000 });
   if (!r) return null;

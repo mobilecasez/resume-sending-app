@@ -67,6 +67,84 @@ function isFontRequest(url) {
 }
 const isAllowedRequest = (url) => String(url || '').startsWith('data:') || isFontRequest(url);
 
+// ── Preview density + format: PREVIEW_REV ────────────────────────────────────────────────────────────
+// ⚠️ THE GALLERY PAGE WAS A 1x JPEG ON A 3x PHONE. Previews were captured at the 794-px CSS width with the
+// default deviceScaleFactor 1 (JPEG q82), while the app draws the page CARD_W = window − 24 pt wide — 369 pt
+// on a 393-pt iPhone, 1107 physical px — and lets the user pinch to 3x. The source was upscaled 1.4x on the
+// first frame and dissolved under the pinch (field report 2026-09-18: "not crystal clear, very blurry on
+// zoom… specially for cover letter" — small serif letter text is where an upscale shows first).
+// So previews are rendered at PREVIEW_DPR device pixels per CSS pixel (Playwright deviceScaleFactor on the
+// preview page — never a wider CSS viewport, which would reflow the design) and shipped as WebP.
+// MEASURED 2026-09-18 (chromium 1223, sharp 0.34.5 / libwebp 1.6; a 1-page résumé, a 1.8-page one and two
+// letters; SSIM against chromium's own rendering AT the 2x-zoom display density, 2214 px across the page):
+//   density 1x (the old page) 0.72–0.78 · 2x 0.87 · 2.5x 0.81–0.88 · 3x 0.96–0.97 — only 3x (2382 px) covers
+//   2x zoom on a 3x phone (2214 px) without an upscale.
+//   bytes per A4 page at 3x, as base64: chromium JPEG q82 600–880 KB · mozjpeg q80 400–630 · WebP q80 300–390
+//   (SSIM equal to the JPEG's within 0.003) — WebP is the only format that fits PREVIEW_BUDGET at 3x.
+//   quality is nearly free on text at 3x (WebP q80 → q50: SSIM −0.002, bytes −28%); density is not (3x → 2.5x
+//   −0.08) — so a page too heavy for the budget gives up quality first and density only after (PREVIEW_LADDER).
+// ⚠️ PREVIEW_REV NAMES ALL OF THAT. Every cache key that stores a rendered preview page or a card derived
+// from one includes it (resumeBuilderController: previewFile / cachedThumb / docPageNameOf; the letter
+// controllers' keys for coverLetterRenderer's pages), so a page rendered before a change of density, format
+// or ladder is never served again — the old files are simply never asked for, and age out through each
+// cache's own LRU. Change any of the constants below → bump PREVIEW_REV. coverLetterRenderer mirrors this
+// block and must carry the same values (test-preview-sharpness.js holds the two together).
+const PREVIEW_REV = 'hd1';
+const PREVIEW_DPR = 3;
+const PREVIEW_FORMAT = 'webp';
+const PREVIEW_BUDGET = 450 * 1024;       // one page's base64 payload — the gallery fetches pages 3 to a request
+const WEBP_MAX_PX = 16383;               // libwebp's hard limit on either side
+// Best first. `bytes` is the rung's measured size against the first rung's (same page, same capture), so a
+// rung that cannot fit is skipped without paying its encode; the last rung (2x — still twice the old page)
+// is the floor and is served whatever it weighs. Only pages longer than ~1.4 A4 ever leave the first rung.
+const PREVIEW_LADDER = [
+  { scale: 1,       quality: 80, bytes: 1 },
+  { scale: 1,       quality: 50, bytes: 0.72 },
+  { scale: 2.5 / 3, quality: 50, bytes: 0.56 },
+  { scale: 2 / 3,   quality: 50, bytes: 0.43 },
+];
+const b64Len = (n) => Math.ceil(n / 3) * 4;
+
+/**
+ * One captured page (chromium's JPEG q82 at PREVIEW_DPR) → { image: data URI, width, height } in the IMAGE's pixels:
+ * WebP, down PREVIEW_LADDER until the payload fits PREVIEW_BUDGET. Never throws: without sharp — or on bytes it cannot
+ * read, or when not one rung can encode — the capture itself is served (a JPEG at the same density: heavier, just as
+ * sharp). Runs OUTSIDE the warm lock — it needs no page — so the next design's render proceeds while this one encodes.
+ */
+async function encodePreview(capture, cssW, cssH) {
+  try {
+    const sharp = require('sharp');
+    const { data, info } = await sharp(capture).raw().toBuffer({ resolveWithObject: true });   // decoded once, for every rung
+    // ⚠️ A page past ~4.9 A4 at 3x is taller than WebP can hold (16383 px a side), so every rung is also bounded by
+    // HEIGHT — never by a width derived from it: Math.round(width × 16383 / height) rounds UP about half the time,
+    // the height sharp derives back from that width lands on 16384–16386, and the encode throws (measured: a 26697-px
+    // page at 1462 px across → 16386). `fit: 'inside'` makes the binding side exact and the other one smaller.
+    const tall = info.height > WEBP_MAX_PX;
+    let out = null;
+    let first = 0;
+    for (let i = 0; i < PREVIEW_LADDER.length; i++) {
+      const rung = PREVIEW_LADDER[i];
+      const floor = i === PREVIEW_LADDER.length - 1;
+      if (out && !floor && first * rung.bytes > PREVIEW_BUDGET * 1.1) continue;               // predicted to miss: skip the encode
+      let pipe = sharp(data, { raw: info });
+      if (rung.scale < 1 || tall) {
+        pipe = pipe.resize({ width: Math.min(Math.round(info.width * rung.scale), WEBP_MAX_PX), height: WEBP_MAX_PX, fit: 'inside', kernel: 'lanczos3' });
+      }
+      // One rung that cannot encode falls through to the next — never straight to the raw capture (a 3x JPEG of
+      // several MB, outside any budget, that the caches would then keep and serve on every gallery open).
+      let enc;
+      try { enc = await pipe.webp({ quality: rung.quality, effort: 4 }).toBuffer({ resolveWithObject: true }); } catch { continue; }
+      out = enc;
+      if (!first) first = b64Len(out.data.length);
+      if (b64Len(out.data.length) <= PREVIEW_BUDGET) break;
+    }
+    if (!out) throw new Error('no rung encoded');                                             // → the capture, below
+    return { image: `data:image/webp;base64,${out.data.toString('base64')}`, width: out.info.width, height: out.info.height };
+  } catch {
+    return { image: `data:image/jpeg;base64,${capture.toString('base64')}`, width: Math.round(cssW * PREVIEW_DPR), height: Math.round(cssH * PREVIEW_DPR) };
+  }
+}
+
 async function launchBrowser(extraArgs = []) {
   const { chromium } = require('playwright');
   const { launchChromium } = require('./browserLimit');
@@ -130,7 +208,7 @@ async function getWarmPage() {
   await resetWarm();
   const browser = await launchBrowser(PREVIEW_ARGS);
   try {
-    warmPage = await newRoutedPage(browser);
+    warmPage = await newRoutedPage(browser, PREVIEW_DPR);   // the preview page: rendered at PREVIEW_DPR (see PREVIEW_REV)
   } catch (e) {
     await browser.close().catch(() => {});
     throw e;
@@ -171,8 +249,10 @@ async function routeRequests(page) {
   });
 }
 
-async function newRoutedPage(browser) {
-  const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H }, javaScriptEnabled: false });
+// `dpr` is the page's deviceScaleFactor: PREVIEW_DPR for the warm preview page; the PDF path keeps 1 — page.pdf()
+// is vector and came out byte-identical at 1x and 3x (measured, 2026-09-18), so a denser raster there buys nothing.
+async function newRoutedPage(browser, dpr = 1) {
+  const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H }, deviceScaleFactor: dpr, javaScriptEnabled: false });
   // Installed BEFORE the content exists, so not even the first subresource escapes it. A route call
   // on a page that is already closing rejects — that is not a render failure.
   await routeRequests(page).catch(() => {});
@@ -281,9 +361,11 @@ async function renderPdf(templateId, resumeData, opts = {}) {
   }
 }
 
-// ── All templates → preview images (base64 JPEG data URIs) ────────────────────
+// ── All templates → preview images (base64 WebP data URIs at PREVIEW_DPR — see PREVIEW_REV) ──────────
 // One-page render; a full-page screenshot captures the CSS sidebar band. Returns
-// { id, name, accent, image, width, height } so the app can size to the real aspect.
+// { id, name, accent, ats, image, width, height }: width/height are the IMAGE's pixels (2382 across at 3x, as a
+// cache hit reads them back from the file's header), and every client sizes by their RATIO (the gallery's
+// imgH = CARD_W * height / width), so a denser page changes nothing about layout.
 async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
   // Per-TEMPLATE render with per-template recovery, each one on the warm page under the lock (see
   // above). A failed render resets the warm browser and retries just that template; a template that
@@ -300,6 +382,7 @@ async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
     // design's texture. A throwaway 8×8 capture forces the compositor to produce a frame at the NEW
     // size first — no page script needed (JS is off, so an in-page animation-frame callback never fires).
     await page.screenshot({ type: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 8, height: 8 } }).catch(() => {});
+    // The clip is in CSS pixels; the capture comes back at PREVIEW_DPR (the warm page's deviceScaleFactor).
     const shot = await page.screenshot({
       type: 'jpeg',
       quality: 82,
@@ -307,29 +390,33 @@ async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
     });
     warmPages += 1;
     return {
-      id: tpl.id,
-      name: tpl.name,
-      // The accent the image actually shows: the employer's re-hue of it for a branded document.
-      accent: opts.brand ? brandedTemplate(tpl, opts.brand).accent : tpl.accent,
-      ats: tpl.ats || null,
-      image: `data:image/jpeg;base64,${shot.toString('base64')}`,
-      width: A4_W,
-      height: h,
+      shot, h,
+      meta: {
+        id: tpl.id,
+        name: tpl.name,
+        // The accent the image actually shows: the employer's re-hue of it for a branded document.
+        accent: opts.brand ? brandedTemplate(tpl, opts.brand).accent : tpl.accent,
+        ats: tpl.ats || null,
+      },
     };
   });
-  const results = [];
+  const pending = [];
   for (const tpl of templates) {
+    let cap = null;
     try {
-      results.push(await renderOne(tpl));
+      cap = await renderOne(tpl);
     } catch (first) {
       await withWarmLock(resetWarm);
       try {
-        results.push(await renderOne(tpl));   // one clean retry, fresh browser, this template only
+        cap = await renderOne(tpl);   // one clean retry, fresh browser, this template only
       } catch (e) {
         console.warn(`[resumeRenderer] preview "${tpl.id}" failed twice:`, String((e && e.message) || e).split('\n')[0]);
       }
     }
+    // The encode needs no page, so it runs off the lock while the next design renders; the answer keeps the order.
+    if (cap) pending.push(encodePreview(cap.shot, A4_W, cap.h).then((img) => ({ ...cap.meta, ...img })));
   }
+  const results = await Promise.all(pending);
   if (!results.length && templates.length) throw new Error('No preview could be rendered');
   return results;
 }
@@ -361,4 +448,8 @@ async function warmPreviews() {
   finally { warmingUp = false; }
 }
 
-module.exports = { renderPdf, renderPreviews, warmPreviews, isAllowedRequest };
+module.exports = {
+  renderPdf, renderPreviews, warmPreviews, isAllowedRequest,
+  // PREVIEW_REV goes into every preview/page/card cache key; the rest are read by test-preview-sharpness.js.
+  PREVIEW_REV, PREVIEW_DPR, PREVIEW_FORMAT, PREVIEW_BUDGET, encodePreview,
+};

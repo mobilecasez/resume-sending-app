@@ -139,6 +139,18 @@ ok('the warm browser recycles every few pages, below the crash threshold',
 ok('a composited frame is forced between resize and screenshot',
   /clip: \{ x: 0, y: 0, width: 8, height: 8 \}/.test(rend) && !/requestAnimationFrame/.test(rend));
 ok('the idle timer never keeps the process alive', /warmTimer\.unref/.test(rend));
+// ⚠️ 2026-09-18: "the preview is not crystal clear and looks very blurry on zoom". The page was captured at 794 px with
+// deviceScaleFactor 1 and drawn 1107 physical px wide on a 3x phone, then pinched to 3x. The WARM page (previews only)
+// now renders at PREVIEW_DPR; the PDF page stays 1x (page.pdf is vector — byte-identical either way). The full
+// contract — pixel width, format, budget, cards, cache keys — is test-preview-sharpness.js; these pin the wiring.
+ok('the preview page renders at PREVIEW_DPR, the PDF page at the default 1x',
+  /warmPage = await newRoutedPage\(browser, PREVIEW_DPR\)/.test(rend) && /async function newRoutedPage\(browser, dpr = 1\)/.test(rend)
+  && /deviceScaleFactor: dpr/.test(rend) && /return loadHtml\(await newRoutedPage\(browser\), html\)/.test(rend));
+ok('…ships WebP down a per-page budget ladder, and encodes OFF the warm lock',
+  /const PREVIEW_FORMAT = 'webp';/.test(rend) && /const PREVIEW_LADDER = \[/.test(rend) && /if \(cap\) pending\.push\(encodePreview\(/.test(rend));
+ok('…and every résumé preview cache key carries PREVIEW_REV (gallery JSON, Home card, employer-doc page)',
+  /tplId \+ ':' \+ PREVIEW_REV;/.test(ctl.slice(ctl.indexOf('function previewFile'))) && /tag \+ ':' \+ tplId \+ ':' \+ PREVIEW_REV;/.test(ctl)
+  && /brandKeyOf\(brand\), PREVIEW_REV\]\.join\('\|'\)/.test(ctl));
 ok('Google Fonts are served from an in-memory cache', /fontCache/.test(rend) && /route\(/.test(rend));
 ok('request interception applies to EVERY page (one page factory, and it routes)',
   (rend.match(/\.newPage\(/g) || []).length === 1 && /async function newRoutedPage[\s\S]{0,400}routeRequests\(page\)/.test(rend));
@@ -214,7 +226,7 @@ ok('a retry clears the failure before refetching', /for \(const id of need\) del
 console.log('── region is LEVEL ONE of the gallery ──');
 // Field report: "all regions' designs show under Generic and changing region does nothing" —
 // the chips were a cosmetic Recommended badge while the pager always held every family.
-ok('the pager renders the REGION-FILTERED family list', /\{visibleFams\.map\(\(f\) =>/.test(tpl));
+ok('the pager renders the REGION-FILTERED family list (with the index the full-size zoom decode keys on)', /\{visibleFams\.map\(\(f, i\) =>/.test(tpl));
 ok('the dots follow the same list', /s\.dots[\s\S]{0,120}visibleFams\.map/.test(tpl));
 ok('picking a region resets the pager and starts rendering its first family',
   /function pickRegion[\s\S]{0,900}prefetchAround\(0, fams, chosen\)/.test(tpl));

@@ -489,15 +489,49 @@ async function giveBackLedgerRow(userId, ledgerId, why) {
 // per-attempt cap that really aborts, one budget for the whole letter. ai-cover-letter-v2 still owns the PROMPT
 // (buildPrompt, byte for byte what it sent) and this is its call and its parsing, kept as they were.
 //
+// ⚠️ THE ONE LETTER WRITER (2026-09-18, the owner's decision: "we have a prompt/api that is already written on the
+// jobs section … and hence we finalized that … we need to use the same one … and not the new one"). Home's employer
+// letter (employerLetterController.buildEmployerLetter) used to write with a prompt of its own, ungrounded; it is now
+// written by exactly this lane's generation — the metadata loader (letterResumeMetadataFor), the research subject
+// (letterResearchSubjectOf), the posting (letterListingOf), v2's prompt, Google Search grounding, v2's config, the
+// letter chain, the parsing and the mapping of the answer into a letter (letterDetailsOf). Those pieces are exported
+// from HERE and Home calls them: REUSED, never copied, so the two screens cannot drift apart. A change to any of them
+// changes both screens' letters — which is the point.
+//
 // ⚠️ MONEY. Every AI call here runs BEFORE the charge (withUsageLock → claimGeneration / consumeOnSuccess, after
 // the letter exists), so a letter no model could write charges NOTHING and hands nothing over. That is what makes
 // "Nothing was charged" in the two refusals below true. These lanes store no document and no model id; the
-// model that answered is logged.
+// model that answered is logged. (Home stores its letter, and the model that wrote it — never in its fingerprint.)
 // Lazily, per use: a suite that reloads aiText (or shrinks its timing knobs) must be what the next call sees.
 const aiTextMod = () => require('../services/aiText');
 
-/** What ai-cover-letter-v2 always asked. Since 2026-09-18 the lane walks aiText.writing() instead (see aiText WRITING_PRIMARY). */
+/**
+ * What ai-cover-letter-v2 always asked: the PRIMARY of the chain. This lane and Home's employer letter (written through
+ * writeLegacyLetter below) walk [this, ...letterFallbacks()]; Job Hub's per-job letter (aiHubController, its own prompt and
+ * its own gemini-2.5-flash) walks [it, ...aiText.fallbackModels()]. None of them walks aiText.writing().
+ * ⚠️ REVERTED 2026-09-18, the same day it moved. The measured writing chain (gemini-3.1-flash-lite first) was evaluated on
+ * Home's OLD prompt, which had no grounding; v2's prompt with Google Search grounding — the one every letter is written
+ * with now — was never measured on it. Until it is, letters stay on the chain v2 was finalized on. The résumé lanes keep
+ * aiText.writing(): that one WAS measured.
+ * ⚠️ ≤ 48 chars — Home records it as the writer of a stored letter when an answer ever arrives without a model id.
+ */
 const LEGACY_LETTER_MODEL = 'gemini-2.5-flash';
+/**
+ * The letter lanes' BACKUPS, in order — MEASURED on v2's own prompt WITH Google Search grounding (2026-09-18, three
+ * letters per model, judged blind): gemini-3.1-flash-lite gave 3/3 usable letters (it answers without searching);
+ * gemini-2.5-flash-lite broke 2 of 3 once grounding was on (invalid JSON, a 79-word letter). So a busy 2.5-flash hands
+ * the letter to 3.1-flash-lite first. The PRIMARY stays v2's finalized gemini-2.5-flash: it was judged best (3/3 top tier),
+ * and none of the cheaper models was the same result — the flash-lites skip the live research and invented more.
+ * The operator's AI_TEXT_FALLBACK_MODELS (including "none") still wins, exactly as it did through fallbackModels().
+ */
+const LETTER_FALLBACKS = Object.freeze(['gemini-3.1-flash-lite', 'gemini-2.5-flash-lite']);
+// ⚠️ Read through aiText's own cleaner, and ONLY a usable list wins: "none"/"off" → [] (primary only); an unset, blank or
+// all-junk value → the measured pair. Handing a junk value to fallbackModels() would have fallen back to aiText's DEFAULT
+// order — 2.5-flash-lite first, the very order measured to break grounded letters.
+const letterFallbacks = () => {
+    const fromEnv = aiTextMod().envModelList(process.env.AI_TEXT_FALLBACK_MODELS);
+    return fromEnv === null ? [...LETTER_FALLBACKS] : fromEnv;
+};
 /**
  * ai-cover-letter-v2's generationConfig, unchanged, given to EVERY model of the chain. No responseMimeType: the
  * letter is grounded (googleSearch), and the API refuses JSON mode and grounding together — the prompt asks for
@@ -550,8 +584,13 @@ const isAiRefusal = (e) => !!e && (e.reason === 'ai_busy' || e.reason === 'ai_do
 /** The HTTP body every lane answers an AI refusal with (HTTP 503). */
 const aiRefusalBody = (e) => ({ success: false, reason: e.reason, retryable: !!e.retryable, error: e.message });
 
-/** A retry, in the words the user reads: a model switch, an overload, or a second pass at a bad answer. */
-const legacyRetryLabel = ({ model, kind, nextModel }) => (nextModel && nextModel !== model ? 'Switching to a backup model'
+/**
+ * A retry, in the words the user reads: a model switch, an overload, or a second pass at a bad answer.
+ * ⚠️ "FASTER" MUST BE TRUE FOR THE CHAIN THIS LANE WALKS. It is: after gemini-2.5-flash come the flash-lites
+ * (letterFallbacks). A chain whose backups are not faster (aiText.writing(), 2.5-flash behind 3.1-flash-lite) says "a backup
+ * model" instead — which is why the words changed for the one afternoon the letters walked that chain.
+ */
+const legacyRetryLabel = ({ model, kind, nextModel }) => (nextModel && nextModel !== model ? 'Switching to a faster model'
     : kind === 'transient' ? "Google's AI is busy — trying again" : 'Taking another pass at it');
 
 /**
@@ -646,11 +685,14 @@ function parseLegacyLetterJson(text) {
  *   - the ANSWER was unusable (empty, no JSON, no letter) → asked again, up to LEGACY_LETTER_TRIES answers, like v2.
  * `report(stage, label)` (optional) puts each retry on the job in plain words. It is awaited by aiText, and
  * anything it throws is ignored there — a progress write can never break a letter.
+ * `deadline` (optional, epoch ms) is a caller's own window: the letter's budget ends at the EARLIER of it and
+ * LEGACY_LETTER_BUDGET_MS from now. Home passes the AI window its build started at its first line (it may have waited
+ * on another build first); the Jobs lanes pass none. It shortens the budget, never the prompt or the chain.
  *
  * A v2 without buildPrompt (an older copy, or a suite's stub of the whole module) keeps the old call through its
  * generateCoverLetter: the prompt is v2's to build, and there is nothing here to build it from.
  */
-async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsibilities = null, jobLocation = null, listing = null, { report = null } = {}) {
+async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsibilities = null, jobLocation = null, listing = null, { report = null, deadline = null } = {}) {
     if (typeof letterV2.buildPrompt !== 'function') {
         return { letter: await letterV2.generateCoverLetter(resumeMetadata, employerUrl, position, responsibilities, jobLocation, listing), model: null };
     }
@@ -664,10 +706,10 @@ async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsi
     const prompt = letterV2.buildPrompt(resumeMetadata, position, url, responsibilities, jobLocation, listing);
 
     const aiText = aiTextMod();
-    const deadline = Date.now() + LEGACY_LETTER_BUDGET_MS;
+    const endsAt = Math.min(Date.now() + LEGACY_LETTER_BUDGET_MS, Number.isFinite(deadline) ? deadline : Infinity);
     let lastErr = null;
     for (let attempt = 1; attempt <= LEGACY_LETTER_TRIES; attempt++) {
-        const left = deadline - Date.now();
+        const left = endsAt - Date.now();
         if (left < LEGACY_LETTER_MIN_TRY_MS) break;
         if (attempt > 1 && report) {
             try { await report('retry', 'Taking another pass at it'); } catch (_) { /* a progress write never breaks a letter */ }
@@ -679,7 +721,9 @@ async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsi
                 lane: 'letter_legacy',
                 prompt: { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ googleSearch: {} }] },
                 config: legacyLetterConfig(),
-                ...aiText.writing(),   // the measured document chain (see aiText WRITING_PRIMARY)
+                // The letter chain — v2's primary, then the verified fallbacks — with v2's config on every model and no
+                // per-model config (see LEGACY_LETTER_MODEL: this prompt was never measured on aiText.writing()).
+                models: [LEGACY_LETTER_MODEL, ...letterFallbacks()],
                 budgetMs: left,
                 attemptCapsMs: LEGACY_LETTER_CAPS_MS,
                 onRetry: (info) => (report ? report('retry', legacyRetryLabel(info)) : undefined),
@@ -719,6 +763,124 @@ async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsi
 const legacyJobReporter = (jobId) => async (stage, label) => {
     try { await jobService.updateJobPartialResult(jobId, { stage, label }); } catch (_) { /* a progress write never breaks a letter */ }
 };
+
+// ── THE LETTER'S INPUTS AND ITS MAPPING — one definition, every screen that writes a letter ─────────────
+// Lifted out of executeGenerationWork / generateCoverLetters / generateCoverLetterDetails UNCHANGED (their answers are
+// byte for byte what they were) so Home's employer letter can be written from the same inputs in the same shapes and
+// mapped the same way (see THE ONE LETTER WRITER above). Change one here and both screens change together.
+
+/**
+ * The résumé a letter is written FROM: the parsed upload (resume_metadata, parse_status 'done'), with the Builder
+ * résumé merged in (mergeBuilderResume) — or null when no parsed upload landed.
+ * `tries` reads, 5 s apart: the background parser may still be running a moment after an upload, so the Jobs lanes
+ * wait for it (5 reads = up to 20 s). A caller that already knows whether a parse landed reads once (Home: tries 1).
+ */
+async function letterResumeMetadataFor(userId, { tries = 5 } = {}) {
+    let resumeMetadata = null;
+    for (let attempt = 0; attempt < tries; attempt++) {
+        resumeMetadata = await dbConfig.get(
+            'SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?',
+            [userId, 'done'] // 'done' — the status the parser writes
+        );
+        if (resumeMetadata) break;
+        if (attempt < tries - 1) await new Promise(r => setTimeout(r, 5000)); // wait 5s before the next read
+    }
+    // Point 6: add Builder-resume context (if present) for richer letters.
+    return resumeMetadata ? mergeBuilderResume(userId, resumeMetadata) : null;
+}
+
+// Job BOARDS are not employers. A posting opened on instahyre/naukri/linkedin gives us the board's
+// host, and researching THAT produced letters addressed to the job board instead of the company.
+const AGGREGATOR_HOST = /(instahyre|naukri|linkedin|indeed|glassdoor|monster|shine|timesjobs|foundit|wellfound|ziprecruiter|simplyhired|jooble|careerjet|adzuna|talent\.com|jobs?\.[a-z]+\.com)\b/i;
+
+/**
+ * Who the letter researches → { normalizedWebsiteUrl, researchSubject }. The website, https:// added; but when the only
+ * URL we have is a job board, the COMPANY NAME from the posting instead — otherwise the letter is written to the board.
+ */
+function letterResearchSubjectOf(websiteUrl, companyNameHint) {
+    const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
+    const researchSubject = (companyNameHint && AGGREGATOR_HOST.test(normalizedWebsiteUrl))
+        ? String(companyNameHint).trim()
+        : normalizedWebsiteUrl;
+    return { normalizedWebsiteUrl, researchSubject };
+}
+
+/**
+ * The real posting, when there is one → v2's `listing`, else null. It is context for the prompt only — it is never
+ * treated as the employer URL (that slot expects a company site, and a raw description dropped into it would be turned
+ * into "https://<text>").
+ */
+function letterListingOf({ jobUrl, jobText, position, companyNameHint }) {
+    return (jobUrl || jobText)
+        ? { url: jobUrl || '', text: jobText || '', title: position || '', company: companyNameHint || '' }
+        : null;
+}
+
+/** What a location with no real address reads as — the one row the mobile picker needs when nothing was found. */
+const ADDRESS_NOT_AVAILABLE = 'Address not available';
+
+/**
+ * v2's answer → the letter the Jobs section hands over: { companyName, hiringManager, subject, locations, coverLetterHtml }.
+ * Every field v2 can leave out is derived here, once: the name falls back to the caller's hint, then the research
+ * subject; the addressee to "Hiring Manager"; the subject to "Application for <position>".
+ */
+function letterDetailsOf(aiResult, { position, companyNameHint = null, researchSubject = '', jobLocation = null } = {}) {
+    const companyName = aiResult.employer_name || companyNameHint || researchSubject;
+    const hiringManager = aiResult.to || 'Hiring Manager';
+    const subject = aiResult.subject || `Application for ${position}`;
+
+    // Map addresses array → locations format expected by the mobile app
+    const locations = (aiResult.addresses || []).map((addr, i) => ({
+        address: addr,
+        city: '',
+        country: '',
+        isHeadquarters: i === 0
+    }));
+    if (locations.length === 0) {
+        locations.push({ address: ADDRESS_NOT_AVAILABLE, city: '', country: '', isHeadquarters: true });
+    }
+
+    // Job-aware selection: a cover letter generated FOR A JOB must use that job's office,
+    // not the HQ. If jobLocation was provided, surface the matching office first (flagged
+    // matchesJobLocation); if none of the scraped addresses match, synthesize an entry from
+    // the job location so it is always present AND first. The mobile picker defaults to it.
+    // A placeholder job location (extraction couldn't resolve it) must NEVER be surfaced — otherwise
+    // the letter shows "Location TBD, Location TBD, Location TBD". Treat these as "no job location"
+    // and fall back to the real researched offices (HQ first).
+    const isPlaceholderLoc = (v) => !v || /^(location\s*tbd|tbd\s*location|tbd|n\.?\/?a\.?|none|null|unknown|not\s*(specified|available|provided)|various|multiple\s*locations?|remote|hybrid|on[\s-]?site|—|–|-)$/i.test(String(v).trim());
+    if (jobLocation && jobLocation.trim() && !isPlaceholderLoc(jobLocation)) {
+        const jl = jobLocation.toLowerCase().trim();
+        const tokens = jl.split(/[,\s]+/).map(t => t.trim()).filter(t => t.length >= 3 && !isPlaceholderLoc(t));
+        const matchIdx = locations.findIndex(l => {
+            const hay = `${l.address} ${l.city} ${l.country}`.toLowerCase();
+            return (jl.length >= 4 && hay.includes(jl)) || tokens.some(t => hay.includes(t));
+        });
+        if (matchIdx >= 0) {
+            const [match] = locations.splice(matchIdx, 1);
+            match.matchesJobLocation = true;
+            locations.unshift(match);
+        } else {
+            const parts = jobLocation.split(',').map(s => s.trim()).filter(Boolean);
+            locations.unshift({
+                address: jobLocation.trim(),
+                city: parts[0] || '',
+                // Only set country from a distinct 2nd part — never duplicate the city as the country.
+                country: parts.length > 1 ? parts[parts.length - 1] : '',
+                isHeadquarters: false,
+                matchesJobLocation: true,
+            });
+        }
+    }
+    // Drop any placeholder/junk locations that slipped through (e.g. a synthesized 'Location TBD').
+    let cleaned = locations.filter((l) => !(isPlaceholderLoc(l.address) && isPlaceholderLoc(l.city) && isPlaceholderLoc(l.country)));
+    if (cleaned.length === 0) cleaned = [{ address: ADDRESS_NOT_AVAILABLE, city: '', country: '', isHeadquarters: true }];
+
+    // Format markdown cover letter body as HTML. This single region-neutral
+    // letter is used for every region — the picker only changes PDF formatting.
+    const coverLetterHtml = formatCoverLetterWithHTML(aiResult.cover_letter || '', {});
+
+    return { companyName, hiringManager, subject, locations: cleaned, coverLetterHtml };
+}
 
 // Generate cover letter (bulk)
 const generateCoverLetters = async (req, res) => {
@@ -780,16 +942,8 @@ const generateCoverLetters = async (req, res) => {
             const results = [];
             let creditsDeducted = 0;
 
-            // Load resume metadata once for all recipients, with retries
-            let resumeMetadata = null;
-            for (let attempt = 0; attempt < 5; attempt++) {
-                resumeMetadata = await dbConfig.get(
-                    'SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?',
-                    [userId, 'done']
-                );
-                if (resumeMetadata) break;
-                if (attempt < 4) await new Promise(r => setTimeout(r, 5000)); // wait 5s
-            }
+            // Load resume metadata once for all recipients, with retries (+ the Builder résumé, letterResumeMetadataFor)
+            const resumeMetadata = await letterResumeMetadataFor(userId);
 
             if (!resumeMetadata) {
                 return res.status(400).json({
@@ -797,9 +951,6 @@ const generateCoverLetters = async (req, res) => {
                     message: 'Your resume is still being analyzed. This can take up to a minute. Please wait a moment and try again.'
                 });
             }
-
-            // Point 6: add Builder-resume context (if present) for richer letters.
-            resumeMetadata = await mergeBuilderResume(userId, resumeMetadata);
 
             // ⚠️ ONE AI REFUSAL ENDS THE RUN (2026-09-18). aiText only gives up after it has waited, retried and walked
             // every fallback model inside its budget, and quota / auth is the key itself: the next recipient, asked a
@@ -970,12 +1121,8 @@ const generateCoverLetterDetails = async (req, res) => {
     try {
         const userId = req.user.id;
         let { recipientEmail, websiteUrl, position, responsibilities, jobLocation, jobId: sourceJobId, companyName: companyNameHint, jobUrl, jobText } = req.body;
-        // The real posting, when the user pasted one. It is context for the prompt only — it is
-        // never treated as the employer URL (that slot expects a company site, and a raw
-        // description dropped into it would be turned into "https://<text>").
-        const listing = (jobUrl || jobText)
-            ? { url: jobUrl || '', text: jobText || '', title: position || '', company: companyNameHint || '' }
-            : null;
+        // The real posting, when the user pasted one (letterListingOf — context for the prompt only).
+        const listing = letterListingOf({ jobUrl, jobText, position, companyNameHint });
         // The company a PASS attaches to, and whether one covers this generation. Resolved here and
         // threaded into the worker (see the gate below).
         //
@@ -1142,41 +1289,20 @@ const generateCoverLetterDetails = async (req, res) => {
 /**
  * The actual heavy generation work — used by both sync and async modes
  */
-// Job BOARDS are not employers. A posting opened on instahyre/naukri/linkedin gives us the board's
-// host, and researching THAT produced letters addressed to the job board instead of the company.
-const AGGREGATOR_HOST = /(instahyre|naukri|linkedin|indeed|glassdoor|monster|shine|timesjobs|foundit|wellfound|ziprecruiter|simplyhired|jooble|careerjet|adzuna|talent\.com|jobs?\.[a-z]+\.com)\b/i;
-
 // `report(stage, label)` — the async job's retry reporter (legacyJobReporter); absent in sync mode and batch-process.
 async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null, passEmployer = null, passViaPass = false, passEnv = null, report = null }) {
     console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}, hasResponsibilities=${!!(responsibilities && responsibilities.length)}, jobLocation=${jobLocation || 'none'}, companyHint=${companyNameHint || 'none'}`);
-    // Normalize URL
-    const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
-    // Who do we actually research? If the only URL we have is a job board, research the COMPANY NAME
-    // we extracted from the posting instead — otherwise the letter is written to the job board.
-    const researchSubject = (companyNameHint && AGGREGATOR_HOST.test(normalizedWebsiteUrl))
-        ? String(companyNameHint).trim()
-        : normalizedWebsiteUrl;
+    // Who do we actually research? The website — or the company name when the only URL is a job board.
+    const { normalizedWebsiteUrl, researchSubject } = letterResearchSubjectOf(websiteUrl, companyNameHint);
     if (researchSubject !== normalizedWebsiteUrl) console.log(`🏢 [employer] job-board URL detected → researching "${researchSubject}" instead of ${normalizedWebsiteUrl}`);
 
-    // Load pre-parsed resume metadata (generated by resumeParserService after upload)
-    // Retry multiple times with increasing delay in case the background parser is still running
-    let resumeMetadata = null;
-    for (let attempt = 0; attempt < 5; attempt++) { // Increased to 5 retries
-        resumeMetadata = await dbConfig.get(
-            'SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?',
-            [userId, 'done'] // Corrected status to 'done' to match the parser
-        );
-        if (resumeMetadata) break;
-        // Wait longer before retrying
-        if (attempt < 4) await new Promise(r => setTimeout(r, 5000)); // wait 5s before retry
-    }
+    // Load pre-parsed resume metadata (generated by resumeParserService after upload), waiting in case the
+    // background parser is still running — with the Builder résumé merged in.
+    const resumeMetadata = await letterResumeMetadataFor(userId);
 
     if (!resumeMetadata) {
         throw new Error('Resume not processed yet. Please wait a moment after uploading and try again.');
     }
-
-    // Point 6: add Builder-resume context (if present) for richer letters.
-    resumeMetadata = await mergeBuilderResume(userId, resumeMetadata);
 
     console.log(`[coverLetterController] Starting generation for user ${userId}, url=${normalizedWebsiteUrl}, position=${position}`);
 
@@ -1217,61 +1343,10 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         }
     }
 
-    const companyName = aiResult.employer_name || companyNameHint || researchSubject;
-    const hiringManager = aiResult.to || 'Hiring Manager';
-    const subject = aiResult.subject || `Application for ${position}`;
-
-    // Map addresses array → locations format expected by the mobile app
-    const locations = (aiResult.addresses || []).map((addr, i) => ({
-        address: addr,
-        city: '',
-        country: '',
-        isHeadquarters: i === 0
-    }));
-    if (locations.length === 0) {
-        locations.push({ address: 'Address not available', city: '', country: '', isHeadquarters: true });
-    }
-
-    // Job-aware selection: a cover letter generated FOR A JOB must use that job's office,
-    // not the HQ. If jobLocation was provided, surface the matching office first (flagged
-    // matchesJobLocation); if none of the scraped addresses match, synthesize an entry from
-    // the job location so it is always present AND first. The mobile picker defaults to it.
-    // A placeholder job location (extraction couldn't resolve it) must NEVER be surfaced — otherwise
-    // the letter shows "Location TBD, Location TBD, Location TBD". Treat these as "no job location"
-    // and fall back to the real researched offices (HQ first).
-    const isPlaceholderLoc = (v) => !v || /^(location\s*tbd|tbd\s*location|tbd|n\.?\/?a\.?|none|null|unknown|not\s*(specified|available|provided)|various|multiple\s*locations?|remote|hybrid|on[\s-]?site|—|–|-)$/i.test(String(v).trim());
-    if (jobLocation && jobLocation.trim() && !isPlaceholderLoc(jobLocation)) {
-        const jl = jobLocation.toLowerCase().trim();
-        const tokens = jl.split(/[,\s]+/).map(t => t.trim()).filter(t => t.length >= 3 && !isPlaceholderLoc(t));
-        const matchIdx = locations.findIndex(l => {
-            const hay = `${l.address} ${l.city} ${l.country}`.toLowerCase();
-            return (jl.length >= 4 && hay.includes(jl)) || tokens.some(t => hay.includes(t));
-        });
-        if (matchIdx >= 0) {
-            const [match] = locations.splice(matchIdx, 1);
-            match.matchesJobLocation = true;
-            locations.unshift(match);
-        } else {
-            const parts = jobLocation.split(',').map(s => s.trim()).filter(Boolean);
-            locations.unshift({
-                address: jobLocation.trim(),
-                city: parts[0] || '',
-                // Only set country from a distinct 2nd part — never duplicate the city as the country.
-                country: parts.length > 1 ? parts[parts.length - 1] : '',
-                isHeadquarters: false,
-                matchesJobLocation: true,
-            });
-        }
-    }
-    // Drop any placeholder/junk locations that slipped through (e.g. a synthesized 'Location TBD').
-    let cleaned = locations.filter((l) => !(isPlaceholderLoc(l.address) && isPlaceholderLoc(l.city) && isPlaceholderLoc(l.country)));
-    if (cleaned.length === 0) cleaned = [{ address: 'Address not available', city: '', country: '', isHeadquarters: true }];
-    locations.length = 0;
-    locations.push(...cleaned);
-
-    // Format markdown cover letter body as HTML. This single region-neutral
-    // letter is used for every region — the picker only changes PDF formatting.
-    const coverLetterHtml = formatCoverLetterWithHTML(aiResult.cover_letter || '', {});
+    // The answer → the letter (letterDetailsOf: the one mapping, which Home's employer letter goes through too).
+    const { companyName, hiringManager, subject, locations, coverLetterHtml } = letterDetailsOf(aiResult, {
+        position, companyNameHint, researchSubject, jobLocation,
+    });
 
     // DEDUCT — only now, after the letter was actually produced. entitlements picks the pool (plan → the
     // Free plan) and writes the usage-ledger row for the Usage screen.
@@ -1996,6 +2071,19 @@ module.exports = {
     // The shared per-(user, kind) usage lock, for a lane that has none of its own (aiHubController's Job Hub
     // letter) — so it serialises against every other lane's key instead of inventing a second spelling.
     withUsageLock,
+    // ⚠️ THE ONE LETTER WRITER (2026-09-18, the owner's decision — see the section above writeLegacyLetter). Home's
+    // employer letter (employerLetterController) is written by exactly this lane's generation: its résumé metadata,
+    // research subject, posting, v2 prompt + Google Search grounding + config + chain + parsing, and the mapping of the
+    // answer into a letter. Called from there, never copied, so the two screens cannot drift. LEGACY_LETTER_MODEL is
+    // what Home records as a stored letter's writer if an answer ever arrives without a model id.
+    writeLegacyLetter,
+    letterResumeMetadataFor,
+    mergeBuilderResume,
+    letterResearchSubjectOf,
+    letterListingOf,
+    letterDetailsOf,
+    ADDRESS_NOT_AVAILABLE,
+    LEGACY_LETTER_MODEL,
     // exposed for tests / diagnostics only: the legacy letter's AI call and its parsing
-    _internals: { writeLegacyLetter, parseLegacyLetterJson, legacyAiRefusal, LEGACY_LETTER_MODEL, legacyLetterConfig, LEGACY_LETTER_BUDGET_MS },
+    _internals: { LETTER_FALLBACKS, letterFallbacks, writeLegacyLetter, parseLegacyLetterJson, legacyAiRefusal, LEGACY_LETTER_MODEL, legacyLetterConfig, LEGACY_LETTER_BUDGET_MS },
 };

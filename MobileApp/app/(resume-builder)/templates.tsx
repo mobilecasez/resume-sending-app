@@ -59,6 +59,13 @@ const REGION_FLAGS: Record<string, string> = {
 };
 
 const WIN = Dimensions.get('window').width;
+// ⚠️ THE PAGE BEING LOOKED AT DECODES AT FULL SIZE (2026-09-18) — the same rule as the letter gallery, for the same
+// reported blur. expo-image downscales every bitmap to its FRAME × screen scale by default (allowDownscaling):
+// CARD_W ≈ 369 pt = ~1107 px on a 3x phone, and the pinch below is a ScrollView transform on that frame, so the
+// server's 3x page (2382 px, PREVIEW_REV hd1) was cut to ~1107 px at decode and zooming enlarged the cut copy. The
+// ACTIVE page keeps every pixel; neighbours keep the default (~32 MB of bitmap per full page is a cost only the page
+// on screen should pay). iOS only: the pinch (maximumZoomScale) is iOS-only, and at 1x a full decode buys nothing.
+const FULL_RES_ZOOM = Platform.OS === 'ios';
 const SIDE_PAD = 12;
 const CARD_W = WIN - SIDE_PAD * 2;
 // A preview still pending after this long offers "Still rendering — tap to retry" (the request itself
@@ -752,7 +759,7 @@ export default function ResumeTemplates() {
                 onContentSizeChange={onPagerContent}
                 decelerationRate="fast"
               >
-                {visibleFams.map((f) => {
+                {visibleFams.map((f, i) => {
                   const tid = chosen[f.id] || f.id;
                   const p = previews[tid];
                   const accent = f.variants.find((v) => v.id === tid)?.accent || f.accent;
@@ -773,7 +780,13 @@ export default function ResumeTemplates() {
                               showsHorizontalScrollIndicator={false}
                               nestedScrollEnabled
                             >
-                              <Image source={{ uri: p.image }} style={{ width: CARD_W, height: imgH }} contentFit="cover" transition={160} />
+                              <Image
+                                source={{ uri: p.image }}
+                                style={{ width: CARD_W, height: imgH }}
+                                contentFit="cover"
+                                transition={160}
+                                allowDownscaling={!(FULL_RES_ZOOM && i === active)}
+                              />
                             </ScrollView>
                           ) : failed[tid] ? (
                             <TouchableOpacity style={s.previewLoading} activeOpacity={0.8} onPress={() => ensurePreviews([tid])}>

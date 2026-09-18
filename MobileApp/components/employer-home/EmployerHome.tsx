@@ -2257,6 +2257,30 @@ export default function EmployerHome({
 
   const headerH = insets.top + 52;
   /**
+   * ⚠️ THE PAGE RUNS UNDER THE HOME INDICATOR (2026-09-18: "why there is a bottom white small area on the
+   * home page"). HomeScreen wraps this screen in a SafeAreaView with the BOTTOM edge on (it drops only the
+   * top one for Home), so the last `insets.bottom` points of the screen — the home-indicator strip, 34pt
+   * on a Face ID iPhone — were that wrapper's padding, painted in its light app background: a pale band
+   * under the floating menu, and a hard stop for the page above it (the Tailor button, blue into violet,
+   * was sliced off right there, so its two ends peeked out either side of the menu like a stray shape).
+   * The fix is here, not in the wrapper: the scroll view hangs `footBleed` below this root, into that
+   * padding (overflow is visible, the strip is inside the wrapper's own bounds), so the page — gradient,
+   * cards and all — runs to the very bottom edge and scrolls on under the menu and the indicator.
+   * Three things keep the rest of the screen exactly where it was:
+   *   • the root's own box does NOT move, so rootH, the fold (FOLD_ALLOW) and the Tailor hint's geometry —
+   *     all measured from the top — are untouched, and so is the menu (HomeScreen pins it to the screen's
+   *     bottom, which never moved);
+   *   • the stage is at least the viewport PLUS the strip (stageMinH), so even a short page leaves no gap
+   *     in it — for a long page the spacer below is already inside pageH, so nothing is counted twice;
+   *   • a `footBleed` spacer under the tail keeps the page's END where it was: scrolled to the bottom, the
+   *     last line still rests 108pt above the old edge, clear of the menu.
+   * The scroll view paints E.stage behind its content, so a bounce past the foot shows the stage colour in
+   * the strip too, never the wrapper's grey. ⚠️ COUPLED TO HomeScreen's `edges` (test-employer-home pins
+   * both): if that wrapper ever stops padding the bottom for Home, this bleed must go with it, or the page
+   * would hang off the screen by the same amount.
+   */
+  const footBleed = insets.bottom;
+  /**
    * ⚠️ THERE IS NO SECOND SURFACE ON THIS SCREEN ANY MORE. The stage used to end partway down and
    * melt into a light section that carried the library; however carefully that melt was tuned, it
    * was still a place where one surface stopped and another began, and it read as a line. The
@@ -2266,6 +2290,8 @@ export default function EmployerHome({
    * the first screenful rather than spreading it over a page three times as tall.
    */
   const stageH = Math.max(rootH || 700, headerH + pageH);
+  // The stage never ends above the screen's bottom edge — the viewport now reaches into the strip (footBleed).
+  const stageMinH = Math.max(stageH, (rootH || 700) + footBleed);
   // ⚠️ CAPPED AT 0.82. While the deck is still loading the page is barely taller than the
   // viewport, so the ratio runs to ~0.95 and the teal wash — which sits at three quarters of
   // the colour — lands in the middle of the first screen and turns it green for a second.
@@ -2346,7 +2372,7 @@ export default function EmployerHome({
     <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
       <Animated.ScrollView
         ref={scrollRef}
-        style={s.flex}
+        style={[s.scroll, { marginBottom: -footBleed }]}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
@@ -2356,7 +2382,7 @@ export default function EmployerHome({
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={E.blue} progressViewOffset={headerH} />}
       >
       {/* ────────────────── ONE GRADIENT, THE WHOLE PAGE ────────────────── */}
-      <MeshStage style={{ minHeight: stageH, paddingTop: headerH }} focus={focus} rows={gridRows}>
+      <MeshStage style={{ minHeight: stageMinH, paddingTop: headerH }} focus={focus} rows={gridRows}>
         {/* ⚠️ EVERYTHING GOES INSIDE, INCLUDING THE TAIL. Anything rendered after </MeshStage>
             would sit on the root colour, and the root is the near-black the gradient STARTS from —
             so a sibling below would be a hard step back to dark at the bottom of the page. */}
@@ -2751,6 +2777,8 @@ export default function EmployerHome({
 
       {/* The tab bar's worth of room, ON the gradient rather than under it. */}
       <View style={s.tail} />
+      {/* …and the home-indicator strip the scroll view now runs under (footBleed), so the page ends where it did. */}
+      <View style={{ height: footBleed }} />
       </View>
       </MeshStage>
       </Animated.ScrollView>
@@ -3071,6 +3099,9 @@ const s = StyleSheet.create({
   // exposes this, and any other value would flash a band above the hero.
   root: { flex: 1, backgroundColor: E.stage },
   flex: { flex: 1 },
+  // The page's scroll view: it paints the stage colour itself because it reaches PAST the root (footBleed),
+  // so a bounce at the foot shows the stage in the home-indicator strip, not the wrapper behind it.
+  scroll: { flex: 1, backgroundColor: E.stage },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   rowCenter: { flexDirection: 'row', alignItems: 'center' },
 

@@ -139,9 +139,12 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
 
 (async () => {
   print('── the contract surface and its defaults ──');
-  ok('exports exactly generateText, fallbackModels, writing, writingChain, AiUnavailableError, isAiBusy, _internals',
-    JSON.stringify(Object.keys(AT).sort()) === JSON.stringify(['AiUnavailableError', '_internals', 'fallbackModels', 'generateText', 'isAiBusy', 'writing', 'writingChain'])
-    && typeof writing === 'function' && typeof writingChain === 'function', Object.keys(AT));
+  // envModelList is public so a lane that keeps its OWN backup order (the letters' LETTER_FALLBACKS) reads the operator's
+  // AI_TEXT_FALLBACK_MODELS through the same cleaner — and can tell "nothing usable" (null) from "none" ([]).
+  ok('exports exactly generateText, fallbackModels, envModelList, writing, writingChain, AiUnavailableError, isAiBusy, _internals',
+    JSON.stringify(Object.keys(AT).sort()) === JSON.stringify(['AiUnavailableError', '_internals', 'envModelList', 'fallbackModels', 'generateText', 'isAiBusy', 'writing', 'writingChain'])
+    && typeof writing === 'function' && typeof writingChain === 'function' && AT.envModelList === AT._internals.envModelList
+    && AT.envModelList('???, ,!!') === null && JSON.stringify(AT.envModelList(' None ')) === '[]' && AT.envModelList(undefined) === null, Object.keys(AT));
   // The ONE place the default chain's ids are typed: P/F1/F2 above are read from chainFor, so this pins what they are.
   ok('the DEFAULT chain (no `models`; the research lanes\' chain) is gemini-2.5-flash, then the VERIFIED fallbacks exactly [gemini-2.5-flash-lite, gemini-3.1-flash-lite]',
     _internals.DEFAULT_PRIMARY === 'gemini-2.5-flash' && JSON.stringify(fallbackModels()) === JSON.stringify(['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite'])

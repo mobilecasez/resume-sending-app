@@ -535,6 +535,7 @@ async function generateText({ lane, prompt, config, models, modelConfig, budgetM
 module.exports = {
     generateText,
     fallbackModels,
+    envModelList,   // a lane that keeps its OWN fallback order reads the operator's list through the same cleaner
     writing,
     writingChain,
     AiUnavailableError,

@@ -5,6 +5,8 @@ import WelcomeExplainer from './WelcomeExplainer';
 import ResumeScoreModal from './ResumeScoreModal';
 import ResumeRebuildCard from './ResumeRebuildCard';
 import EmployerHome from './employer-home/EmployerHome';
+// The shared bottom-menu fill + inactive ink (FloatingTabBar's header says why: translucent, and darker ink to stay legible).
+import { TAB_BAR_FILL, TAB_BAR_INK } from './FloatingTabBar';
 import HomeBoundary from './employer-home/HomeBoundary';
 import JourneyCoach from './JourneyCoach';
 import { fetchJourney } from '../services/journeyService';
@@ -2170,7 +2172,7 @@ export default function HomeScreen({
             onPress={() => require('expo-router').router?.push?.('/(ai-hub)')}
             activeOpacity={0.7}
           >
-            <Ionicons name="briefcase-outline" size={20} color={T.textFaint} />
+            <Ionicons name="briefcase-outline" size={20} color={TAB_BAR_INK} />
             <Text style={tabStyles.label}>Jobs</Text>
           </TouchableOpacity>
 
@@ -2180,7 +2182,7 @@ export default function HomeScreen({
             onPress={() => handleReview()}
             activeOpacity={0.7}
           >
-            <Ionicons name="document-text-outline" size={20} color={T.textFaint} />
+            <Ionicons name="document-text-outline" size={20} color={TAB_BAR_INK} />
             <Text style={tabStyles.label}>Letters</Text>
           </TouchableOpacity>
 
@@ -2190,7 +2192,7 @@ export default function HomeScreen({
             onPress={() => setScreen('profile')}
             activeOpacity={0.7}
           >
-            <Ionicons name="person-outline" size={20} color={T.textFaint} />
+            <Ionicons name="person-outline" size={20} color={TAB_BAR_INK} />
             <Text style={tabStyles.label}>Me</Text>
           </TouchableOpacity>
         </View>
@@ -2711,7 +2713,10 @@ const tabStyles = StyleSheet.create({
   bar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: T.surface,
+    // A little translucent, like FloatingTabBar: the dark Home shows through faintly under the menu.
+    backgroundColor: TAB_BAR_FILL,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.9)',
     borderRadius: 28,
     paddingVertical: 8,
     paddingHorizontal: 8,
@@ -2750,7 +2755,7 @@ const tabStyles = StyleSheet.create({
   label: {
     fontSize: 10,
     fontWeight: '600',
-    color: T.textFaint,
+    color: TAB_BAR_INK,
     letterSpacing: -0.1,
   },
 });

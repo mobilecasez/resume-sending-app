@@ -56,6 +56,18 @@ const clean = () => mine().forEach((n) => { try { fs.unlinkSync(path.join(tmp, n
   fs.writeFileSync(f, JSON.stringify({ id: 'azure' }));            // no image
   ok('an entry with no image reads as empty', (await readPreviewCache(USER, ROW, 'azure', 'none')) === null);
 
+  // 2026-09-18: the gallery page went from a 1x JPEG to a 3x WebP (resumeRenderer's PREVIEW_REV block) because the
+  // old one dissolved under the pinch-zoom. A page rendered before that must never be served again: the render's
+  // name is IN the key, so the old file is simply never asked for, and prunePreviews drops it like any old entry.
+  console.log('── ⚠️ PREVIEW_REV is in the key: a page cached before a render change is a miss ──');
+  const { PREVIEW_REV } = require('../utils/resumeRenderer');
+  ok('the file name carries the render it was made with', typeof PREVIEW_REV === 'string' && PREVIEW_REV.length > 0 && path.basename(f).includes(PREVIEW_REV), path.basename(f));
+  const preRev = path.join(tmp, `resume_prev_${USER}_${String(ROW.updated_at.getTime() + ':none:azure').replace(/[^a-zA-Z0-9_]/g, '-')}.json`);
+  fs.unlinkSync(f);
+  fs.writeFileSync(preRev, JSON.stringify(PREVIEW));                // a perfectly good entry — under the pre-rev key
+  ok('an entry under the pre-rev key (the 1x page) reads as a miss', preRev !== f && (await readPreviewCache(USER, ROW, 'azure', 'none')) === null);
+  ok('…and it keeps the prefix prunePreviews ages out', path.basename(preRev).startsWith(`resume_prev_${USER}_`));
+
   clean();
   console.log(`\npreview cache: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -21,7 +21,11 @@
 // gate lies about money (sends a user to Plans for a free cache hit, or promises a free hit that then
 // charges) and the stale pill nags on every letter. So there is exactly ONE function per input —
 // candidateMaterialFor, jobFieldsOf, letterFingerprintOf — and all three call them. Read the header of
-// letterFingerprintOf before adding an input to the prompt.
+// letterFingerprintOf before handing the letter writer a new input.
+//
+// ⚠️ THE WORDS ARE THE JOBS SECTION'S (2026-09-18, the owner's decision). The letter is written by
+// coverLetterController's own generation — ai-cover-letter-v2's prompt with Google Search grounding — from the
+// same inputs in the same shapes; this file keeps everything around the words. See "The letter itself".
 //
 // ⚠️ EMPLOYER IDENTITY IS downloads.employerKeyOf / sameEmployer, via employerDocs — never a second
 // normalisation here. The pass, the cache and the history rows must agree on who the employer is.
@@ -46,26 +50,12 @@ const employerDocsMod = () => require('../services/employerDocs');
 const designFitMod = () => require('../services/designFit');
 const researchMod = () => require('../services/employerResearch');
 const scorerMod = () => require('../services/resumeScorer');
+// The letter's WRITER as well as its readers (the brand, the sender block, the photo): the Jobs section's generation
+// lives there, and this lane calls it (writeLegacyLetter and its inputs) — through aiText, on the letter chain.
 const clMod = () => require('./coverLetterController');
-// cvPlaybook is newer than this lane and answers for the RESUME first: a deploy where it is missing, or an
-// older copy without the letter variant, must still write letters exactly as they were written before it
-// existed — so it is resolved here, defensively, and never at load.
-const playbookMod = () => require('../services/cvPlaybook');
-// Every letter's AI call goes through aiText (2026-09-18: the Amazon letter that died on two back-to-back 503s).
-// Lazy for the same reason as the rest: a half-deployed slice must fail a build, never the route table.
-const aiTextMod = () => require('../services/aiText');
 
 /**
- * ⚠️ NO LONGER THE MODEL THAT WRITES THE LETTER. Since 2026-09-18 the letter walks aiText.writing() — the measured
- * document chain, cost first at equal quality (gemini-3.1-flash-lite, then 2.5-flash with thinking off, then
- * 2.5-flash-lite; see aiText WRITING_PRIMARY) — and the stored row records whoever actually answered
- * (writeLetterText's `model`). This is only the id recorded if an answer ever arrived without one.
- * ⚠️ ≤ 48 chars — user_employer_documents.model is VARCHAR(48) and Postgres refuses, not truncates.
- */
-const LETTER_MODEL = 'gemini-2.5-flash';
-
-/**
- * Folded into the fingerprint next to employerResearch.RESEARCH_REV. Bump when THIS prompt changes
+ * Folded into the fingerprint next to employerResearch.RESEARCH_REV. Bump when the letter's instructions change
  * shape: the stored letters are still faithful to their inputs, but they answer different instructions.
  * (employerDocs.FP_VERSION would invalidate every resume too.)
  *
@@ -74,7 +64,7 @@ const LETTER_MODEL = 'gemini-2.5-flash';
  * already paid for is a full charge for a letter they have. It is worth that only when the stored letters
  * would be WRONG — not when a new one would merely be better.
  * ⚠️ WHICH IS WHY THE CONVENTIONS SLICE (2026-09-14) DID NOT BUMP IT. Hiring conventions set the register,
- * the length band and the paragraph emphasis (letterStyleFor) — the same facts, addressed to the same
+ * the length band and the paragraph emphasis (the old prompt's letterStyleFor) — the same facts, addressed to the same
  * employer, in a tone that suits them. A stored letter is still a true letter, so nobody is charged for
  * ours having improved. Telling the two apart later needs no marker in the fingerprint either: a letter
  * written with them has them in its stored `research.conventions`.
@@ -82,37 +72,32 @@ const LETTER_MODEL = 'gemini-2.5-flash';
  * register are the same rule (the same facts, said for this employer), and the brand (design.brand — the
  * employer's colour and font on every design) is RENDERING, not writing: a stored letter without one reads
  * its brand back from its research at render time (coverLetterController.letterBrandOf).
+ * ⚠️ NOR DID THE SWITCH TO THE JOBS SECTION'S WRITER (2026-09-18) — the biggest change of instructions this lane has
+ * had, and still not a reason to charge anyone again. Every stored letter is a true letter from the same résumé to the
+ * same employer; a user who wants the new writer's version taps Refresh, sees what it costs, and confirms it. A bump
+ * would have made every saved letter "stale" at once and billed the next open of each — the drain this file exists to
+ * prevent. Telling the two apart needs no marker here: the stored row's `model` and its research say which it was.
  */
 const LETTER_REV = 'letter-v1';
 
 /**
  * ⚠️ ONE AI WINDOW FOR THE WHOLE BUILD, counted from the handler's first line. The app polls a build for 6 minutes
  * (homeAddEmployer DEADLINE_MS), and after the AI this lane still ranks designs, waits on the usage lock (≤ 15 s)
- * and lays out thumbnails (≤ 20 s). So research (≤ 25 s), every draft, every pause, every fallback model and the
- * corrective pass must all END inside these 4 minutes — not each inside a cap of its own. The old lane gave each
- * call 80 s and three calls could add up; a fallback chain that simply added its caps on top (60 + 40 + 40 + 40 s a
- * draft, twice, plus a corrective pass) would outlive the app that is waiting for it. Worst case now:
- * 240 s of research + AI, + 15 s lock + 20 s thumbs ≈ 275 s, with the rest of the 6 minutes left for the queue.
- *   windowMs            the AI deadline, from the handler's first line. A joiner that waited on a leader has spent
- *                       part of it waiting, so the chain it runs after that leader failed is short on purpose.
- *   draftBudgetMs       one draft's whole chain (aiText's own caps inside it: 60 s the first try, 40 s each later one)
- *   correctionBudgetMs  the placeholder pass. The first draft is already good enough to keep, so it gets less.
- *   minCallMs           never START the lane's bad-output retry or the corrective pass with less than this left:
- *                       a chain with no room would end as an "AI is busy" the provider never said.
- * Read at call time; the suite shrinks them. Nothing in production writes them.
+ * and lays out thumbnails (≤ 20 s). So the letter — every try, every pause, every fallback model, every answer it
+ * asks again for — must END inside these 4 minutes, whatever it waited on before: the writer's own budget is cut to
+ * what is left of this window (coverLetterController.writeLegacyLetter `deadline`). The research runs BESIDE the
+ * letter (≤ 25 s), inside the same window. Worst case: 240 s of AI + 15 s lock + 20 s thumbs ≈ 275 s, with the rest
+ * of the 6 minutes left for the queue.
+ *   windowMs   the AI deadline, from the handler's first line. A joiner that waited on a leader has spent part of it
+ *              waiting, so the letter it writes after that leader failed has less time on purpose.
+ * Read at call time; the suite shrinks it. Nothing in production writes it.
  */
 const LETTER_AI = {
     windowMs: 4 * 60 * 1000,
-    draftBudgetMs: 3 * 60 * 1000,
-    correctionBudgetMs: 90 * 1000,
-    minCallMs: 20 * 1000,
 };
 
-/** The parsed upload rides into the prompt AND the fingerprint capped at the same length — one string. */
+/** The parsed upload's share of the fingerprint, capped (the writer reads the row itself — see letterFingerprintOf). */
 const UPLOAD_CONTEXT_MAX = 24000;
-/** Posting text in the prompt. The fingerprint hashes the whole text (both sides see all of it). */
-const POSTING_PROMPT_MAX = 12000;
-const TAILORED_PROMPT_MAX = 20000;
 
 // ── Letter thumbnails ────────────────────────────────────────────────────────────────────────────
 // ⚠️ ON THE PERSISTENT VOLUME, IN A DOT DIRECTORY. temp/ is wiped by every deploy, and a letter's
@@ -123,7 +108,7 @@ const TAILORED_PROMPT_MAX = 20000;
 // share the scheme (file prefix differs: cl_ here), and each lane prunes only its own prefix.
 const THUMB_ROOT = process.env.DOC_THUMB_CACHE_DIR || path.join(__dirname, '../../uploads/.thumb_cache');
 const THUMB_W = 480;
-const LETTER_THUMB_KEEP = 120;   // per user, cl_ files only — ~17 letters with every design rendered
+const LETTER_THUMB_KEEP = 240;   // per user, cl_ files only (a page and its card) — ~17 letters with every design rendered
 const CARDS_MAX = 3;             // renderPreviews launches one browser per batch; 3 pages is the safe batch
 const PRERENDER_TOP = 2;
 const PRERENDER_BUDGET_MS = 20 * 1000;
@@ -194,7 +179,8 @@ async function uploadedMetaFor(userId) {
     }
 }
 
-/** The upload as the prompt sees it — keys sorted, bookkeeping stripped, empties dropped, capped. */
+/** The upload as the FINGERPRINT sees it — keys sorted, bookkeeping stripped, empties dropped, capped. (It fed this lane's
+ *  own prompt too until 2026-09-18; the writer reads the row itself now. Unchanged: a change here moves every fingerprint.) */
 function uploadContextOf(meta) {
     if (!meta || typeof meta !== 'object') return '';
     const rest = {};
@@ -208,14 +194,16 @@ function uploadContextOf(meta) {
 }
 
 /**
- * The candidate's own material — the ONLY source of truth about them. null = they have no résumé.
+ * The candidate's own material — what the fingerprint hashes, what decides no_resume, and where a letter with no posting
+ * takes its position from. null = they have no résumé. (The letter's WORDS are written from the Jobs lane's résumé
+ * metadata — see buildEmployerLetter — which is the same upload row, with the Builder résumé merged in.)
  *
  * base: resumeScorer.narrativeFor({ base: true, strict: true }) — the résumé the user OWNS, never the
  *   row a tailored build last overwrote (tailoring must not compound across employers). strict: a DB
  *   failure THROWS instead of reading as "no résumé" (telling someone who has one to upload one is how
  *   they end up overwriting it).
  * upload: the parsed upload, as the resume doc lane feeds its prompt (includeUploadedResume). Skipped
- *   when the narrative already IS the upload — the same facts twice only cost tokens.
+ *   when the narrative already IS the upload — the same facts twice. Kept exactly so: it is a fingerprint input.
  */
 async function candidateMaterialFor(userId, env) {
     const n = await scorerMod().narrativeFor(userId, { base: true, env, strict: true });
@@ -227,21 +215,23 @@ async function candidateMaterialFor(userId, env) {
 /**
  * The per-employer cache fingerprint of a letter — THE one definition (gate, build, stale label).
  *
- * Every input the prompt sees that can change the letter's WORDS: the base narrative, the parsed upload,
- * the posting's title / text / link, the website, the research revision and this prompt's revision.
+ * Every input that can change the letter's WORDS: the base narrative, the parsed upload, the posting's title / text /
+ * link, the website, the research revision and this lane's letter revision. (Since 2026-09-18 the words are written by
+ * the Jobs section's generation — see "The letter itself" — from the parsed upload row with the Builder résumé merged
+ * in, the posting and a research subject derived from the website: the same facts this hashes.)
  *
  * ⚠️ DELIBERATELY NOT HASHED — each for a reason that is about money:
- *   • the employer's tailored RESUME doc. It is derived from the same base (the doc lane adds no facts),
- *     so it moves nothing true; hashed, every letter would turn "stale" the moment its resume landed,
- *     and a letter and resume built side by side would race each other into a paid Refresh. The build
- *     only reads a tailored resume whose own fingerprint is CURRENT (see tailoredResumeFor), so a
- *     pre-edit resume can never feed old facts into a new letter.
+ *   • the upload row's bookkeeping (ids, parse stamps): the writer is handed the whole row, as the Jobs lane hands it,
+ *     but re-parsing an unchanged upload must not re-bill a letter (uploadContextOf strips them from this side).
+ *   • the Builder résumé the writer merges in (builder_resume — the user_resumes row as it is NOW). The base narrative
+ *     above is the résumé the user owns; after a tailored build that row is a copy of it ordered for another employer,
+ *     which adds no facts. Hashed, every letter would turn "stale" the moment any tailored resume landed.
  *   • the research itself (only RESEARCH_REV) — its `conventions` included: a 30-day cache refresh, or
- *     conventions fetched onto an old cache row, must not re-bill every letter.
- *   • `country`: since the conventions slice the country (through regionForConventions) and the conventions
- *     set the letter's REGISTER, length band and structure (letterStyleFor) — never its facts. A chip that
- *     learns its country later must still not make a finished letter stale or bill a Refresh for a change
- *     of tone; the design ranking it also reorders costs nothing.
+ *     conventions fetched onto an old cache row, must not re-bill every letter. It writes no word of the letter now
+ *     (it ranks the designs and paints the brand); the letter researches the employer live, through grounding.
+ *   • `country`: the writer's JOB LOCATION (which office leads the addresses, and whether the closing speaks of
+ *     relocating), and the design ranking's region. A chip that learns its country later must still not make a
+ *     finished letter stale or bill a Refresh; the user who wants it rewritten for the new country taps Refresh.
  *   • the candidate's name and contact details: the template prints them live from the profile.
  */
 function letterFingerprintOf(material, job) {
@@ -296,32 +286,6 @@ function researchSiteFor(company, job) {
         }
     } catch (e) { console.warn('[employerLetter] website vetting unavailable:', e.message); }
     return '';
-}
-
-/**
- * This employer's tailored resume, when one exists AND was written from the user's CURRENT résumé.
- * ⚠️ A stale tailored resume carries facts from before the user's last edit (an old title, a date they
- * corrected). Letting it into the prompt would write those back into a brand-new letter — so its own
- * fingerprint must equal the resume lane's current one, or it is ignored. If the resume lane cannot
- * say (export missing, unreadable), it is ignored too: the base résumé alone is always enough.
- * ⚠️ Found by the chip's IDENTITY (docJobUrl — the job_url the resume doc lane stores), compared by the
- * job it was WRITTEN against (job, incl. a pasted posting link): an employer-level chip's resume lives
- * under job_url '' even when both documents were written against a posting.
- */
-async function tailoredResumeFor(userId, { company, employerId, job, docJobUrl }, req) {
-    try {
-        const rdoc = await employerDocsMod().currentFor(userId, 'resume', { employer: company, employerId, jobUrl: docJobUrl }, req);
-        if (!rdoc || !rdoc.payload || typeof rdoc.payload !== 'object' || !rdoc.payload.personal_info) return null;
-        const rb = require('./resumeBuilderController');
-        if (typeof rb.currentResumeFingerprint !== 'function') return null;
-        const fp = await rb.currentResumeFingerprint(userId, {
-            job: { company, title: job.title, url: job.url, description: job.description, website: job.website }, env: req,
-        });
-        return fp && fp === rdoc.input_fingerprint ? rdoc.payload : null;
-    } catch (e) {
-        console.warn('[employerLetter] tailored resume unreadable (writing from the base alone):', e.message);
-        return null;
-    }
 }
 
 /** The builder resume JSON, for seniority only — tailoring never moves experience dates. */
@@ -533,7 +497,9 @@ const LOST_COVER = Object.freeze({
  * withUsageLock. The build's catch answers these only while chargedAt is still 0 — never after a charge.
  * ⚠️ 503, and a reason of its own: an older app maps an unknown reason to 'failed' and shows `error`, which says
  * the same thing; the current one reads the reason and offers Try again only for ai_busy (useHomeBuilds RETRYABLE).
- * Any OTHER failure — bad output twice, every model truncated — keeps the 500 / 504 it always had.
+ * Any OTHER failure — answers the writer could not use three times over, every model truncated — keeps the 500 /
+ * 504 it always had. The words are the Jobs lane's own refusals (coverLetterController LEGACY_AI_BUSY / _DOWN), letter
+ * for letter, so a user reads one story whichever screen they wrote from.
  */
 const AI_BUSY = Object.freeze({
     status: 503,
@@ -550,31 +516,46 @@ const AI_DOWN = Object.freeze({
     }),
 });
 
-/** AI_BUSY / AI_DOWN for aiText's final failure, or null for anything else (kind 'other' is not an outage). Read by
- *  name, like aiText.isAiBusy, so a second copy of that module in the require cache still answers. */
+/**
+ * AI_BUSY / AI_DOWN for the letter writer's refusal, or null for anything else. The writer
+ * (coverLetterController.writeLegacyLetter) has already turned aiText's final AiUnavailableError into its
+ * reason — 'ai_busy' (every model busy, hung or out of time) or 'ai_down' (quota / auth: the key itself) — with the
+ * cause attached; kind 'other' (every model truncated, or refused the request) stays its "could not finish", which is
+ * not an outage.
+ */
 function aiEndingOf(e) {
-    if (!e || e.name !== 'AiUnavailableError') return null;
-    if (e.kind === 'busy') return AI_BUSY;
-    if (e.kind === 'quota' || e.kind === 'auth') return AI_DOWN;
+    if (!e) return null;
+    if (e.reason === 'ai_busy') return AI_BUSY;
+    if (e.reason === 'ai_down') return AI_DOWN;
     return null;
 }
 
 // ── The letter itself ────────────────────────────────────────────────────────────────────────────
+//
+// ⚠️ WRITTEN BY THE JOBS SECTION'S GENERATION (2026-09-18, the owner's decision: "we have a prompt/api that is already
+// written on the jobs section and that used to generate good cover letters with project details and clients and hence
+// we finalized that… we need to use the same one… and not the new one"). This lane used to build a prompt of its own
+// (buildEmployerLetterPrompt — a cached research block, the hiring conventions, the country's letter habits, a register
+// and a length band) and ask it with NO live search. v2's finalized prompt researches the employer itself through Google
+// Search grounding — that is where the named projects, products and clients come from — and a letter written from Home
+// must read like the one the Jobs section writes for the same job. So the WORDS are now written by coverLetterController's
+// own functions, called from here and never copied (see that file's THE ONE LETTER WRITER):
+//   letterResumeMetadataFor  the résumé the Jobs lane writes from: the parsed upload + the Builder résumé
+//   letterResearchSubjectOf  who is researched: the website — the company's name when the only URL is a job board
+//   letterListingOf          the posting, when there is one (the pasted link and text)
+//   writeLegacyLetter        v2's buildPrompt, the grounding, v2's config, the letter chain, the parsing, the retries
+//   letterDetailsOf          the answer → the addressee, the subject, the offices and the letter's HTML
+// Everything AROUND the words stays this lane's own: the gate, the cache, the flights, the money, the stored document,
+// the design ranking, the brand and the thumbnails. The employer research below writes no word of the letter any more —
+// it ranks the designs and paints the brand.
+// ⚠️ THE PLACEHOLDER GUARD, ITS CORRECTIVE PASS AND THE SALUTATION STRIP WENT WITH THE OLD PROMPT. They answered that
+// prompt's failure modes ("[X%]" from a model with no facts to cite; a "Dear …" it had been told not to write), and
+// the corrective pass re-sent that prompt. The Jobs lane's parsing is the one both screens share now: a clean-up on one
+// screen alone would be a letter that reads differently on the other.
 
 /** research.conventions when it is a usable object, else null (an old cache row or an old research module). */
 const conventionsOf = (facts) => (facts && facts.conventions && typeof facts.conventions === 'object'
     && !Array.isArray(facts.conventions) ? facts.conventions : null);
-
-/**
- * employerResearch.conventionsPromptBlock, defensively: '' when there are no conventions, the export is
- * missing (a research module from before the conventions slice) or it throws. The block carries its own
- * guard rails (conventions shape format and emphasis, never the candidate's facts); the prompt repeats them.
- */
-function conventionsBlockFor(research, conventions, company) {
-    if (!conventions || !research || typeof research.conventionsPromptBlock !== 'function') return '';
-    try { return String(research.conventionsPromptBlock(conventions, company, { forLetter: true }) || ''); }
-    catch (e) { console.warn('[employerLetter] conventions block unavailable:', e.message); return ''; }
-}
 
 /**
  * The convention region: regionForConventions — the chip's own country first, then the research's role country,
@@ -591,564 +572,15 @@ function letterRegionFor(research, designFit, conventions, { country, website })
     try { return designFit.regionFor({ country, website }); } catch { return 'generic'; }
 }
 
-const LETTER_REGISTER_DEFAULT = 'professional but human — someone who did their homework, not a template. Clear, direct, medium vocabulary; vary sentence length.';
-
-// ── The country's own letter habits ───────────────────────────────────────────────────────────────
-// ⚠️ A LETTER TAKES THE REGISTER AND STRUCTURE HALF OF THE PLAYBOOK, AND NOTHING ELSE. cvPlaybook answers
-// "how is a CV written where this application is going" for every country regionFromCountry knows. A cover
-// letter keeps only the half a letter can honour — how formal it reads, how long it runs, how it opens and
-// how it closes — and must NEVER carry a CV habit: no photo, no date of birth, no personal details, no page
-// count, no date pattern, no section order, no projects policy. Those belong to the résumé, and a letter that
-// mentions one is a defect, not a convention. Two mechanisms, not one promise:
-//   • countryLetterRowOf reads ONLY playbook.source and playbook.profile. The playbook's cv half is never
-//     read in this file at all, so the CV habits cannot leak from the table — there is no path;
-//   • letterPlaybookBlockFor puts cvPlaybook's own letter block through letterSafeBlock, so a CV line that
-//     ever appears in it is dropped HERE, in the lane that must not carry it, rather than trusted away.
-// ⚠️ THE SALUTATION, THE DATE LINE AND THE SIGNATURE BLOCK ARE THE TEMPLATE'S, NOT THE MODEL'S. Every design
-// prints "Dear …", the date and the sign-off itself (parseLetterOutput strips them from the body precisely
-// because a model that writes one has it printed twice), so no country rule here may ask for any of them.
-// Who the letter is addressed TO is likewise decided after the call, from evidence: a name only where the
-// posting or the research states one.
-
 /**
- * How a letter READS where this application is going, per regionFromCountry CV profile — all 17, so every
- * country that table knows is answered. Three columns, and deliberately only three:
- *   register  — how formal (the prompt's TONE line);
- *   words     — how long, never below the ~230-word floor letterStyleFor documents;
- *   structure — ONE line about the arc or the closing, and only where that country departs from the
- *               four-paragraph shape the prompt already describes. Most countries close a letter the same
- *               way; seventeen slightly different sentences saying so would be prompt noise, paid for twice
- *               whenever the corrective pass re-sends the prompt.
- * ⚠️ WHAT IS NOT HERE, AND WHY: emphasis — what evidence leads, how it is presented — is cvPlaybook's own
- * letter block, printed beside this one (letterPlaybookBlockFor). The two are split by subject so they never
- * say the same thing twice: register, length and the closing here; the opening and the emphasis there.
- * ⚠️ NO COUNTRY OVERRIDE TABLE. regionFromCountry's profile IS the grouping of countries that read a letter
- * the same way, and a register that differed from a country's neighbours' would be a claim this file cannot
- * source. A country that really does depart belongs in that table, where the whole app reads it.
- */
-const LETTER_PROFILES = {
-    // US, Israel, Puerto Rico — the shortest, plainest letter in the table; it is scanned once.
-    anglo1: {
-        register: 'direct and specific — plain sentences, concrete nouns, no ceremony.',
-        words: '250-350',
-        structure: 'Four paragraphs and a one-sentence close: this letter gets one quick read.',
-    },
-    // UK, Ireland, Canada, Australia, NZ and the Commonwealth by proxy.
-    anglo2: {
-        register: 'professional and understated — evidence before adjectives, no superlatives, no hard sell.',
-        words: '300-400',
-        structure: null,
-    },
-    // Germany, Austria, Switzerland — the Anschreiben: formal, impersonal, and it closes on the meeting.
-    dach: {
-        register: 'formal and impersonal — complete sentences, no contractions, no exclamation marks, no casual asides.',
-        words: '300-400',
-        structure: 'Close by offering to discuss the role in person, rather than restating the letter.',
-    },
-    // France, Belgium, Luxembourg — the lettre de motivation, and its "vous-moi-nous" arc.
-    franco: {
-        register: 'formal and courteous throughout — complete sentences, no contractions, no familiarity.',
-        words: '300-400',
-        structure: 'The arc this market reads is: what the employer needs, then what the candidate brings, then what they would do together.',
-    },
-    // Maghreb, francophone and lusophone Africa.
-    franco_ext: {
-        register: 'ceremonious and correct — complete sentences, no contractions, no familiarity.',
-        words: '300-400',
-        structure: null,
-    },
-    // Italy, Portugal, Greece, Malta, Cyprus.
-    south_eu: {
-        register: 'formal and measured — complete sentences, courteous phrasing, no casual asides.',
-        words: '300-400',
-        structure: null,
-    },
-    // Spain, Andorra.
-    iberia: {
-        register: 'formal but warm — courteous complete sentences, no casual phrasing.',
-        words: '300-400',
-        structure: null,
-    },
-    // Netherlands and the Nordics — ceremony reads as padding here.
-    north_eu: {
-        register: 'matter-of-fact — concrete, unadorned sentences; no superlatives and no flattery.',
-        words: '250-350',
-        structure: 'Close in a single sentence — anything longer reads as padding here.',
-    },
-    // Central & Eastern Europe, the Baltics.
-    cee: {
-        register: 'professional and formal — complete sentences, no contractions.',
-        words: '300-400',
-        structure: null,
-    },
-    // Russia, the Caucasus, Central Asia, Turkey.
-    cis: {
-        register: 'formal and business-like — complete sentences, no casual asides.',
-        words: '280-380',
-        structure: null,
-    },
-    // The Gulf states, the Levant, Egypt.
-    gulf: {
-        register: 'formal and courteous — polished and respectful throughout.',
-        words: '300-400',
-        structure: null,
-    },
-    // Anglophone Africa.
-    africa_en: {
-        register: 'formal and respectful — complete sentences, courteous, no casual phrasing.',
-        words: '300-400',
-        structure: null,
-    },
-    // India, Pakistan, Bangladesh, Sri Lanka, Nepal — skills and projects are what is read first.
-    south_asia: {
-        register: 'respectful and professional — courteous complete sentences, no slang and no hard sell.',
-        words: '300-400',
-        structure: 'Paragraphs 2 and 3 stay with the skills, tools and projects the material names — that is what is read first here.',
-    },
-    // Singapore, Hong Kong, Macau.
-    sg: {
-        register: 'concise and corporate — precise sentences, no filler.',
-        words: '250-350',
-        structure: 'Stay at the lower end of the length band: a long letter is skimmed here.',
-    },
-    // Malaysia, Indonesia, the Philippines, Thailand, Vietnam.
-    sea: {
-        register: 'polite and professional — courteous complete sentences, warm but never familiar.',
-        words: '300-400',
-        structure: null,
-    },
-    // Japan, Korea, China, Taiwan — modesty is the register; self-promotion reads badly.
-    east_asia: {
-        register: 'formal and deferential — courteous, measured sentences that never boast.',
-        words: '250-350',
-        structure: null,
-    },
-    // Latin America.
-    latam: {
-        register: 'warm but professional — complete sentences, no slang and no familiarity.',
-        words: '300-400',
-        structure: null,
-    },
-};
-
-/**
- * The row for the country this application is going to, or null.
- * ⚠️ ONLY A RESOLVED COUNTRY SPEAKS. A playbook built from a region WORD ("Europe", "APAC") knows less than
- * letterStyleFor's own region switch already does — its `profile` is a nearest proxy, not that region's
- * habit — so it is left to the region switch, exactly as cvPlaybook leaves its own region rows.
- * ⚠️ `source` and `profile` are the only two fields this lane reads from a playbook. Not `cv`, ever.
- */
-function countryLetterRowOf(playbook) {
-    const pb = playbook && typeof playbook === 'object' ? playbook : null;
-    if (!pb || pb.source !== 'country') return null;
-    return LETTER_PROFILES[pb.profile] || null;
-}
-
-/**
- * The country playbook for THIS application — cvPlaybook.playbookFor, defensively: null when the module is
- * absent (a deploy mid-slice), when it is older than the playbook slice, when it answers null, or when it
- * throws. A null playbook writes the letter exactly as this lane wrote it before any of this existed.
- * ⚠️ RESOLVED ONCE PER BUILD and handed to both the style and the block. Two resolutions could disagree, and
- * a letter written for one country while its designs are ranked for another is the one thing that must not
- * happen — the same rule the doc lane carries.
- */
-function letterPlaybookFor({ country, website, conventions, research }) {
-    try {
-        const mod = playbookMod();
-        if (!mod || typeof mod.playbookFor !== 'function') return null;
-        return mod.playbookFor({ country: country || null, website: website || null, conventions, research }) || null;
-    } catch (e) {
-        console.warn('[employerLetter] country playbook unavailable:', e.message);
-        return null;
-    }
-}
-
-/**
- * A CV habit, in the letter lane. Any line naming one is DROPPED before the model ever sees it: a photo, a
- * date of birth or nationality, personal details, a page count, a date pattern, a section order, the CV's own
- * sections. They are all legitimate in a résumé prompt and all defects in a letter — the letter's ABSOLUTE
- * RULES tell the model so, and this makes sure it is never told the opposite three lines earlier.
- */
-const CV_HABIT_RE = new RegExp([
-    'photo|photograph|headshot',
-    'date of birth|birth date|\\bdob\\b|marital|civil status|nationality|passport|personal details',
-    '\\bpages?\\b|one[- ]page|two[- ]pages|page count',
-    '\\bcvs?\\b|curriculum vitae|\\br[eé]sum[eé]s?\\b',
-    'section order|\\bheadings?\\b|\\bbullets?\\b|skills block|skills section|projects section',
-    'date format|\\bdates\\b|mm/yyyy|mmm yyyy',
-].join('|'), 'i');
-
-/** cvPlaybook's own closing guard rail — kept, but it is not a rule, so a block of nothing but it is empty. */
-const PLAYBOOK_CLOSER_RE = /habits of the place|never mention this guidance/i;
-const PLAYBOOK_RULES_MAX = 5;
-
-/**
- * cvPlaybook's letter block, made letter-safe: the header, then the rules that carry no CV habit, capped.
- * '' when nothing actionable survives — a header with no rule under it is tokens, not guidance.
- * ⚠️ THIS FILTER IS THE POINT. cvPlaybook is a CV module: its letter variant is written to carry none of this
- * today, and this lane still refuses to depend on that staying true through somebody else's future edit.
- */
-function letterSafeBlock(raw) {
-    const lines = String(raw || '').split('\n').map((l) => l.trim()).filter(Boolean);
-    if (!lines.length) return '';
-    const head = /^===/.test(lines[0]) ? lines[0] : '';
-    const rules = [];
-    let closer = '';
-    let dropped = 0;
-    for (const line of lines) {
-        if (!/^-\s/.test(line)) continue;
-        if (CV_HABIT_RE.test(line)) { dropped++; continue; }
-        // ⚠️ THE GUARD RAIL IS NOT A RULE AND NEVER COUNTS AGAINST THE CAP. "these are habits, not facts about
-        // the candidate" is the line that keeps the whole block honest: a block long enough to be trimmed is
-        // exactly the one that must keep it.
-        if (PLAYBOOK_CLOSER_RE.test(line)) { closer = closer || line; continue; }
-        if (rules.length >= PLAYBOOK_RULES_MAX) continue;
-        if (!rules.includes(line)) rules.push(line);
-    }
-    if (dropped) console.warn(`[employerLetter] ${dropped} CV line(s) dropped from the country letter block — a letter never carries them`);
-    if (!rules.length) return '';
-    return [head, ...rules, closer].filter(Boolean).join('\n');
-}
-
-/** The block for the prompt, or '' — never throws, and never a second resolution of the country. */
-function letterPlaybookBlockFor(playbook, company) {
-    if (!playbook) return '';
-    try {
-        const mod = playbookMod();
-        if (!mod || typeof mod.playbookPromptBlock !== 'function') return '';
-        return letterSafeBlock(mod.playbookPromptBlock(playbook, company, { forLetter: true }));
-    } catch (e) {
-        console.warn('[employerLetter] country letter block unavailable:', e.message);
-        return '';
-    }
-}
-
-/**
- * How THIS employer reads a cover letter: { words, register, notes[] } for the prompt's HOW TO WRITE IT.
- *
- * ⚠️ DETERMINISTIC, NOT A SECOND AI GUESS. The facts come from one grounded research call (conventions), the
- * country playbook and the region; this maps them onto the three things a letter can honestly change —
- * register, length band, paragraph emphasis. The shape the templates depend on never moves: four paragraphs,
- * no salutation, no sign-off, English (see buildEmployerLetterPrompt). The band never goes below ~230 words:
- * parseLetterOutput refuses < 120 and the placeholder guard < 80, and a strip must not push a short letter
- * under either.
- *
- * THE ORDER, and it is the same one every other merge in this lane uses — the more specific answer wins:
- *   1. the EMPLOYER TYPE leads (contract 2: the employer, not the candidate's seniority, decides the format);
- *   2. the COUNTRY, when the playbook resolved one, fills the register and the band the type left at their
- *      defaults, and adds its one structure line either way (that line describes what the closing paragraph
- *      DOES, never how formal it is, so it cannot fight the type's register);
- *   3. the REGION switch — six broad habits — speaks only when no country did. ⚠️ NEVER BOTH: a Dutch letter
- *      hearing continental Europe's "formal, no contractions" and the Netherlands' "direct and plain" in one
- *      prompt is two instructions that disagree, which is worse than the one we had before the country knew.
- * `playbook` is optional: a caller without one (an older path, an unavailable cvPlaybook) gets exactly the
- * style this function returned before the country was known.
- */
-function letterStyleFor(conventions, region, playbook) {
-    const c = conventions && typeof conventions === 'object' ? conventions : null;
-    let words = '300-450';
-    let register = LETTER_REGISTER_DEFAULT;
-    const notes = [];
-    // Whether the EMPLOYER TYPE spoke — set inside each case, so a type the switch does not answer cannot
-    // silently read as one that did, however the cases are edited later.
-    let byType = false;
-    switch (c && c.employerType) {
-        case 'public_sector':
-            byType = true;
-            words = '350-450';
-            register = 'formal and measured — complete sentences, no contractions, no casual phrasing, no sales language.';
-            notes.push('Public-sector hiring is criteria-led: in paragraphs 2 and 3 answer the requirements the posting states, in its own terms, one at a time — only with experience the candidate really has.');
-            break;
-        case 'academia':
-            byType = true;
-            words = '350-450';
-            register = 'formal and scholarly but readable — no contractions, no sales language.';
-            notes.push('Where the candidate\'s material shows research, teaching, publications or grants, those lead paragraphs 2 and 3; never add any it does not contain.');
-            break;
-        case 'enterprise':
-            byType = true;
-            words = '300-400';
-            register = 'professional and polished — confident and specific, no hyperbole.';
-            notes.push('Large employers screen fast: the strongest real match to the role opens paragraph 2.');
-            break;
-        case 'sme':
-            byType = true;
-            words = '280-380';
-            register = 'professional and personable — practical, showing breadth and hands-on ownership.';
-            break;
-        case 'startup':
-            byType = true;
-            words = '230-320';
-            register = 'direct and plain-spoken — short sentences, no corporate filler.';
-            notes.push('Lead with what the candidate shipped and owned; keep every paragraph short.');
-            break;
-        case 'agency':
-            byType = true;
-            words = '250-350';
-            register = 'crisp and outcome-led — client-facing polish, no filler.';
-            notes.push('Lead with delivered work and the results the candidate\'s material states.');
-            break;
-        case 'ngo':
-            byType = true;
-            words = '300-400';
-            register = 'warm but professional — sincere and concrete, no sales language.';
-            notes.push('Connect to the organisation\'s mission only through facts in the research above.');
-            break;
-        default: break;
-    }
-    // THE COUNTRY, when one resolved — register and length only where the employer type left them alone.
-    const row = countryLetterRowOf(playbook);
-    if (row) {
-        if (!byType) { words = row.words; register = row.register; }
-        if (row.structure) notes.push(row.structure);
-    }
-    // …and the region only where it did not: one voice about where this letter is going, never two.
-    if (!row) switch (region) {
-        case 'dach':
-            notes.push('German-speaking employers expect a formal, structured letter: no contractions, no exclamation marks, no casual asides.');
-            break;
-        case 'eu':
-            notes.push('European motivation-letter habit: paragraph 1 opens with why this employer and this role before the candidate\'s background; keep the register formal, with no contractions.');
-            break;
-        case 'uk_au':
-            notes.push('Understated register: evidence over adjectives, no superlatives.');
-            break;
-        case 'us_ca':
-            notes.push('Achievement-led: name concrete results the candidate\'s material states early in paragraph 2.');
-            break;
-        case 'india':
-            notes.push('Respectful, professional register; skills and projects lead.');
-            break;
-        case 'sg':
-            notes.push('Concise corporate register; stay at the lower end of the length band.');
-            break;
-        default: break;
-    }
-    // The register the conventions observed in this employer's OWN hiring communication ("direct",
-    // "formal and institutional") — folded into the tone, never into the facts. Formality and length come
-    // from the employer type above; this only tunes the voice inside that band.
-    if (c && typeof c.tone === 'string' && c.tone.trim()) {
-        notes.push(`Match the register of the employer's own hiring communication — "${c.tone.trim().slice(0, 120)}" — within the tone above.`);
-    }
-    return { words, register, notes };
-}
-
-/**
- * The prompt. ⚠️ WHY NOT ai-cover-letter-v2.generateCoverLetter: its proven prompt researches the
- * employer LIVE ("use Google Search aggressively… name specific clients"), and this lane's contract is the
- * opposite — the employer research is one cached, sanitised block, and the letter may NOT say anything
- * about the employer beyond it or the posting. Handing the model both instructions gives it two sources of
- * truth to disagree with. So v2's proven PARTS are reused where they fit — the four-paragraph structure,
- * the tone and banned-phrase list, the bold rules, the no-salutation/no-sign-off body contract the
- * templates depend on, the international-safety rule and the English-output rule — and the research,
- * the posting and the candidate's material are the only facts it gets. No live search tool is attached.
- * ⚠️ Every input here must be in letterFingerprintOf, or be one of the documented exclusions there.
- */
-function buildEmployerLetterPrompt({ company, website, job, material, tailored, researchBlock, conventionsBlock, playbookBlock, style, sector, correction }) {
-    const st = style && typeof style === 'object' ? style : letterStyleFor(null, 'generic');
-    // The employer's sector (the conventions' sector, else the research's industry), so paragraph 1 opens
-    // with the candidate's fit for THAT field in the employer's own vocabulary — the difference between a
-    // letter written for this employer and one that could open a letter to anyone. '' = no sector known.
-    const sec = typeof sector === 'string' ? sector.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
-    // ⚠️ SAID ONCE. The country block and these notes are split by subject (register, length and the closing
-    // here; the opening and the emphasis there), so they do not collide today — but either table can gain a
-    // line later, and a rule the prompt states twice is a rule the model weighs twice. A note the block
-    // already carries word for word is therefore dropped rather than repeated.
-    const blockPlain = plainOf(playbookBlock);
-    const notes = (Array.isArray(st.notes) ? st.notes : []).filter((n) => !(blockPlain && blockPlain.includes(plainOf(n))));
-    const styleNotes = notes.length ? `\nFOR THIS EMPLOYER:\n${notes.map((n) => `- ${n}`).join('\n')}\n` : '';
-    const posting = !!(job.title.trim() || job.description.trim());
-    const tailoredJson = tailored ? (() => {
-        // Contact details are the template's business, not the model's.
-        const { personal_info: pi, design: _d, _buildMethod: _b, ...rest } = tailored;
-        return JSON.stringify({ title: (pi && pi.title) || '', ...rest }, null, 1).slice(0, TAILORED_PROMPT_MAX);
-    })() : '';
-
-    const roleBlock = posting
-        ? [
-            '=== THE ROLE (a job posting was given — it is authoritative for what the role involves) ===',
-            `Title: ${job.title.trim() || '(not given)'}`,
-            job.url.trim() ? `Link: ${job.url.trim()} (for reference only — it has NOT been opened; infer nothing from it)` : '',
-            job.description.trim() ? `Posting text:\n---\n${job.description.slice(0, POSTING_PROMPT_MAX)}\n---` : '',
-            'Use the posting for the role\'s real duties, requirements and seniority. Where it asks for something the candidate genuinely has, say so in the posting\'s own words. Where it asks for something they do not have, say nothing about it — never imply it.',
-        ].filter(Boolean).join('\n')
-        : [
-            '=== THE ROLE (no job posting was given) ===',
-            `This is an application to ${company} for a role that matches the candidate's experience. Write it for the role their material points to — their current or most recent job title.`,
-            'Never call it an "open", "speculative", "unsolicited", "general" or "spontaneous" application, and never invent a vacancy, a team or a requisition.',
-        ].join('\n');
-
-    const noResearch = `(No research is available for ${company}. Do not describe its products, customers, figures, news, values or culture. If what ${company} does is not plain from its name or the posting, keep the "why ${company}" part to the kind of work the candidate wants to do there.)`;
-
-    return `You are an expert cover letter writer. Write ONE cover letter from the candidate below to ${company}.
-Return ONLY the JSON object described at the end.
-
-=== THE CANDIDATE'S OWN MATERIAL (the ONLY source of truth about the candidate) ===
---- Resume ---
-${material.baseText}
-${material.uploadText ? `--- Details parsed from their uploaded resume ---\n${material.uploadText}\n` : ''}${tailoredJson ? `--- The same resume, already tailored for ${company} (the same facts, ordered for this employer — use it to decide which strengths lead) ---\n${tailoredJson}\n` : ''}
-=== THE EMPLOYER ===
-Company: ${company}
-${website ? `Website: ${website} (identifies the company only — it has not been opened)\n` : ''}
-${researchBlock || noResearch}
-${conventionsBlock ? `\n${conventionsBlock}\n` : ''}${playbookBlock ? `\n${playbookBlock}\n` : ''}
-${roleBlock}
-
-=== HOW TO WRITE IT ===
-Four paragraphs separated by one blank line, ${st.words || '300-450'} words in total:
-1. Introduction and connection to ${company}. ${sec
-        ? `The FIRST sentence states the candidate's fit for ${sec}: their current or most recent title, and the one or two real strengths from their material that matter most in ${sec}, said in the vocabulary ${company} uses (the technologies, products, mission or posting terms above — only ones the candidate genuinely has). Only when their material states or clearly dates it, their years of experience.`
-        : `One factual opening sentence: the candidate's current or most recent title and, only when their material states or clearly dates it, their years of experience.`} Then two or three sentences on why ${company}: name something specific ONLY when the research above or the posting states it; otherwise speak to the field ${company} is plainly in, without specifics. The opening must read as written for ${company}: never a sentence that could open a letter to any employer.
-2. Skills and domain match. Connect four to six of the candidate's real skills, tools or projects to what ${company} does or what the posting asks for — one concrete link each.
-3. Value. Two or three concrete things from the candidate's material (roles held, projects delivered, results they stated) and how they answer ${company}'s needs.
-4. Closing. Genuine interest in contributing to the team, then one direct thank-you sentence.
-
-TONE: ${st.register || LETTER_REGISTER_DEFAULT}
-${styleNotes}Never use: delve, testament, tapestry, leverage, synergy, spearhead, multifaceted, holistic, passion, passionate, thrilled, excited, eager, fascination, "deeply resonates", "drawn to", "proven track record", "I am writing to express", "I am confident that", "I believe I am", "ideal candidate", "innovative company", "leading firm", "dynamic environment".
-
-BOLD with **double asterisks**: ${company}'s name, the candidate's role titles, their years of experience, and every named skill, tool, technology, product, project or client you mention (only ones that exist in the material, the research or the posting). About 10-20 bold items; never bold a whole sentence.
-
-=== ABSOLUTE RULES ===
-- About the candidate: NEVER add an employer, job title, date, degree, certification, skill, tool, metric, number, client, project or achievement their material does not contain, and never imply more experience than it supports. A number appears only when the material states it.
-- About ${company}: NEVER state a product, customer, project, figure, award, office, value, person or piece of news that is not in the research block or the posting text above.
-- NEVER claim willingness to relocate, visa or work-permit status, notice period, availability or salary expectations unless the candidate's material states it.
-- NO placeholders of any kind: no square brackets, no [X%], [Insert ...], [Company Name], [Your Name], XX%, "X years". When a detail is unknown, write the sentence without it.
-- NO salutation ("Dear ...") and NO sign-off ("Sincerely", "Best regards", the candidate's name) inside cover_letter — the letter template adds both.
-- NO headings, bullet points or numbered lists inside cover_letter.
-- Internationally safe: never mention age, date of birth, marital status, religion, nationality, gender, a photo, family details or salary figures.
-- Hiring conventions and the country's letter conventions (above) shape register, length, structure and emphasis ONLY — they never add a fact about the candidate or ${company}. CV conventions about photos, date of birth, personal details or how many pages a resume runs to belong to the resume: never mention them in this letter, and never write a date line, an address block or a signature into it.
-
-=== OUTPUT — only this JSON object ===
-{
-  "position": "${posting ? 'the posting title exactly as given' : "the candidate's current or most recent job title"} — never 'open application', never square brackets",
-  "to": "the hiring contact's full name ONLY if the posting text names one, otherwise \\"Hiring Manager\\"",
-  "addresses": ["an office address ONLY if it is written in the posting text or the research above; otherwise leave this array empty"],
-  "cover_letter": "PARAGRAPH 1\\n\\nPARAGRAPH 2\\n\\nPARAGRAPH 3\\n\\nPARAGRAPH 4"
-}
-
-OUTPUT LANGUAGE — ABSOLUTE: write the whole letter in plain professional English, even when the material, the research or the posting is in another language, or the employer's country usually writes letters in one. Keep proper nouns (company, product, technology and place names) exactly as written.${correction ? `\n\n=== CORRECTION — YOUR PREVIOUS DRAFT WAS REJECTED ===\nIt contained placeholders: ${correction.join(', ')}. Write the whole letter again with NO placeholder, bracket or unknown-number marker anywhere. Where a number, name or detail is unknown, write the sentence without it.` : ''}`;
-}
-
-/**
- * Gemini's responseSchema is a SUBSET of JSON Schema (type/properties/required/items/description) —
- * it guarantees the SHAPE; lengths and content are enforced by parseLetterOutput. No search tool is
- * attached, which is also what makes responseMimeType JSON legal here (v2 cannot use it).
- */
-const LETTER_SCHEMA = {
-    type: 'object',
-    properties: {
-        position: { type: 'string', description: 'The role this letter applies for. Never "open application", never brackets.' },
-        to: { type: 'string', description: 'A hiring contact named in the posting text, otherwise "Hiring Manager".' },
-        addresses: { type: 'array', items: { type: 'string' }, description: 'Office addresses written in the posting or research; usually empty.' },
-        cover_letter: { type: 'string', description: 'Four paragraphs separated by blank lines. No salutation, no sign-off, no lists.' },
-    },
-    required: ['position', 'to', 'addresses', 'cover_letter'],
-};
-
-// ⚠️ maxOutputTokens stays generous: gemini-2.5-flash spends "thinking" tokens from the SAME budget, and a
-// tight cap truncates the JSON mid-object (the failure both existing lanes hit and documented). The same config
-// goes to EVERY model in the chain — the fallbacks were measured with exactly this one (2026-09-18: valid JSON,
-// 235-282 words, from gemini-2.5-flash-lite in 2.3 s).
-const letterGenerationConfig = () => ({ temperature: 0.7, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: LETTER_SCHEMA });
-
-/**
- * One piece of letter text → { text, model }, through aiText.generateText. The pause before the primary's second
- * try, the fallback chain, a per-attempt cap that really ABORTS a hung request, and one budget for the whole chain
- * all live there (its header has the incident and the measurements).
- *
- * ⚠️ WHAT THIS REPLACED — 2026-09-18. callLetterModel asked LETTER_MODEL once, and the build loop asked it again
- * the same millisecond: two 503 "high demand" answers 0 ms apart, and Amazon's letter "didn't finish".
- *
- * ⚠️ A THROW HERE IS FINAL FOR THE BUILD. aiText throws only AiUnavailableError, and only after it has waited,
- * retried and walked every model it may use inside `budgetMs` — so the lane never retries one (a second chain
- * would only outlive the app's deadline). busy / quota / auth become AI_BUSY / AI_DOWN in the build's catch; kind
- * 'other' (every model truncated, or refused the request) keeps today's 500 and its own message.
- * Output the LANE rejects (not JSON, too short, placeholders) is not a provider failure and never reaches aiText:
- * the build loop keeps its own bad-output retry for that.
- *
- * `model` is the model that ANSWERED — what the stored letter records, and NEVER a fingerprint input: a letter a
- * fallback wrote must be the same free cache hit next time as one the primary wrote (letterFingerprintOf).
- * `deadline` is the build's AI deadline (LETTER_AI.windowMs from its first line); the chain gets the smaller of
- * `budgetMs` and what is left of it. `report` / `pct` put each retry on the user's progress bar in plain words.
- */
-async function writeLetterText(prompt, { deadline, budgetMs, report, pct }) {
-    const aiText = aiTextMod();
-    const { text, model } = await aiText.generateText({
-        lane: 'letter',
-        prompt,
-        config: letterGenerationConfig(),
-        ...aiText.writing(),   // the measured document chain: cost first at equal quality (see aiText WRITING_PRIMARY)
-        budgetMs: Math.max(0, Math.min(budgetMs, deadline - Date.now())),
-        // Awaited by aiText, and anything it throws is ignored there — a progress write can never break a build.
-        onRetry: ({ model: was, kind, nextModel }) => (typeof report === 'function' ? report('retry',
-            nextModel !== was ? 'Switching to a backup model'
-                : kind === 'transient' ? "Google's AI is busy — trying again" : 'Taking another pass at it',
-            pct) : undefined),
-    });
-    return { text, model };
-}
-
-const SIGN_OFF_WORDS = 'sincerely|yours sincerely|yours faithfully|yours truly|best regards|kind regards|warm regards|warmest regards|regards|respectfully|best wishes';
-/** A whole closing paragraph: "Sincerely,\nJane Doe\njane@x.com" (a bare "Best," / "Thank you," too). */
-const SIGN_OFF_RE = new RegExp(`^(${SIGN_OFF_WORDS}|best|thank you|thanks)[,.!]?(\\s*\\n[^\\n]{0,80}){0,3}$`, 'i');
-/** A closing glued onto the last paragraph with single newlines: "…your time.\nSincerely,\nJane Doe". */
-const TRAILING_SIGN_OFF_RE = new RegExp(`\\n+[ \\t]*(${SIGN_OFF_WORDS})[,.!]?([ \\t]*\\n[^\\n]{0,80}){0,3}\\s*$`, 'i');
-
-/**
- * The model's JSON → { position, to, addresses, body } or a throw (AI_BAD_OUTPUT → the retry).
- * ⚠️ The templates print "Dear Hiring Manager," and the closing themselves, so a salutation or sign-off
- * that slipped into the body would appear TWICE on every design — they are removed here, not trusted away.
- */
-function parseLetterOutput(text, { candidateName = '' } = {}) {
-    let o;
-    try { o = JSON.parse(String(text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()); }
-    catch { throw new Error('AI_BAD_OUTPUT: not JSON'); }
-    if (!o || typeof o !== 'object') throw new Error('AI_BAD_OUTPUT: not an object');
-
-    let body = String(o.cover_letter || '').replace(/\r\n?/g, '\n').replace(/\\n/g, '\n').trim();
-    body = body.replace(/^[ \t]*#{1,6}[ \t]*/gm, '');
-    const paras = body.split(/\n\s*\n+/).map((p) => p.trim()).filter(Boolean);
-    while (paras.length && /^(dear\b|to whom it may concern)[^\n]{0,80}[,:!]?$/i.test(paras[0])) paras.shift();
-    if (paras.length) {
-        paras[0] = paras[0]
-            .replace(/^(dear\b|to whom it may concern)[^\n]{0,80}[,:]\s*\n+/i, '')   // "Dear X,\nWith eight years…"
-            .replace(/^dear\s+[^,\n]{1,60},\s+(?=[A-Z*])/, '')                       // "Dear X, With eight years…"
-            .trim();
-    }
-    const name = String(candidateName || '').trim().toLowerCase();
-    while (paras.length && (SIGN_OFF_RE.test(paras[paras.length - 1])
-        || (name && paras[paras.length - 1].replace(/\*\*/g, '').trim().toLowerCase() === name))) paras.pop();
-    if (paras.length) paras[paras.length - 1] = paras[paras.length - 1].replace(TRAILING_SIGN_OFF_RE, '').trim();
-    body = paras.join('\n\n');
-    // An odd number of ** would leave literal asterisks on the page: drop the last unmatched marker.
-    if (((body.match(/\*\*/g) || []).length) % 2) {
-        const i = body.lastIndexOf('**');
-        body = body.slice(0, i) + body.slice(i + 2);
-    }
-    body = body.replace(/\*\*\s*\*\*/g, '');
-    const words = body.split(/\s+/).filter(Boolean).length;
-    if (words < 120) throw new Error(`AI_BAD_OUTPUT: ${words} words`);
-
-    return {
-        position: String(o.position || ''),
-        to: String(o.to || ''),
-        addresses: Array.isArray(o.addresses) ? o.addresses : [],
-        body,
-    };
-}
-
-/**
- * Placeholder tokens in a letter: [X%], [Insert metric], [Company Name], {your name}, bare XX% / X% / $X /
- * $XX,XXX, "N years".
- * ⚠️ NEVER STORED. A letter reading "increased revenue by [X%]" is worse than a generic one — it is
- * visibly unfinished, with our name on it.
- * ⚠️ BUT A BRACKET IS NOT A PLACEHOLDER FOR BEING A BRACKET. Whatever is found here is DELETED from the
- * letter once the corrective pass has had its go, so a rule that matches real text removes a real fact
- * from a letter the user paid for. The old rule called any bracket a slot when a %, $ or # or a lone X/N
- * or a slot word appeared ANYWHERE inside: "[top 5%]", "[CGPA 8.4 / 85%]", "[Class X]", "[C#]",
- * "[Team Lead]" and "[Name Service]" all went. A bracket's inside (see isLetterSlot) is now a slot only
- * when it is nothing but a slot. The resume doc lane's isPlaceholderInside answers the same question for
- * resumes — keep the two in step.
+ * Placeholder tokens: [X%], [Insert metric], [Company Name], {your name}, bare XX% / X% / $X / $XX,XXX, "N years".
+ * Read by cleanPosition: a role title that IS a slot ("[Position]", "[Job Title]") is no title, so it never reaches the
+ * letter's Target Position, the stored payload or the subject.
+ * ⚠️ A BRACKET IS NOT A PLACEHOLDER FOR BEING A BRACKET. The old rule called any bracket a slot when a %, $ or # or a
+ * lone X/N or a slot word appeared ANYWHERE inside: "[top 5%]", "[CGPA 8.4 / 85%]", "[Class X]", "[C#]", "[Team Lead]"
+ * and "[Name Service]" were all cut out of finished letters. A bracket's inside (see isLetterSlot) is a slot only when
+ * it is nothing but a slot. The resume doc lane's isPlaceholderInside answers the same question for resumes — keep the
+ * two in step.
  */
 // Opens like an instruction to whoever fills the template in: [Insert …], [Add …], [Your …], [Number of …].
 // ⚠️ A space (or the end) must follow: "[Add-on]" and "[Insertion sort]" are the candidate's words.
@@ -1190,41 +622,10 @@ function findLetterPlaceholders(text) {
     return [...out];
 }
 
-/** Remove placeholder tokens conservatively (plus a dangling "by " before one), then tidy the spacing. */
-function stripLetterPlaceholders(text, tokens) {
-    let s = String(text || '');
-    // ⚠️ LONGEST FIRST: removing "X%" before "XX%" leaves a stray "X" in the letter.
-    for (const t of [...(tokens || [])].sort((a, b) => b.length - a.length)) {
-        const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        s = s.replace(new RegExp(`[ \\t]*\\bby[ \\t]+(\\*\\*)?${esc}(\\*\\*)?`, 'g'), '');
-        s = s.replace(new RegExp(`(\\*\\*)?${esc}(\\*\\*)?`, 'g'), '');
-    }
-    return s
-        .replace(/\*\*\s*\*\*/g, '')
-        .replace(/\(\s*\)/g, '')
-        .replace(/[ \t]{2,}/g, ' ')
-        .replace(/[ \t]+([,.;:!?])/g, '$1')
-        .replace(/([,;:])(\s*[,;:])+/g, '$1')
-        .replace(/,\s*\./g, '.')
-        .replace(/^[ \t]+|[ \t]+$/gm, '')
-        .trim();
-}
-
-/** Remove placeholders until none are left (a strip can expose a nested token). */
-function withoutPlaceholders(text) {
-    let s = text;
-    for (let i = 0; i < 3; i++) {
-        const t = findLetterPlaceholders(s);
-        if (!t.length) break;
-        s = stripLetterPlaceholders(s, t);
-    }
-    return s;
-}
-
 /**
- * A role title fit for the subject line, or ''. Real parentheses survive ("Software Engineer (m/w/d)" is
- * how a German posting is titled); an "(open application)"-style artefact, a placeholder or a stray
- * bracket does not.
+ * A role title fit for the letter — v2's Target Position, the stored payload's position — or ''. Real parentheses
+ * survive ("Software Engineer (m/w/d)" is how a German posting is titled); an "(open application)"-style artefact, a
+ * placeholder or a stray bracket does not.
  */
 function cleanPosition(raw) {
     let s = String(raw || '').replace(/\s+/g, ' ').trim();
@@ -1236,14 +637,13 @@ function cleanPosition(raw) {
     return s.slice(0, 120).trim();
 }
 
-/** Comparable text: lower case, punctuation to spaces, whitespace collapsed. */
-const plainOf = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-
 const TECH_ROLE_RE = /\b(engineer|engineering|developer|software|devops|sre|data|machine learning|ml|ai|scientist|architect|programmer|technical|it|security|cloud|backend|frontend|full[- ]?stack|qa|firmware|embedded)\b/i;
 
-const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
 // ── Thumbnails ───────────────────────────────────────────────────────────────────────────────────
+
+/** The data-URI type of cached bytes, from the bytes: a WebP (RIFF…WEBP) or, as every card and every older page is, a JPEG. */
+const imageMimeOf = (buf) => (Buffer.isBuffer(buf) && buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF'
+    && buf.toString('latin1', 8, 12) === 'WEBP' ? 'image/webp' : 'image/jpeg');
 
 const thumbDirOf = (userId) => path.join(THUMB_ROOT, String(Math.max(0, Math.floor(Number(userId) || 0))));
 
@@ -1271,9 +671,9 @@ async function pruneLetterThumbs(userId) {
 }
 
 /**
- * Cards for a stored letter: [{ id, name, accent, image, fit, reason }] in the order of `ids`.
+ * Cards — or full pages — for a stored letter: [{ id, name, accent, image, fit, reason }] in the order of `ids`.
  *
- * ⚠️ THE THUMB MUST BE THE FILE THEY WOULD DOWNLOAD. Same data as generate-template-pdf: the payload's
+ * ⚠️ THE IMAGE MUST BE THE FILE THEY WOULD DOWNLOAD. Same data as generate-template-pdf: the payload's
  * html/company/address, the live sender block (buildCLSender), the employer's brand (its colour recolours
  * EVERY design's accent and its Google font sets the type — letterBrandOf, the same reading the downloads
  * use) and — for the branded design — the profile photo. So every one of those is in the cache key: the
@@ -1281,12 +681,28 @@ async function pruneLetterThumbs(userId) {
  * keep their old name on every card), a hash of the brand pair (a letter whose brand changed — a design
  * re-stored, a research row that learned its colour — must not keep the old tint), and for 'standard'
  * the photo version. Renders only what is missing, in ONE browser batch. Unrenderable ids are simply absent.
+ *
+ * ⚠️ A PAGE AND ITS CARD (2026-09-18: "the preview … looks very blurry on zoom … specially for cover letter"). Only the
+ * 480-px card used to be stored, and it was ALSO what the letter gallery showed and let the user pinch-zoom to 3x — a
+ * 480-px JPEG, blown up. The résumé lane has kept the full page since 2026-09-15; this lane now does too:
+ *   size 'page'   the renderer's page, untouched — for a screen that shows the letter at full size (the gallery);
+ *   size 'card'   the 480-px card derived from that page with sharp — Home's cards (the default, what they always got).
+ * One render writes both (the card under the page's name suffixed .w480), so the build's pre-render is the gallery's
+ * first page as well as Home's card. Without sharp, or on bytes it cannot read, the page itself is served as the card —
+ * heavier but correct — and no card file is written.
+ * ⚠️ coverLetterRenderer.PREVIEW_REV is in the key: the resolution and format a page was rendered at. A page (or a
+ * card cut from it) rendered before a change of resolution is never served after it; old files keep their names and
+ * leave through pruneLetterThumbs' LRU like any other unused file.
+ * ⚠️ ".jpg" IS THIS CACHE'S NAMING SCHEME, NOT ITS FORMAT. A page is whatever the renderer produced (a WebP since
+ * PREVIEW_REV hd1; its JPEG when sharp is unavailable there), so the data URI takes its type from the BYTES
+ * (imageMimeOf), never from the name. A card is always a real 480-px JPEG.
  */
-async function letterCardsFor(userId, doc, ids, design) {
+async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) {
     const cl = clMod();
     const p = doc.payload || {};
     const tpls = [...new Set(ids)].map((id) => clTemplates.TEMPLATES.find((t) => t.id === id)).filter(Boolean);
     if (!tpls.length) return [];
+    const wantPage = size === 'page';
     const sender = await cl.buildCLSender(userId);
     const senderHash = sha(JSON.stringify(sender)).slice(0, 24);
     const branded = tpls.some((t) => t.generic);
@@ -1300,20 +716,41 @@ async function letterCardsFor(userId, doc, ids, design) {
     const brandFont = (brand && brand.font) || null;
     const brandHash = sha(JSON.stringify({ accent: accent || null, font: brandFont })).slice(0, 16);
     const updatedMs = new Date(doc.updated_at || 0).getTime() || 0;
+    const previewRev = String(clRenderer.PREVIEW_REV || '');   // read per call: the renderer owns it
     const dir = thumbDirOf(userId);
-    const fileOf = (t) => path.join(dir, `cl_${sha(['cl', userId, doc.id, updatedMs, t.id, senderHash, brandHash,
-        t.generic ? photoVer : '-'].join('|'))}.jpg`);
+    const pageOf = (t) => path.join(dir, `cl_${sha(['cl', userId, doc.id, updatedMs, t.id, senderHash, brandHash,
+        t.generic ? photoVer : '-', previewRev].join('|'))}.jpg`);
+    const cardOf = (page) => page.replace(/\.jpg$/, `.w${THUMB_W}.jpg`);
+    const uriOf = (buf) => `data:${imageMimeOf(buf)};base64,${buf.toString('base64')}`;
+    const read = (file) => fs.readFile(file).then((buf) => (buf && buf.length ? buf : null), () => null);
+    // LRU: a card or page still being shown stays cached (reads touch mtime), and a card keeps its page alive.
+    const touch = (...files) => { const now = new Date(); for (const f of files) fs.utimes(f, now, now).catch(() => {}); };
+    // Written aside then renamed: a request racing this write never reads half a JPEG.
+    const write = async (file, buf) => {
+        const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+        await fs.writeFile(tmp, buf).then(() => fs.rename(tmp, file)).catch(() => fs.unlink(tmp).catch(() => {}));
+    };
+    /** The card of a page — written beside it — or the page itself when sharp cannot make one. */
+    const cardFrom = async (page, full) => {
+        let card = null;
+        try { card = await require('sharp')(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer(); }
+        catch { /* sharp unavailable, or bytes it cannot read → the page; heavier but correct */ }
+        if (card) await write(cardOf(page), card);
+        return card || full;
+    };
 
     const images = new Map();
     const missing = [];
     for (const t of tpls) {
-        const file = fileOf(t);
-        try {
-            const buf = await fs.readFile(file);
-            images.set(t.id, `data:image/jpeg;base64,${buf.toString('base64')}`);
-            const now = new Date();
-            fs.utimes(file, now, now).catch(() => {});   // LRU: a card still being shown stays cached
-        } catch { missing.push(t); }
+        const page = pageOf(t);
+        if (!wantPage) {
+            const card = await read(cardOf(page));
+            if (card) { images.set(t.id, uriOf(card)); touch(cardOf(page), page); continue; }
+        }
+        const full = await read(page);
+        if (!full) { missing.push(t); continue; }
+        touch(page);
+        images.set(t.id, uriOf(wantPage ? full : await cardFrom(page, full)));
     }
     if (missing.length) {
         try {
@@ -1325,14 +762,11 @@ async function letterCardsFor(userId, doc, ids, design) {
                 const t = missing.find((m) => m.id === r.id);
                 if (!t || !r.image) continue;
                 const full = Buffer.from(String(r.image).split(',')[1] || '', 'base64');
-                let thumb = full;
-                try { thumb = await require('sharp')(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer(); }
-                catch { /* sharp unavailable → full size; heavier but correct */ }
-                images.set(t.id, `data:image/jpeg;base64,${thumb.toString('base64')}`);
-                // Written aside then renamed: a card request racing this render never reads half a JPEG.
-                const file = fileOf(t);
-                const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-                await fs.writeFile(tmp, thumb).then(() => fs.rename(tmp, file)).catch(() => fs.unlink(tmp).catch(() => {}));
+                if (!full.length) continue;
+                const page = pageOf(t);
+                await write(page, full);
+                const card = await cardFrom(page, full);   // both, whichever was asked: the next ask is a hit
+                images.set(t.id, uriOf(wantPage ? full : card));
             }
             pruneLetterThumbs(userId);   // fire and forget
         } catch (e) {
@@ -1552,12 +986,12 @@ const FLIGHTS = new Map();
  *       before the charge, so nothing was charged or stored — see AI_BUSY / AI_DOWN)
  *   409 { reason:'payer_changed' | 'cache_miss' }   (contract C2 — only for a build that sent `expectVia`)
  *
- * `job` is what the letter is WRITTEN against (the fingerprint, the prompt, the research host);
+ * `job` is what the letter is WRITTEN against (the fingerprint, the posting the writer reads, the research host);
  * `docJobUrl` is the stored letter's IDENTITY — see where it is read below.
  *
  * Order (each step is load-bearing): no résumé → fingerprint → CACHE (free, returns before any gate) →
- * gates → coveredOnly refusal (before research, which is paid work) → research → AI letter →
- * placeholder guard → design ranking → CHARGE + STORE under the usage lock → thumbs.
+ * gates → coveredOnly refusal (before research and the AI, which are paid work) → the letter (the Jobs section's
+ * writer), with the research beside it → design ranking → CHARGE + STORE under the usage lock → thumbs.
  *
  * ⚠️ `expectVia` (contract C2), when the app sends it, is the payer the user CONFIRMED on Home's sheet. At
  * every point where this lane is about to bind or charge, the payer it would really use is worked out first
@@ -1610,7 +1044,6 @@ async function buildEmployerLetter(req, res) {
         const designFit = designFitMod();
         const research = researchMod();
         const cl = clMod();
-        aiTextMod();
 
         let material;
         try {
@@ -1666,6 +1099,25 @@ async function buildEmployerLetter(req, res) {
             };
         }
 
+        // ── THE RÉSUMÉ THE LETTER IS WRITTEN FROM — the Jobs lane's, loaded its way ──────────────────────
+        // cl.letterResumeMetadataFor: the parsed upload row with the Builder résumé merged in. Read ONCE, never waited for:
+        // `material.meta` has already answered whether a parse landed, by the same query. A Builder-only résumé (no upload
+        // at all — the Jobs lane refuses one, Home never did) is the same merge over no upload row: { builder_resume }.
+        // After the cache and the flight (a hit or a joiner needs no résumé read) and before every gate, so a failure
+        // here has reserved and spent nothing.
+        let resumeMetadata = null;
+        try {
+            resumeMetadata = (material.meta ? await cl.letterResumeMetadataFor(userId, { tries: 1 }) : null)
+                || await cl.mergeBuilderResume(userId, {});
+        } catch (e) { console.warn(`[employerLetter] résumé metadata unreadable for user ${userId}:`, e.message); }
+        // ⚠️ THEY HAVE A RÉSUMÉ — the strict material read said so — but the writer's read of it came back empty or failed
+        // (mergeBuilderResume swallows a DB error, as the Jobs lane always has). A "try again", never "upload one" (that
+        // is how a user overwrites the résumé they have), and never a letter written from an empty object.
+        if (!resumeMetadata || !Object.keys(resumeMetadata).length) {
+            console.warn(`[employerLetter] no résumé metadata for user ${userId} although the material read found a résumé — not written`);
+            return res.status(500).json({ success: false, error: "We couldn't read your resume just now. Please try again.", reason: 'failed' });
+        }
+
         // ── GATES — plan/free quota first, the pass as the fallback, legacy credits last ────────────
         // ⚠️ THE PLAN IS ASKED FIRST. Burning someone's one-off while their plan could pay destroys what
         // they bought; `boundOnly` lets only a pass ALREADY bound to this employer jump in while quota
@@ -1715,118 +1167,74 @@ async function buildEmployerLetter(req, res) {
         }
         emit(req, 'cover_letter_generate', { forJob: !!(job.title || job.url), lane: 'employer_home' });
 
-        // ── RESEARCH (optional grounding — never a dependency, never throws) ───────────────────────
-        // It carries `conventions` (how THIS employer hires, what its country / sector expects of a letter):
-        // one grounded call inside the same cached row. `country` is only a hint for that call — the chip's
-        // country is the role's location more often than the employer's HQ.
+        // ── RESEARCH — the designs and the brand, BESIDE the letter (optional, never a dependency, never throws) ───
+        // It writes no word of the letter any more: the letter researches the employer itself, live, through Google
+        // Search grounding. What this call still decides is how the letter LOOKS — the region and the hiring
+        // conventions (how THIS employer hires) the designs are ranked by, and the employer's own colour and font — so
+        // it runs while the letter is being written, not before it. `country` is only a hint for it: the chip's country
+        // is the role's location more often than the employer's HQ.
         const site = researchSiteFor(company, job);
-        let facts = null;
-        if (site) {
-            await report('researching', `Researching ${company}`, 16);
-            facts = await research.getEmployerResearch({ website: site, name: company, country: country || null }).catch(() => null);
-        }
-        const conventions = conventionsOf(facts);
-        const region = letterRegionFor(research, designFit, conventions, { country, website: site });
-        // How a letter READS where this application is going — resolved ONCE, from the same three inputs the
-        // region above is resolved from, and handed to the style and the block together (see letterPlaybookFor).
-        // Deterministic and local: no AI call, no read, nothing billable, and nothing in the fingerprint.
-        const playbook = letterPlaybookFor({ country, website: site, conventions, research: facts });
+        if (site) await report('researching', `Researching ${company}`, 16);
+        const researching = site
+            ? research.getEmployerResearch({ website: site, name: company, country: country || null }).catch(() => null)
+            : Promise.resolve(null);
 
-        const [tailored, sender] = await Promise.all([
-            tailoredResumeFor(userId, { company, employerId, job, docJobUrl }, req),
-            cl.buildCLSender(userId).catch(() => ({ name: '' })),
-        ]);
-
-        // ── THE LETTER ──────────────────────────────────────────────────────────────────────────────
-        const writingLabel = `Writing your ${company} cover letter`;
-        await report('writing', writingLabel, 40);
-        const promptArgs = {
-            company, website: site, job, material, tailored,
-            researchBlock: research.researchPromptBlock(facts, company, { forLetter: true }),
-            conventionsBlock: conventionsBlockFor(research, conventions, company),
-            playbookBlock: letterPlaybookBlockFor(playbook, company),
-            style: letterStyleFor(conventions, region, playbook),
-            sector: (conventions && typeof conventions.sector === 'string' && conventions.sector)
-                || (facts && typeof facts.industry === 'string' && facts.industry) || '',
-        };
-        const prompt = buildEmployerLetterPrompt(promptArgs);
-        // ⚠️ TWO DIFFERENT RETRIES, ON PURPOSE (2026-09-18). A busy, hung or vanished MODEL is aiText's business:
-        // it pauses, retries the primary once and walks the fallbacks inside ONE budget, and what it finally throws
-        // ends this build (AI_BUSY / AI_DOWN in the catch) — this loop never runs a second chain after a first one
-        // gave up. What stays here is the lane's own question, "is this a letter?": an answer that is not JSON, or
-        // too short, earns one more draft — while the window still has room for one.
-        let out = null;
-        let outModel = LETTER_MODEL;   // the model that wrote `out` — what the stored letter records
-        let lastErr = null;
-        for (let attempt = 1; attempt <= 2 && !out; attempt++) {
-            if (attempt > 1) {
-                if (aiDeadline - Date.now() < LETTER_AI.minCallMs) {
-                    console.warn(`[employerLetter] no time left for a second draft of the "${company}" letter — giving up on it`);
-                    break;
-                }
-                await report('retry', 'Taking another pass at it', 46);
-            }
-            const written = await writeLetterText(prompt, { deadline: aiDeadline, budgetMs: LETTER_AI.draftBudgetMs, report, pct: 46 });
-            try {
-                out = parseLetterOutput(written.text, { candidateName: sender.name });
-                outModel = written.model;
-            } catch (e) {
-                lastErr = e;
-                console.warn(`[employerLetter] letter attempt ${attempt}/2 for "${company}" failed (${written.model}): ${e.message}`);
-            }
-        }
-        if (!out) throw lastErr || new Error('AI_BAD_OUTPUT');
-
-        // ── PLACEHOLDER GUARD — one corrective pass, then remove what is left ───────────────────────
-        // ⚠️ THE FIRST DRAFT IS ALREADY A LETTER. The corrective pass only improves it, so NOTHING it meets may cost
-        // the user that letter: a busy provider, a dead key, bad output, or no time left in the window all keep the
-        // first draft (with its placeholders stripped). It runs through aiText like every draft, on a smaller budget.
-        let tokens = findLetterPlaceholders(out.body);
-        if (tokens.length) {
-            console.warn(`[employerLetter] placeholders in the "${company}" letter (${tokens.join(', ')}) — one corrective pass`);
-            await report('polishing', 'Polishing the wording', 70);
-            const timeLeft = aiDeadline - Date.now();
-            if (timeLeft < LETTER_AI.minCallMs) {
-                console.warn(`[employerLetter] no time left for the corrective pass (${timeLeft}ms), keeping the first draft`);
-            } else {
-                try {
-                    const fixed = await writeLetterText(buildEmployerLetterPrompt({ ...promptArgs, correction: tokens }),
-                        { deadline: aiDeadline, budgetMs: LETTER_AI.correctionBudgetMs, report, pct: 72 });
-                    const again = parseLetterOutput(fixed.text, { candidateName: sender.name });
-                    const left = findLetterPlaceholders(again.body);
-                    if (left.length <= tokens.length) { out = again; outModel = fixed.model; tokens = left; }
-                } catch (e) { console.warn('[employerLetter] corrective pass failed, keeping the first draft:', e.message); }
-            }
-            if (tokens.length) out.body = withoutPlaceholders(out.body);
-        }
-        if (out.body.split(/\s+/).filter(Boolean).length < 80) throw new Error('AI_BAD_OUTPUT: too short after the placeholder guard');
-
-        // ── THE DOCUMENT — assembled completely BEFORE the charge, so nothing after it can throw ──────
-        // The posting's own title when there is one; otherwise the model's reading of the candidate's
-        // current title, then the résumé's own words for it.
+        // ── THE LETTER — the Jobs section's generation, exactly (see "The letter itself") ───────────────────
+        // The same inputs in the same shapes as POST /generate-cover-letter-details hands it:
+        //   the résumé      resumeMetadata above (the Jobs lane's loader);
+        //   the position    the posting's title when there is one, else the candidate's own current title (the
+        //                   narrative's "Current title:" line, then the upload's first job title). v2 needs one: with
+        //                   neither, it gets what the Jobs lane's bulk sender gives a recipient with no position;
+        //   the subject     the employer's own website (researchSiteFor vetted it), through the Jobs lane's rule — or,
+        //                   with no website of its own, the employer's NAME: exactly what the Jobs lane researches when
+        //                   all it has is a job board;
+        //   job location    the chip's country — where the user wants this job (see letterFingerprintOf: not hashed);
+        //   the posting     the pasted link and text, when there are any (cl.letterListingOf).
+        // No responsibilities: a Home chip carries none (a posting's duties arrive in its text).
         const narrativeTitle = (material.baseText.match(/^Current title:\s*(.+)$/m) || [])[1];
         const uploadTitle = material.meta && Array.isArray(material.meta.job_titles) ? material.meta.job_titles[0] : '';
-        const position = cleanPosition(job.title) || cleanPosition(out.position)
-            || cleanPosition(tailored && tailored.personal_info && tailored.personal_info.title)
-            || cleanPosition(narrativeTitle) || cleanPosition(uploadTitle);
-        const name = String(sender.name || '').trim();
-        // Built here, not by the model: a subject line gains nothing from creativity and is exactly where
-        // "(open application)" and "[Your Name]" artefacts used to surface.
-        const subject = position
-            ? (name ? `Application for ${position} — ${name}` : `Application for ${position}`)
-            : (name ? `Application — ${name}` : 'Job application');
-        // A named contact or an address survives only when the posting (or research) actually says it.
-        // ⚠️ Not the conventions: their notes describe the COUNTRY's hiring habits, and an address or a name
-        // matched there would be one this employer never published.
-        const { conventions: _conventions, ...employerFacts } = facts || {};
-        const evidence = plainOf([job.description, JSON.stringify(employerFacts)].join(' '));
-        const to = String(out.to || '').replace(/\s+/g, ' ').trim();
-        const hiringManager = to && to.length <= 80 && !/hiring|recruit|talent|manager|team|human resources|\bhr\b/i.test(to)
-            && plainOf(to) && evidence.includes(plainOf(to)) ? to : 'Hiring Manager';
-        const addresses = out.addresses
-            .map((a) => String(a || '').replace(/\s+/g, ' ').trim())
-            .filter((a) => a && a.length <= 200 && plainOf(a).length >= 8 && evidence.includes(plainOf(a)))
-            .slice(0, 5);
+        const position = cleanPosition(job.title) || cleanPosition(narrativeTitle) || cleanPosition(uploadTitle);
+        const targetPosition = position || 'Position';
+        const researchSubject = site ? cl.letterResearchSubjectOf(site, company).researchSubject : company;
+        const jobLocation = country || null;
+        const listing = cl.letterListingOf({ jobUrl: job.url, jobText: job.description, position: targetPosition, companyNameHint: company });
+        await report('writing', `Writing your ${company} cover letter`, 40);
+        // ⚠️ A THROW HERE ENDS THE BUILD BEFORE THE CHARGE. The writer has already waited, retried the primary, walked
+        // the letter chain and asked again for answers it could not use — inside what is left of THIS build's window
+        // (`deadline`) — so nothing here asks a second time: its ai_busy / ai_down refusal becomes AI_BUSY / AI_DOWN in
+        // the catch, and anything else ("could not finish") the 500 it always was. Its retries reach the bar in its
+        // own words ("Google's AI is busy — trying again", "Switching to a faster model", "Taking another pass at it").
+        const written = await cl.writeLegacyLetter(resumeMetadata, researchSubject, targetPosition, null, jobLocation, listing, {
+            report: (stage, label) => report(stage, label, 46),
+            deadline: aiDeadline,
+        });
+        // Who WROTE it — a fallback on a busy day — recorded on the row, never hashed (a fallback's letter is the same
+        // free cache hit next time as the primary's).
+        const outModel = written.model || cl.LEGACY_LETTER_MODEL;
+        const facts = await researching;
+        const conventions = conventionsOf(facts);
+        const region = letterRegionFor(research, designFit, conventions, { country, website: site });
+
+        // ── THE DOCUMENT — assembled completely BEFORE the charge, so nothing after it can throw ──────
+        // The answer mapped the way the Jobs lane maps it (cl.letterDetailsOf: its body as <p> HTML, its subject, its
+        // addressee, its offices — each with the Jobs lane's fallback), into the payload Home has always stored, key for
+        // key, for the editor, the cards and the downloads that read it:
+        //   companyName     the employer as the user picked it — the name this letter is keyed, billed and shown under
+        //                   on Home; the letter's own words name the employer as the research found it
+        //   companyAddress  the first RESEARCHED office in the Jobs lane's order (the job location's own first); '' when
+        //                   the research found none
+        //   locations       the researched offices, in that order — only the ones v2 returned
+        //   position        the role written for ('' when only the fallback above was known — never "Position")
+        // ⚠️ letterDetailsOf also adds two rows nobody researched, both for the Jobs PICKER, where the user sees them and
+        // chooses: "Address not available" when v2 found nothing, and — when no researched office names the job location —
+        // the job location ITSELF, first, as the picker's default. Home has no picker: its companyAddress goes straight into
+        // every rendered letter and PDF. So the chip's country ("Germany") became the address block whenever v2's offices
+        // spelled it their own way — "…80333 München, Deutschland" (v2 returns addresses verbatim), "Schweiz", "Nederland",
+        // "USA" — or found none, and replaced the Munich street address the research HAD found. A row is kept only when its
+        // address is one v2 returned; the Jobs mapping itself is untouched.
+        const details = cl.letterDetailsOf(written.letter, { position: targetPosition, companyNameHint: company, researchSubject, jobLocation });
+        const researched = new Set(Array.isArray(written.letter.addresses) ? written.letter.addresses : []);
+        const locations = details.locations.filter((l) => researched.has(l.address) && l.address !== cl.ADDRESS_NOT_AVAILABLE);
         // The employer's brand — the website's own colour and font (brandExtract) over the researcher's guess
         // (coverLetterController.researchBrandOf, contract 2's precedence). Stored on the design so every render
         // of this letter draws it; the payload's brandColor / fontName keep their keys and carry the same
@@ -1834,13 +1242,13 @@ async function buildEmployerLetter(req, res) {
         const brand = brandOfResearch(cl, facts);
         const brandColor = (brand && brand.accent) || hexOrNull(facts && facts.brandColor);
         const payload = {
-            coverLetterHtml: cl.formatCoverLetterWithHTML(escHtml(out.body), {}),
-            subject,
+            coverLetterHtml: details.coverLetterHtml,
+            subject: details.subject,
             companyName: company,
-            companyAddress: addresses[0] || '',
-            hiringManager,
+            companyAddress: locations.length ? locations[0].address : '',
+            hiringManager: details.hiringManager,
             position,
-            locations: addresses.map((address, i) => ({ address, city: '', country: '', isHeadquarters: i === 0 })),
+            locations,
             brandColor,
             fontName: (brand && brand.font && brand.font.family) || (facts && facts.fontName) || null,
         };
@@ -1848,7 +1256,7 @@ async function buildEmployerLetter(req, res) {
         await report('designing', 'Ranking letter designs', 86);
         let design = null;
         try {
-            const builder = tailored || await builderResumeFor(userId);
+            const builder = await builderResumeFor(userId);
             let seniorityYears = builder ? designFit.seniorityYearsOf(builder) : 0;
             const parsedYears = Number(material.meta && material.meta.experience_years);
             if (!seniorityYears && Number.isFinite(parsedYears) && parsedYears > 0) seniorityYears = Math.min(60, parsedYears);
@@ -2067,7 +1475,9 @@ async function buildEmployerLetter(req, res) {
         // before the charge (every AI call is), because the answer promises that nothing was charged.
         const ending = chargedAt ? null : aiEndingOf(e);
         if (ending) {
-            console.warn(`[employerLetter] "${company}" letter for user ${userId} ended as ${ending.body.reason} after ${(e.attempts || []).length} AI attempts (${(e.attempts || []).map((a) => `${a.model} ${a.kind}`).join(', ') || 'none'}) — nothing charged, nothing stored`);
+            // aiText's own record of the walk rides on the writer's refusal as its cause.
+            const attempts = (e.cause && Array.isArray(e.cause.attempts)) ? e.cause.attempts : [];
+            console.warn(`[employerLetter] "${company}" letter for user ${userId} ended as ${ending.body.reason} after ${attempts.length} AI attempts (${attempts.map((a) => `${a.model} ${a.kind}`).join(', ') || 'none'}) — nothing charged, nothing stored`);
             return res.status(ending.status).json(ending.body);
         }
         const isTimeout = e && (e.message === 'AI_TIMEOUT' || /timeout|ETIMEDOUT/i.test(e.message || ''));
@@ -2085,11 +1495,13 @@ async function buildEmployerLetter(req, res) {
 }
 
 /**
- * GET /api/cover-letter/employer-cards?doc=<id>&ids=a,b,c
+ * GET /api/cover-letter/employer-cards?doc=<id>&ids=a,b,c[&size=page]
  *   200 { success:true, cards: [{ id, name, accent, image, fit, reason }] }   404 { success:false, reason:'doc_gone' }
  * ≤ 3 ids per request (asked ∩ catalogue; none asked → the top 3 of the letter's design). No padding:
  * an id the client asked for that could not be rendered is simply absent. Free — a preview of a letter
  * the user already owns; never generates, never charges.
+ * `size=page` answers the full rendered page instead of the 480-px card — for a screen that shows the letter at full
+ * size and lets it be zoomed (see letterCardsFor). Anything else, or nothing, is the card: what Home always got.
  */
 async function employerLetterCards(req, res) {
     const userId = req.user.id;
@@ -2108,7 +1520,8 @@ async function employerLetterCards(req, res) {
             ? [...new Set(asked)].filter((id) => clTemplates.TEMPLATE_IDS.includes(id)).slice(0, CARDS_MAX)
             : ((design && design.ranked) || clTemplates.TEMPLATE_IDS.map((id) => ({ id }))).slice(0, CARDS_MAX).map((r) => r.id);
         if (!ids.length) return res.json({ success: true, cards: [] });
-        const cards = await letterCardsFor(userId, doc, ids, design);
+        const size = req.query && req.query.size === 'page' ? 'page' : 'card';
+        const cards = await letterCardsFor(userId, doc, ids, design, { size });
         if (!cards.length) return res.status(500).json({ success: false, error: 'Could not render previews.' });
         return res.json({ success: true, cards });
     } catch (e) {
@@ -2123,8 +1536,7 @@ module.exports = {
     employerLetterCards,
     currentLetterFingerprint,
     // exported for tests only
-    buildEmployerLetterPrompt, parseLetterOutput, findLetterPlaceholders, stripLetterPlaceholders, cleanPosition,
-    passWouldCoverLetter, letterFingerprintOf, jobFieldsOf, uploadContextOf, letterStyleFor, usageAndPassFor,
-    letterPlaybookFor, letterPlaybookBlockFor, countryLetterRowOf, LETTER_PROFILES,
-    LETTER_AI, LETTER_MODEL,
+    findLetterPlaceholders, cleanPosition,
+    passWouldCoverLetter, letterFingerprintOf, jobFieldsOf, uploadContextOf, usageAndPassFor,
+    LETTER_AI,
 };

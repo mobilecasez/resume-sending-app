@@ -6,11 +6,20 @@
 // the doc's ranked design list with a fit % on each, and the download carries the docId so the server
 // renders and bills THAT document. The region chips give way to that ranking — the server already
 // weighed the region when it ranked. Without a docId every line below behaves exactly as before.
+//
+// ⚠️ ONE BUTTON UNDER THE PAGE, LIKE THE RESUME GALLERY (2026-09-18). The footer used to be four rows —
+// One Page / A4, Download PDF, Download as Word and a note — about 225pt of a phone taken from the one
+// thing this screen is for: looking at the letter ("so many fields… make more space for preview"). It is
+// now the resume gallery's footer: ONE Download button, and the page layout, both formats and the note
+// live in its swipe-up sheet, in the same order and with the same gate. Nothing a button does changed —
+// only where it sits. The doc-mode "Ranked for …" row folded into the lead line, as the resume's did.
+// ⚠️ ONE MODAL AT A TIME (see pickFormat): a format tap closes the sheet FIRST and only then downloads or
+// opens the paywall sheet, because iOS cannot present a modal while another is still sliding away.
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  Alert, ActivityIndicator, Dimensions, Platform,
-  NativeSyntheticEvent, NativeScrollEvent,
+  Alert, ActivityIndicator, Dimensions, Platform, Modal, Pressable,
+  NativeSyntheticEvent, NativeScrollEvent, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -108,6 +117,23 @@ const DOWNLOAD_CREDITS = 2;
 const WIN = Dimensions.get('window').width;
 const SIDE_PAD = 12;
 const CARD_W = WIN - SIDE_PAD * 2;
+// The fit reason under the pager is a fixed two-line slot, exactly as in the resume gallery: a design with
+// no reason next to one with two lines resized the flex pager on every swipe and the card jumped.
+const REASON_LINE_H = 16;
+const REASON_MAX_SCALE = 1.3;
+// How long the download sheet may take to slide away before its format tap runs anyway. iOS reports the
+// end through onDismiss; this is only the net under it (a slide is ~300ms), never the usual path.
+const SHEET_SETTLE_MS = 650;
+// ⚠️ THE PAGE BEING LOOKED AT DECODES AT FULL SIZE (2026-09-18). expo-image downscales every bitmap to its
+// FRAME × screen scale by default (allowDownscaling) — CARD_W, 369 pt = 1107 px on a 3x phone — and the pinch
+// below is a ScrollView transform on that same frame. So the server's 3x page (2382 px, PREVIEW_REV hd1) was
+// cut to 1107 px at decode and the zoom still enlarged the cut copy: as soft at 2x as the old 1x page, the
+// blur that was reported. The ACTIVE page (allowDownscaling={!(FULL_RES_ZOOM && i === active)} in both
+// pagers) keeps every pixel; its neighbours keep the default, because ~32 MB of bitmap per page is a cost
+// only the page on screen should pay. A swipe flips the prop on two Images, and each re-reads its page from
+// the local cache (a decode and a cross-fade, never a request). iOS only: the pinch is iOS-only
+// (maximumZoomScale — PaperZoom gates its own the same way), and at 1x a full decode buys nothing.
+const FULL_RES_ZOOM = Platform.OS === 'ios';
 
 async function getToken() {
   const raw = await SecureStore.getItemAsync('userSession');
@@ -157,6 +183,13 @@ export default function CoverLetterTemplates() {
   const [dlState, setDlState] = useState<DownloadState>({ metered: false, paid: false, unlimited: false, remaining: null, passes: 0, ownsEmployer: false, employer: null });
   const [payOpen, setPayOpen] = useState(false);
   const [pendingFmt, setPendingFmt] = useState<'pdf' | 'docx' | null>(null);
+  // The download sheet (page layout + file format), opened by the ONE footer button — see the header.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  // The format tap waiting for the sheet to finish leaving, and the net under its onDismiss.
+  const afterSheet = useRef<null | (() => void)>(null);
+  const settleTmr = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Leaving the screen mid-slide must not start a download (or open a paywall) for a screen that is gone.
+  useEffect(() => () => { afterSheet.current = null; if (settleTmr.current) clearTimeout(settleTmr.current); }, []);
   useEffect(() => {
     (async () => {
       try {
@@ -284,7 +317,8 @@ export default function CoverLetterTemplates() {
     try {
       for (let i = 0; i < need.length; i += DOC_BATCH) {
         const batch = need.slice(i, i + DOC_BATCH);
-        const got = await fetchDocCards('cover_letter', did, batch).catch(() => null);
+        // The FULL page, not the 480-px card: this pager pinch-zooms to 3x (see fetchDocCards).
+        const got = await fetchDocCards('cover_letter', did, batch, { size: 'page' }).catch(() => null);
         if (gen !== docGen.current) return;                  // a newer load owns the screen now
         if (got === 'gone') {
           setDocGone(true);
@@ -437,9 +471,36 @@ export default function CoverLetterTemplates() {
     }
   }
 
+  // ── The sheet's format rows ──
+  // ⚠️ THE SHEET LEAVES FIRST, THEN THE TAP RUNS. A locked tap opens DownloadPaywallSheet — another Modal
+  // — and iOS cannot present one while this one is still sliding away: asked for in the same commit, the
+  // paywall simply never appeared, and the tap read as a dead button. So the tap waits for onDismiss (with
+  // a short net in case that event never comes); Android stacks dialogs, so it runs at once there. Either
+  // way it is handleDownload(fmt) — the same gate, the same paywall, the same download as before.
+  function runAfterSheet() {
+    if (settleTmr.current) { clearTimeout(settleTmr.current); settleTmr.current = null; }
+    const run = afterSheet.current;
+    afterSheet.current = null;          // exactly once, whichever of onDismiss / the net gets here first
+    run?.();
+  }
+  function pickFormat(fmt: 'pdf' | 'docx') {
+    if (downloading || afterSheet.current) return;
+    afterSheet.current = () => handleDownload(fmt);
+    setSheetOpen(false);
+    if (Platform.OS !== 'ios') { runAfterSheet(); return; }
+    settleTmr.current = setTimeout(runAfterSheet, SHEET_SETTLE_MS);
+  }
+
   const selected = previews[active];
   const selectedDoc = docId ? docSlots[active] : undefined;
   const fitStyleOf = (n: number) => (n >= 85 ? s.fitHi : n >= 70 ? s.fitMid : s.fitLo);
+  // The reason slot is reserved while ANY design has a reason, so swiping between them never moves the
+  // pager; its height follows the font scale, capped like the Text itself.
+  const { fontScale } = useWindowDimensions();
+  const reasonSlotH = REASON_LINE_H * 2 * Math.min(Math.max(fontScale || 1, 1), REASON_MAX_SCALE);
+  const hasReasons = !!docId && docSlots.some((sl) => !!sl.reason);
+  const sheetName = (docId ? selectedDoc?.name : selected?.name) || 'Cover Letter';
+  const leadEmployer = docEmployer || passEmployer || 'this employer';
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
@@ -452,15 +513,12 @@ export default function CoverLetterTemplates() {
         <View style={{ width: 64 }} />
       </View>
 
-      {docId ? (
-        <View>
-          <Text style={s.regionHint} numberOfLines={1}>
-            {docEmployer ? `Ranked for ${docEmployer} · best fit first` : 'Ranked for this employer · best fit first'}
-          </Text>
-        </View>
-      ) : (
+      {/* Region chips — the classic picker only, exactly where the resume gallery keeps its own. Doc mode
+          has none (the server already weighed the region when it ranked): its "best fit first" line is the
+          lead under the chips' place, as on the resume. The old "Target country / region" caption row is
+          gone with the footer rows — the flags say it, and the resume's chips carry no caption either. */}
+      {!docId && (
       <View>
-        <Text style={s.regionHint}>Target country / region</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.regionRow}>
           {REGIONS.map((r) => {
             const on = r.id === region;
@@ -506,7 +564,7 @@ export default function CoverLetterTemplates() {
         </View>
       ) : docId ? (
         <>
-          <Text style={s.lead}>Swipe to compare · scroll &amp; pinch to zoom · preview is free</Text>
+          <Text style={s.lead} numberOfLines={1}>{`Best fit for ${leadEmployer} first · every preview is free`}</Text>
           <View style={s.pagerWrap} onLayout={(e) => setPagerH(e.nativeEvent.layout.height)}>
             {pagerH > 0 && (
               <ScrollView
@@ -537,6 +595,7 @@ export default function CoverLetterTemplates() {
                                 style={{ width: CARD_W, height: imgH }}
                                 contentFit="cover"
                                 transition={160}
+                                allowDownscaling={!(FULL_RES_ZOOM && i === active)}
                                 onLoad={(e) => {
                                   // No size from the server → learn the real page height from the image
                                   // itself, once, so a long letter is not cropped to A4.
@@ -609,7 +668,11 @@ export default function CoverLetterTemplates() {
               </View>
             )}
             <Text style={s.designName}>{selectedDoc?.name || 'Cover Letter'}</Text>
-            {!!selectedDoc?.reason && <Text style={s.fitReason} numberOfLines={2}>{selectedDoc.reason}</Text>}
+            {hasReasons && (
+              <Text style={[s.fitReason, { minHeight: reasonSlotH }]} numberOfLines={2} maxFontSizeMultiplier={REASON_MAX_SCALE}>
+                {selectedDoc?.reason || ''}
+              </Text>
+            )}
           </View>
         </>
       ) : (
@@ -625,7 +688,7 @@ export default function CoverLetterTemplates() {
                 onScrollEndDrag={onScrollEnd}
                 decelerationRate="fast"
               >
-                {previews.map((p) => {
+                {previews.map((p, i) => {
                   const imgH = Math.round(CARD_W * (p.height / p.width));
                   return (
                     <View key={p.id} style={[s.page, { height: pagerH }]}>
@@ -636,7 +699,10 @@ export default function CoverLetterTemplates() {
                             maximumZoomScale={3} minimumZoomScale={1} bouncesZoom pinchGestureEnabled
                             showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} nestedScrollEnabled
                           >
-                            <Image source={{ uri: p.image }} style={{ width: CARD_W, height: imgH }} contentFit="cover" transition={160} />
+                            <Image
+                              source={{ uri: p.image }} style={{ width: CARD_W, height: imgH }} contentFit="cover" transition={160}
+                              allowDownscaling={!(FULL_RES_ZOOM && i === active)}
+                            />
                           </ScrollView>
                         </View>
                       </View>
@@ -662,33 +728,58 @@ export default function CoverLetterTemplates() {
         </>
       )}
 
+      {/* Sticky footer: ONE button, the resume gallery's. It only opens the sheet — the gate, the
+          paywall and the download itself all still run from the format row the user picks there. */}
       {!loading && !error && (
         <View style={s.footer}>
+          <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} onPress={() => setSheetOpen(true)} disabled={downloading}>
+            <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
+              {downloading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="download-outline" size={17} color="#fff" />
+                  <Text style={s.dlText}>Download</Text>
+                  {/* The padlock follows the PASS as well as the plan (dlLabel), never isPaid alone —
+                      the resume gallery's rule, for the same reason. */}
+                  {dlLabel.locked && <View style={s.credBadge}><Ionicons name="lock-closed" size={10} color="#fff" /><Text style={s.credBadgeText}>Paid plans</Text></View>}
+                </>
+              )}
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── The download sheet: page layout + file format, paid-gated — the resume gallery's sheet ── */}
+      <Modal visible={sheetOpen} transparent animationType="slide" onRequestClose={() => setSheetOpen(false)} onDismiss={runAfterSheet}>
+        <Pressable style={s.sheetBackdrop} onPress={() => setSheetOpen(false)} />
+        <View style={s.sheet}>
+          <View style={s.sheetHandle} />
+          <Text style={s.sheetTitle} numberOfLines={1}>Download “{sheetName}”</Text>
+
+          <Text style={s.sheetLabel}>Page layout</Text>
           <View style={s.segWrap}>
             <SegBtn icon="document-outline"  label="One Page" active={mode === 'onepage'} onPress={() => setMode('onepage')} />
             <SegBtn icon="documents-outline" label="A4 Pages" active={mode === 'a4'}      onPress={() => setMode('a4')} />
           </View>
+
+          <Text style={s.sheetLabel}>File format</Text>
+          {/* The format chosen on the Review screen still comes first. */}
           {(preferredFormat === 'docx' ? ['docx', 'pdf'] : ['pdf', 'docx']).map((fmt, i) => (
             <TouchableOpacity
               key={fmt}
               style={[s.dlOuter, i > 0 && { marginTop: 8 }]}
               activeOpacity={0.9}
-              onPress={() => handleDownload(fmt as 'pdf' | 'docx')}
+              onPress={() => pickFormat(fmt as 'pdf' | 'docx')}
               disabled={downloading}
             >
               <LinearGradient
                 colors={fmt === 'pdf' ? [T.navy, '#1a2346'] : ['#2B579A', '#1f407a']}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}
               >
-                {downloading ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <>
-                    <Ionicons name={dlLabel.locked ? 'lock-closed' : (fmt === 'pdf' ? 'download-outline' : 'document-text-outline')} size={17} color="#fff" />
-                    <Text style={s.dlText}>{fmt === 'pdf' ? 'Download PDF' : 'Download as Word'}</Text>
-                    {!!dlBadge && <View style={s.credBadge}><Text style={s.credBadgeText}>{dlBadge}</Text></View>}
-                  </>
-                )}
+                <Ionicons name={dlLabel.locked ? 'lock-closed' : (fmt === 'pdf' ? 'download-outline' : 'document-text-outline')} size={17} color="#fff" />
+                <Text style={s.dlText}>{fmt === 'pdf' ? 'PDF' : 'Word (.docx)'}</Text>
+                {!!dlBadge && <View style={s.credBadge}><Text style={s.credBadgeText}>{dlBadge}</Text></View>}
               </LinearGradient>
             </TouchableOpacity>
           ))}
@@ -700,7 +791,7 @@ export default function CoverLetterTemplates() {
               : 'Previews are free · downloads are included in every paid plan'}
           </Text>
         </View>
-      )}
+      </Modal>
       <RatingPromptModal visible={!!rating.trigger} trigger={rating.trigger} onClose={closeRating} />
       <DownloadPaywallSheet
         visible={payOpen}
@@ -733,8 +824,8 @@ const s = StyleSheet.create({
   backPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
   topTitle:     { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
-  regionHint:   { fontSize: 11, fontWeight: '700', color: T.faint, letterSpacing: 0.6, textTransform: 'uppercase', paddingHorizontal: 16, marginTop: 2, marginBottom: 6 },
-  regionRow:    { paddingHorizontal: 12, gap: 8, paddingBottom: 4 },
+  // paddingTop 2: the resume gallery's chip row, now that the caption row above it is gone.
+  regionRow:    { paddingHorizontal: 12, gap: 8, paddingBottom: 4, paddingTop: 2 },
   regionChip:   { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 13, borderWidth: 1, borderColor: T.border },
   regionChipOn: { backgroundColor: T.navy, borderColor: T.navy },
   regionFlag:   { fontSize: 14 },
@@ -762,7 +853,8 @@ const s = StyleSheet.create({
   previewLoadingText: { fontSize: 12.5, fontWeight: '600', color: T.muted, textAlign: 'center' },
   retryChip:          { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 8 },
   retryChipText:      { fontSize: 12.5, fontWeight: '800', color: '#fff' },
-  fitReason:    { fontSize: 11.5, fontWeight: '600', color: T.muted, textAlign: 'center', paddingHorizontal: 28 },
+  // lineHeight is pinned so the two-line slot (minHeight, set inline from the font scale) is exact.
+  fitReason:    { fontSize: 11.5, lineHeight: REASON_LINE_H, fontWeight: '600', color: T.muted, textAlign: 'center', paddingHorizontal: 28 },
   fitPill:      { position: 'absolute', top: 10, right: 10, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 6, elevation: 4 },
   fitHi:        { backgroundColor: '#0E9F6E' },
   fitMid:       { backgroundColor: T.blueDeep },
@@ -770,7 +862,12 @@ const s = StyleSheet.create({
   fitPillText:  { fontSize: 11.5, fontWeight: '800', color: '#fff', letterSpacing: 0.1 },
   bestBadge:    { position: 'absolute', top: 10, left: 10, maxWidth: CARD_W - 120, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.navy, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 6, elevation: 4 },
   bestBadgeText:{ fontSize: 11.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
-  footer:       { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.select({ ios: 28, default: 16 }), gap: 10, shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
+  footer:       { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.select({ ios: 26, default: 14 }), shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
+  sheetBackdrop:{ flex: 1, backgroundColor: 'rgba(11,15,34,0.45)' },
+  sheet:        { backgroundColor: T.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 18, paddingTop: 10, paddingBottom: Platform.select({ ios: 34, default: 20 }), gap: 10 },
+  sheetHandle:  { alignSelf: 'center', width: 40, height: 4.5, borderRadius: 3, backgroundColor: 'rgba(11,15,34,0.16)', marginBottom: 4 },
+  sheetTitle:   { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3, textAlign: 'center', marginBottom: 2 },
+  sheetLabel:   { fontSize: 11, fontWeight: '800', color: T.faint, letterSpacing: 0.6, textTransform: 'uppercase', marginTop: 4 },
   segWrap:      { flexDirection: 'row', backgroundColor: T.bgSoft, borderRadius: 12, padding: 4, gap: 4 },
   segBtn:       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, borderRadius: 9 },
   segBtnActive: { backgroundColor: T.navy },

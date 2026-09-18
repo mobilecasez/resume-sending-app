@@ -696,9 +696,11 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
     const admin = await hub(16, { adminTest: true });
     ok('the admin test stays free: no gate, no charge', admin.statusCode === 200 && admin.body.adminTest === true && ent.attempts.length === att0, { status: admin.statusCode });
     // The live check an operator uses after a model switch: the admin test names the model that wrote the letter.
-    const WCHAIN0 = require(path.join(ROOT, 'server', 'services', 'aiText.js')).writingChain()[0];
-    ok('…and it names the model that WROTE it (the document chain\'s primary on a quiet day)',
-      admin.body.inputs && admin.body.inputs.model === WCHAIN0, admin.body.inputs && admin.body.inputs.model);
+    // ⚠️ RETARGETED 2026-09-18 (the letter chain reverted the same day): the letter lanes walk [gemini-2.5-flash,
+    // ...fallbackModels()] again, not aiText.writing() — so on a quiet day it is the LETTER primary, GEMINI_FLASH_MODEL.
+    const LETTER_P0 = process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash';
+    ok('…and it names the model that WROTE it (the letter chain\'s primary on a quiet day, gemini-2.5-flash)',
+      admin.body.inputs && admin.body.inputs.model === LETTER_P0, admin.body.inputs && admin.body.inputs.model);
     ent.gate = { allowed: true, remaining: 5 };
 
     ok('⚠️ NO CREDIT was priced, charged or refunded anywhere in the Job Hub lane',
@@ -725,25 +727,28 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
   console.log('\n── T16b · ⚠️ the Job Hub letter rides out a Gemini 503 spike — and says so honestly when it cannot ──');
   {
     // 2026-09-18: Home's Amazon letter died on two back-to-back 503 "high demand" answers from ONE model. This lane
-    // made ONE call to ONE model — the same failure, with nothing to fall back on. It now goes through aiText, and
-    // since 2026-09-18 (the blind evaluation — see WRITING_PRIMARY in aiText.js) on the measured DOCUMENT chain,
-    // `...aiText.writing()`: gemini-3.1-flash-lite first, then gemini-2.5-flash with thinking OFF, then
-    // gemini-2.5-flash-lite. gemini-2.5-flash is no longer the primary — it is the FIRST FALLBACK.
+    // made ONE call to ONE model — the same failure, with nothing to fall back on. It now goes through aiText, on the
+    // LETTER chain: GEMINI_FLASH_MODEL (gemini-2.5-flash), then aiText.fallbackModels() (the flash-lites).
+    // ⚠️ REVERTED 2026-09-18, the same day: for one afternoon this lane spread aiText.writing() (gemini-3.1-flash-lite
+    // first, 2.5-flash with thinking off behind it). That chain was measured on Home's OLD letter prompt only, so every
+    // letter lane is back on the chain it was written with — and none of them may pass a per-model config (no model
+    // gets thinkingConfig from the lane). The résumé lanes keep writing(); that is pinned below too.
     const AH = require(path.join(ROOT, 'server', 'controllers', 'aiHubController.js'));
     // The SAME aiText instance the controller calls: both resolve to this one file in require.cache (nothing in this
     // suite stubs or reloads it), so the chain read below is the chain the lane walks.
     const AT = require(path.join(ROOT, 'server', 'services', 'aiText.js'));
     const saved = { wait: AT._internals.settings.retryWaitMs, jitter: AT._internals.settings.retryJitterMs };
     AT._internals.settings.retryWaitMs = 20; AT._internals.settings.retryJitterMs = 0;   // the 2 s pause, shrunk
-    // Model ids come from the module, never re-hard-coded: P = the writing primary, F1 = its first fallback
-    // (gemini-2.5-flash on the measured chain — the one model aiText.writing() turns thinking off for).
-    const CHAIN = AT.writingChain();
+    // Model ids come from the module and the env, never re-hard-coded past the lane's own default: P = the letter
+    // primary, then the verified fallbacks in order.
+    const CHAIN = [process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash', ...AT.fallbackModels()];
     const [P, F1] = CHAIN;
-    // What generateJobCoverLetter passes as its own generationConfig (`config: {}` in aiHubController). Every model
-    // gets exactly this, except gemini-2.5-flash, which gets thinkingConfig { thinkingBudget: 0 } merged over it.
+    // What generateJobCoverLetter passes as its own generationConfig (`config: {}` in aiHubController) — and EVERY
+    // model of the letter chain gets exactly this: no thinkingConfig from anywhere.
     const LANE_CONFIG = {};
-    const THINK_OFF = { ...LANE_CONFIG, thinkingConfig: { thinkingBudget: 0 } };
     const noThinking = (c) => !!c && typeof c === 'object' && !('thinkingConfig' in c);
+    ok('the letter chain under test: gemini-2.5-flash first, then the verified fallbacks (not the writing chain)',
+      CHAIN.length >= 3 && new Set(CHAIN).size === CHAIN.length && JSON.stringify(CHAIN) !== JSON.stringify(AT.writingChain()), { letter: CHAIN, writing: AT.writingChain() });
     const e503 = () => Object.assign(new Error('[GoogleGenerativeAI Error]: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.'), { status: 503 });
     const eDry = () => Object.assign(new Error('[GoogleGenerativeAI Error]: [429 Too Many Requests] Your prepayment credits are depleted. [RESOURCE_EXHAUSTED]'), { status: 429 });
     db.hubJob = { id: 'hub-1', title: 'Backend Engineer', employer_id: null, location: 'Pune', responsibilities: 'Build APIs' };
@@ -759,14 +764,10 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
     const rode = await hub(16);
     ok('the primary 503s twice → the first fallback writes it → 200 with the letter',
       rode.statusCode === 200 && !!rode.body.coverLetter && JSON.stringify(ai.models) === JSON.stringify([P, P, F1]), { status: rode.statusCode, models: ai.models });
-    // NEW (2026-09-18): the lane spreads aiText.writing() — its models AND its per-model config. The first fallback
-    // (gemini-2.5-flash) must be asked with thinking OFF, laid over the lane's config; the primary gets the lane's
-    // config untouched. A lane that passed only `models` (dropping modelConfig) would bill thinking tokens again.
-    ok('⚠️ …the first fallback was asked with thinkingConfig { thinkingBudget: 0 } merged over the lane\'s config; the primary with the lane\'s config and NO thinkingConfig',
-      ai.configs.length === 3
-      && JSON.stringify(ai.configs[0]) === JSON.stringify(LANE_CONFIG) && noThinking(ai.configs[0])
-      && JSON.stringify(ai.configs[1]) === JSON.stringify(LANE_CONFIG) && noThinking(ai.configs[1])
-      && JSON.stringify(ai.configs[2]) === JSON.stringify(THINK_OFF), { models: ai.models, configs: ai.configs });
+    // ⚠️ REWRITTEN 2026-09-18 (the revert): every model — the primary twice, then the fallback — was asked with the
+    // lane's config exactly, and NO thinkingConfig. The writing chain's per-model config is not this lane's any more.
+    ok('⚠️ …every model was asked with the lane\'s config exactly — NO thinkingConfig, on the primary or the fallback',
+      ai.configs.length === 3 && ai.configs.every((c) => JSON.stringify(c) === JSON.stringify(LANE_CONFIG) && noThinking(c)), { models: ai.models, configs: ai.configs });
     ok('…charged exactly ONE unit, once the letter existed', ent.consumed.length === c0 + 1, ent.consumed.slice(c0));
 
     ai.models.length = 0; ai.configs.length = 0; ai.failModel = () => e503();
@@ -776,15 +777,12 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
       busy.statusCode === 503 && busy.body.reason === 'ai_busy' && busy.body.retryable === true && /Nothing was charged/.test(busy.body.error || ''), { status: busy.statusCode, body: busy.body });
     ok('…and it is TRUE: no unit consumed, no charge attempted, no usage lock taken',
       ent.consumed.length === c0 && ent.attempts.length === att0 && lockTakenSince(logMark) === 0, { consumed: ent.consumed.slice(c0), attempts: ent.attempts.slice(att0) });
-    // Retargeted 2026-09-18: the chain walked is aiText.writingChain() (the lane passes aiText.writing()), not the
-    // old [gemini-2.5-flash, ...fallbackModels()]. Primary twice, then every writing fallback once, in order.
-    ok('…after the whole measured writing chain was tried (primary twice, then every fallback)',
+    // Retargeted again 2026-09-18 (the revert): the chain walked is the LETTER chain, [gemini-2.5-flash,
+    // ...fallbackModels()] — primary twice, then every verified fallback once, in order.
+    ok('…after the whole letter chain was tried (primary twice, then every fallback)',
       CHAIN.length >= 3 && JSON.stringify(ai.models) === JSON.stringify([P, P, ...CHAIN.slice(1)]), { chain: CHAIN, models: ai.models });
-    ok('⚠️ …and on the way down only gemini-2.5-flash ran with thinking off: every other model got the lane\'s config, NO thinkingConfig',
-      ai.configs.length === ai.models.length
-      && ai.models.every((m, i) => (m === F1
-        ? JSON.stringify(ai.configs[i]) === JSON.stringify(THINK_OFF)
-        : JSON.stringify(ai.configs[i]) === JSON.stringify(LANE_CONFIG) && noThinking(ai.configs[i]))), { models: ai.models, configs: ai.configs });
+    ok('⚠️ …and on the way down NO model ran with a config of its own: the lane\'s config, no thinkingConfig, every time',
+      ai.configs.length === ai.models.length && ai.configs.every((c) => JSON.stringify(c) === JSON.stringify(LANE_CONFIG) && noThinking(c)), { models: ai.models, configs: ai.configs });
 
     ai.models.length = 0; ai.configs.length = 0; ai.failModel = () => eDry();
     c0 = ent.consumed.length;
@@ -809,6 +807,19 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
 
     ai.failModel = null; ai.models.length = 0; ai.configs.length = 0; ent.consumeFor = null;
     AT._internals.settings.retryWaitMs = saved.wait; AT._internals.settings.retryJitterMs = saved.jitter;
+
+    // ⚠️ THE TWO CHAINS, IN THE SOURCE (comment-stripped). Letters: [their gemini-2.5-flash, ...fallbackModels()] with no
+    // per-model config — this lane, the Jobs-section letter (which Home's employer letter now writes through). Résumés:
+    // still aiText.writing(), the chain that WAS measured for them. A letter lane that spread writing() again, or a
+    // résumé lane that lost it, fails here before it ships.
+    const fsC = require('fs');
+    const stripS = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const ahS = stripS(fsC.readFileSync(path.join(ROOT, 'server', 'controllers', 'aiHubController.js'), 'utf8'));
+    const hubCall = ((ahS.match(/async function generateJobCoverLetter\([\s\S]*?\n\}/) || [''])[0].match(/aiText\.generateText\(\{[\s\S]*?\}\);/) || [''])[0];
+    ok('⚠️ the Job Hub letter asks [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()], with no writing() and no modelConfig',
+      /lane: 'job_hub_letter'/.test(hubCall) && /models: \[GEMINI_FLASH_MODEL, \.\.\.aiText\.fallbackModels\(\)\]/.test(hubCall) && !/writing\(\)|modelConfig/.test(hubCall), hubCall);
+    const rbS = stripS(fsC.readFileSync(path.join(ROOT, 'server', 'controllers', 'resumeBuilderController.js'), 'utf8'));
+    ok('…while the résumé lanes still spread aiText.writing() (the measured chain stays theirs)', (rbS.match(/\.\.\.aiText\.writing\(\)/g) || []).length >= 1);
   }
 
   // ── tidy: the handlers are real, so they wrote real files. Remove everything THIS RUN created

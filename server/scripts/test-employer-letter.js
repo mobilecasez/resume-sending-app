@@ -12,11 +12,23 @@
 // or a charge. The lane asks through aiText — a pause, the primary once more, the rest of the chain, one AI window —
 // a fallback's letter is stored as ITS letter under the same fingerprint, and when no model answers, nothing is
 // charged or stored and the answer says so (503 ai_busy / ai_down).
-// ⚠️ THE CHAIN IS aiText.writing() (2026-09-18, the blind evaluation — see aiText WRITING_PRIMARY): the measured
-// DOCUMENT chain, gemini-3.1-flash-lite first, then gemini-2.5-flash with thinking OFF, then gemini-2.5-flash-lite. It
-// is no longer [LETTER_MODEL, …fallbackModels()]. Every scenario below reads the chain from the aiText the lane
-// calls (P, F1, F2 = aiText.writingChain()) — a model id hard-coded here would script a storm on a model the lane no
-// longer asks first, and the storm would simply never happen.
+// ⚠️ AND (2026-09-18, the owner's decision): "we have a prompt/api that is already written on the jobs section and that
+// used to generate good cover letters with project details and clients and hence we finalized that… we need to use the
+// same one… and not the new one". Home's letter is WRITTEN by the Jobs section's generation now — ai-cover-letter-v2's
+// buildPrompt through coverLetterController's own functions (the metadata loader, the research subject, the posting,
+// Google Search grounding, v2's config, the letter chain, the parsing, the mapping), called and never copied. The pins
+// that matter most: the prompt the two lanes send for the same job is IDENTICAL, and the Home lane builds none of its own.
+// Everything around the words (the gate, the cache, the flights, the money, the stored document, the design ranking,
+// the brand, the thumbnails, the 503 answers) is pinned exactly as before.
+// ⚠️ THE CHAIN IS THE LETTER CHAIN (reverted 2026-09-18, the same day): [coverLetterController.LEGACY_LETTER_MODEL
+// (gemini-2.5-flash), ...letterFallbacks()], v2's config on every model, no per-model config. For one afternoon the
+// letter lanes spread aiText.writing(); that chain was measured on Home's OLD prompt, never on v2's grounded one. Every
+// scenario reads the chain from the modules the lane calls (P, F1, F2 below) — a model id hard-coded here would script a
+// storm on a model the lane does not ask first, and the storm would simply never happen.
+// ⚠️ RETARGETED 2026-09-18 (the measured letter backups): the backups are the controller's OWN letterFallbacks() —
+// gemini-3.1-flash-lite first, then gemini-2.5-flash-lite — no longer aiText.fallbackModels() (2.5-flash-lite first).
+// Measured on v2's grounded prompt: 2.5-flash-lite broke 2 of 3 letters, 3.1-flash-lite gave 3/3 usable. The literal
+// order is pinned ONCE (LETTER_CHAIN_PINNED); every other assertion reads it through CL._internals.
 'use strict';
 const path = require('path');
 const os = require('os');
@@ -26,11 +38,12 @@ const ROOT = path.join(__dirname, '..', '..');
 const THUMBS = fsSync.mkdtempSync(path.join(os.tmpdir(), 'cva-letter-thumbs-'));
 process.env.DOC_THUMB_CACHE_DIR = THUMBS;   // ⚠️ before the controller is required — it reads this at load
 process.env.GEMINI_API_KEY = 'test-key-not-used';
-delete process.env.AI_TEXT_FALLBACK_MODELS;   // the VERIFIED chain (aiText's default), whatever the shell exports
-// …and the MEASURED writing chain the letter lane walks (aiText.writing()), whatever the shell exports: an operator's
-// AI_WRITING_FALLBACK_MODELS=none would leave a one-model chain and no fallback for any storm below to reach.
-delete process.env.AI_WRITING_MODEL;
-delete process.env.AI_WRITING_FALLBACK_MODELS;
+// The MEASURED letter fallbacks (coverLetterController LETTER_FALLBACKS) the letter chain walks after its primary,
+// whatever the shell exports: an operator's AI_TEXT_FALLBACK_MODELS wins over them (letterFallbacks()), so a list would
+// replace them and "none" would leave a one-model chain with no fallback for any storm below to reach. The scenarios
+// that pin the operator's switch set it themselves, and put it back.
+delete process.env.AI_TEXT_FALLBACK_MODELS;
+process.env.USE_ASYNC_JOBS = 'false';   // the Jobs lane (POST /generate-cover-letter-details) answers synchronously here
 
 let pass = 0, fail = 0; const failures = [];
 // ⚠️ A build left waiting on a flight nobody settles holds no timer, so node would simply exit — code 0, no summary.
@@ -45,6 +58,9 @@ const world = {
   resumeRow: { resume_data: { personal_info: { title: 'Senior Backend Engineer' }, experience: [{ role: 'Senior Backend Engineer', company: 'Payly', start_date: 'Jan 2016', end_date: 'Present' }] } },
   user: { full_name: 'Jane Doe', email: 'jane@x.test', phone_number: '+1 555', city: 'Pune', country: 'India', photo_path: null, resume_path: '/uploads/r.pdf' },
   marks: { h: 10, l: 20 }, creditHistory: { n: 0, cost: 0 }, ledgerCredits: { n: 0 },
+  // The Jobs lane's brand cache (employer_brand_profiles). null = no row; the Jobs-lane comparison sets one, so that lane
+  // never reaches its own researcher (stubbed below to throw).
+  brandProfile: null,
   sql: [],
 };
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
@@ -60,6 +76,7 @@ async function dbGet(sql, params = []) {
   if (/COUNT\(\*\)::int AS n, COALESCE\(MAX\(credits_used\)/.test(q)) return world.creditHistory;
   if (/COUNT\(\*\)::int AS n FROM usage_ledger/.test(q)) return world.ledgerCredits;
   if (/FROM download_passes/.test(q)) return null;
+  if (/SELECT brand_color, font_name FROM employer_brand_profiles/.test(q)) return world.brandProfile;
   return null;
 }
 const stubAt = (abs, exports) => { const p = require.resolve(abs); require.cache[p] = { id: p, filename: p, loaded: true, exports }; };
@@ -112,7 +129,12 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
   } }; } },
 } };
 const PARA = (n) => `Paragraph ${n} about **Node.js** and **PostgreSQL** work the candidate did across payment systems, reliability, observability and careful delivery for teams that ship every week without drama or heroics, with clear ownership of services from design review through production support and steady mentoring.`;
-const GOOD = (over = {}) => JSON.stringify({ position: 'Senior Backend Engineer', to: 'Hiring Manager', addresses: [], cover_letter: [PARA(1), PARA(2), PARA(3), PARA(4)].join('\n\n'), ...over });
+// ai-cover-letter-v2's answer, in its own shape (to, employer_name, position, addresses, subject, cover_letter). A key set
+// to undefined is left out of the JSON — how a scenario says "the model did not give one".
+const GOOD = (over = {}) => JSON.stringify({ to: 'Hiring Manager', employer_name: 'Acme Corporation', position: 'Senior Backend Engineer', addresses: [], subject: 'Application for Senior Backend Engineer — Jane Doe', cover_letter: [PARA(1), PARA(2), PARA(3), PARA(4)].join('\n\n'), ...over });
+/** The prompt TEXT a call carried (the letter is a grounded request: { contents, tools }), and the tools on it. */
+const textOf = (c) => (c && c.prompt && Array.isArray(c.prompt.contents) ? c.prompt.contents[0].parts[0].text : String((c && c.prompt) || ''));
+const toolsOf = (c) => (c && c.prompt && c.prompt.tools) || null;
 
 // ⚠️ 2026-09-18 — what Google answered for Amazon's letter, and the answers around it. The SDK's fetch errors carry the
 // HTTP status as a number; the incident's own line is replayed message-only too, exactly as production logged it
@@ -127,7 +149,13 @@ const E503 = (m) => sdkErr(m, 503, 'Service Unavailable', 'This model is current
 const E429 = (m) => sdkErr(m, 429, 'Too Many Requests', 'Your prepayment credits are depleted. Please go to AI Studio to manage your project and billing. [RESOURCE_EXHAUSTED]');
 const INCIDENT_503 = (m) => new Error(`[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.`);
 
-stub('ai-cover-letter-v2.js', { generateCoverLetter: async () => { throw new Error('legacy v2 must not be called'); } });
+// ⚠️ THE REAL ai-cover-letter-v2 (read-only — the finalized prompt): its buildPrompt is what both lanes must send. Loaded
+// after the SDK stub above (it takes the SDK at load); its own callGemini is never reached — the call is aiText's.
+const V2 = require(path.join(ROOT, 'ai-cover-letter-v2.js'));
+const realBuildPrompt = V2.buildPrompt;
+const v2Calls = [];   // every buildPrompt call, with its arguments — from EITHER lane
+V2.buildPrompt = (...a) => { v2Calls.push(a); return realBuildPrompt(...a); };
+V2.generateCoverLetter = async () => { throw new Error("v2's own model call must never run: the letter goes through aiText"); };
 stub('ai-employer-researcher.js', { researchEmployer: async () => { throw new Error('researcher must not be called directly'); } });
 stub('server/controllers/notificationsController.js', { notifyCoverLetterGenerated: async () => {}, notifyError: async () => {} });
 // The operator's pager under the REAL aiHealth: a dead key (quota / auth) must page, and no push may leave this suite.
@@ -143,6 +171,8 @@ stub('server/controllers/emailController.js', { generateCoverLetterPDF: async (.
 stub('server/services/eventCosts.js', { getEventCost: async () => 1, refundCredits: async (...a) => { world.refunds = (world.refunds || []).concat([a]); }, chargeCredits: async () => ({}) });
 stub('server/services/track.js', { emit: () => {} });
 stub('server/utils/coverLetterRenderer.js', {
+  // PREVIEW_REV: the renderer's name for its preview resolution/format — every page/card key carries it (the contract).
+  PREVIEW_REV: 'test-rev-1',
   renderPdf: async (id, data, opts) => { rendered.pdf++; rendered.pdfArgs = { id, data, opts }; return Buffer.from('%PDF fake'); },
   renderPreviews: async (data, opts, tpls) => { rendered.previews.push({ data, opts, ids: tpls.map((t) => t.id) }); return tpls.map((t) => ({ id: t.id, name: t.name, accent: t.accent, image: 'data:image/jpeg;base64,' + Buffer.from('img-' + t.id).toString('base64'), width: 794, height: 1123 })); },
 });
@@ -193,19 +223,23 @@ const EL = require(path.join(ROOT, 'server/controllers/employerLetterController.
 const AT = require(path.join(ROOT, 'server/services/aiText.js'));
 AT._internals.settings.retryWaitMs = 25;
 AT._internals.settings.retryJitterMs = 0;
-// ⚠️ THE CHAIN THE LANE WALKS, read from the SAME aiText instance the controller requires (lazily, by the same
-// resolved path — the storm scenarios wrap AT.generateText and see the lane's call through it, which proves it):
-// P = the writing chain's primary, F1 = its first fallback, F2 = its last resort. Never written out as ids here.
-const [P, F1, F2] = AT.writingChain();
-/** The per-model config the writing chain lays over the lane's own config (only F1 has one: thinking OFF). */
-const WRITING_CFG = AT.writing().modelConfig;
 const CL = require(path.join(ROOT, 'server/controllers/coverLetterController.js'));
+// ⚠️ THE CHAIN THE LANE WALKS — the letter chain, read from the module the writer lives in: P = LEGACY_LETTER_MODEL, F1 /
+// F2 = the controller's own letterFallbacks() (its measured LETTER_FALLBACKS while AI_TEXT_FALLBACK_MODELS is unset — it
+// is, above). The storm scenarios wrap AT.generateText and see the lane's call on exactly this chain, which proves it.
+// Never written out as ids — except ONCE, in LETTER_CHAIN_PINNED.
+const [P, F1, F2] = [CL.LEGACY_LETTER_MODEL, ...CL._internals.letterFallbacks()];
+/** The ONE literal pin of the letter chain's order. Why this order: on v2's grounded prompt (2026-09-18, three letters per
+ *  model, judged blind) 3.1-flash-lite gave 3/3 usable letters and 2.5-flash-lite broke 2 of 3 — so it goes last. */
+const LETTER_CHAIN_PINNED = Object.freeze(['gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite']);
+/** v2's generationConfig — what EVERY model of the letter chain is asked with (no per-model config, no thinkingConfig). */
+const LETTER_CFG = CL._internals.legacyLetterConfig();
 const routes = require(path.join(ROOT, 'server/routes/coverLetterRoutes.js'));
 
 function mkRes() { const r = { statusCode: 200, body: null }; r.status = (c) => { r.statusCode = c; return r; }; r.json = (b) => { r.body = b; return r; }; return r; }
 const mkReq = (userId, body, extra = {}) => ({ user: { id: userId }, body, query: {}, headers: {}, ...extra });
 const call = async (fn, userId, body, extra) => { const res = mkRes(); await fn(mkReq(userId, body, extra), res); return res; };
-const reset = () => { ent.usageCalls = []; ent.usageThrows = false; passState.calls = []; passState.answer = { available: false, forThisEmployer: false }; researchConv = null; ai.queue = []; ai.calls = []; ai.fail = null; ent.consumed = []; ent.gateCalls = 0; ent.quota = { allowed: true, via: 'plan', remaining: 5 }; ent.quotaSeq = null; ent.used = { via: 'plan' }; ent.legacyEntitlements = false; passSpy.cover = false; passSpy.coverCalls = []; passSpy.claim = { charged: false }; passSpy.claimCalls = []; store.puts = []; store.failPut = false; researchCalls.length = 0; stages.length = 0; narr.throwIt = null; world.metaThrow = null; world.creditHistory = { n: 0, cost: 0 }; world.ledgerCredits = { n: 0 }; world.refunds = []; rendered.previews = []; resumeDocs.doc = null; rbFp.value = null; };
+const reset = () => { v2Calls.length = 0; world.brandProfile = null; ent.usageCalls = []; ent.usageThrows = false; passState.calls = []; passState.answer = { available: false, forThisEmployer: false }; researchConv = null; ai.queue = []; ai.calls = []; ai.fail = null; ent.consumed = []; ent.gateCalls = 0; ent.quota = { allowed: true, via: 'plan', remaining: 5 }; ent.quotaSeq = null; ent.used = { via: 'plan' }; ent.legacyEntitlements = false; passSpy.cover = false; passSpy.coverCalls = []; passSpy.claim = { charged: false }; passSpy.claimCalls = []; store.puts = []; store.failPut = false; researchCalls.length = 0; stages.length = 0; narr.throwIt = null; world.metaThrow = null; world.creditHistory = { n: 0, cost: 0 }; world.ledgerCredits = { n: 0 }; world.refunds = []; rendered.previews = []; resumeDocs.doc = null; rbFp.value = null; };
 const JOB = { company: 'Acme', title: '', url: '', description: '', website: 'acme.test' };
 const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employerId: '0f8fad5b-d9cb-469f-a165-70867728950e', country: 'United States', job: { ...JOB }, ...over });
 
@@ -218,6 +252,11 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('legacy routes still registered', stack.includes('POST /cover-letter/generate-template-pdf (2)') && stack.includes('POST /generate-cover-letter-details (2)'), stack);
   ok('exports', ['employerLetterGate', 'buildEmployerLetter', 'employerLetterCards', 'currentLetterFingerprint'].every((k) => typeof EL[k] === 'function'));
   ok('coverLetterController helper exports', ['formatCoverLetterWithHTML', 'buildCLSender', 'loadCLPhotoDataUri', 'lookupBrandColor'].every((k) => typeof CL[k] === 'function'));
+  ok('⚠️ …and the ONE letter writer\'s pieces, exported for the Home lane to call (never copy)',
+    ['writeLegacyLetter', 'letterResumeMetadataFor', 'mergeBuilderResume', 'letterResearchSubjectOf', 'letterListingOf', 'letterDetailsOf'].every((k) => typeof CL[k] === 'function')
+    && CL.ADDRESS_NOT_AVAILABLE === 'Address not available' && CL.LEGACY_LETTER_MODEL === 'gemini-2.5-flash', Object.keys(CL));
+  ok('⚠️ the Home lane\'s own prompt machinery is GONE (no prompt builder, no output parser, no style, no playbook, no placeholder strip)',
+    ['buildEmployerLetterPrompt', 'parseLetterOutput', 'letterStyleFor', 'letterPlaybookFor', 'letterPlaybookBlockFor', 'countryLetterRowOf', 'LETTER_PROFILES', 'stripLetterPlaceholders', 'LETTER_MODEL'].every((k) => !(k in EL)), Object.keys(EL));
 
   console.log('── build: refusals before any paid work ──');
   reset();
@@ -257,11 +296,16 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('200 success, not cached, a docId', r.statusCode === 200 && r.body.success === true && r.body.cached === false && Number.isInteger(r.body.docId), r.body);
   ok('tailoredFor = the company', r.body.tailoredFor === 'Acme');
   ok('exactly ONE AI call', ai.calls.length === 1, ai.calls.length);
-  ok('no search tool, JSON mime + schema on the call', ai.calls[0].cfg.generationConfig.responseMimeType === 'application/json' && !!ai.calls[0].cfg.generationConfig.responseSchema);
-  // ADDED 2026-09-18 (the writing chain): a healthy Google answers from the writing chain's HEAD, called with the
-  // lane's own config exactly — the thinking-off entry belongs to F1 alone and must never ride along on the primary.
-  ok('…written by the writing chain\'s primary, with the lane\'s config untouched (no thinkingConfig)',
-    ai.calls[0].cfg.model === P && !('thinkingConfig' in ai.calls[0].cfg.generationConfig), { model: ai.calls[0].cfg.model, cfg: Object.keys(ai.calls[0].cfg.generationConfig) });
+  // ⚠️ REVERSED BY DESIGN 2026-09-18 (the owner's decision): this was "no search tool, JSON mime + schema" — the Home
+  // lane's own ungrounded prompt. The letter is v2's now: Google Search grounding ON, v2's config (no JSON mode — the
+  // API refuses JSON mode and grounding together; the parser digs the JSON out).
+  ok('⚠️ Google Search grounding on the call, and v2\'s config exactly (temperature 1, topP 0.95, 32768 — no JSON mime, no schema)',
+    JSON.stringify(toolsOf(ai.calls[0])) === JSON.stringify([{ googleSearch: {} }])
+    && JSON.stringify(ai.calls[0].cfg.generationConfig) === JSON.stringify(LETTER_CFG) && JSON.stringify(LETTER_CFG) === JSON.stringify({ temperature: 1, topP: 0.95, maxOutputTokens: 32768 }),
+    { tools: toolsOf(ai.calls[0]), cfg: ai.calls[0].cfg.generationConfig });
+  // RETARGETED 2026-09-18 (the letter chain): a healthy Google answers from the letter chain's HEAD, gemini-2.5-flash.
+  ok('…written by the letter chain\'s primary (gemini-2.5-flash), with no thinkingConfig',
+    ai.calls[0].cfg.model === P && P === 'gemini-2.5-flash' && !('thinkingConfig' in ai.calls[0].cfg.generationConfig), { model: ai.calls[0].cfg.model });
   ok('exactly ONE consume, kind cover_letter', ent.consumed.length === 1 && ent.consumed[0].kind === 'cover_letter', ent.consumed);
   ok('research called with the vetted website', researchCalls.length === 1 && researchCalls[0].website === 'acme.test' && researchCalls[0].name === 'Acme', researchCalls);
   const put = store.puts[0] || {};
@@ -272,21 +316,35 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('payload keys exactly as the contract', JSON.stringify(Object.keys(pl).sort()) === JSON.stringify(['brandColor', 'companyAddress', 'companyName', 'coverLetterHtml', 'fontName', 'hiringManager', 'locations', 'position', 'subject'].sort()), Object.keys(pl));
   ok('coverLetterHtml is <p> html with <strong>', /<p [^>]*>/.test(pl.coverLetterHtml) && /<strong>Node\.js<\/strong>/.test(pl.coverLetterHtml), pl.coverLetterHtml && pl.coverLetterHtml.slice(0, 120));
   ok('companyName is the picked name', pl.companyName === 'Acme');
-  ok('open application: position from the résumé title, subject has no artefact', pl.position === 'Senior Backend Engineer' && pl.subject === 'Application for Senior Backend Engineer — Jane Doe', { position: pl.position, subject: pl.subject });
-  ok('no address invented, hiring manager default', pl.companyAddress === '' && pl.locations.length === 0 && pl.hiringManager === 'Hiring Manager', pl);
+  ok('open application: position from the résumé title; the subject is v2\'s own', pl.position === 'Senior Backend Engineer' && pl.subject === 'Application for Senior Backend Engineer — Jane Doe', { position: pl.position, subject: pl.subject });
+  // ⚠️ RETARGETED TWICE 2026-09-18: the offices are the Jobs lane's mapping now — but only the ones v2 RESEARCHED. v2
+  // found none here, and this used to assert companyAddress 'United States': the Jobs picker's stand-in row (the chip's
+  // country, a default the user can change there) stored as Home's address block, where nobody can. HEAD's Home stored ''.
+  ok('⚠️ no researched office → no address at all: neither the chip\'s country (the Jobs picker\'s stand-in) nor "Address not available"; hiring manager default',
+    pl.companyAddress === '' && pl.locations.length === 0
+    && !JSON.stringify(pl).includes('Address not available') && pl.hiringManager === 'Hiring Manager', pl);
+  ok('…and the rendered letter\'s address block is empty, not "United States"',
+    rendered.previews.length === 1 && rendered.previews[0].data.company.address === '' && rendered.previews[0].data.company.name === 'Acme', rendered.previews[0] && rendered.previews[0].data.company);
   ok('brandColor/fontName from research', pl.brandColor === '#1a73e8' && pl.fontName === 'Inter', pl);
-  ok('model column ≤ 48', String(put.model).length <= 48);
+  ok('model column ≤ 48, and it names the model that wrote it', String(put.model).length <= 48 && put.model === P, put.model);
   const st = stages.map((s) => s.stage);
   ok('stages in order', JSON.stringify(st) === JSON.stringify(['reading', 'researching', 'writing', 'designing', 'saving', 'pages']), st);
   ok('stage labels per contract', stages.find((s) => s.stage === 'writing').label === 'Writing your Acme cover letter' && stages.find((s) => s.stage === 'researching').label === 'Researching Acme' && stages.find((s) => s.stage === 'designing').label === 'Ranking letter designs', stages);
   ok('stage pcts monotonic', stages.every((s, i, a) => i === 0 || a[i - 1].pct <= s.pct), stages.map((s) => s.pct));
   ok('thumbs pre-rendered for the top 2 designs in one batch', rendered.previews.length === 1 && rendered.previews[0].ids.length === 2 && rendered.previews[0].ids[0] === put.design.ranked[0].id, rendered.previews.map((p) => p.ids));
+  // The stub's page bytes are not an image sharp can read, so no card is cut: the PAGE is stored (and served as the card).
   const thumbFiles = fsSync.readdirSync(path.join(THUMBS, '7')).filter((n) => n.startsWith('cl_'));
   ok('thumb files written under <root>/<userId>/cl_*.jpg', thumbFiles.length === 2 && thumbFiles.every((n) => /^cl_[0-9a-f]{64}\.jpg$/.test(n)), thumbFiles);
-  const prompt1 = ai.calls[0].prompt;
-  ok('prompt carries the research block with letter rules', /=== WHAT WE KNOW ABOUT Acme/.test(prompt1) && /You may reference clearly public facts/.test(prompt1));
-  ok('prompt: open application instructions, no "(open application)" artefact asked', /no job posting was given/.test(prompt1) && /Never call it an "open"/.test(prompt1));
-  ok('prompt carries the upload context minus bookkeeping', /Backend engineer, Node, Postgres/.test(prompt1) && !/parsed_at/.test(prompt1) && !/"id"/.test(prompt1));
+  // ⚠️ REVERSED BY DESIGN 2026-09-18: these pinned the Home lane's OWN prompt (a research block, "no job posting was
+  // given", the upload minus its bookkeeping). The prompt is v2's now, built from the Jobs lane's inputs in their shapes.
+  const prompt1 = textOf(ai.calls[0]);
+  const META1 = { ...world.meta, builder_resume: world.resumeRow.resume_data };   // the Jobs loader: the upload row + the Builder résumé
+  ok('⚠️ the prompt IS ai-cover-letter-v2\'s buildPrompt for these inputs, byte for byte (the Jobs lane\'s metadata, the résumé title, the website, the chip\'s country as the job location)',
+    prompt1 === realBuildPrompt(META1, 'Senior Backend Engineer', 'https://acme.test', null, 'United States', null) && prompt1.length > 5000, prompt1.slice(0, 200));
+  ok('…built ONCE, through v2\'s buildPrompt itself (the spy saw it), with those arguments',
+    v2Calls.length === 1 && JSON.stringify(v2Calls[0]) === JSON.stringify([META1, 'Senior Backend Engineer', 'https://acme.test', null, 'United States', null]), v2Calls.map((a) => a.slice(1)));
+  ok('⚠️ …and none of the Home lane\'s old prompt is in it (no research block, no "no job posting was given", no JSON schema talk)',
+    !/=== WHAT WE KNOW ABOUT/.test(prompt1) && !/no job posting was given/.test(prompt1) && !/=== ABSOLUTE RULES ===/.test(prompt1) && /Google Search/.test(prompt1));
 
   console.log('── fingerprints agree: gate == build == stale label ──');
   const buildFp = put.fingerprint;
@@ -450,42 +508,95 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('⚠️ no AI, no quota, no pass, no consume, no put', ai.calls.length === 0 && ent.gateCalls === 0 && passSpy.coverCalls.length === 0 && ent.consumed.length === 0 && store.puts.length === 0);
   ok('reports cached 90 with the contract label', stages.some((s) => s.stage === 'cached' && s.pct === 90 && s.label === 'Found your Acme letter'), stages);
 
-  console.log('── build: placeholder guard ──');
+  console.log('── build: the Jobs lane\'s parsing and mapping — no clean-up pass of the lane\'s own ──');
+  // ⚠️ REPLACED 2026-09-18: the placeholder guard (one corrective pass that re-sent the OLD prompt, then a strip) and the
+  // salutation / sign-off strip answered the old prompt's failure modes. Both screens share the Jobs lane's parsing now:
+  // the stored letter is exactly what the Jobs lane hands over for the same answer — one call, never a second pass.
   reset();
-  ai.queue = [GOOD({ cover_letter: [PARA(1), 'Improved settlement speed by [X%] for merchants and reduced disputes by XX% across regions over two years of steady work on the platform and its tooling.', PARA(3), PARA(4)].join('\n\n') }), GOOD()];
+  const DRAFT = [PARA(1), 'Improved settlement speed by 40% for merchants across regions over two years of steady work on the platform and its tooling.', PARA(3), PARA(4)].join('\n\n');
+  ai.queue = [GOOD({ cover_letter: DRAFT, subject: undefined })];
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Staff Engineer' } }));
-  ok('one corrective pass (2 AI calls), then stored', r.statusCode === 200 && ai.calls.length === 2, { status: r.statusCode, calls: ai.calls.length });
-  ok('corrective prompt lists the tokens', /CORRECTION/.test(ai.calls[1].prompt) && ai.calls[1].prompt.includes('[X%]'));
-  ok('stored html has no placeholder', !/\[X%\]|XX%/.test(store.puts[0].payload.coverLetterHtml));
-  ok('posting title used exactly', store.puts[0].payload.position === 'Staff Engineer' && store.puts[0].payload.subject === 'Application for Staff Engineer — Jane Doe', store.puts[0].payload);
-  reset();
-  const BAD = GOOD({ cover_letter: [PARA(1), 'Improved settlement speed by [X%] for merchants and reduced disputes by XX% across regions over two years of steady work on the platform and its tooling.', PARA(3), PARA(4)].join('\n\n') });
-  ai.queue = [BAD, BAD];
-  r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Principal Engineer' } }));
-  const html2 = (store.puts[0] || { payload: {} }).payload.coverLetterHtml || '';
-  ok('still present after the corrective pass → stripped, stored', r.statusCode === 200 && !/\[|XX%/.test(html2), html2.slice(0, 400));
-  ok('"by [X%]" removed with its dangling by', /Improved settlement speed for merchants and reduced disputes across regions/.test(html2), html2.match(/Improved[^<]*/));
-
-  console.log('── build: salutation / sign-off never doubled ──');
-  reset();
-  ai.queue = [GOOD({ cover_letter: ['Dear Hiring Manager,', PARA(1), PARA(2), PARA(3), PARA(4) + '\nSincerely,\nJane Doe'].join('\n\n') })];
-  r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Lead Engineer' } }));
-  const html3 = store.puts[0].payload.coverLetterHtml;
-  ok('no "Dear", no "Sincerely", no trailing name', !/Dear Hiring/i.test(html3) && !/Sincerely/i.test(html3) && !/Jane Doe/.test(html3), html3.slice(-300));
+  const plJ = (store.puts[0] || { payload: {} }).payload;
+  ok('ONE call, stored, charged once — no corrective pass', r.statusCode === 200 && ai.calls.length === 1 && store.puts.length === 1 && ent.consumed.length === 1, { status: r.statusCode, calls: ai.calls.length });
+  ok('⚠️ the stored HTML is EXACTLY the Jobs lane\'s conversion of the same answer (formatCoverLetterWithHTML, unescaped, as there)',
+    plJ.coverLetterHtml === CL.formatCoverLetterWithHTML(DRAFT, {}) && plJ.coverLetterHtml === CL.letterDetailsOf(JSON.parse(GOOD({ cover_letter: DRAFT })), { position: 'Staff Engineer' }).coverLetterHtml, plJ.coverLetterHtml && plJ.coverLetterHtml.slice(0, 160));
+  ok('posting title used exactly; no subject from the model → the Jobs lane\'s own "Application for <position>"',
+    plJ.position === 'Staff Engineer' && plJ.subject === 'Application for Staff Engineer', { position: plJ.position, subject: plJ.subject });
+  ok('…and the prompt carried that title as v2\'s Target Position', v2Calls.length === 1 && v2Calls[0][1] === 'Staff Engineer', v2Calls.map((a) => a[1]));
 
   console.log('── build: AI failures charge nothing ──');
   // Every "which model" scenario below needs a real three-model chain: with a repeated or missing id, "the primary
   // twice, then the first fallback" would not describe a fallback at all.
-  ok('the writing chain the lane walks has three distinct models (P, F1, F2)',
-    [P, F1, F2].every((m) => typeof m === 'string' && m) && new Set([P, F1, F2]).size === 3 && AT.writingChain().length === 3, AT.writingChain());
-  reset(); ai.queue = ['not json', '{"cover_letter":"too short"}'];
+  // RETARGETED 2026-09-18 (the measured letter backups): the two fallbacks are letterFallbacks()'s, not aiText's.
+  ok('the letter chain the lane walks has three distinct models (P, F1, F2): gemini-2.5-flash, then the measured letter fallbacks',
+    [P, F1, F2].every((m) => typeof m === 'string' && m) && new Set([P, F1, F2]).size === 3 && CL._internals.letterFallbacks().length === 2 && P === LETTER_CHAIN_PINNED[0], [P, F1, F2]);
+  // ⚠️ THE ONE LITERAL PIN (see LETTER_CHAIN_PINNED): a busy 2.5-flash hands the letter to 3.1-flash-lite (3/3 usable on v2's
+  // grounded prompt), and 2.5-flash-lite (2 of 3 broken) is the last resort. Swapping the two backups fails HERE.
+  ok('⚠️ the letter chain\'s order, pinned: gemini-2.5-flash → gemini-3.1-flash-lite → gemini-2.5-flash-lite (LETTER_FALLBACKS, frozen)',
+    JSON.stringify([P, F1, F2]) === JSON.stringify(LETTER_CHAIN_PINNED)
+    && JSON.stringify([CL._internals.LEGACY_LETTER_MODEL, ...CL._internals.LETTER_FALLBACKS]) === JSON.stringify(LETTER_CHAIN_PINNED)
+    && Object.isFrozen(CL._internals.LETTER_FALLBACKS), { chain: [P, F1, F2], LETTER_FALLBACKS: CL._internals.LETTER_FALLBACKS });
+  {
+    // letterFallbacks() is read at CALL time and is always a FRESH array: no caller can reorder or empty the measured
+    // backups for every later letter. And the operator's AI_TEXT_FALLBACK_MODELS still wins, exactly as it did through
+    // aiText.fallbackModels() — a list replaces the backups, "none" / "off" removes them; unset or blank is the measured pair.
+    const LF = CL._internals.letterFallbacks;
+    const a = LF(), b = LF();
+    let mutated = true;
+    try { a.reverse(); a.push('gemini-mutated'); a.length = 0; } catch (_) { mutated = false; }
+    ok('⚠️ letterFallbacks() returns a FRESH, writable array each call — never LETTER_FALLBACKS itself — and editing one changes nothing',
+      mutated && a !== b && a !== CL._internals.LETTER_FALLBACKS && b !== CL._internals.LETTER_FALLBACKS && a.length === 0
+      && JSON.stringify(LF()) === JSON.stringify(LETTER_CHAIN_PINNED.slice(1)) && JSON.stringify([...CL._internals.LETTER_FALLBACKS]) === JSON.stringify(LETTER_CHAIN_PINNED.slice(1)),
+      { mutated, after: LF() });
+    const envWas = process.env.AI_TEXT_FALLBACK_MODELS;
+    try {
+      process.env.AI_TEXT_FALLBACK_MODELS = ' Models/Gemini-Op-One , gemini-op-two,gemini-op-one ';
+      const op = LF();
+      ok('⚠️ AI_TEXT_FALLBACK_MODELS as a list → the OPERATOR\'s list wins (aiText.fallbackModels()\'s own reading: trimmed, lower-cased, "models/" off, deduped)',
+        JSON.stringify(op) === JSON.stringify(['gemini-op-one', 'gemini-op-two']) && JSON.stringify(op) === JSON.stringify(AT.fallbackModels()), op);
+      const op2 = LF(); op2.push('x');
+      ok('…and that list is a fresh array too', LF().length === 2 && op !== LF(), LF());
+      process.env.AI_TEXT_FALLBACK_MODELS = 'none';
+      const none = LF();
+      process.env.AI_TEXT_FALLBACK_MODELS = ' OFF ';
+      const off = LF();
+      ok('⚠️ AI_TEXT_FALLBACK_MODELS=none (or off) → NO letter fallbacks: the operator\'s "primary only" switch still works for letters',
+        Array.isArray(none) && none.length === 0 && Array.isArray(off) && off.length === 0, { none, off });
+      process.env.AI_TEXT_FALLBACK_MODELS = '   ';
+      const blank = LF();
+      delete process.env.AI_TEXT_FALLBACK_MODELS;
+      const unset = LF();
+      ok('…while unset or blank is the MEASURED pair — never aiText\'s generic default order',
+        JSON.stringify(blank) === JSON.stringify(LETTER_CHAIN_PINNED.slice(1)) && JSON.stringify(unset) === JSON.stringify(LETTER_CHAIN_PINNED.slice(1)), { blank, unset });
+      // ⚠️ A value that names NOTHING usable ("???", a stray comma) is not an operator's list. Handed to fallbackModels() it
+      // fell back to aiText's DEFAULT order — 2.5-flash-lite first, the order measured to break grounded letters.
+      process.env.AI_TEXT_FALLBACK_MODELS = '???, ,!!';
+      const junk = LF();
+      delete process.env.AI_TEXT_FALLBACK_MODELS;
+      ok('⚠️ an all-junk AI_TEXT_FALLBACK_MODELS is the MEASURED pair too — never aiText\'s default (2.5-flash-lite first)',
+        JSON.stringify(junk) === JSON.stringify(LETTER_CHAIN_PINNED.slice(1)) && junk[0] !== 'gemini-2.5-flash-lite', junk);
+    } finally {
+      if (envWas === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = envWas;
+    }
+    // Job Hub's per-job letter is its OWN prompt (plain text, no grounding) and was never measured on the letter backups:
+    // it stays on [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()]. Comment-stripped source, the job_hub_letter call only.
+    const stripH = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const hub = stripH(fsSync.readFileSync(path.join(ROOT, 'server/controllers/aiHubController.js'), 'utf8'));
+    const hubCall = (hub.match(/aiText\.generateText\(\{\s*lane: 'job_hub_letter',[\s\S]*?\}\);/) || [''])[0];
+    ok('⚠️ the Job Hub letter is untouched: still [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()], never letterFallbacks() / LETTER_FALLBACKS',
+      hubCall.length > 0 && /models: \[GEMINI_FLASH_MODEL, \.\.\.aiText\.fallbackModels\(\)\],/.test(hubCall)
+      && !/letterFallbacks|LETTER_FALLBACKS/.test(hub), hubCall || 'no job_hub_letter generateText call found');
+  }
+  // RETARGETED 2026-09-18 (the Jobs writer): an unusable answer is the WRITER's retry now — v2's parsing, up to three
+  // answers (it was the Home lane's own two-draft loop). Three unusable answers end as its "could not finish": 500.
+  reset(); ai.queue = ['not json', '{"to":"HR","cover_letter":"   "}', 'Sorry, I cannot help with that.'];
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'QA Lead' } }));
-  ok('two bad outputs → 500 failed', r.statusCode === 500 && r.body.reason === 'failed', r.body);
+  ok('three unusable answers → 500 failed', r.statusCode === 500 && r.body.reason === 'failed', r.body);
   ok('⚠️ no consume, no put', ent.consumed.length === 0 && store.puts.length === 0);
-  // ADDED 2026-09-18: output the LANE rejects is the lane's own retry — never a provider failure. The second draft is
-  // asked of the same primary; the fallback chain is for a BUSY model and is never walked for bad output.
-  ok('⚠️ …both drafts asked of the primary: bad output is not an overload, so no fallback is walked for it',
-    ai.calls.length === 2 && ai.calls.every((c) => c.cfg.model === P), ai.calls.map((c) => c.cfg.model));
+  // Output the WRITER rejects is its own retry — never a provider failure. Each answer is asked of the same primary; the
+  // fallback chain is for a BUSY model and is never walked for bad output.
+  ok('⚠️ …every answer asked of the primary: bad output is not an overload, so no fallback is walked for it',
+    ai.calls.length === 3 && ai.calls.every((c) => c.cfg.model === P), ai.calls.map((c) => c.cfg.model));
   // ⚠️ RETARGETED 2026-09-18 (was "two timeouts → 504"): a timeout is a hung model, and a hung model is exactly what the
   // fallback chain is for. The primary is tried twice, with a pause, and then the next model writes the letter.
   reset(); ai.queue = [new Error('AI_TIMEOUT'), new Error('AI_TIMEOUT')];
@@ -496,21 +607,15 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
 
   console.log('── ⚠️ 2026-09-18: GOOGLE BUSY (Amazon\'s letter: two 503s, 0 ms apart, "That cover letter didn\'t finish") ──');
   {
-    // Production, user 1, Home → Cover letters → Amazon: gemini-2.5-flash (the head of the chain that day) answered 503
-    // "high demand" twice, back to back, and the letter died. The lane now asks through aiText — a pause, the primary
-    // once more, then the rest of the WRITING chain (aiText.writing(): P, then F1, then F2 — the head is no longer
-    // gemini-2.5-flash, so every storm here is scripted on P, the model the lane asks first today)
-    // — all inside ONE AI window, all before the charge. A fallback's letter is stored as ITS letter, under the same
-    // fingerprint (a later identical request is a free hit); when no model can answer, nothing is charged or stored,
-    // the answer is an honest 503 ai_busy / ai_down, and any build waiting on this one is released.
+    // Production, user 1, Home → Cover letters → Amazon: gemini-2.5-flash answered 503 "high demand" twice, back to back,
+    // and the letter died. The letter is written through aiText — a pause, the primary once more, then the rest of the
+    // LETTER chain (P = gemini-2.5-flash, then F1, then F2) — all inside ONE AI window, all before the charge. A fallback's
+    // letter is stored as ITS letter, under the same fingerprint (a later identical request is a free hit); when no model
+    // can answer, nothing is charged or stored, the answer is an honest 503 ai_busy / ai_down, and any build waiting on
+    // this one is released. (Since the owner's decision the writer is the Jobs section's — the rules did not move.)
     const LA = EL.LETTER_AI || {};   // the lane's AI window (its absence is a failure below, not a crash here)
     const modelsOf = () => ai.calls.map((c) => c.cfg.model);
-    // The config one call received, as JSON; { dropThinking } leaves out thinkingConfig, to compare F1's call with the rest.
-    const cfgOf = (c, { dropThinking = false } = {}) => {
-      const g = { ...(c.cfg.generationConfig || {}) };
-      if (dropThinking) delete g.thinkingConfig;
-      return JSON.stringify(g);
-    };
+    const cfgOf = (c) => JSON.stringify(c.cfg.generationConfig || {});
     const runsSince = (mark) => world.sql.slice(mark).filter((q) => /^RUN /.test(q));
     const labelsOf = (stage) => stages.filter((s) => s.stage === stage).map((s) => s.label);
     const gt = [];   // every generateText call the lane makes, exactly as it made it
@@ -518,9 +623,14 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     AT.generateText = (o) => { gt.push(o); return realGT(o); };
     const STORM_JOB = { company: 'Amazon', title: 'Storm Role', url: '', description: '', website: 'amazon.test' };
     const storm = (title) => buildBody({ employer: 'Amazon', job: { ...STORM_JOB, title } });
-    const PLACEHOLDER_DRAFT = GOOD({ cover_letter: [PARA(1), 'Improved settlement speed by [X%] for merchants and reduced disputes by XX% across regions over two years of steady work on the platform and its tooling.', PARA(3), PARA(4)].join('\n\n') });
+    // "Every model busy" scripts EVERY model of the LETTER chain — and only those: a model outside it (aiText's generic
+    // fallbacks, say) would answer, and the 503 below would turn into a letter the lane should never have asked for.
+    const LETTER_CHAIN = () => [CL.LEGACY_LETTER_MODEL, ...CL._internals.letterFallbacks()];
+    const onLetterChain = (mk) => (cfg) => (LETTER_CHAIN().includes(cfg.model) ? mk(cfg.model) : null);
 
-    // 1. the incident, replayed: the primary answers exactly what production logged, every time it is asked
+    // 1. the incident, replayed: the primary answers exactly what production logged, every time it is asked. The FIRST
+    // fallback that writes it is the letter chain's F1 — gemini-3.1-flash-lite since the measured backups (it was
+    // gemini-2.5-flash-lite through aiText.fallbackModels()).
     reset(); gt.length = 0; ai.fail = (cfg) => (cfg.model === P ? INCIDENT_503(P) : null);
     r = await call(EL.buildEmployerLetter, 7, storm('Storm Role'), { __jobId: 'job-storm' });
     const putS = store.puts[0] || {};
@@ -529,40 +639,32 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('…the primary twice, then the first fallback — three calls, and never a second chain on top', modelsOf().join() === [P, P, F1].join(), modelsOf());
     ok('⚠️ …with a PAUSE before the primary\'s second try (the incident\'s two 503s were 0 ms apart)',
       ai.calls.length >= 2 && ai.calls[1].t - ai.calls[0].t >= 20, ai.calls.map((c) => c.t - ai.calls[0].t));
-    // ⚠️ REWRITTEN 2026-09-18 (the writing chain): "identical on every call" is no longer true BY DESIGN. F1
-    // (gemini-2.5-flash) is called with thinking OFF — aiText lays WRITING_MODEL_CONFIG[F1] over the lane's config for
-    // that model only — so the claim now is: the lane's OWN config on every call, and on F1's call that config plus
-    // thinkingConfig { thinkingBudget: 0 } and NOTHING else; the primary's calls carry no thinkingConfig at all.
-    const gcF1 = (ai.calls[2] || { cfg: { generationConfig: {} } }).cfg.generationConfig;
-    ok('…the fallback asked with the lane\'s OWN config — JSON mime + schema, 0.7, 32768 tokens — the same as the primary\'s but for F1\'s thinking switch',
-      ai.calls.length === 3 && cfgOf(ai.calls[1]) === cfgOf(ai.calls[0]) && cfgOf(ai.calls[2], { dropThinking: true }) === cfgOf(ai.calls[0])
-      && gcF1.responseMimeType === 'application/json' && !!gcF1.responseSchema && gcF1.temperature === 0.7 && gcF1.maxOutputTokens === 32768,
-      ai.calls.map((c) => cfgOf(c)));
-    ok('⚠️ …F1 is called with thinkingConfig { thinkingBudget: 0 } merged over the lane\'s config, and the primary\'s calls carry NO thinkingConfig',
-      ai.calls.length === 3 && ai.calls[2].cfg.model === F1 && JSON.stringify(gcF1.thinkingConfig) === JSON.stringify({ thinkingBudget: 0 })
-      && ai.calls.slice(0, 2).every((c) => c.cfg.model === P && !('thinkingConfig' in c.cfg.generationConfig)),
-      ai.calls.map((c) => ({ model: c.cfg.model, thinking: c.cfg.generationConfig.thinkingConfig })));
+    // ⚠️ REWRITTEN BACK 2026-09-18 (the letter chain): the fallback is asked EXACTLY as the primary was — v2's config, the
+    // same grounded prompt — and no call carries a thinkingConfig (that per-model switch belonged to the writing chain).
+    ok('…the fallback asked exactly as the primary was: v2\'s config (1, 0.95, 32768), the same grounded prompt, NO thinkingConfig on any call',
+      ai.calls.length === 3 && ai.calls.every((c) => cfgOf(c) === JSON.stringify(LETTER_CFG) && !('thinkingConfig' in c.cfg.generationConfig)
+        && textOf(c) === textOf(ai.calls[0]) && JSON.stringify(toolsOf(c)) === JSON.stringify([{ googleSearch: {} }])),
+      ai.calls.map((c) => ({ model: c.cfg.model, cfg: c.cfg.generationConfig })));
     ok('…every attempt carries an abort signal: a hung model is CANCELLED at its cap, not merely stopped waiting for',
       ai.calls.every((c) => c.opts && c.opts.signal && typeof c.opts.signal.aborted === 'boolean'));
     ok('⚠️ charged EXACTLY once, stored once', ent.consumed.length === 1 && store.puts.length === 1, { consumed: ent.consumed.length, puts: store.puts.length });
     ok('⚠️ the stored letter records the model that WROTE it (the fallback), not the lane\'s first choice', putS.model === F1, putS.model);
-    ok('the user is told in plain words: "busy — trying again", then "switching to a backup model"',
-      JSON.stringify(labelsOf('retry')) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a backup model']), stages);
-    // ⚠️ REWRITTEN 2026-09-18 (the writing chain): the old claim — the lane passes [LETTER_MODEL, …fallbackModels()] — is
-    // no longer true BY DESIGN. The letter is a DOCUMENT lane: it spreads aiText.writing() into the call, so it passes that
-    // chain AND its per-model config. Without the modelConfig, F1 would think: 3x the cost per letter, and the letters the
-    // blind evaluation scored lower (aiText WRITING_PRIMARY).
-    ok('the lane asks through aiText ONCE, as "letter", with aiText.writing()\'s chain AND its modelConfig, and a budget inside its AI window',
-      gt.length === 1 && gt[0].lane === 'letter'
-      && JSON.stringify(gt[0].models) === JSON.stringify(AT.writing().models) && JSON.stringify(gt[0].models) === JSON.stringify([P, F1, F2])
-      && !!gt[0].modelConfig && JSON.stringify(gt[0].modelConfig) === JSON.stringify(AT.writing().modelConfig)
-      && gt[0].budgetMs > 0 && gt[0].budgetMs <= LA.draftBudgetMs && typeof gt[0].onRetry === 'function',
+    // ⚠️ RETARGETED BACK 2026-09-18: "faster" is TRUE again — the flash-lites follow gemini-2.5-flash on this chain.
+    ok('the user is told in plain words: "busy — trying again", then "switching to a faster model"',
+      JSON.stringify(labelsOf('retry')) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a faster model']), stages);
+    // ⚠️ REWRITTEN 2026-09-18 (three times in a day): the lane's ONE aiText call is the Jobs writer's — lane letter_legacy,
+    // the letter chain [LEGACY_LETTER_MODEL, ...letterFallbacks()] (the measured backups, no longer aiText's
+    // fallbackModels()), v2's config, NO modelConfig, the grounding tool — and its budget is what was LEFT of the build's AI
+    // window (never the writer's own four minutes on top of it).
+    ok('the lane asks through aiText ONCE, as the Jobs writer ("letter_legacy"), on [LEGACY_LETTER_MODEL, ...letterFallbacks()] with NO modelConfig, grounded, inside its AI window',
+      gt.length === 1 && gt[0].lane === 'letter_legacy'
+      && JSON.stringify(gt[0].models) === JSON.stringify([CL.LEGACY_LETTER_MODEL, ...CL._internals.letterFallbacks()]) && JSON.stringify(gt[0].models) === JSON.stringify([P, F1, F2])
+      && !('modelConfig' in gt[0]) && JSON.stringify(gt[0].config) === JSON.stringify(LETTER_CFG)
+      && JSON.stringify(gt[0].prompt && gt[0].prompt.tools) === JSON.stringify([{ googleSearch: {} }])
+      && gt[0].budgetMs > 0 && gt[0].budgetMs <= LA.windowMs && typeof gt[0].onRetry === 'function',
       gt.map((g) => ({ lane: g.lane, models: g.models, modelConfig: g.modelConfig, budgetMs: g.budgetMs })));
-    ok('…not the old [LETTER_MODEL, …fallbackModels()] chain, and the lane\'s own config carries no thinking setting of its own',
-      gt.length === 1 && JSON.stringify(gt[0].models) !== JSON.stringify([EL.LETTER_MODEL, ...AT.fallbackModels()])
-      && !!gt[0].config && !('thinkingConfig' in gt[0].config), gt.map((g) => ({ models: g.models, config: g.config && Object.keys(g.config) })));
-    ok('…a modelConfig that switches thinking OFF for F1 and for no other model of the chain',
-      JSON.stringify(WRITING_CFG[F1]) === JSON.stringify({ thinkingConfig: { thinkingBudget: 0 } }) && !WRITING_CFG[P] && !WRITING_CFG[F2], WRITING_CFG);
+    ok('…and never aiText.writing()\'s chain (measured for the résumés, never for a grounded letter)',
+      gt.length === 1 && JSON.stringify(gt[0].models) !== JSON.stringify(AT.writingChain()), gt.map((g) => g.models));
 
     // 2. ⚠️ THE MONEY LINE: who wrote a letter is not an input. The fallback's letter carries the fingerprint the gate, the
     // build and the stale label compute, so the next identical request is FREE — exactly as a primary-written one is.
@@ -572,7 +674,7 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     r = await call(EL.buildEmployerLetter, 7, storm('Storm Role'));
     ok('⚠️ the same request again is a FREE cache hit on the fallback\'s letter: no AI, no gate, no charge, no new row',
       r.statusCode === 200 && r.body.cached === true && r.body.docId === stormDocId && ai.calls.length === 0 && gt.length === 0
-      && ent.gateCalls === 0 && ent.consumed.length === 0 && store.puts.length === 0, r.body);
+      && ent.gateCalls === 0 && ent.consumed.length === 0 && store.puts.length === 0 && v2Calls.length === 0, r.body);
     r = await call(EL.employerLetterGate, 7, { employer: 'Amazon', job: { ...STORM_JOB } });
     ok('…and the confirm-sheet gate calls it a saved letter too (via cache)', r.body.covered === true && r.body.via === 'cache', r.body);
     reset();
@@ -582,24 +684,24 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
       r.statusCode === 200 && putP.model === P && putP.fingerprint === putS.fingerprint, { status: r.statusCode, model: putP.model, same: putP.fingerprint === putS.fingerprint });
 
     // 3. every model busy: NOTHING charged, NOTHING stored — and an answer that says so
-    reset(); gt.length = 0; ai.fail = (cfg) => E503(cfg.model);
+    reset(); gt.length = 0; ai.fail = onLetterChain(E503);
     const sqlBusy = world.sql.length;
     r = await call(EL.buildEmployerLetter, 7, storm('Storm Role B'), { __jobId: 'job-busy' });
     ok('⚠️ every model busy → 503 ai_busy, retryable', r.statusCode === 503 && r.body.success === false && r.body.reason === 'ai_busy' && r.body.retryable === true, r.body);
-    ok('…in a sentence that names the cover letter and says NOTHING was charged', /cover letter/.test(r.body.error || '') && /Nothing was charged/.test(r.body.error || ''), r.body.error);
+    ok('…in a sentence that names the cover letter and says NOTHING was charged — the Jobs lane\'s own words, letter for letter',
+      /cover letter/.test(r.body.error || '') && /Nothing was charged/.test(r.body.error || '')
+      && r.body.error === "Google's AI is overloaded right now, so your cover letter could not be written. Nothing was charged — please try again in a minute.", r.body.error);
     ok('…after the chain ran ONCE: the primary twice, then each fallback — four calls, never a second chain from the lane',
       modelsOf().join() === [P, P, F1, F2].join() && gt.length === 1, { models: modelsOf(), chains: gt.length });
-    // ADDED 2026-09-18 (the writing chain): the whole chain, each model with the config it is owed — only F1 thinks less.
-    ok('⚠️ …F1 asked with thinkingConfig { thinkingBudget: 0 }; the primary and F2 with the lane\'s config exactly, NO thinkingConfig',
-      ai.calls.length === 4 && JSON.stringify(ai.calls[2].cfg.generationConfig.thinkingConfig) === JSON.stringify({ thinkingBudget: 0 })
-      && cfgOf(ai.calls[2], { dropThinking: true }) === cfgOf(ai.calls[0])
-      && [0, 1, 3].every((i) => !('thinkingConfig' in ai.calls[i].cfg.generationConfig) && cfgOf(ai.calls[i]) === cfgOf(ai.calls[0])),
-      ai.calls.map((c) => ({ model: c.cfg.model, thinking: c.cfg.generationConfig.thinkingConfig })));
+    ok('…every model of the LETTER chain was asked (the measured backups included), and no model outside it',
+      LETTER_CHAIN().every((m) => modelsOf().includes(m)) && modelsOf().every((m) => LETTER_CHAIN().includes(m)), { asked: modelsOf(), chain: LETTER_CHAIN() });
+    ok('⚠️ …every one of the four asked with v2\'s config exactly, NO thinkingConfig',
+      ai.calls.length === 4 && ai.calls.every((c) => cfgOf(c) === JSON.stringify(LETTER_CFG)), ai.calls.map((c) => ({ model: c.cfg.model, cfg: c.cfg.generationConfig })));
     ok('⚠️ NOTHING consumed, stored, claimed, refunded or written',
       ent.consumed.length === 0 && store.puts.length === 0 && passSpy.claimCalls.length === 0 && (world.refunds || []).length === 0 && runsSince(sqlBusy).length === 0,
       { consumed: ent.consumed.length, puts: store.puts.length, runs: runsSince(sqlBusy) });
     ok('…and it never reached the payment stages', !stages.some((s) => ['designing', 'saving', 'pages'].includes(s.stage)), stages.map((s) => s.stage));
-    reset(); ai.fail = () => new Error('AI_TIMEOUT');
+    reset(); ai.fail = onLetterChain(() => new Error('AI_TIMEOUT'));
     r = await call(EL.buildEmployerLetter, 7, storm('Storm Role F'));
     ok('every model hung (timed out) is the same overload → 503 ai_busy, no longer a 504', r.statusCode === 503 && r.body.reason === 'ai_busy' && !r.body.isTimeout
       && modelsOf().join() === [P, P, F1, F2].join() && ent.consumed.length === 0 && store.puts.length === 0, { status: r.statusCode, body: r.body, models: modelsOf() });
@@ -607,7 +709,7 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     // 4. ⚠️ THE WAITERS. A second identical build that joined the first is RELEASED when the first ends ai_busy (the
     // finally), then runs its own gates and its own chain and gets its own honest answer. Nobody waits on a build that
     // will never land; the calls come in two whole chains, one after the other, because the second WAITED.
-    reset(); ai.fail = (cfg) => E503(cfg.model);
+    reset(); ai.fail = onLetterChain(E503);
     const bodyW = storm('Storm Role C');
     let wd = null;
     const hung = new Promise((resolve) => { wd = setTimeout(() => resolve('HUNG'), 5000); });
@@ -625,6 +727,32 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('…and the flight is gone: the next identical build runs at once, charged once', Array.isArray(both) && r.statusCode === 200 && r.body.cached === false && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1,
       { status: r.statusCode, ai: ai.calls.length });
 
+    // 4b. ⚠️ THE OPERATOR'S SWITCH, end to end through the lane (2026-09-18, the measured letter backups): the letter's
+    // backups are the controller's own now, but AI_TEXT_FALLBACK_MODELS still wins over them — "none" is "primary only",
+    // a list replaces them. Read at call time, so no restart and no code change.
+    {
+      const envWas = process.env.AI_TEXT_FALLBACK_MODELS;
+      try {
+        process.env.AI_TEXT_FALLBACK_MODELS = 'none';
+        reset(); gt.length = 0; ai.fail = onLetterChain(E503);
+        r = await call(EL.buildEmployerLetter, 7, storm('Storm Role N'));
+        ok('⚠️ AI_TEXT_FALLBACK_MODELS=none → the letter walks the primary ALONE: tried twice, then 503 ai_busy — no fallback asked, nothing charged or stored',
+          r.statusCode === 503 && r.body.reason === 'ai_busy' && modelsOf().join() === [P, P].join()
+          && gt.length === 1 && JSON.stringify(gt[0].models) === JSON.stringify([P]) && ent.consumed.length === 0 && store.puts.length === 0,
+          { status: r.statusCode, body: r.body, models: modelsOf(), chain: gt.map((g) => g.models) });
+        process.env.AI_TEXT_FALLBACK_MODELS = 'gemini-op-backup';
+        reset(); gt.length = 0; ai.fail = (cfg) => (cfg.model === P ? E503(P) : null);
+        r = await call(EL.buildEmployerLetter, 7, storm('Storm Role O'));
+        ok('⚠️ AI_TEXT_FALLBACK_MODELS=<a list> → the OPERATOR\'s model writes the letter a busy primary could not: stored as its writer, charged once',
+          r.statusCode === 200 && modelsOf().join() === [P, P, 'gemini-op-backup'].join() && JSON.stringify(gt[0].models) === JSON.stringify([P, 'gemini-op-backup'])
+          && store.puts.length === 1 && store.puts[0].model === 'gemini-op-backup' && ent.consumed.length === 1,
+          { status: r.statusCode, models: modelsOf(), chain: gt.map((g) => g.models), model: store.puts[0] && store.puts[0].model });
+      } finally {
+        if (envWas === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = envWas;
+      }
+      ok('…and with the switch put back, the lane\'s chain is the measured letter chain again', JSON.stringify(LETTER_CHAIN()) === JSON.stringify(LETTER_CHAIN_PINNED), LETTER_CHAIN());
+    }
+
     // 5. a dead key: quota fails FAST (one call — every model shares the key) and pages the operator
     reset(); ai.fail = (cfg) => E429(cfg.model);
     const pages0 = pages.length;
@@ -641,58 +769,44 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('no key on the server → 503 ai_down before any AI call, nothing charged or stored (was a 500 "failed")',
       r.statusCode === 503 && r.body.reason === 'ai_down' && ai.calls.length === 0 && ent.consumed.length === 0 && store.puts.length === 0, r.body);
 
-    // 6. the corrective pass rides the same chain — and NOTHING it meets may cost the user the letter they already have
-    reset(); ai.queue = [PLACEHOLDER_DRAFT]; ai.fail = (cfg, prompt) => (/CORRECTION/.test(prompt) && cfg.model === P ? E503(P) : null);
-    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role G'), { __jobId: 'job-fix' });
-    ok('the corrective pass goes through the chain too: the primary busy → the fallback rewrites it',
-      r.statusCode === 200 && modelsOf().join() === [P, P, P, F1].join() && /CORRECTION/.test((ai.calls[3] || {}).prompt || ''), modelsOf());
-    ok('⚠️ …and the stored letter records the model whose draft was KEPT (the fallback\'s rewrite), placeholders gone',
-      !!store.puts[0] && store.puts[0].model === F1 && !/\[X%\]|XX%/.test(store.puts[0].payload.coverLetterHtml), store.puts[0] && store.puts[0].model);
-    ok('…its retries reported after "Polishing the wording", never behind it on the bar',
-      (() => { const i = stages.findIndex((s) => s.stage === 'polishing'); return i >= 0 && stages.slice(i + 1).some((s) => s.stage === 'retry' && s.pct >= 70); })(), stages.map((s) => `${s.stage}:${s.pct}`));
-    ok('…charged once', ent.consumed.length === 1 && store.puts.length === 1);
-    reset(); ai.queue = [PLACEHOLDER_DRAFT]; ai.fail = (cfg, prompt) => (/CORRECTION/.test(prompt) ? E503(cfg.model) : null);
-    r = await call(EL.buildEmployerLetter, 7, storm('Storm Role H'));
-    const htmlH = (store.puts[0] || { payload: {} }).payload.coverLetterHtml || '';
-    ok('⚠️ every model busy on the CORRECTIVE pass: the first draft is kept (placeholders stripped), stored and charged once',
-      r.statusCode === 200 && ent.consumed.length === 1 && store.puts.length === 1 && store.puts[0].model === P && !/\[X%\]|XX%/.test(htmlH) && /Improved settlement speed for merchants/.test(htmlH),
-      { status: r.statusCode, body: r.body, model: store.puts[0] && store.puts[0].model });
-    ok('…after one draft and ONE corrective chain (primary twice, each fallback)', modelsOf().join() === [P, P, P, F1, F2].join(), modelsOf());
+    // 6. (the corrective pass that rode this chain is gone: it re-sent the Home lane's own prompt — see "the Jobs lane's
+    // parsing" above.)
 
-    // 7. bad output is the LANE's retry: a second draft from the primary, told as a second pass — not as Google being busy
+    // 7. bad output is the WRITER's retry: a second answer from the primary, told as a second pass — not as Google being busy
     reset(); ai.queue = ['not json'];
     r = await call(EL.buildEmployerLetter, 7, storm('Storm Role I'), { __jobId: 'job-bad' });
-    ok('bad output → the lane\'s own second draft, from the primary (200, two calls, both the primary)',
+    ok('bad output → the writer asks again, of the primary (200, two calls, both the primary)',
       r.statusCode === 200 && modelsOf().join() === [P, P].join() && !!store.puts[0] && store.puts[0].model === P, modelsOf());
     ok('…reported as "Taking another pass at it", never as a busy provider', JSON.stringify(labelsOf('retry')) === JSON.stringify(['Taking another pass at it']), labelsOf('retry'));
 
-    // 8. ⚠️ ONE AI WINDOW (LETTER_AI): no second draft and no corrective pass is STARTED without room to finish it.
+    // 8. ⚠️ ONE AI WINDOW (LETTER_AI): the writer's budget is what is LEFT of it, and no answer is STARTED without room
+    // to finish (the writer never starts one with less than 20 s left).
     const realWindow = { ...LA };
     try {
-      LA.windowMs = 30 * 1000; LA.minCallMs = 60 * 1000;   // room for one draft, none for another call
-      reset(); gt.length = 0; ai.queue = ['not json'];
+      LA.windowMs = 15 * 1000;   // less than the writer's least try: no answer may even start
+      reset(); gt.length = 0;
       r = await call(EL.buildEmployerLetter, 7, storm('Storm Role J'));
-      ok('⚠️ bad output with no room left → 500 failed after ONE call — never an "AI is busy" the provider never said',
-        r.statusCode === 500 && r.body.reason === 'failed' && ai.calls.length === 1 && ent.consumed.length === 0 && store.puts.length === 0, { status: r.statusCode, body: r.body, calls: ai.calls.length });
-      ok('…and its one chain was given what was LEFT of the window, not a budget of its own', gt.length === 1 && gt[0].budgetMs > 0 && gt[0].budgetMs <= 30 * 1000, gt.map((g) => g.budgetMs));
-      reset(); ai.queue = [PLACEHOLDER_DRAFT];
+      ok('⚠️ a window with no room for one answer → 500 failed after ZERO calls — never started, never an "AI is busy" the provider never said',
+        r.statusCode === 500 && r.body.reason === 'failed' && ai.calls.length === 0 && gt.length === 0 && ent.consumed.length === 0 && store.puts.length === 0, { status: r.statusCode, body: r.body, calls: ai.calls.length });
+      LA.windowMs = 30 * 1000;   // room for two answers, and not one more second of the writer's own four minutes
+      reset(); gt.length = 0; ai.queue = ['not json'];
       r = await call(EL.buildEmployerLetter, 7, storm('Storm Role K'));
-      ok('placeholders with no room for the corrective pass → the first draft kept (stripped) after ONE call, charged once',
-        r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1 && !/\[X%\]|XX%/.test(store.puts[0].payload.coverLetterHtml),
-        { status: r.statusCode, calls: ai.calls.length });
+      ok('…with 30 s, each answer is given what is LEFT of the window, never a budget of its own',
+        r.statusCode === 200 && gt.length === 2 && gt.every((g) => g.budgetMs > 0 && g.budgetMs <= 30 * 1000) && gt[1].budgetMs <= gt[0].budgetMs, gt.map((g) => g.budgetMs));
     } finally { Object.assign(LA, realWindow); }
-    // 240 s of research + AI, + ≤ 15 s of lock + ≤ 20 s of thumbs, inside the app's 6 minutes with room for the queue.
-    ok('the production window: 4 min for research + every AI call, 3 min a draft, 90 s a correction, 20 s the least a call starts with',
-      LA.windowMs === 240000 && LA.draftBudgetMs === 180000 && LA.correctionBudgetMs === 90000 && LA.minCallMs === 20000
+    // 240 s of AI (the research runs beside it), + ≤ 15 s of lock + ≤ 20 s of thumbs, inside the app's 6 minutes.
+    ok('the production window: 4 min for every AI call, the writer\'s own budget no longer than it, room for the lock and the thumbs inside the app\'s 6 minutes',
+      LA.windowMs === 240000 && CL._internals.LEGACY_LETTER_BUDGET_MS === 240000 && Object.keys(LA).join() === 'windowMs'
       && LA.windowMs + 35 * 1000 < 6 * 60 * 1000, EL.LETTER_AI);
 
-    // 9. ⚠️ THE MONEY CONSTANTS. A bump of any of them re-bills every saved document; a fallback model moves none of them.
+    // 9. ⚠️ THE MONEY CONSTANTS. A bump of any of them re-bills every saved document; neither a fallback model nor the
+    // switch to the Jobs section's writer moves any of them.
     const elSrc = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
-    ok('⚠️ LETTER_REV stays letter-v1 through the fallback round', /const LETTER_REV = 'letter-v1';/.test(elSrc) && !/LETTER_REV = 'letter-v[2-9]'/.test(elSrc));
+    ok('⚠️ LETTER_REV stays letter-v1 through the fallback round and the writer switch', /const LETTER_REV = 'letter-v1';/.test(elSrc) && !/LETTER_REV = 'letter-v[2-9]'/.test(elSrc));
     ok('⚠️ RESEARCH_REV stays r1', research.RESEARCH_REV === 'r1', research.RESEARCH_REV);
     ok('⚠️ FP_VERSION stays v1 (the hash of a known input is exactly what it was)',
       docs.fingerprint({ baseText: 'a', jobText: 'b', researchRev: 'c' }) === crypto.createHash('sha256').update(['v1', 'a', 'b', 'c'].join('\0')).digest('hex'));
-    ok('⚠️ no model id anywhere in the letter\'s fingerprint', (() => { const b = (elSrc.match(/function letterFingerprintOf\([\s\S]*?\n\}/) || [''])[0]; return b.length > 50 && !/model/i.test(b); })());
+    ok('⚠️ no model id — and no prompt text — anywhere in the letter\'s fingerprint', (() => { const b = (elSrc.match(/function letterFingerprintOf\([\s\S]*?\n\}/) || [''])[0]; return b.length > 50 && !/model|prompt|buildPrompt|v2/i.test(b); })());
     AT.generateText = realGT;
   }
 
@@ -791,222 +905,232 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('two identical concurrent builds → ONE AI call, ONE consume', ai.calls.length === 1 && ent.consumed.length === 1, { ai: ai.calls.length, consumed: ent.consumed.length });
   ok('…both answered with the same docId, one as cached', a17.body.docId === b17.body.docId && [a17.body.cached, b17.body.cached].sort().join() === 'false,true', [a17.body, b17.body]);
 
-  console.log('── build: tailored resume only when current; job boards never researched ──');
-  reset(); resumeDocs.doc = { input_fingerprint: 'fp-old', payload: { personal_info: { title: 'Tailored Title' }, summary: 'TAILORED SUMMARY MARK', experience: [] } }; rbFp.value = 'fp-new';
-  r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Engineer A' } }));
-  ok('stale tailored resume is NOT in the prompt', !/TAILORED SUMMARY MARK/.test(ai.calls[0].prompt));
+  console.log('── build: the tailored resume is not an input any more; job boards never researched ──');
+  // ⚠️ RETARGETED 2026-09-18: the Home lane used to hand its OWN prompt this employer's tailored resume (when current).
+  // v2's prompt takes the Jobs lane's résumé metadata and nothing else, so the tailored resume is not read at all — not
+  // even its fingerprint (the resume lane's currentResumeFingerprint is never asked).
   reset(); resumeDocs.doc = { input_fingerprint: 'fp-same', payload: { personal_info: { title: 'Tailored Title', email: 'secret@x.test' }, summary: 'TAILORED SUMMARY MARK', experience: [] } }; rbFp.value = 'fp-same';
+  const rbCalls0 = rbFp.calls;
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Engineer B' } }));
-  ok('current tailored resume IS in the prompt, without contact details', /TAILORED SUMMARY MARK/.test(ai.calls[0].prompt) && !/secret@x\.test/.test(ai.calls[0].prompt));
+  ok('a current tailored resume is NOT in the prompt, and its fingerprint is never even asked for',
+    r.statusCode === 200 && !/TAILORED SUMMARY MARK|secret@x\.test/.test(textOf(ai.calls[0])) && rbFp.calls === rbCalls0, { status: r.statusCode, rb: rbFp.calls - rbCalls0 });
   reset();
   r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Zeta', job: { company: 'Zeta', title: 'Engineer', website: 'https://www.linkedin.com/company/zeta', url: 'https://boards.greenhouse.io/zeta/jobs/1' } }));
   ok('a job-board website is never researched', r.statusCode === 200 && researchCalls.length === 0, researchCalls);
   ok('…and the stage list skips researching', !stages.some((s) => s.stage === 'researching'));
+  // No website of the employer's own → the letter researches the employer's NAME — what the Jobs lane researches when all
+  // it has is a job board (letterResearchSubjectOf; v2 then asks for it as https://<name>, as it always has).
+  ok('⚠️ …and the letter researches the employer\'s NAME, exactly as the Jobs lane does with a job board',
+    v2Calls.length === 1 && v2Calls[0][2] === 'https://Zeta' && /Employer Website URL: https:\/\/Zeta\n/.test(textOf(ai.calls[0]))
+    && CL.letterResearchSubjectOf('https://www.linkedin.com/company/zeta', 'Zeta').researchSubject === 'Zeta', v2Calls.map((a) => a[2]));
+  ok('…with the pasted posting as v2\'s listing (the Jobs lane\'s shape: url, text, title, company)',
+    v2Calls.length === 1 && JSON.stringify(v2Calls[0][5]) === JSON.stringify({ url: 'https://boards.greenhouse.io/zeta/jobs/1', text: '', title: 'Engineer', company: 'Zeta' }), v2Calls[0] && v2Calls[0][5]);
   reset();
   r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Amazon', job: { company: 'Amazon', title: 'SDE', website: '', url: 'https://amazon.jobs/en/jobs/123' } }));
   ok('a posting host the employer owns is researched (amazon.jobs)', researchCalls.length === 1 && researchCalls[0].website === 'amazon.jobs', researchCalls);
+  ok('…and it is the site the letter researches too', v2Calls.length === 1 && v2Calls[0][2] === 'https://amazon.jobs', v2Calls.map((a) => a[2]));
 
-  console.log('── build: named contact / address only with evidence ──');
-  reset(); ai.queue = [GOOD({ to: 'Maria Lopez', addresses: ['1 Invented Road, Nowhere'] })];
-  r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Engineer C', description: 'Reach out to Maria Lopez. Office: 500 Market Street, San Francisco.' } }));
-  ok('contact named in the posting is kept', store.puts[0].payload.hiringManager === 'Maria Lopez', store.puts[0].payload.hiringManager);
-  ok('address not in the posting is dropped', store.puts[0].payload.companyAddress === '', store.puts[0].payload);
-  reset(); ai.queue = [GOOD({ to: 'Bob Smith', addresses: ['500 Market Street, San Francisco'] })];
-  r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'Engineer D', description: 'Office: 500 Market Street, San Francisco.' } }));
-  ok('contact NOT in the posting → Hiring Manager', store.puts[0].payload.hiringManager === 'Hiring Manager');
-  ok('address written in the posting → kept', store.puts[0].payload.companyAddress === '500 Market Street, San Francisco', store.puts[0].payload);
+  console.log('── build: the addressee and the offices — the Jobs lane\'s mapping ──');
+  // ⚠️ RETARGETED 2026-09-18: the Home lane kept a named contact or an address only when the posting or the cached research
+  // spelled it — its prompt had no live search, so anything else was invented. v2 researches the employer through Google
+  // Search grounding (the addresses are the prompt's REQUIRED research), so the answer is mapped the way the Jobs lane maps
+  // it: the model's addressee, and its offices HQ first — the job location's own office moved to the front.
+  reset(); ai.queue = [GOOD({ to: 'Maria Lopez', addresses: ['1 Main Street, 62701 Springfield, USA', 'Hauptstraße 12, 45128 Essen, Germany'] })];
+  r = await call(EL.buildEmployerLetter, 7, buildBody({ country: 'Germany', job: { ...JOB, title: 'Engineer C' } }));
+  const plC = (store.puts[0] || { payload: {} }).payload;
+  ok('the researched addressee is kept (what the Jobs lane prints)', plC.hiringManager === 'Maria Lopez', plC.hiringManager);
+  ok('⚠️ the office in the job\'s country leads (matchesJobLocation), the HQ after it — the Jobs lane\'s order',
+    plC.companyAddress === 'Hauptstraße 12, 45128 Essen, Germany' && plC.locations.length === 2 && plC.locations[0].matchesJobLocation === true
+    && plC.locations[1].address === '1 Main Street, 62701 Springfield, USA', plC.locations);
+  const jobsMap = CL.letterDetailsOf(JSON.parse(GOOD({ to: 'Maria Lopez', addresses: ['1 Main Street, 62701 Springfield, USA', 'Hauptstraße 12, 45128 Essen, Germany'] })),
+    { position: 'Engineer C', companyNameHint: 'Acme', researchSubject: 'https://acme.test', jobLocation: 'Germany' });
+  ok('…exactly the Jobs lane\'s own answer for the same model output (addressee, subject, offices, HTML)',
+    JSON.stringify(plC.locations) === JSON.stringify(jobsMap.locations) && plC.hiringManager === jobsMap.hiringManager && plC.subject === jobsMap.subject && plC.coverLetterHtml === jobsMap.coverLetterHtml, { home: plC.locations, jobs: jobsMap.locations });
+  // ⚠️ The review's case: v2 returns addresses VERBATIM (its prompt: never translated), so a German office ends in
+  // "Deutschland" — which the chip's "Germany" never matches. letterDetailsOf then puts the job location ITSELF first (the
+  // Jobs picker's default, a row the user sees and can change); Home has no picker and stored it as the address block:
+  // "Germany", instead of the Munich street address the research found. Home keeps only the offices v2 returned.
+  const MUC = 'Werner-von-Siemens-Straße 1, 80333 München, Deutschland';
+  reset(); ai.queue = [GOOD({ addresses: [MUC] })];
+  r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Siemens', country: 'Germany', job: { company: 'Siemens', title: 'Engineer M', website: 'siemens.test' } }));
+  const plM = (store.puts[0] || { payload: {} }).payload;
+  ok('⚠️ an office spelled "Deutschland" under the chip "Germany" → the researched street address, never the country alone',
+    r.statusCode === 200 && plM.companyAddress === MUC && plM.locations.length === 1 && plM.locations[0].address === MUC
+    && !plM.locations.some((l) => l.address === 'Germany'), plM.locations);
+  ok('…and it is the address block the letter is rendered with',
+    rendered.previews.length === 1 && rendered.previews[0].data.company.address === MUC, rendered.previews[0] && rendered.previews[0].data.company);
+  const jobsMuc = CL.letterDetailsOf(JSON.parse(GOOD({ addresses: [MUC] })), { position: 'Engineer M', companyNameHint: 'Siemens', researchSubject: 'https://siemens.test', jobLocation: 'Germany' });
+  ok('…while the Jobs mapping is untouched: its picker still leads with the job location, the researched office after it',
+    jobsMuc.locations.length === 2 && jobsMuc.locations[0].address === 'Germany' && jobsMuc.locations[0].matchesJobLocation === true
+    && jobsMuc.locations[1].address === MUC, jobsMuc.locations);
+  // "Schweiz", "USA": none names the chip's country either → the first researched office (v2's HQ), in the Jobs order.
+  reset(); ai.queue = [GOOD({ addresses: ['Bahnhofstrasse 1, 8001 Zürich, Schweiz', '1 Main St, Austin, TX 78701, USA'] })];
+  r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Helvet', country: 'Germany', job: { company: 'Helvet', title: 'Engineer H', website: 'helvet.test' } }));
+  const plH = (store.puts[0] || { payload: {} }).payload;
+  ok('no researched office in the chip\'s country → the first researched office (the HQ), and only researched offices stored',
+    plH.companyAddress === 'Bahnhofstrasse 1, 8001 Zürich, Schweiz' && JSON.stringify(plH.locations.map((l) => l.address)) === JSON.stringify(['Bahnhofstrasse 1, 8001 Zürich, Schweiz', '1 Main St, Austin, TX 78701, USA']), plH.locations);
+  reset(); ai.queue = [GOOD({ addresses: [] })];
+  r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Nullco', country: 'Germany', job: { company: 'Nullco', title: 'Engineer N', website: 'nullco.test' } }));
+  const plN = (store.puts[0] || { payload: {} }).payload;
+  ok('⚠️ no office found under a chip country → \'\' (HEAD\'s Home), never "Germany" and never "Address not available"',
+    r.statusCode === 200 && plN.companyAddress === '' && plN.locations.length === 0 && rendered.previews.length === 1 && rendered.previews[0].data.company.address === '', { payload: plN, render: rendered.previews[0] && rendered.previews[0].data.company });
+  reset(); ai.queue = [GOOD({ to: undefined, addresses: [] })];
+  r = await call(EL.buildEmployerLetter, 7, buildBody({ country: '', job: { ...JOB, title: 'Engineer D' } }));
+  const plD = (store.puts[0] || { payload: {} }).payload;
+  ok('no addressee → "Hiring Manager"; no office and no country → no address at all ("Address not available" is never a line on a letter)',
+    plD.hiringManager === 'Hiring Manager' && plD.companyAddress === '' && plD.locations.length === 0, plD);
   reset(); ai.queue = [GOOD({ position: 'Backend Engineer (open application)' })];
   r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Omega', job: { company: 'Omega', website: 'omega.test' } }));
-  ok('"(open application)" never reaches position/subject', store.puts[0].payload.position === 'Backend Engineer' && !/open application/i.test(store.puts[0].payload.subject), store.puts[0].payload);
+  ok('the model\'s echo of the position never becomes the stored one (the lane decided it before the call)',
+    store.puts[0].payload.position === 'Senior Backend Engineer' && v2Calls.length === 1 && v2Calls[0][1] === 'Senior Backend Engineer', store.puts[0].payload);
+  ok('…and the employer the user picked stays the letter\'s companyName (the model\'s official name is in its words)',
+    store.puts[0].payload.companyName === 'Omega', store.puts[0].payload.companyName);
 
-  console.log('── ⚠️ conventions shape the letter\'s tone and length — never its facts, never its price ──');
+  console.log('── ⚠️ the research ranks the DESIGNS — it writes no word of the letter any more ──');
   {
     reset();
     researchConv = { hqCountry: 'Germany', roleCountry: 'Germany', employerType: 'startup', sector: 'Fintech', atsVendor: 'Personio', tone: 'direct',
       cv: { photo: 'expected', length: 'two_pages', personalDetails: 'include', dateFormat: 'MM/YYYY', format: 'tabular', notes: ['Berlin startups read short, direct letters.'] }, sources: [] };
     r = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Conv GmbH', country: '', job: { ...JOB, company: 'Conv GmbH', website: 'conv.test' } }), { __jobId: 'job-conv' });
-    const pc = String((ai.calls[0] || {}).prompt || '');
-    ok('200, ONE AI call, ONE consume', r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1, { status: r.statusCode, ai: ai.calls.length, consumed: ent.consumed.length });
-    ok('the letter prompt carries the conventions block, letter version (no CV habits)',
-      /=== HOW Conv GmbH HIRES/.test(pc) && /Personio/.test(pc) && /never mention them in the letter/.test(pc) && !/CV conventions: /.test(pc), pc.slice(pc.indexOf('=== HOW'), pc.indexOf('=== HOW') + 400));
-    // ⚠️ CHANGED 2026-09-16 (the country playbook): the research names Germany, so GERMANY's own letter habit
-    // speaks and the six-region line stands down — one voice about where this letter is going, never two that
-    // could disagree. The startup's band is untouched: the employer type still leads, as it always has.
-    ok('…a startup\'s shorter band (230-320 words), and Germany\'s own letter habit in place of the region\'s',
-      /230-320/.test(pc) && /discuss the role in person/.test(pc) && !/German-speaking employers expect a formal, structured letter/.test(pc), pc.slice(pc.indexOf('FOR THIS EMPLOYER'), pc.indexOf('FOR THIS EMPLOYER') + 400));
-    ok('⚠️ …and the absolute rule: conventions never add facts', /never (add|state|imply)[^.]*fact/i.test(pc));
+    const pc = textOf(ai.calls[0]);
+    ok('200, ONE AI call, ONE consume, ONE research call', r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && researchCalls.length === 1, { status: r.statusCode, ai: ai.calls.length, consumed: ent.consumed.length });
+    // ⚠️ REVERSED BY DESIGN 2026-09-18: the conventions block, the startup's length band and the country's letter habits
+    // were the Home lane's OWN prompt. v2's prompt is the Jobs lane's — none of that is in it; it researches live.
+    ok('⚠️ the prompt carries NO conventions block, NO research block and NO register or length band of the lane\'s own',
+      !/=== HOW Conv GmbH HIRES/.test(pc) && !/Personio/.test(pc) && !/230-320/.test(pc) && !/FOR THIS EMPLOYER:/.test(pc) && v2Calls.length === 1 && pc === realBuildPrompt(...v2Calls[0]), pc.slice(0, 120));
     const putC = store.puts[store.puts.length - 1] || {};
-    ok('region from the research (Germany → dach) when the chip names no country', putC.design && putC.design.region === 'dach', putC.design && putC.design.region);
+    ok('…while the conventions still RANK the designs: region from the research (Germany → dach) when the chip names no country', putC.design && putC.design.region === 'dach', putC.design && putC.design.region);
     ok('the stored letter design keeps conventionsSummary (≤120) and the aiFamilies key', putC.design && 'aiFamilies' in putC.design
       && typeof putC.design.conventionsSummary === 'string' && putC.design.conventionsSummary.length <= 120, putC.design && { ai: putC.design.aiFamilies, s: putC.design.conventionsSummary });
-    const style = EL.letterStyleFor(null, 'generic');
-    ok('no conventions + generic region → v1\'s 300-450 words, no extra notes', style && /300-450/.test(JSON.stringify(style)) && (!style.notes || style.notes.length === 0), style);
+    ok('…and the research ran BESIDE the letter, not before it: both asked, the stages in their order', researchCalls.length === 1
+      && JSON.stringify(stages.map((x) => x.stage).filter((x) => ['researching', 'writing'].includes(x))) === JSON.stringify(['researching', 'writing']), stages.map((x) => x.stage));
     researchConv = null;
   }
 
-  console.log('── ⚠️ the country reaches the LETTER too: register and structure only — never a CV habit, never a charge ──');
+  console.log('── ⚠️ the chip\'s country is the letter\'s JOB LOCATION — never a fingerprint input, never a charge ──');
   {
-    // The playbook (cvPlaybook) answers "how is a document written where this application is going" for every
-    // country regionFromCountry knows. A LETTER takes only the half a letter can honour — how formal it reads,
-    // how long it runs, how it opens and how it closes. Photos, dates of birth, personal details, page counts,
-    // date patterns and section orders are the résumé's, and one of them in a letter is a defect, not a
-    // convention. None of it is hashed, so none of it can bill anyone for a letter they already have.
-    const toneOf = (p) => (String(p).match(/^TONE: (.+)$/m) || [])[1] || '';
-    const bandOf = (p) => (String(p).match(/(\d{3}-\d{3}) words in total/) || [])[1] || '';
-    const blockOf = (p) => {
-      const i = String(p).indexOf('=== HOW A COVER LETTER READS');
-      if (i < 0) return '';
-      const rest = String(p).slice(i);
-      const end = rest.indexOf('\n\n');
-      return end < 0 ? rest : rest.slice(0, end);
-    };
-    const notesOf = (p) => (String(p).match(/\nFOR THIS EMPLOYER:\n([\s\S]*?)\nNever use:/) || [])[1] || '';
-    // Every CV habit, spelled the way a CV prompt spells it. NOT ONE of these may reach a letter.
-    const CV_HABIT = /photo|date of birth|marital|nationality|personal details|\bpages?\b|\bcvs?\b|r[eé]sum[eé]|section order|MM\/YYYY|\bbullets?\b|skills block/i;
-    const PB = require(path.join(ROOT, 'server/services/cvPlaybook.js'));
-    const realFor = PB.playbookFor, realBlock = PB.playbookPromptBlock;
-
-    // ── a formal country and a direct one must not read the same ──
+    // ⚠️ RETARGETED 2026-09-18: the country used to reach the Home lane's own prompt as a register and a length band (the
+    // country playbook). The Jobs lane's prompt takes a JOB LOCATION instead — which office leads the addresses, and the
+    // closing's relocation line — so that is where the chip's country goes. It is still NOT hashed: a chip whose country
+    // changes never makes a finished letter stale, and never bills a Refresh.
     reset();
     let rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Chateau SA', country: 'France', job: { ...JOB, company: 'Chateau SA', website: 'chateau.test', title: 'Backend Engineer' } }));
-    const pFr = String((ai.calls[0] || {}).prompt || '');
+    const pFr = textOf(ai.calls[0]);
     const fpFr = (store.puts[0] || {}).fingerprint;
-    ok('a French employer → 200, ONE AI call, ONE consume, ONE research call: the country costs nothing extra',
+    ok('a French chip → 200, ONE AI call, ONE consume, ONE research call: the country costs nothing extra',
       rp.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && researchCalls.length === 1 && store.puts.length === 1,
       { status: rp.statusCode, ai: ai.calls.length, consumed: ent.consumed.length, research: researchCalls.length });
-    ok('…France\'s own letter block, headed by the country', /=== HOW A COVER LETTER READS IN FRANCE ===/.test(pFr), blockOf(pFr));
-    ok('…a formal register and the French arc in the notes', /^formal and courteous/.test(toneOf(pFr)) && /what the employer needs/.test(notesOf(pFr)), { tone: toneOf(pFr), notes: notesOf(pFr) });
-
-    // ⚠️ THE MONEY LINE: the country changes how a letter READS, never what it costs. The same employer and the
-    // same job fields are the same fingerprint whatever country the chip names — so the letter just written is
-    // still the free cache hit it would have been before any of this existed.
+    ok('…France is v2\'s JOB LOCATION (its office first, the relocation line) — and no CV habit, register or band of the lane\'s own',
+      /JOB LOCATION: France/.test(pFr) && v2Calls.length === 1 && v2Calls[0][4] === 'France' && !/=== HOW A COVER LETTER READS/.test(pFr) && !/^TONE: /m.test(pFr), v2Calls.map((a) => a[4]));
     reset();
     rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Chateau SA', country: 'Japan', job: { ...JOB, company: 'Chateau SA', website: 'chateau.test', title: 'Backend Engineer' } }));
     ok('⚠️ the same letter under a different country is the SAME free cache hit — no AI, no gate, no charge',
       rp.statusCode === 200 && rp.body.cached === true && ai.calls.length === 0 && ent.gateCalls === 0 && ent.consumed.length === 0 && store.puts.length === 0,
       { status: rp.statusCode, body: rp.body, ai: ai.calls.length });
     ok('…because the country was never a fingerprint input', (await EL.currentLetterFingerprint(7, { job: { company: 'Chateau SA', website: 'chateau.test', title: 'Backend Engineer' }, country: 'Japan', env: 'Production' })) === fpFr);
-
     reset();
-    rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Statewide Inc', country: 'United States', job: { ...JOB, company: 'Statewide Inc', website: 'statewide.test', title: 'Backend Engineer' } }));
-    const pUs = String((ai.calls[0] || {}).prompt || '');
-    ok('an American employer reads direct, at the shorter band', rp.statusCode === 200 && /^direct and specific/.test(toneOf(pUs)) && bandOf(pUs) === '250-350', { tone: toneOf(pUs), band: bandOf(pUs) });
-    ok('⚠️ a country with a formal convention really does read differently from one without',
-      toneOf(pFr) !== toneOf(pUs) && bandOf(pFr) !== bandOf(pUs) && blockOf(pFr) !== blockOf(pUs), { fr: [toneOf(pFr), bandOf(pFr)], us: [toneOf(pUs), bandOf(pUs)] });
+    rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Nowhere Ltd', country: '', job: { ...JOB, company: 'Nowhere Ltd', website: 'nowhere.test', title: 'Backend Engineer' } }));
+    ok('no country → no JOB LOCATION block at all (v2\'s prompt as the Jobs lane sends it without one)',
+      rp.statusCode === 200 && v2Calls.length === 1 && v2Calls[0][4] === null && !/JOB LOCATION:/.test(textOf(ai.calls[0])), v2Calls.map((a) => a[4]));
+    const elP = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
+    ok('⚠️ LETTER_REV stays letter-v1 (a bump re-bills every saved letter), and the lane reads no country playbook any more',
+      /const LETTER_REV = 'letter-v1';/.test(elP) && !/LETTER_REV = 'letter-v[2-9]'/.test(elP) && !/cvPlaybook|playbookFor|playbookPromptBlock/.test(elP.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')));
+  }
 
-    // ── ⚠️ NEVER A CV HABIT, IN ANY COUNTRY ──
-    // Swept over the prompt itself (block + TONE + notes), for a country from every corner of the table. The
-    // prompt is built directly here: the register, the band and the block are pure functions of the country, so
-    // this costs nothing and can afford to ask the question everywhere rather than in one place.
-    const promptFor = (country) => {
-      const pb = EL.letterPlaybookFor({ country, website: '', conventions: null, research: null });
-      return EL.buildEmployerLetterPrompt({
-        company: 'Acme', website: '', job: { title: 'Backend Engineer', url: '', description: '', website: '' },
-        material: { baseText: 'Current title: Backend Engineer', uploadText: '' }, tailored: null,
-        researchBlock: '', conventionsBlock: '', playbookBlock: EL.letterPlaybookBlockFor(pb, 'Acme'),
-        style: EL.letterStyleFor(null, pb ? pb.region : 'generic', pb), sector: '',
-      });
-    };
-    const SWEEP = ['United States', 'United Kingdom', 'Germany', 'France', 'Switzerland', 'Netherlands', 'Italy',
-      'Poland', 'Russia', 'India', 'Japan', 'Singapore', 'Indonesia', 'Brazil', 'Nigeria', 'Saudi Arabia', 'Morocco'];
-    const leaks = SWEEP.filter((c) => { const p = promptFor(c); return CV_HABIT.test(blockOf(p)) || CV_HABIT.test(notesOf(p)) || CV_HABIT.test(toneOf(p)); });
-    ok('⚠️ NOT ONE CV habit in any country\'s letter guidance (17 countries, block + tone + notes)', leaks.length === 0, leaks);
-    const mute = SWEEP.filter((c) => { const p = promptFor(c); return !toneOf(p) || toneOf(p) === EL.letterStyleFor(null, 'generic').register; });
-    ok('…and every one of them is actually answered: a register of its own, not the generic one', mute.length === 0, mute);
-    const bands = new Set(SWEEP.map((c) => bandOf(promptFor(c))));
-    ok('…with more than one length band across the table (how long a letter runs is part of the answer)', bands.size >= 2, [...bands]);
-
-    // ── every country regionFromCountry knows is answered, and answered safely ──
-    const RF = require(path.join(ROOT, 'server/utils/regionFromCountry.js'));
-    const unanswered = RF._internals.COUNTRY_ROWS.map((row) => row[1])
-      .filter((c) => !EL.countryLetterRowOf(EL.letterPlaybookFor({ country: c })));
-    ok('every country in the table has a letter register of its own — none falls through to the generic one', unanswered.length === 0, unanswered.slice(0, 8));
-    ok('…one row per CV profile the country table uses, no more and no fewer',
-      JSON.stringify(Object.keys(EL.LETTER_PROFILES).sort()) === JSON.stringify(Object.keys(RF._internals.CV_PROFILES).sort()),
-      Object.keys(EL.LETTER_PROFILES).sort());
-    const badRow = Object.entries(EL.LETTER_PROFILES).filter(([, row]) => {
-      const band = String(row.words || '').match(/^(\d{3})-(\d{3})$/);
-      // ⚠️ THE ~230-WORD FLOOR: parseLetterOutput refuses a letter under 120 words and the placeholder guard
-      // under 80, so a band that let a letter start short would throw away work the user paid for.
-      return !row.register || !band || Number(band[1]) < 230 || Number(band[2]) > 450 || Number(band[1]) >= Number(band[2])
-        || CV_HABIT.test(row.register) || (row.structure && CV_HABIT.test(row.structure));
+  console.log('── ⚠️ THE OWNER\'S DECISION: Home\'s letter is written by EXACTLY the Jobs section\'s generation ──');
+  {
+    // "we have a prompt/api that is already written on the jobs section… we need to use the same one… and not the new
+    // one." The same job, written from Home (POST /cover-letter/employer-build) and from the Jobs section (POST
+    // /generate-cover-letter-details): the SAME v2 buildPrompt call, the same bytes to Google, the same grounding, config
+    // and chain — and the same model answer mapped into the same letter. If the two ever drift, this is where it shows.
+    const gtP = [];
+    const realGT = AT.generateText;
+    AT.generateText = (o) => { gtP.push(o); return realGT(o); };
+    const PJOB = { company: 'Nordwerk', title: 'Platform Engineer', url: 'https://nordwerk.test/jobs/7', description: 'Build the payments platform on Kafka and Postgres. Own services end to end.', website: 'nordwerk.test' };
+    const ANSWER = GOOD({ employer_name: 'Nordwerk GmbH', to: 'Head of Engineering', addresses: ['Hauptstraße 12, 45128 Essen, Germany'], subject: 'Application for Platform Engineer — Jane Doe' });
+    reset(); ai.queue = [ANSWER];
+    const homeR = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Nordwerk', country: 'Germany', job: { ...PJOB } }));
+    const home = { v2: v2Calls.slice(), calls: ai.calls.slice(), gt: gtP.slice(), put: store.puts[0] || { payload: {} } };
+    reset(); gtP.length = 0; ai.queue = [ANSWER]; world.brandProfile = { brand_color: '#123456', font_name: 'Lato' };   // the Jobs lane's brand cache: a hit
+    const jobsR = await call(CL.generateCoverLetterDetails, 7, {
+      recipientEmail: 'hr@nordwerk.test', websiteUrl: 'nordwerk.test', position: 'Platform Engineer', jobLocation: 'Germany',
+      companyName: 'Nordwerk', jobUrl: PJOB.url, jobText: PJOB.description,
     });
-    ok('…and every row is well formed: a register, a band inside the 230-450 floor, and no CV habit in either', badRow.length === 0, badRow.map(([k]) => k));
-
-    // ── ⚠️ THE GUARD IS THE POINT: a CV line that ever appears in cvPlaybook's letter block is dropped HERE ──
-    const gPb = EL.letterPlaybookFor({ country: 'Germany' });
-    PB.playbookPromptBlock = () => ['=== HOW A COVER LETTER READS IN GERMANY ===',
-      '- A photo belongs top right, and the date of birth under it.',
-      '- Length: up to two pages is normal here.',
-      '- Dates: write every start and end date as MM/YYYY.',
-      '- Section order read here: contact → summary → experience.',
-      '- Name the exact post applied for in the opening line.',
-      '- These are habits of the place, not facts about the candidate: never add anything their material does not contain.'].join('\n');
-    const guarded = EL.letterPlaybookBlockFor(gPb, 'Acme');
-    ok('⚠️ the CV lines are dropped and the letter-safe one survives', !CV_HABIT.test(guarded) && /Name the exact post applied for/.test(guarded), guarded);
-    PB.playbookPromptBlock = () => '=== HOW A COVER LETTER READS IN GERMANY ===\n- A photo belongs top right.\n- Length: one page.';
-    ok('…and a block of nothing but CV lines is no block at all (a header with no rule is tokens, not guidance)', EL.letterPlaybookBlockFor(gPb, 'Acme') === '');
-    PB.playbookPromptBlock = () => ['=== HOW A COVER LETTER READS IN GERMANY ===', '- one', '- two', '- three', '- four', '- five', '- six', '- seven',
-      '- These are habits of the place, not facts about the candidate: never add anything their material does not contain.'].join('\n');
-    const capped = EL.letterPlaybookBlockFor(gPb, 'Acme');
-    ok('…a long block is capped — and what survives the cap is the guard rail, never the seventh rule (the corrective pass pays for every line twice)',
-      capped.split('\n').length === 7 && /habits of the place/.test(capped) && !/- seven/.test(capped), capped);
-    PB.playbookPromptBlock = realBlock;
-
-    // ⚠️ THE OTHER HALF OF THE GUARANTEE: the letter lane never READS the playbook's cv half — there is no path
-    // from a photo or a page count into a letter, not merely a filter in front of one. (cvPlaybook reads its own
-    // cv half when it builds a block; what comes back is what letterSafeBlock above answers for.)
-    const seen = new Set();
-    const spy = new Proxy(EL.letterPlaybookFor({ country: 'Germany' }), { get(t, k) { if (typeof k === 'string') seen.add(k); return t[k]; } });
-    const spied = EL.letterStyleFor({ employerType: 'startup', tone: 'direct' }, 'dach', spy);
-    ok('⚠️ the letter lane never even LOOKS at the playbook\'s CV half', !seen.has('cv') && !seen.has('content') && seen.has('profile') && seen.has('source'), [...seen]);
-
-    // ── country beats region, and the region still speaks when no country does ──
-    const deReg = EL.letterStyleFor(null, 'dach', null);
-    const deCty = EL.letterStyleFor(null, 'dach', EL.letterPlaybookFor({ country: 'Germany' }));
-    ok('a caller with no playbook keeps exactly the style it had before (the six region notes)',
-      deReg.words === '300-450' && deReg.notes.length === 1 && /German-speaking employers expect/.test(deReg.notes[0]), deReg);
-    ok('⚠️ …and with the country resolved it is the COUNTRY that speaks, never both',
-      /^formal and impersonal/.test(deCty.register) && deCty.notes.length === 1 && !deCty.notes.some((n) => /German-speaking employers expect/.test(n)), deCty);
-    const euWord = EL.letterStyleFor(null, 'eu', EL.letterPlaybookFor({ country: 'Europe' }));
-    ok('a region WORD knows less than the region switch — so the switch keeps it', euWord.notes.some((n) => /European motivation-letter habit/.test(n)), euWord);
-    ok('…and a country nobody can place is the letter we always wrote', JSON.stringify(EL.letterStyleFor(null, 'generic', EL.letterPlaybookFor({ country: 'Atlantis' }))) === JSON.stringify(EL.letterStyleFor(null, 'generic')));
-
-    // ── the employer still leads: a country fills a silence, it never overrules the employer type ──
-    const jp = EL.letterPlaybookFor({ country: 'Japan' });
-    const TYPE_BANDS = { public_sector: '350-450', academia: '350-450', enterprise: '300-400', sme: '280-380', startup: '230-320', agency: '250-350', ngo: '300-400' };
-    const overruled = Object.keys(TYPE_BANDS).filter((t) => EL.letterStyleFor({ employerType: t }, 'generic', jp).words !== TYPE_BANDS[t]
-      || EL.letterStyleFor({ employerType: t }, 'generic', jp).register !== EL.letterStyleFor({ employerType: t }, 'generic').register);
-    ok('⚠️ every employer type keeps its own band and register under a country playbook', overruled.length === 0, overruled);
-    ok('…while the country still adds its structure line on top', spied.notes.some((n) => /discuss the role in person/.test(n)) && spied.words === '230-320', spied);
-
-    // ── deterministic, and free ──
-    const twice = [1, 2].map(() => JSON.stringify(EL.letterStyleFor({ employerType: 'sme' }, 'eu', EL.letterPlaybookFor({ country: 'Italy' }))));
-    ok('the same inputs give the same style, every time', twice[0] === twice[1]);
-    ok('…and the resolution is synchronous: a Promise would mean something was fetched', !(EL.letterPlaybookFor({ country: 'Italy' }) instanceof Promise));
-
-    // ── an unavailable / broken cvPlaybook writes the letter exactly as this lane wrote it before ──
-    PB.playbookFor = () => { throw new Error('module half-deployed'); };
+    const jobs = { v2: v2Calls.slice(), calls: ai.calls.slice(), gt: gtP.slice() };
+    AT.generateText = realGT;
+    ok('both lanes wrote the letter: Home 200 with a docId, the Jobs section 200 with the letter', homeR.statusCode === 200 && Number.isInteger(homeR.body.docId)
+      && jobsR.statusCode === 200 && jobsR.body && jobsR.body.success === true, { home: homeR.body, jobs: jobsR.body && (jobsR.body.error || jobsR.body.companyName) });
+    ok('⚠️ each built its prompt ONCE, through ai-cover-letter-v2\'s buildPrompt, with IDENTICAL arguments (metadata, position, research subject, responsibilities, job location, posting)',
+      home.v2.length === 1 && jobs.v2.length === 1 && JSON.stringify(home.v2[0]) === JSON.stringify(jobs.v2[0]), { home: home.v2.map((a) => a.slice(1)), jobs: jobs.v2.map((a) => a.slice(1)) });
+    ok('⚠️ …so Google received the SAME prompt, byte for byte, from both screens', home.calls.length === 1 && jobs.calls.length === 1
+      && jobs.v2.length === 1 && textOf(home.calls[0]) === textOf(jobs.calls[0]) && textOf(home.calls[0]) === realBuildPrompt(...jobs.v2[0]) && textOf(home.calls[0]).length > 5000,
+      { home: textOf(home.calls[0]).length, jobs: textOf(jobs.calls[0]).length });
+    ok('⚠️ …with the same grounding tool, the same config and the same model',
+      JSON.stringify(toolsOf(home.calls[0])) === JSON.stringify([{ googleSearch: {} }]) && JSON.stringify(toolsOf(home.calls[0])) === JSON.stringify(toolsOf(jobs.calls[0]))
+      && JSON.stringify(home.calls[0].cfg) === JSON.stringify(jobs.calls[0].cfg) && home.calls[0].cfg.model === P, { home: home.calls[0].cfg, jobs: jobs.calls[0].cfg });
+    const sameAsk = (g) => g && JSON.stringify({ lane: g.lane, prompt: g.prompt, config: g.config, models: g.models, modelConfig: g.modelConfig, caps: g.attemptCapsMs });
+    ok('⚠️ …through ONE identical aiText request (lane, prompt, config, the letter chain, no modelConfig, the caps) — only the budget is each lane\'s own',
+      home.gt.length === 1 && jobs.gt.length === 1 && sameAsk(home.gt[0]) === sameAsk(jobs.gt[0]) && home.gt[0].lane === 'letter_legacy'
+      && JSON.stringify(home.gt[0].models) === JSON.stringify([P, F1, F2]) && !('modelConfig' in home.gt[0]), { home: home.gt.map((g) => g.models), jobs: jobs.gt.map((g) => g.models) });
+    const hp = home.put.payload || {};
+    ok('⚠️ the same answer became the same letter: the Home payload\'s HTML, subject, addressee and first office are the Jobs response\'s',
+      hp.coverLetterHtml === jobsR.body.coverLetterHtml && hp.subject === jobsR.body.subject && hp.hiringManager === jobsR.body.hiringManager
+      && Array.isArray(jobsR.body.locations) && hp.companyAddress === jobsR.body.locations[0].address && JSON.stringify(hp.locations) === JSON.stringify(jobsR.body.locations),
+      { home: { subject: hp.subject, to: hp.hiringManager, address: hp.companyAddress }, jobs: { subject: jobsR.body.subject, to: jobsR.body.hiringManager, locations: jobsR.body.locations } });
+    ok('…stored in the payload shape Home\'s readers expect (the same nine keys), the employer as the user picked it',
+      JSON.stringify(Object.keys(hp).sort()) === JSON.stringify(['brandColor', 'companyAddress', 'companyName', 'coverLetterHtml', 'fontName', 'hiringManager', 'locations', 'position', 'subject'].sort())
+      && hp.companyName === 'Nordwerk' && hp.position === 'Platform Engineer', Object.keys(hp));
+    // Money, unchanged by the new writer: charged once above; the same request again is free; AI refusals charge nothing
+    // (the storm block above, on this same writer).
     reset();
-    rp = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Fallback Ltd', country: 'France', job: { ...JOB, company: 'Fallback Ltd', website: 'fallback.test', title: 'Backend Engineer' } }));
-    const pFb = String((ai.calls[0] || {}).prompt || '');
-    ok('⚠️ a cvPlaybook that throws costs the user nothing: 200, one AI call, the letter written as it always was',
-      rp.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && !blockOf(pFb) && bandOf(pFb) === '300-450' && toneOf(pFb) === EL.letterStyleFor(null, 'generic').register,
-      { status: rp.statusCode, band: bandOf(pFb), tone: toneOf(pFb) });
-    PB.playbookFor = realFor;
+    const again = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Nordwerk', country: 'Germany', job: { ...PJOB } }));
+    ok('⚠️ the same Home request again is the FREE cache hit: no v2 prompt built, no AI, no gate, no charge',
+      again.statusCode === 200 && again.body.cached === true && again.body.docId === homeR.body.docId && v2Calls.length === 0 && ai.calls.length === 0 && ent.gateCalls === 0 && ent.consumed.length === 0, again.body);
 
-    {
-      const elP = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
-      // ⚠️ THE MONEY CONSTANT, through the country round too. Register and structure are not facts: a stored
-      // letter written before this slice is still a true letter, so nobody pays for ours having improved.
-      ok('⚠️ LETTER_REV stays letter-v1 through the country round (a bump re-bills every saved letter)',
-        /const LETTER_REV = 'letter-v1';/.test(elP) && !/LETTER_REV = 'letter-v[2-9]'/.test(elP));
-      ok('…cvPlaybook is resolved lazily, like every other module the paid half needs', /const playbookMod = \(\) => require\('\.\.\/services\/cvPlaybook'\);/.test(elP));
-      ok('…and the playbook is resolved ONCE per build, then handed to the style and the block',
-        (elP.match(/letterPlaybookFor\(\{ country, website: site/g) || []).length === 1
-        && /playbookBlock: letterPlaybookBlockFor\(playbook, company\)/.test(elP) && /style: letterStyleFor\(conventions, region, playbook\)/.test(elP));
-    }
+    // A Builder-only résumé (no upload at all): the Jobs lane refuses one; Home never did, and still writes — from the same
+    // merge over no upload row, { builder_resume }.
+    const savedMeta = world.meta;
+    world.meta = null;
     reset();
+    const builderOnly = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Builderco', job: { ...JOB, company: 'Builderco', website: 'builderco.test' } }));
+    ok('a Builder-only résumé still writes a letter: v2\'s metadata is { builder_resume } (mergeBuilderResume over no upload row)',
+      builderOnly.statusCode === 200 && v2Calls.length === 1 && JSON.stringify(v2Calls[0][0]) === JSON.stringify({ builder_resume: world.resumeRow.resume_data })
+      && /ADDITIONAL DETAILED RESUME/.test(textOf(ai.calls[0])), { status: builderOnly.statusCode, meta: v2Calls[0] && Object.keys(v2Calls[0][0]) });
+    const savedRow = world.resumeRow;
+    world.resumeRow = null;
+    reset();
+    // The writer's résumé read sits AFTER the cache: a saved letter is served free even while that read would come back empty.
+    const hitAnyway = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Builderco', job: { ...JOB, company: 'Builderco', website: 'builderco.test' } }));
+    ok('…and its saved letter is still the free cache hit while the résumé read-back is empty (that read comes after the cache)',
+      hitAnyway.statusCode === 200 && hitAnyway.body.cached === true && hitAnyway.body.docId === builderOnly.body.docId && ai.calls.length === 0 && ent.gateCalls === 0, hitAnyway.body);
+    reset();
+    const nothing = await call(EL.buildEmployerLetter, 7, buildBody({ employer: 'Emptyco', job: { ...JOB, company: 'Emptyco', website: 'emptyco.test' } }));
+    // (The material read says they HAVE a résumé — the stubbed narrative — so an empty read-back is a blip, not "no résumé".)
+    ok('⚠️ …and a résumé the writer could not read back is a 500 "try again", never "upload one" — before any gate, research or AI',
+      nothing.statusCode === 500 && nothing.body.reason === 'failed' && /couldn't read your resume/.test(nothing.body.error || '')
+      && ent.gateCalls === 0 && researchCalls.length === 0 && ai.calls.length === 0 && v2Calls.length === 0 && ent.consumed.length === 0, nothing.body);
+    world.meta = savedMeta; world.resumeRow = savedRow;
+
+    // The code rules behind it (comment-stripped): the Home lane CALLS the Jobs lane's pieces and builds nothing of its own;
+    // the Jobs lanes use the very same pieces.
+    const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const el = strip(fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8'));
+    const cl = strip(fsSync.readFileSync(path.join(ROOT, 'server/controllers/coverLetterController.js'), 'utf8'));
+    const bodyOf = (src, name) => (src.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`)) || [''])[0];
+    const build = bodyOf(el, 'buildEmployerLetter');
+    ok('⚠️ Home calls the Jobs lane\'s pieces — the loader, the subject rule, the posting, the writer, the mapping — and nothing of its own',
+      /cl\.letterResumeMetadataFor\(userId, \{ tries: 1 \}\)/.test(build) && /cl\.mergeBuilderResume\(userId, \{\}\)/.test(build) && /cl\.letterResearchSubjectOf\(site, company\)/.test(build)
+      && /cl\.letterListingOf\(\{/.test(build) && /cl\.writeLegacyLetter\(/.test(build) && /cl\.letterDetailsOf\(written\.letter,/.test(build));
+    ok('⚠️ …and the lane holds no prompt, schema, grounding or model call of its own',
+      !/buildEmployerLetterPrompt|LETTER_SCHEMA|responseSchema|responseMimeType|googleSearch|generateText|getGenerativeModel|writing\(\)|buildPrompt\(/.test(el), el.length);
+    const work = bodyOf(cl, 'executeGenerationWork');
+    const details = (cl.match(/const generateCoverLetterDetails = async[\s\S]*?\n\};/) || [''])[0];
+    const bulk = (cl.match(/const generateCoverLetters = async[\s\S]*?\n\};/) || [''])[0];
+    ok('⚠️ the Jobs lanes use the SAME pieces (so the two screens cannot drift): the worker, the details route and bulk',
+      /letterResearchSubjectOf\(websiteUrl, companyNameHint\)/.test(work) && /await letterResumeMetadataFor\(userId\)/.test(work) && /letterDetailsOf\(aiResult, \{/.test(work)
+      && /letterListingOf\(\{ jobUrl, jobText, position, companyNameHint \}\)/.test(details) && /await letterResumeMetadataFor\(userId\)/.test(bulk)
+      && !/AGGREGATOR_HOST\.test|'Address not available'|SELECT \* FROM resume_metadata/.test(work + details + bulk), { work: work.length, details: details.length, bulk: bulk.length });
+    ok('⚠️ …and v2\'s prompt is built in ONE place in the whole server (writeLegacyLetter)', (cl.match(/letterV2\.buildPrompt\(/g) || []).length === 1 && /letterV2\.buildPrompt\(/.test(bodyOf(cl, 'writeLegacyLetter')));
   }
 
   console.log('── cards ──');
@@ -1030,6 +1154,68 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('an edited letter (updated_at moved) re-renders', rendered.previews.length === 1, rendered.previews);
   res = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(letterDoc.id), ids: 'nope' } }), res);
   ok('only unknown ids → empty cards, no padding', res.statusCode === 200 && res.body.cards.length === 0, res.body);
+
+  console.log('── ⚠️ pages AND cards: the gallery zooms the FULL page, Home keeps its 480-px card; PREVIEW_REV in every key ──');
+  {
+    // 2026-09-18: "the preview is not crystal clear and looks very blurry on zoom… specially for cover letter". The letter
+    // gallery showed — and let the user pinch to 3x — the 480-px CARD, the only thing this lane stored. It stores the
+    // renderer's page now, and cuts the card from it: size=page is the page, untouched; anything else is the card.
+    const sharp = require('sharp');
+    const rStub = require.cache[require.resolve(path.join(ROOT, 'server/utils/coverLetterRenderer.js'))].exports;
+    const realRP = rStub.renderPreviews;
+    // A REAL page, as the renderer draws one since PREVIEW_REV hd1: a WebP, far wider than a card.
+    const PAGE = await sharp({ create: { width: 1588, height: 2246, channels: 3, background: '#ffffff' } }).webp({ quality: 80 }).toBuffer();
+    rStub.renderPreviews = async (data, opts, tpls) => {
+      rendered.previews.push({ data, opts, ids: tpls.map((t) => t.id) });
+      return tpls.map((t) => ({ id: t.id, name: t.name, accent: t.accent, image: 'data:image/webp;base64,' + PAGE.toString('base64'), width: 1588, height: 2246 }));
+    };
+    const meta = async (uri) => { const m = await sharp(Buffer.from(String(uri).split(',')[1] || '', 'base64')).metadata(); return { format: m.format, width: m.width }; };
+    const cardsOf = async (query) => { const out = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(letterDoc.id), ...query } }), out); return out; };
+    try {
+      letterDoc.updated_at = new Date('2026-09-18T10:00:00Z');   // a new version of the letter: nothing of it is cached
+      rendered.previews = [];
+      res = await cardsOf({ ids: 'german', size: 'page' });
+      const pg = res.body.cards && res.body.cards[0];
+      const pgMeta = pg ? await meta(pg.image) : {};
+      ok('⚠️ size=page → the renderer\'s FULL page, untouched: a 1588-px WebP, labelled as the WebP it is',
+        res.statusCode === 200 && !!pg && /^data:image\/webp;base64,/.test(pg.image) && pgMeta.format === 'webp' && pgMeta.width === 1588 && rendered.previews.length === 1, { status: res.statusCode, meta: pgMeta });
+      rendered.previews = [];
+      res = await cardsOf({ ids: 'german' });
+      const cd = res.body.cards && res.body.cards[0];
+      const cdMeta = cd ? await meta(cd.image) : {};
+      ok('…Home\'s card (no size: the default) is cut from that same page — a 480-px JPEG — with NO second render',
+        res.statusCode === 200 && !!cd && /^data:image\/jpeg;base64,/.test(cd.image) && cdMeta.format === 'jpeg' && cdMeta.width === 480 && rendered.previews.length === 0, { meta: cdMeta, renders: rendered.previews.length });
+      const names = fsSync.readdirSync(path.join(THUMBS, '7'));
+      ok('…both on disk: the page under its key, its card beside it (.w480)',
+        names.some((n) => /^cl_[0-9a-f]{64}\.w480\.jpg$/.test(n) && names.includes(n.replace(/\.w480\.jpg$/, '.jpg'))), names.filter((n) => n.startsWith('cl_')).slice(0, 6));
+      res = await cardsOf({ ids: 'german', size: 'huge' });
+      ok('…and a size the route does not know is the card, never the page', res.statusCode === 200 && !!(res.body.cards && res.body.cards[0]) && (await meta(res.body.cards[0].image)).width === 480);
+      // A render asked for as a CARD (the build's pre-render, Home) writes the page too: the gallery's first page is a hit.
+      letterDoc.updated_at = new Date('2026-09-18T11:00:00Z');
+      rendered.previews = [];
+      res = await cardsOf({ ids: 'technical' });
+      const firstAsCard = rendered.previews.length;
+      res = await cardsOf({ ids: 'technical', size: 'page' });
+      ok('⚠️ a page first rendered for a card is the gallery\'s next page — no second render, the full page served',
+        firstAsCard === 1 && rendered.previews.length === 1 && !!(res.body.cards && res.body.cards[0]) && (await meta(res.body.cards[0].image)).width === 1588, { renders: rendered.previews.length });
+      // ⚠️ THE CONTRACT: PREVIEW_REV is in every key. A renderer that changes resolution changes it, and nothing rendered
+      // under the old one is served again — page or card.
+      rStub.PREVIEW_REV = 'test-rev-2';
+      rendered.previews = [];
+      res = await cardsOf({ ids: 'technical', size: 'page' });
+      const pageAfter = rendered.previews.length;
+      res = await cardsOf({ ids: 'technical' });
+      ok('⚠️ a new PREVIEW_REV is a new key: the page is rendered again, and the card is cut from the NEW page (one render for both)',
+        pageAfter === 1 && rendered.previews.length === 1 && res.statusCode === 200, { renders: rendered.previews.length });
+    } finally {
+      rStub.PREVIEW_REV = 'test-rev-1';
+      rStub.renderPreviews = realRP;
+    }
+    const elK = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
+    ok('⚠️ the page key carries coverLetterRenderer.PREVIEW_REV, read per call, and the card\'s name is the page\'s',
+      /const previewRev = String\(clRenderer\.PREVIEW_REV \|\| ''\);/.test(elK) && /t\.generic \? photoVer : '-', previewRev\]\.join\('\|'\)/.test(elK)
+      && /const cardOf = \(page\) => page\.replace\(\/\\\.jpg\$\/, `\.w\$\{THUMB_W\}\.jpg`\);/.test(elK));
+  }
 
   console.log('── downloads with docId ──');
   hist.length = 0; dlSpy.can.length = 0; dlSpy.claim.length = 0; rendered.pdf = 0; rendered.rich = 0; rendered.docx = 0;
@@ -1055,14 +1241,14 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'ats_pro', companyName: 'Classic Co' });
   ok('classic lane without html is still 400', r.statusCode === 400);
 
-  console.log('── ⚠️ THE EMPLOYER\'S BRAND ON A LETTER (2026-09-15): design.brand stored, in EVERY doc-mode render, the sector-led opening ──');
+  console.log('── ⚠️ THE EMPLOYER\'S BRAND ON A LETTER (2026-09-15): design.brand stored, in EVERY doc-mode render ──');
   {
     // Contracts 4 (letter side) + 5 (letters): the website's colour and font (research.brand, contract 1) beat the
     // researcher's brandColor/fontName; the effective pair is stored as design.brand and reaches employer-cards (hashed into
     // the thumb key for EVERY design, so a changed brand is never served in yesterday's colour), generate-template-pdf/docx
-    // with a docId, and the generic PDFKit path; the classic lanes stay byte-for-byte as they were; paragraph 1 opens with
-    // the candidate's fit for the employer's sector. The money guards (gate, C2, consume, store-only-when-charged) are the
-    // scenarios above — nothing here spends differently.
+    // with a docId, and the generic PDFKit path; the classic lanes stay byte-for-byte as they were. (The sector-led opening
+    // went with the Home lane's own prompt on 2026-09-18 — the brand is rendering, and it never reaches the words.) The
+    // money guards (gate, C2, consume, store-only-when-charged) are the scenarios above — nothing here spends differently.
     const realGER = research.getEmployerResearch;
     ent.sub = { plan_key: 'plus' };
     // 1. the two readings
@@ -1083,14 +1269,8 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('letterBrandOf: the stored research next (string columns parsed)', lb2 && lb2.accent === '#1a73e8' && lb2.font.family === 'Inter', lb2);
     const lb3 = CL.letterBrandOf({ design: null, research: null, payload: { brandColor: '#123456', fontName: 'Lato' } });
     ok('letterBrandOf: the payload last; nothing → null', lb3 && lb3.accent === '#123456' && lb3.font.family === 'Lato' && CL.letterBrandOf({ payload: {} }) === null, lb3);
-    // 2. the prompt and the style (contract 5)
-    const pSec = EL.buildEmployerLetterPrompt({ company: 'Acme', website: '', job: { title: '', url: '', description: '', website: '' }, material: { baseText: 'x', uploadText: '' }, tailored: null, researchBlock: '', conventionsBlock: '', style: EL.letterStyleFor(null, 'generic'), sector: 'Fintech payments' });
-    ok('prompt: paragraph 1\'s FIRST sentence states the fit for the sector, never a sentence that could open a letter to anyone',
-      /FIRST sentence states the candidate's fit for Fintech payments/.test(pSec) && /never a sentence that could open a letter to any employer/.test(pSec));
-    const pNo = EL.buildEmployerLetterPrompt({ company: 'Acme', website: '', job: { title: '', url: '', description: '', website: '' }, material: { baseText: 'x', uploadText: '' }, tailored: null, researchBlock: '', conventionsBlock: '', style: EL.letterStyleFor(null, 'generic') });
-    ok('prompt: no sector → the factual opener, still employer-specific', /One factual opening sentence/.test(pNo) && !/FIRST sentence states/.test(pNo));
-    const st = EL.letterStyleFor({ employerType: 'startup', tone: 'direct' }, 'generic');
-    ok('style: the conventions\' tone folded as a note, the startup band kept; no conventions → no notes', st.words === '230-320' && st.notes.some((n) => /"direct"/.test(n)) && EL.letterStyleFor(null, 'generic').notes.length === 0, st);
+    // 2. (the sector-led opening and the conventions' style were the Home lane's OWN prompt — gone with it on 2026-09-18,
+    // when the letter became the Jobs section's. The brand is RENDERING, not writing, and stays exactly as it was.)
     // 3. the build stores design.brand from the research (the website's brand wins)
     reset();
     research.getEmployerResearch = async (a) => { researchCalls.push(a); return { conventions: { sector: 'Fintech', employerType: 'enterprise' }, domain: 'acme.test', employerName: 'Acme', industry: 'Fintech payments', companySize: '10,001+', mission: 'Move money', technologies: ['Kafka'], clients: [], recentActivity: [], brandColor: '#1a73e8', fontName: 'Inter', brand: { primary: '#c0392b', secondary: null, font: { family: 'Poppins', google: true }, from: {}, fetchedAt: new Date().toISOString() }, fetchedAt: new Date().toISOString() }; };
@@ -1102,7 +1282,8 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
       putB && putB.design && putB.design.brand && putB.design.brand.accent === '#c0392b' && putB.design.brand.font.family === 'Poppins' && putB.design.brand.font.google === true, putB && putB.design && putB.design.brand);
     ok('the payload keeps its exact keys, brandColor/fontName now the EFFECTIVE pair',
       JSON.stringify(Object.keys(putB.payload).sort()) === JSON.stringify(['brandColor', 'companyAddress', 'companyName', 'coverLetterHtml', 'fontName', 'hiringManager', 'locations', 'position', 'subject'].sort()) && putB.payload.brandColor === '#c0392b' && putB.payload.fontName === 'Poppins', putB.payload && Object.keys(putB.payload));
-    ok('the prompt opened for the conventions\' sector', /fit for Fintech:/.test(ai.calls[0].prompt));
+    ok('…and the brand never reached the words: the prompt is v2\'s, with no colour, font or sector of the research in it',
+      !/#c0392b|Poppins|fit for Fintech/.test(textOf(ai.calls[0])) && v2Calls.length === 1 && textOf(ai.calls[0]) === realBuildPrompt(...v2Calls[0]));
     ok('the pre-rendered thumbs were painted with brandColor + brandFont', rendered.previews.length === 1 && rendered.previews[0].opts.brandColor === '#c0392b' && rendered.previews[0].opts.brandFont.family === 'Poppins', rendered.previews[0] && rendered.previews[0].opts);
     // 4. cards: the same brand is a cache hit; a changed brand re-renders in the new colour
     const bdoc = store.rows.find((x) => x.id === r.body.docId);

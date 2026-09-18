@@ -45,6 +45,8 @@ import { LoadingTips } from './LoadingTips';
 import MotivationProgress from '../../components/MotivationProgress';
 import CreditCostPill from '../../components/CreditCostPill';
 import LinkedInJobLoader from '../../components/LinkedInJobLoader';
+// The shared bottom-menu fill + inactive ink (FloatingTabBar's header says why: translucent, and darker ink to stay legible).
+import { TAB_BAR_FILL, TAB_BAR_INK } from '../../components/FloatingTabBar';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import { track } from '../../services/analytics';
 import { ExploreFeed } from '../(discover)';
@@ -882,7 +884,7 @@ function JobHubTabBar() {
           }
           return (
             <TouchableOpacity key={tab.key} style={tabStyles.tab} onPress={() => router.back()} activeOpacity={0.7}>
-              <Ionicons name={tab.icon as any} size={20} color={T.textFaint} />
+              <Ionicons name={tab.icon as any} size={20} color={TAB_BAR_INK} />
               <Text style={tabStyles.tabLabel}>{tab.label}</Text>
             </TouchableOpacity>
           );
@@ -893,12 +895,13 @@ function JobHubTabBar() {
 }
 const tabStyles = StyleSheet.create({
   wrapper:      { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 20, paddingBottom: 28, paddingTop: 8, backgroundColor: 'transparent' },
-  bar:          { flexDirection: 'row', alignItems: 'center', backgroundColor: T.surface, borderRadius: 28, paddingVertical: 8, paddingHorizontal: 8, gap: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.14, shadowRadius: 24, elevation: 12 },
+  // A little translucent, like FloatingTabBar: the page shows through faintly under the menu.
+  bar:          { flexDirection: 'row', alignItems: 'center', backgroundColor: TAB_BAR_FILL, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.9)', borderRadius: 28, paddingVertical: 8, paddingHorizontal: 8, gap: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.14, shadowRadius: 24, elevation: 12 },
   activeTab:    { flex: 1, borderRadius: 22 },
   activeTabInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 12 },
   activeLabel:  { fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },
   tab:          { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, paddingVertical: 6 },
-  tabLabel:     { fontSize: 10, fontWeight: '600', color: T.textFaint, letterSpacing: -0.1 },
+  tabLabel:     { fontSize: 10, fontWeight: '600', color: TAB_BAR_INK, letterSpacing: -0.1 },
 });
 
 // ─────────────────────────────────────────────────────────────────
