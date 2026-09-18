@@ -10,6 +10,10 @@
 // Since 2026-09-18 (S30) it covers Google's AI being BUSY, for both résumé lanes: a 503 storm is waited for and fallen back
 // from (aiText), the model that actually answered is stored, and a build no model can write is a 503 ai_busy / ai_down
 // that charged, stored and locked nothing — the Amazon "didn't finish" incident, in the résumé lanes.
+// ⚠️ RETARGETED 2026-09-18 (the same day, later): both résumé lanes now walk aiText.writing() — the MEASURED document chain
+// (primary gemini-3.1-flash-lite, then gemini-2.5-flash with thinking OFF, then gemini-2.5-flash-lite) — not
+// [RESUME_MODEL, ...fallbackModels()]. S30 reads PRIMARY / FB1 / FB2 from aiText.writingChain() and never types an id, so a
+// storm "on the primary" is scripted on whatever the lanes really ask first.
 // ⚠️ WHY: this lane spends money. A cache hit must touch no billing; coveredOnly must refuse before research
 // (a grounded AI call) and again at the moment of payment; a document is stored only for a build that was
 // actually charged; and the lane must never read or write user_resumes (Home keeps one document PER EMPLOYER).
@@ -38,7 +42,10 @@ const STARTED = Date.now();
 // each call went to and when, and `down` makes a model fail EVERY call it gets ({ [model]: () => Error }) — a 503 storm
 // on the primary, a quota wall on all of them — before the queue is consulted, so the queue feeds whoever answers.
 // A `down` entry answering 'hang' never answers at all (gemini-flash-latest took 257 s): only a real cap ends that call.
-const ai = { calls: 0, prompts: [], queue: [], temps: [], models: [], at: [], down: {} };
+// A `down` entry is handed the model it failed for, so the error it builds names THAT model (as Google's URL would).
+// `configs` (2026-09-18, the writing chain) is the generationConfig OBJECT each model was handed — by reference, so "the
+// lane's own config, untouched" is checked as identity, and "gemini-2.5-flash with thinking OFF" as its merged copy.
+const ai = { calls: 0, prompts: [], queue: [], temps: [], configs: [], models: [], at: [], down: {} };
 const research = { calls: 0 };
 // previewOpts / pdfOpts / docxOpts: the opts each render was handed — the brand a doc-mode render paints in is asserted
 // from these (contract 4: EVERY doc-mode render passes design.brand; the base paths pass none).
@@ -256,9 +263,10 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
       return { generateContent: async (prompt) => {
         ai.calls++;
         ai.models.push(model); ai.at.push(Date.now());
+        ai.configs.push(cfg ? cfg.generationConfig : undefined);   // beside `models`, so the two slice together
         ai.prompts.push(typeof prompt === 'string' ? prompt : JSON.stringify(prompt));
         if (ai.down[model]) {
-          const e = ai.down[model]();
+          const e = ai.down[model](model);
           if (e === 'hang') await new Promise(() => {});   // no timer: an abandoned call holds nothing open
           throw e;
         }
@@ -1622,13 +1630,20 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
   console.log('── S30 · ⚠️ GOOGLE\'S AI IS BUSY: the build waits, falls back, and a build it still beats charges NOTHING (2026-09-18) ──');
   {
     // The incident, in the letter lane, and the same shape in both of these: user 1 built Amazon from Home and got
-    // "That cover letter didn't finish". gemini-2.5-flash answered 503 "This model is currently experiencing high
-    // demand" twice, back to back, and the lane gave up — the résumé lanes asked THREE times with no pause, on one model,
-    // and a hang (AI_TIMEOUT) failed the build outright. Since then every callGemini goes through aiText: ~2 s, the
-    // primary once more, then gemini-2.5-flash-lite, then gemini-3.1-flash-lite, all inside the build's ONE clock
-    // (withResumeAi), and a build no model can write answers 503 ai_busy / ai_down BEFORE the charge.
+    // "That cover letter didn't finish". gemini-2.5-flash (the primary THEN) answered 503 "This model is currently
+    // experiencing high demand" twice, back to back, and the lane gave up — the résumé lanes asked THREE times with no
+    // pause, on one model, and a hang (AI_TIMEOUT) failed the build outright. Since then every callGemini goes through
+    // aiText: ~2 s, the primary once more, then each fallback in turn, all inside the build's ONE clock (withResumeAi),
+    // and a build no model can write answers 503 ai_busy / ai_down BEFORE the charge.
+    // ⚠️ THE CHAIN IS aiText.writing() (retargeted later on 2026-09-18): a blind evaluation put gemini-3.1-flash-lite first,
+    // gemini-2.5-flash with THINKING OFF second, gemini-2.5-flash-lite last. PRIMARY / FB1 / FB2 below are READ from
+    // aiText.writingChain() — the very module instance the controller calls, never retyped — so every storm lands on the
+    // model the lanes really ask first, and the old ids can never quietly make a scenario not happen.
+    // ⚠️ RESUME_MODEL ('gemini-2.5-flash', the id stored only if an answer ever came without one) is now FB1's id, so a
+    // document FB1 wrote cannot, by its stored id alone, prove the ANSWERING model was stored: (a2) makes FB2 write one.
     // ⚠️ WHAT MUST HOLD, and what each block below pins:
     //   a  a 503 storm on the primary → the document all the same, from a fallback, charged ONCE, the fallback stored
+    //      (a2: the primary AND the first fallback storming → the second fallback writes it, and ITS id is stored)
     //   b  the fingerprint does not know who wrote it → an identical request later is a FREE hit (no re-bill, ever)
     //   c  every model busy → 503 ai_busy, nothing charged / stored / locked, and the job's poller released at once
     //   d  quota / a missing key → 503 ai_down, one call at most, not retryable, the operator paged
@@ -1637,12 +1652,30 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     //   f  the corrective pass: a busy primary falls back; every model busy keeps the first draft (as before)
     //   g  the builder lane (no saveTo) — the same, on user_resumes and its cached copy
     //   h  the money constants and the order in code: AI before the lock, the model outside every fingerprint
+    // ⚠️ THE SAME aiText INSTANCE THE CONTROLLER CALLS: resumeBuilderController requires '../services/aiText', which
+    // resolves to this very file and this require.cache entry (nothing in this suite stubs or reloads aiText).
     const aiText = require(path.join(ROOT, 'server/services/aiText.js'));
     const { asJob } = require(path.join(ROOT, 'server/middleware/asyncJob.js'));
-    const PRIMARY = 'gemini-2.5-flash', LITE = 'gemini-2.5-flash-lite', LITE3 = 'gemini-3.1-flash-lite';
-    const HIGH_DEMAND = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.'), { status: 503, statusText: 'Service Unavailable' });
-    const DEPLETED = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [429 Too Many Requests] Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. RESOURCE_EXHAUSTED'), { status: 429, statusText: 'Too Many Requests' });
+    // The operator's knobs for the writing chain are cleared for the section (and put back at its end), so the chain
+    // read below is the measured default — the one production runs when nobody has turned a knob.
+    const envWritingModel = process.env.AI_WRITING_MODEL, envWritingFallbacks = process.env.AI_WRITING_FALLBACK_MODELS;
+    delete process.env.AI_WRITING_MODEL; delete process.env.AI_WRITING_FALLBACK_MODELS;
+    const CHAIN = aiText.writingChain();
+    const [PRIMARY, FB1, FB2] = CHAIN;
+    ok('the résumé lanes\' writing chain, read from aiText: three DISTINCT models, and the thinking-off entry is the first fallback\'s only',
+      CHAIN.length === 3 && new Set(CHAIN).size === 3 && CHAIN.every((m) => typeof m === 'string' && m)
+      && JSON.stringify(Object.keys(aiText.writing().modelConfig)) === JSON.stringify([FB1]), { chain: CHAIN, modelConfig: aiText.writing().modelConfig });
+    // The fixtures name the model they failed for, as Google's error URL does (the stub hands each `down` entry its model).
+    const HIGH_DEMAND = (model = PRIMARY) => Object.assign(new Error(`[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.`), { status: 503, statusText: 'Service Unavailable' });
+    const DEPLETED = (model = PRIMARY) => Object.assign(new Error(`[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent: [429 Too Many Requests] Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. RESOURCE_EXHAUSTED`), { status: 429, statusText: 'Too Many Requests' });
     const stormOn = (...models) => { ai.down = {}; for (const m of models) ai.down[m] = HIGH_DEMAND; };
+    // ⚠️ THE PER-MODEL CONFIG (aiText.writing().modelConfig): FB1 (gemini-2.5-flash) is called with thinking OFF —
+    // thinkingConfig { thinkingBudget: 0 } merged over the lane's own config — and every other model gets the lane's
+    // config OBJECT untouched, no thinkingConfig at all. `laneConfig` is the config the lane handed aiText for that call;
+    // `models` / `configs` are the slices of ai.models / ai.configs that call produced.
+    const configsRight = (laneConfig, models, configs) => models.length === configs.length && models.every((m, i) => (m === FB1
+      ? configs[i] !== laneConfig && JSON.stringify(configs[i]) === JSON.stringify({ ...laneConfig, thinkingConfig: { thinkingBudget: 0 } })
+      : configs[i] === laneConfig && !('thinkingConfig' in configs[i])));
     // The pause before the primary's second try is ~2 s in production: asserted, then shrunk so the suite stays fast —
     // and still MEASURED below, because "not back to back" is the whole bug.
     ok('the pause before the primary is asked again is ~2 s in production (2000 ms + ≤ 800 ms jitter)',
@@ -1683,26 +1716,52 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     let s0 = snapshot(); let m0 = ai.models.length; let lock0 = lockCount(); let a0 = asked.length; stages.length = 0;
     const bA = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30a', job: { company: 'Storm Co', website: 'https://storm-test.com' } }));
     const dA = docFor('Storm Co');
-    ok('⚠️ (a) a 503 storm on gemini-2.5-flash → 200 all the same, the document written by gemini-2.5-flash-lite',
-      bA.statusCode === 200 && bA.body.cached === false && !!dA && dA.id === bA.body.docId && dA.model === LITE, { status: bA.statusCode, body: bA.body, model: dA && dA.model });
+    ok(`⚠️ (a) a 503 storm on the primary (${PRIMARY}) → 200 all the same, the document written by the first fallback (${FB1})`,
+      bA.statusCode === 200 && bA.body.cached === false && !!dA && dA.id === bA.body.docId && dA.model === FB1, { status: bA.statusCode, body: bA.body, model: dA && dA.model });
     ok('⚠️ …the primary asked TWICE with a real pause between (never back to back), then the first fallback: three calls',
-      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE]) && ai.at[m0 + 1] - ai.at[m0] >= PAUSED,
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, FB1]) && ai.at[m0 + 1] - ai.at[m0] >= PAUSED,
       { models: ai.models.slice(m0), gapMs: ai.at[m0 + 1] - ai.at[m0] });
     ok('⚠️ …charged EXACTLY once and stored exactly once — the AI\'s retries cost nothing extra',
       ent.consumed.length - s0.consumed === 1 && db.docs.length - s0.docs === 1 && lockCount() - lock0 === 1 && refunds.length === s0.refunds,
       { consumed: ent.consumed.length - s0.consumed, docs: db.docs.length - s0.docs, locks: lockCount() - lock0 });
     ok('…every model was asked at the doc lane\'s 0.55, the fallback included', ai.temps.slice(-3).every((t) => t === 0.55), ai.temps.slice(-3));
     ok('⚠️ the bar said so in plain words, at the writing stage, never walking backwards: busy → trying again, then switching',
-      JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a faster model@42'])
+      JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a backup model@42'])
       && stages.map((s) => s.stage).join() === 'reading,researching,writing,retry,retry,designing,saving,pages', { ticks: retryTicks(), stages: stages.map((s) => s.stage) });
     const askA = asked.slice(a0);
-    ok('⚠️ one aiText call for the draft: lane resume_doc, the lane\'s own chain, 90 s / 90 s / 45 s caps, JSON at 0.55',
-      askA.length === 1 && askA[0].lane === 'resume_doc' && JSON.stringify(askA[0].models) === JSON.stringify([PRIMARY, LITE, LITE3])
+    // ⚠️ REWRITTEN BY DESIGN (2026-09-18): this said "the lane's own chain" = [RESUME_MODEL, ...fallbackModels()]. The lane now
+    // spreads aiText.writing(), so it must hand aiText EXACTLY that: the writing chain as `models` AND the per-model config
+    // object as `modelConfig` (without it FB1 would think, at 3x the cost and lower judged quality). Its own `config` stays
+    // the lane's — no thinkingConfig in it: thinking off is FB1's alone, laid over per model by aiText.
+    ok('⚠️ one aiText call for the draft: lane resume_doc, aiText.writing()\'s chain AND its modelConfig, 90 s / 90 s / 45 s caps, JSON at 0.55',
+      askA.length === 1 && askA[0].lane === 'resume_doc' && JSON.stringify(askA[0].models) === JSON.stringify([PRIMARY, FB1, FB2])
+      && askA[0].modelConfig === aiText._internals.WRITING_MODEL_CONFIG
       && JSON.stringify(askA[0].attemptCapsMs) === JSON.stringify([90000, 90000, 45000]) && typeof askA[0].onRetry === 'function'
-      && askA[0].config.temperature === 0.55 && askA[0].config.responseMimeType === 'application/json' && askA[0].config.maxOutputTokens === 32768,
-      askA.map((o) => ({ lane: o.lane, models: o.models, caps: o.attemptCapsMs, config: o.config })));
+      && askA[0].config.temperature === 0.55 && askA[0].config.responseMimeType === 'application/json' && askA[0].config.maxOutputTokens === 32768
+      && !('thinkingConfig' in askA[0].config),
+      askA.map((o) => ({ lane: o.lane, models: o.models, modelConfig: o.modelConfig, caps: o.attemptCapsMs, config: o.config })));
+    ok(`⚠️ …and each model got the RIGHT config: ${FB1} thinking OFF (thinkingBudget 0) over the lane's own, the primary the lane's config untouched`,
+      askA.length === 1 && ai.models.slice(m0).includes(PRIMARY) && ai.models.slice(m0).includes(FB1)
+      && configsRight(askA[0].config, ai.models.slice(m0), ai.configs.slice(m0)),
+      { models: ai.models.slice(m0), configs: ai.configs.slice(m0) });
     ok('⚠️ …on the BUILD\'s clock: 4.5 min from the build\'s START, less the research it already waited for — not a fresh 4.5 min per call',
       askA.length === 1 && askA[0].budgetMs <= 270000 - RESEARCH_MS + 5 && askA[0].budgetMs > 240000, { budget: askA.map((o) => o.budgetMs), research: RESEARCH_MS });
+
+    // (a2) the storm on the primary AND the first fallback: the SECOND fallback writes it. ⚠️ Added with the writing chain:
+    // FB1's id is also RESUME_MODEL (the id a lane stores only when an answer comes back without one), so (a)'s stored id
+    // alone cannot tell "the model that answered was stored" from "the default was stored". FB2's id is neither.
+    stormOn(PRIMARY, FB1);
+    s0 = snapshot(); m0 = ai.models.length; lock0 = lockCount(); a0 = asked.length; stages.length = 0;
+    const bA3 = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30a3', job: { company: 'Squall Co', website: 'https://squall-test.com' } }));
+    const dA3 = docFor('Squall Co');
+    ok(`⚠️ (a2) the primary AND ${FB1} storming → 200, written by the second fallback (${FB2}) and stored under ITS id, charged once`,
+      bA3.statusCode === 200 && bA3.body.cached === false && !!dA3 && dA3.id === bA3.body.docId && dA3.model === FB2
+      && ent.consumed.length - s0.consumed === 1 && db.docs.length - s0.docs === 1 && lockCount() - lock0 === 1,
+      { status: bA3.statusCode, model: dA3 && dA3.model, consumed: ent.consumed.length - s0.consumed });
+    ok('…the primary twice, then each fallback once, in chain order — and the second fallback, too, got the lane\'s config untouched',
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, FB1, FB2]) && asked.length - a0 === 1
+      && configsRight(asked[a0].config, ai.models.slice(m0), ai.configs.slice(m0)),
+      { models: ai.models.slice(m0), configs: ai.configs.slice(m0) });
 
     // (b) the fingerprint cannot see who wrote the document.
     stormOn();
@@ -1721,20 +1780,20 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
       bA2.statusCode === 200 && bA2.body.cached === true && !!dA && bA2.body.docId === dA.id && JSON.stringify(snapshot()) === JSON.stringify(s0), { body: bA2.body, before: s0, after: snapshot() });
 
     // (c) every model busy: 503 ai_busy, and nothing moved.
-    stormOn(PRIMARY, LITE, LITE3);
+    stormOn(PRIMARY, FB1, FB2);
     s0 = snapshot(); m0 = ai.models.length; lock0 = lockCount(); stages.length = 0;
     const passes0 = JSON.stringify(db.passes), ledger0 = db.ledger.length, pages0 = pages.length;
     const bC = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30c', job: { company: 'Gridlock Co', website: 'https://gridlock-test.com' } }));
     ok('⚠️ (c) every model busy → HTTP 503 { success:false, reason:\'ai_busy\', retryable:true } saying nothing was charged',
       bC.statusCode === 503 && JSON.stringify(bC.body) === JSON.stringify({ success: false, reason: 'ai_busy', retryable: true, error: BUSY_WORDS }), { status: bC.statusCode, body: bC.body });
     ok('…after the whole chain: the primary twice, then each fallback once — four calls, then it stops',
-      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE, LITE3]), ai.models.slice(m0));
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, FB1, FB2]), ai.models.slice(m0));
     ok('⚠️ …NOTHING charged, NOTHING stored, NO usage lock taken, no pass stamped, no ledger row, nothing given back (nothing was taken)',
       ent.consumed.length === s0.consumed && db.docs.length === s0.docs && lockCount() === lock0 && JSON.stringify(db.passes) === passes0
       && db.ledger.length === ledger0 && refunds.length === s0.refunds && !docFor('Gridlock Co'),
       { consumed: ent.consumed.length - s0.consumed, docs: db.docs.length - s0.docs, locks: lockCount() - lock0 });
     ok('…a busy provider is not an outage: nobody paged', pages.length === pages0, pages.slice(pages0));
-    ok('…and the bar said what was happening, three times, before the answer', JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a faster model@42', 'Switching to a faster model@44']), retryTicks());
+    ok('…and the bar said what was happening, three times, before the answer', JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a backup model@42', 'Switching to a backup model@44']), retryTicks());
     // The waiters. The résumé lanes keep no in-process FLIGHTS map (that is the letter lane's): what waits on a build is
     // the job the app polls (asJob) and the usage lock's queue. The lock was never taken (above); the job must end NOW,
     // failed WITH its reason, so the poller stops at once and the app can say what happened — not spin for six minutes.
@@ -1751,7 +1810,7 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     ok('…and nothing charged or stored on that path either', ent.consumed.length === s0.consumed && db.docs.length === s0.docs && jobs.completed.length === 0, { consumed: ent.consumed.length - s0.consumed });
 
     // (d) the key: out of credit, or missing. Every model shares it, so one call is all it takes to know.
-    ai.down = { [PRIMARY]: DEPLETED, [LITE]: DEPLETED, [LITE3]: DEPLETED };
+    ai.down = { [PRIMARY]: DEPLETED, [FB1]: DEPLETED, [FB2]: DEPLETED };
     s0 = snapshot(); m0 = ai.models.length; lock0 = lockCount();
     const pagesQ = pages.length;
     const bD = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30d', job: { company: 'Depleted Co', website: 'https://depleted-test.com' } }));
@@ -1779,7 +1838,7 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const bE = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30e', job: { company: 'Hung Co', website: 'https://hung-test.com' } }));
     shrinkCaps = null;
     ok('⚠️ (e) a hung primary no longer fails the build (it was a 504 after 90 s): capped twice, the fallback writes it, charged once',
-      bE.statusCode === 200 && (docFor('Hung Co') || {}).model === LITE && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE])
+      bE.statusCode === 200 && (docFor('Hung Co') || {}).model === FB1 && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, FB1])
       && ent.consumed.length - s0.consumed === 1 && Date.now() - tE < 3000, { status: bE.statusCode, models: ai.models.slice(m0), ms: Date.now() - tE });
 
     // (i) the lane's OWN retry (an answer that was not a résumé) finds the build's clock spent: aiText makes no call and
@@ -1805,23 +1864,23 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const bF = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30f', job: { company: 'Polish Co', website: 'https://polish-test.com' } }));
     const dF = docFor('Polish Co');
     ok('⚠️ (f) the pass meets the storm, falls back, and its answer is taken: stored as written BY THE FALLBACK, charged once',
-      bF.statusCode === 200 && !!dF && dF.payload.personal_info.title === 'Backend Engineer — Retail Platforms' && dF.model === LITE
-      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, PRIMARY, LITE]) && ent.consumed.length - s0.consumed === 1,
+      bF.statusCode === 200 && !!dF && dF.payload.personal_info.title === 'Backend Engineer — Retail Platforms' && dF.model === FB1
+      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, PRIMARY, FB1]) && ent.consumed.length - s0.consumed === 1,
       { title: dF && dF.payload.personal_info.title, model: dF && dF.model, models: ai.models.slice(m0) });
     const askF = asked.slice(a0);
     ok('⚠️ …the draft and the pass share ONE clock: the pass\'s budget is what the draft\'s had left',
       askF.length === 2 && askF[1].budgetMs <= askF[0].budgetMs - (askF[1].at - askF[0].at) + 5 && askF[1].budgetMs <= 270000 - RESEARCH_MS + 5 && askF[1].lane === 'resume_doc',
       askF.map((o) => ({ lane: o.lane, budget: o.budgetMs, at: o.at - askF[0].at })));
-    ok('…and the bar re-labelled the POLISHING stage, never behind it', JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@72', 'Switching to a faster model@74'])
+    ok('…and the bar re-labelled the POLISHING stage, never behind it', JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@72', 'Switching to a backup model@74'])
       && stages.map((s) => s.stage).join() === 'reading,researching,writing,polishing,retry,retry,designing,saving,pages', { ticks: retryTicks(), stages: stages.map((s) => s.stage) });
     ai.down = {};
-    ai.queue.push(() => { stormOn(PRIMARY, LITE, LITE3); return GENERIC(); });
+    ai.queue.push(() => { stormOn(PRIMARY, FB1, FB2); return GENERIC(); });
     s0 = snapshot(); m0 = ai.models.length;
     const bF2 = await call(RB.generateAI, buildBody({ clientBuildId: 'cb-30f2', job: { company: 'Keepsake Co', website: 'https://keepsake-test.com' } }));
     const dF2 = docFor('Keepsake Co');
     ok('⚠️ …and when EVERY model is busy for the pass, the first draft is delivered as before: 200, stored as the primary wrote it, charged once',
       bF2.statusCode === 200 && !!dF2 && dF2.payload.personal_info.title === 'Backend Engineer' && dF2.model === PRIMARY
-      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, PRIMARY, LITE, LITE3]) && ent.consumed.length - s0.consumed === 1,
+      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, PRIMARY, FB1, FB2]) && ent.consumed.length - s0.consumed === 1,
       { status: bF2.statusCode, model: dF2 && dF2.model, models: ai.models.slice(m0) });
     ai.down = {};
 
@@ -1834,12 +1893,19 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     const gDoc = docFor('Builder Storm Co');
     ok('⚠️ (g) builder lane, a 503 storm on the primary → 200 with the resume, saved, cached with the FALLBACK named, charged once',
       gA.statusCode === 200 && gA.body.success === true && gA.body.cached === false && !!(gA.body.resumeData && gA.body.resumeData.personal_info)
-      && savedRows() - saved0 === 1 && !!gDoc && gDoc.model === LITE && ent.consumed.length - s0.consumed === 1 && lockCount() - lock0 === 1,
+      && savedRows() - saved0 === 1 && !!gDoc && gDoc.model === FB1 && ent.consumed.length - s0.consumed === 1 && lockCount() - lock0 === 1,
       { status: gA.statusCode, model: gDoc && gDoc.model, consumed: ent.consumed.length - s0.consumed, saved: savedRows() - saved0 });
-    ok('…the primary twice (a real pause), then flash-lite, at the builder\'s own 0.4, reported as the builder\'s own retries',
-      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE]) && ai.at[m0 + 1] - ai.at[m0] >= PAUSED && ai.temps.slice(-3).every((t) => t === 0.4)
-      && JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a faster model@42'])
+    ok(`…the primary twice (a real pause), then the first fallback (${FB1}), at the builder's own 0.4, reported as the builder's own retries`,
+      JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, FB1]) && ai.at[m0 + 1] - ai.at[m0] >= PAUSED && ai.temps.slice(-3).every((t) => t === 0.4)
+      && JSON.stringify(retryTicks()) === JSON.stringify(['Google\'s AI is busy — trying again@40', 'Switching to a backup model@42'])
       && asked.length - a0 === 1 && asked[a0].lane === 'resume_builder' && asked[a0].budgetMs <= 270000, { models: ai.models.slice(m0), ticks: retryTicks(), lane: asked[a0] && asked[a0].lane });
+    // ⚠️ Added with the writing chain: the builder lane shares callGemini with the doc lane, so it too must hand aiText the
+    // writing chain AND its modelConfig — and FB1 must meet the builder's 0.4 config with thinking OFF laid over it.
+    ok(`⚠️ …the builder lane hands aiText aiText.writing()'s chain AND modelConfig: ${FB1} thinking OFF over the builder's own 0.4 config, the primary that config untouched`,
+      asked.length - a0 === 1 && JSON.stringify(asked[a0].models) === JSON.stringify([PRIMARY, FB1, FB2]) && asked[a0].modelConfig === aiText._internals.WRITING_MODEL_CONFIG
+      && asked[a0].config.temperature === 0.4 && !('thinkingConfig' in asked[a0].config)
+      && configsRight(asked[a0].config, ai.models.slice(m0), ai.configs.slice(m0)),
+      { asked: asked[a0] && { models: asked[a0].models, modelConfig: asked[a0].modelConfig, config: asked[a0].config }, configs: ai.configs.slice(m0) });
     stormOn();
     s0 = snapshot(); m0 = ai.models.length;
     const gB = await call(RB.generateAI, builderBody('Builder Calm Co'));
@@ -1848,21 +1914,36 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     s0 = snapshot();
     const gA2 = await call(RB.generateAI, builderBody('Builder Storm Co'));
     ok('…(the hit: no AI, no charge, no new document)', gA2.statusCode === 200 && gA2.body.cached === true && ai.calls === s0.ai && ent.consumed.length === s0.consumed && db.docs.length === s0.docs, gA2.body);
-    stormOn(PRIMARY, LITE, LITE3);
+    stormOn(PRIMARY, FB1, FB2);
     s0 = snapshot(); m0 = ai.models.length; lock0 = lockCount(); saved0 = savedRows();
     const gC = await call(RB.generateAI, builderBody('Builder Gridlock Co'));
     ok('⚠️ …every model busy → 503 ai_busy with the same sentence; NOTHING charged, NOTHING saved or cached, no lock taken',
       gC.statusCode === 503 && JSON.stringify(gC.body) === JSON.stringify({ success: false, reason: 'ai_busy', retryable: true, error: BUSY_WORDS })
-      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, LITE, LITE3])
+      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, FB1, FB2])
       && ent.consumed.length === s0.consumed && savedRows() === saved0 && !docFor('Builder Gridlock Co') && lockCount() === lock0,
       { status: gC.statusCode, body: gC.body, consumed: ent.consumed.length - s0.consumed, saved: savedRows() - saved0 });
-    // The operator's switch: AI_TEXT_FALLBACK_MODELS=none is "primary only" again, without a deploy — honoured by the lane.
-    process.env.AI_TEXT_FALLBACK_MODELS = 'none';
+    // The operator's switch: "primary only" again, without a deploy — honoured by the lane.
+    // ⚠️ REWRITTEN BY DESIGN (2026-09-18): the switch was AI_TEXT_FALLBACK_MODELS=none while the lanes walked
+    // [RESUME_MODEL, ...fallbackModels()]. The writing chain has its OWN knobs (aiText.writingChain): the switch for the
+    // document lanes is AI_WRITING_FALLBACK_MODELS=none, and AI_TEXT_FALLBACK_MODELS (the research lanes' list) no longer
+    // reaches them — so it is asserted both ways: the writing switch cuts the chain, the research switch leaves it whole.
+    process.env.AI_WRITING_FALLBACK_MODELS = 'none';
     stormOn(PRIMARY);
     m0 = ai.models.length;
-    const gOff = await call(RB.generateAI, builderBody('Builder Switch Co'));
-    delete process.env.AI_TEXT_FALLBACK_MODELS;
-    ok('…and AI_TEXT_FALLBACK_MODELS=none leaves the primary alone: asked twice, then 503 ai_busy', gOff.statusCode === 503 && gOff.body.reason === 'ai_busy' && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY]), ai.models.slice(m0));
+    let gOff;
+    try { gOff = await call(RB.generateAI, builderBody('Builder Switch Co')); }
+    finally { delete process.env.AI_WRITING_FALLBACK_MODELS; }
+    ok('…and AI_WRITING_FALLBACK_MODELS=none leaves the primary alone: asked twice, then 503 ai_busy', gOff.statusCode === 503 && gOff.body.reason === 'ai_busy' && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY]), ai.models.slice(m0));
+    process.env.AI_TEXT_FALLBACK_MODELS = 'none';
+    stormOn(PRIMARY);
+    m0 = ai.models.length; s0 = snapshot();
+    let gText;
+    try { gText = await call(RB.generateAI, builderBody('Builder Research Switch Co')); }
+    finally { delete process.env.AI_TEXT_FALLBACK_MODELS; }
+    ok(`…while AI_TEXT_FALLBACK_MODELS=none (the research lanes' switch) no longer cuts the writing chain: the primary twice, then ${FB1} writes it, charged once`,
+      gText.statusCode === 200 && (docFor('Builder Research Switch Co') || {}).model === FB1
+      && JSON.stringify(ai.models.slice(m0)) === JSON.stringify([PRIMARY, PRIMARY, FB1]) && ent.consumed.length - s0.consumed === 1,
+      { status: gText.statusCode, models: ai.models.slice(m0), model: (docFor('Builder Research Switch Co') || {}).model });
     ai.down = {};
 
     // (h) the money, in code. ⚠️ A bump of any of these re-bills every saved document: the model id must not need one.
@@ -1895,6 +1976,8 @@ const snapshot = () => ({ ai: ai.calls, research: research.calls, consumed: ent.
     research.delayMs = 0;
     aiText._internals.settings.retryWaitMs = 2000; aiText._internals.settings.retryJitterMs = 800;
     if (envFallbacks === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = envFallbacks;
+    if (envWritingModel === undefined) delete process.env.AI_WRITING_MODEL; else process.env.AI_WRITING_MODEL = envWritingModel;
+    if (envWritingFallbacks === undefined) delete process.env.AI_WRITING_FALLBACK_MODELS; else process.env.AI_WRITING_FALLBACK_MODELS = envWritingFallbacks;
     ai.down = {};
   }
 

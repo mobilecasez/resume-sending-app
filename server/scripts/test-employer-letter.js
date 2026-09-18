@@ -9,9 +9,14 @@
 // moment of payment; a letter is stored only when the charge is confirmed; and a download with a docId renders
 // the SAVED letter and bills the document's employer, whatever the body says.
 // ⚠️ AND (2026-09-18, Amazon's letter on a 503 "high demand" day): a busy Google must never cost a user a letter
-// or a charge. The lane asks through aiText — a pause, the primary once more, the verified fallbacks, one AI window —
+// or a charge. The lane asks through aiText — a pause, the primary once more, the rest of the chain, one AI window —
 // a fallback's letter is stored as ITS letter under the same fingerprint, and when no model answers, nothing is
 // charged or stored and the answer says so (503 ai_busy / ai_down).
+// ⚠️ THE CHAIN IS aiText.writing() (2026-09-18, the blind evaluation — see aiText WRITING_PRIMARY): the measured
+// DOCUMENT chain, gemini-3.1-flash-lite first, then gemini-2.5-flash with thinking OFF, then gemini-2.5-flash-lite. It
+// is no longer [LETTER_MODEL, …fallbackModels()]. Every scenario below reads the chain from the aiText the lane
+// calls (P, F1, F2 = aiText.writingChain()) — a model id hard-coded here would script a storm on a model the lane no
+// longer asks first, and the storm would simply never happen.
 'use strict';
 const path = require('path');
 const os = require('os');
@@ -22,6 +27,10 @@ const THUMBS = fsSync.mkdtempSync(path.join(os.tmpdir(), 'cva-letter-thumbs-'));
 process.env.DOC_THUMB_CACHE_DIR = THUMBS;   // ⚠️ before the controller is required — it reads this at load
 process.env.GEMINI_API_KEY = 'test-key-not-used';
 delete process.env.AI_TEXT_FALLBACK_MODELS;   // the VERIFIED chain (aiText's default), whatever the shell exports
+// …and the MEASURED writing chain the letter lane walks (aiText.writing()), whatever the shell exports: an operator's
+// AI_WRITING_FALLBACK_MODELS=none would leave a one-model chain and no fallback for any storm below to reach.
+delete process.env.AI_WRITING_MODEL;
+delete process.env.AI_WRITING_FALLBACK_MODELS;
 
 let pass = 0, fail = 0; const failures = [];
 // ⚠️ A build left waiting on a flight nobody settles holds no timer, so node would simply exit — code 0, no summary.
@@ -106,14 +115,17 @@ const PARA = (n) => `Paragraph ${n} about **Node.js** and **PostgreSQL** work th
 const GOOD = (over = {}) => JSON.stringify({ position: 'Senior Backend Engineer', to: 'Hiring Manager', addresses: [], cover_letter: [PARA(1), PARA(2), PARA(3), PARA(4)].join('\n\n'), ...over });
 
 // ⚠️ 2026-09-18 — what Google answered for Amazon's letter, and the answers around it. The SDK's fetch errors carry the
-// HTTP status as a number; the incident's own line is replayed message-only too, exactly as production logged it.
-const P = 'gemini-2.5-flash', F1 = 'gemini-2.5-flash-lite', F2 = 'gemini-3.1-flash-lite';
+// HTTP status as a number; the incident's own line is replayed message-only too, exactly as production logged it
+// (production logged it for gemini-2.5-flash, the head of the chain that day; the replay speaks for whichever model
+// heads the chain now, so the storm still lands on the model the lane asks FIRST).
+// The chain itself — P (the primary), F1 (the first fallback), F2 (the last resort) — is read from aiText right after
+// it is required below, never written out here.
 const sdkErr = (model, status, statusText, text) => Object.assign(
   new Error(`[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent: [${status} ${statusText}] ${text}`),
   { status, statusText });
 const E503 = (m) => sdkErr(m, 503, 'Service Unavailable', 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.');
 const E429 = (m) => sdkErr(m, 429, 'Too Many Requests', 'Your prepayment credits are depleted. Please go to AI Studio to manage your project and billing. [RESOURCE_EXHAUSTED]');
-const INCIDENT_503 = () => new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.');
+const INCIDENT_503 = (m) => new Error(`[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.`);
 
 stub('ai-cover-letter-v2.js', { generateCoverLetter: async () => { throw new Error('legacy v2 must not be called'); } });
 stub('ai-employer-researcher.js', { researchEmployer: async () => { throw new Error('researcher must not be called directly'); } });
@@ -181,6 +193,12 @@ const EL = require(path.join(ROOT, 'server/controllers/employerLetterController.
 const AT = require(path.join(ROOT, 'server/services/aiText.js'));
 AT._internals.settings.retryWaitMs = 25;
 AT._internals.settings.retryJitterMs = 0;
+// ⚠️ THE CHAIN THE LANE WALKS, read from the SAME aiText instance the controller requires (lazily, by the same
+// resolved path — the storm scenarios wrap AT.generateText and see the lane's call through it, which proves it):
+// P = the writing chain's primary, F1 = its first fallback, F2 = its last resort. Never written out as ids here.
+const [P, F1, F2] = AT.writingChain();
+/** The per-model config the writing chain lays over the lane's own config (only F1 has one: thinking OFF). */
+const WRITING_CFG = AT.writing().modelConfig;
 const CL = require(path.join(ROOT, 'server/controllers/coverLetterController.js'));
 const routes = require(path.join(ROOT, 'server/routes/coverLetterRoutes.js'));
 
@@ -240,6 +258,10 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('tailoredFor = the company', r.body.tailoredFor === 'Acme');
   ok('exactly ONE AI call', ai.calls.length === 1, ai.calls.length);
   ok('no search tool, JSON mime + schema on the call', ai.calls[0].cfg.generationConfig.responseMimeType === 'application/json' && !!ai.calls[0].cfg.generationConfig.responseSchema);
+  // ADDED 2026-09-18 (the writing chain): a healthy Google answers from the writing chain's HEAD, called with the
+  // lane's own config exactly — the thinking-off entry belongs to F1 alone and must never ride along on the primary.
+  ok('…written by the writing chain\'s primary, with the lane\'s config untouched (no thinkingConfig)',
+    ai.calls[0].cfg.model === P && !('thinkingConfig' in ai.calls[0].cfg.generationConfig), { model: ai.calls[0].cfg.model, cfg: Object.keys(ai.calls[0].cfg.generationConfig) });
   ok('exactly ONE consume, kind cover_letter', ent.consumed.length === 1 && ent.consumed[0].kind === 'cover_letter', ent.consumed);
   ok('research called with the vetted website', researchCalls.length === 1 && researchCalls[0].website === 'acme.test' && researchCalls[0].name === 'Acme', researchCalls);
   const put = store.puts[0] || {};
@@ -452,6 +474,10 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
   ok('no "Dear", no "Sincerely", no trailing name', !/Dear Hiring/i.test(html3) && !/Sincerely/i.test(html3) && !/Jane Doe/.test(html3), html3.slice(-300));
 
   console.log('── build: AI failures charge nothing ──');
+  // Every "which model" scenario below needs a real three-model chain: with a repeated or missing id, "the primary
+  // twice, then the first fallback" would not describe a fallback at all.
+  ok('the writing chain the lane walks has three distinct models (P, F1, F2)',
+    [P, F1, F2].every((m) => typeof m === 'string' && m) && new Set([P, F1, F2]).size === 3 && AT.writingChain().length === 3, AT.writingChain());
   reset(); ai.queue = ['not json', '{"cover_letter":"too short"}'];
   r = await call(EL.buildEmployerLetter, 7, buildBody({ job: { ...JOB, title: 'QA Lead' } }));
   ok('two bad outputs → 500 failed', r.statusCode === 500 && r.body.reason === 'failed', r.body);
@@ -470,14 +496,21 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
 
   console.log('── ⚠️ 2026-09-18: GOOGLE BUSY (Amazon\'s letter: two 503s, 0 ms apart, "That cover letter didn\'t finish") ──');
   {
-    // Production, user 1, Home → Cover letters → Amazon: gemini-2.5-flash answered 503 "high demand" twice, back to back,
-    // and the letter died. The lane now asks through aiText — a pause, the primary once more, then the verified fallbacks
+    // Production, user 1, Home → Cover letters → Amazon: gemini-2.5-flash (the head of the chain that day) answered 503
+    // "high demand" twice, back to back, and the letter died. The lane now asks through aiText — a pause, the primary
+    // once more, then the rest of the WRITING chain (aiText.writing(): P, then F1, then F2 — the head is no longer
+    // gemini-2.5-flash, so every storm here is scripted on P, the model the lane asks first today)
     // — all inside ONE AI window, all before the charge. A fallback's letter is stored as ITS letter, under the same
     // fingerprint (a later identical request is a free hit); when no model can answer, nothing is charged or stored,
     // the answer is an honest 503 ai_busy / ai_down, and any build waiting on this one is released.
     const LA = EL.LETTER_AI || {};   // the lane's AI window (its absence is a failure below, not a crash here)
     const modelsOf = () => ai.calls.map((c) => c.cfg.model);
-    const cfgOf = (c) => JSON.stringify(c.cfg.generationConfig);
+    // The config one call received, as JSON; { dropThinking } leaves out thinkingConfig, to compare F1's call with the rest.
+    const cfgOf = (c, { dropThinking = false } = {}) => {
+      const g = { ...(c.cfg.generationConfig || {}) };
+      if (dropThinking) delete g.thinkingConfig;
+      return JSON.stringify(g);
+    };
     const runsSince = (mark) => world.sql.slice(mark).filter((q) => /^RUN /.test(q));
     const labelsOf = (stage) => stages.filter((s) => s.stage === stage).map((s) => s.label);
     const gt = [];   // every generateText call the lane makes, exactly as it made it
@@ -488,7 +521,7 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     const PLACEHOLDER_DRAFT = GOOD({ cover_letter: [PARA(1), 'Improved settlement speed by [X%] for merchants and reduced disputes by XX% across regions over two years of steady work on the platform and its tooling.', PARA(3), PARA(4)].join('\n\n') });
 
     // 1. the incident, replayed: the primary answers exactly what production logged, every time it is asked
-    reset(); gt.length = 0; ai.fail = (cfg) => (cfg.model === P ? INCIDENT_503() : null);
+    reset(); gt.length = 0; ai.fail = (cfg) => (cfg.model === P ? INCIDENT_503(P) : null);
     r = await call(EL.buildEmployerLetter, 7, storm('Storm Role'), { __jobId: 'job-storm' });
     const putS = store.puts[0] || {};
     const stormDocId = r.body && r.body.docId;
@@ -496,20 +529,40 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('…the primary twice, then the first fallback — three calls, and never a second chain on top', modelsOf().join() === [P, P, F1].join(), modelsOf());
     ok('⚠️ …with a PAUSE before the primary\'s second try (the incident\'s two 503s were 0 ms apart)',
       ai.calls.length >= 2 && ai.calls[1].t - ai.calls[0].t >= 20, ai.calls.map((c) => c.t - ai.calls[0].t));
-    ok('…the fallback asked with the lane\'s OWN config — JSON mime + schema, 0.7, 32768 tokens — identical on every call',
-      ai.calls.length === 3 && ai.calls.every((c) => cfgOf(c) === cfgOf(ai.calls[0])) && ai.calls[2].cfg.generationConfig.responseMimeType === 'application/json'
-      && !!ai.calls[2].cfg.generationConfig.responseSchema && ai.calls[2].cfg.generationConfig.temperature === 0.7 && ai.calls[2].cfg.generationConfig.maxOutputTokens === 32768,
-      ai.calls.map(cfgOf));
+    // ⚠️ REWRITTEN 2026-09-18 (the writing chain): "identical on every call" is no longer true BY DESIGN. F1
+    // (gemini-2.5-flash) is called with thinking OFF — aiText lays WRITING_MODEL_CONFIG[F1] over the lane's config for
+    // that model only — so the claim now is: the lane's OWN config on every call, and on F1's call that config plus
+    // thinkingConfig { thinkingBudget: 0 } and NOTHING else; the primary's calls carry no thinkingConfig at all.
+    const gcF1 = (ai.calls[2] || { cfg: { generationConfig: {} } }).cfg.generationConfig;
+    ok('…the fallback asked with the lane\'s OWN config — JSON mime + schema, 0.7, 32768 tokens — the same as the primary\'s but for F1\'s thinking switch',
+      ai.calls.length === 3 && cfgOf(ai.calls[1]) === cfgOf(ai.calls[0]) && cfgOf(ai.calls[2], { dropThinking: true }) === cfgOf(ai.calls[0])
+      && gcF1.responseMimeType === 'application/json' && !!gcF1.responseSchema && gcF1.temperature === 0.7 && gcF1.maxOutputTokens === 32768,
+      ai.calls.map((c) => cfgOf(c)));
+    ok('⚠️ …F1 is called with thinkingConfig { thinkingBudget: 0 } merged over the lane\'s config, and the primary\'s calls carry NO thinkingConfig',
+      ai.calls.length === 3 && ai.calls[2].cfg.model === F1 && JSON.stringify(gcF1.thinkingConfig) === JSON.stringify({ thinkingBudget: 0 })
+      && ai.calls.slice(0, 2).every((c) => c.cfg.model === P && !('thinkingConfig' in c.cfg.generationConfig)),
+      ai.calls.map((c) => ({ model: c.cfg.model, thinking: c.cfg.generationConfig.thinkingConfig })));
     ok('…every attempt carries an abort signal: a hung model is CANCELLED at its cap, not merely stopped waiting for',
       ai.calls.every((c) => c.opts && c.opts.signal && typeof c.opts.signal.aborted === 'boolean'));
     ok('⚠️ charged EXACTLY once, stored once', ent.consumed.length === 1 && store.puts.length === 1, { consumed: ent.consumed.length, puts: store.puts.length });
     ok('⚠️ the stored letter records the model that WROTE it (the fallback), not the lane\'s first choice', putS.model === F1, putS.model);
-    ok('the user is told in plain words: "busy — trying again", then "switching to a faster model"',
-      JSON.stringify(labelsOf('retry')) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a faster model']), stages);
-    ok('the lane asks through aiText ONCE, as "letter", with [primary, …the verified fallbacks] and a budget inside its AI window',
-      gt.length === 1 && gt[0].lane === 'letter' && JSON.stringify(gt[0].models) === JSON.stringify([P, F1, F2])
+    ok('the user is told in plain words: "busy — trying again", then "switching to a backup model"',
+      JSON.stringify(labelsOf('retry')) === JSON.stringify(["Google's AI is busy — trying again", 'Switching to a backup model']), stages);
+    // ⚠️ REWRITTEN 2026-09-18 (the writing chain): the old claim — the lane passes [LETTER_MODEL, …fallbackModels()] — is
+    // no longer true BY DESIGN. The letter is a DOCUMENT lane: it spreads aiText.writing() into the call, so it passes that
+    // chain AND its per-model config. Without the modelConfig, F1 would think: 3x the cost per letter, and the letters the
+    // blind evaluation scored lower (aiText WRITING_PRIMARY).
+    ok('the lane asks through aiText ONCE, as "letter", with aiText.writing()\'s chain AND its modelConfig, and a budget inside its AI window',
+      gt.length === 1 && gt[0].lane === 'letter'
+      && JSON.stringify(gt[0].models) === JSON.stringify(AT.writing().models) && JSON.stringify(gt[0].models) === JSON.stringify([P, F1, F2])
+      && !!gt[0].modelConfig && JSON.stringify(gt[0].modelConfig) === JSON.stringify(AT.writing().modelConfig)
       && gt[0].budgetMs > 0 && gt[0].budgetMs <= LA.draftBudgetMs && typeof gt[0].onRetry === 'function',
-      gt.map((g) => ({ lane: g.lane, models: g.models, budgetMs: g.budgetMs })));
+      gt.map((g) => ({ lane: g.lane, models: g.models, modelConfig: g.modelConfig, budgetMs: g.budgetMs })));
+    ok('…not the old [LETTER_MODEL, …fallbackModels()] chain, and the lane\'s own config carries no thinking setting of its own',
+      gt.length === 1 && JSON.stringify(gt[0].models) !== JSON.stringify([EL.LETTER_MODEL, ...AT.fallbackModels()])
+      && !!gt[0].config && !('thinkingConfig' in gt[0].config), gt.map((g) => ({ models: g.models, config: g.config && Object.keys(g.config) })));
+    ok('…a modelConfig that switches thinking OFF for F1 and for no other model of the chain',
+      JSON.stringify(WRITING_CFG[F1]) === JSON.stringify({ thinkingConfig: { thinkingBudget: 0 } }) && !WRITING_CFG[P] && !WRITING_CFG[F2], WRITING_CFG);
 
     // 2. ⚠️ THE MONEY LINE: who wrote a letter is not an input. The fallback's letter carries the fingerprint the gate, the
     // build and the stale label compute, so the next identical request is FREE — exactly as a primary-written one is.
@@ -536,6 +589,12 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('…in a sentence that names the cover letter and says NOTHING was charged', /cover letter/.test(r.body.error || '') && /Nothing was charged/.test(r.body.error || ''), r.body.error);
     ok('…after the chain ran ONCE: the primary twice, then each fallback — four calls, never a second chain from the lane',
       modelsOf().join() === [P, P, F1, F2].join() && gt.length === 1, { models: modelsOf(), chains: gt.length });
+    // ADDED 2026-09-18 (the writing chain): the whole chain, each model with the config it is owed — only F1 thinks less.
+    ok('⚠️ …F1 asked with thinkingConfig { thinkingBudget: 0 }; the primary and F2 with the lane\'s config exactly, NO thinkingConfig',
+      ai.calls.length === 4 && JSON.stringify(ai.calls[2].cfg.generationConfig.thinkingConfig) === JSON.stringify({ thinkingBudget: 0 })
+      && cfgOf(ai.calls[2], { dropThinking: true }) === cfgOf(ai.calls[0])
+      && [0, 1, 3].every((i) => !('thinkingConfig' in ai.calls[i].cfg.generationConfig) && cfgOf(ai.calls[i]) === cfgOf(ai.calls[0])),
+      ai.calls.map((c) => ({ model: c.cfg.model, thinking: c.cfg.generationConfig.thinkingConfig })));
     ok('⚠️ NOTHING consumed, stored, claimed, refunded or written',
       ent.consumed.length === 0 && store.puts.length === 0 && passSpy.claimCalls.length === 0 && (world.refunds || []).length === 0 && runsSince(sqlBusy).length === 0,
       { consumed: ent.consumed.length, puts: store.puts.length, runs: runsSince(sqlBusy) });

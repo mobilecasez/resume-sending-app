@@ -496,7 +496,7 @@ async function giveBackLedgerRow(userId, ledgerId, why) {
 // Lazily, per use: a suite that reloads aiText (or shrinks its timing knobs) must be what the next call sees.
 const aiTextMod = () => require('../services/aiText');
 
-/** What ai-cover-letter-v2 always asked: the PRIMARY of the chain (aiText's fallbacks follow it). */
+/** What ai-cover-letter-v2 always asked. Since 2026-09-18 the lane walks aiText.writing() instead (see aiText WRITING_PRIMARY). */
 const LEGACY_LETTER_MODEL = 'gemini-2.5-flash';
 /**
  * ai-cover-letter-v2's generationConfig, unchanged, given to EVERY model of the chain. No responseMimeType: the
@@ -551,7 +551,7 @@ const isAiRefusal = (e) => !!e && (e.reason === 'ai_busy' || e.reason === 'ai_do
 const aiRefusalBody = (e) => ({ success: false, reason: e.reason, retryable: !!e.retryable, error: e.message });
 
 /** A retry, in the words the user reads: a model switch, an overload, or a second pass at a bad answer. */
-const legacyRetryLabel = ({ model, kind, nextModel }) => (nextModel && nextModel !== model ? 'Switching to a faster model'
+const legacyRetryLabel = ({ model, kind, nextModel }) => (nextModel && nextModel !== model ? 'Switching to a backup model'
     : kind === 'transient' ? "Google's AI is busy — trying again" : 'Taking another pass at it');
 
 /**
@@ -679,7 +679,7 @@ async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsi
                 lane: 'letter_legacy',
                 prompt: { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ googleSearch: {} }] },
                 config: legacyLetterConfig(),
-                models: [LEGACY_LETTER_MODEL, ...aiText.fallbackModels()],
+                ...aiText.writing(),   // the measured document chain (see aiText WRITING_PRIMARY)
                 budgetMs: left,
                 attemptCapsMs: LEGACY_LETTER_CAPS_MS,
                 onRetry: (info) => (report ? report('retry', legacyRetryLabel(info)) : undefined),

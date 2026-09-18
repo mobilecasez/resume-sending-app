@@ -8,6 +8,12 @@
 // try, a fallback chain, a 404 that is skipped rather than fatal, a quota/auth failure that stops at ONE call and
 // pages the operator, a hang that is ABORTED at its cap, one budget for the whole chain, and a progress hook that
 // cannot break the build it reports on.
+// ⚠️ SINCE 2026-09-18 THERE ARE TWO CHAINS. The letter and résumé lanes no longer walk gemini-2.5-flash first: they
+// spread aiText.writing() into the call — the MEASURED document chain (gemini-3.1-flash-lite, then gemini-2.5-flash
+// with thinking OFF, then gemini-2.5-flash-lite; see WRITING_PRIMARY in aiText.js for the blind evaluation). The
+// research lanes, and any caller that names no `models`, still walk the default chain (gemini-2.5-flash +
+// fallbackModels()). The policy scenarios below run on the default chain; the writing chain, its env variables, its
+// per-model config (thinking OFF for gemini-2.5-flash only) and its storms have their own sections near the end.
 // NO NETWORK: a fake GoogleGenerativeAI is injected through `sdk` (and, for the lazy-require case, through
 // require.cache), and adminNotifier is stubbed so the REAL aiHealth can page without a database. Waits are tiny
 // real ones (the 2 s pause is shrunk to 30 ms through _internals.settings; its default is asserted first).
@@ -16,7 +22,10 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
 process.env.GEMINI_API_KEY = 'test-key-not-used';
+// Every chain variable, cleared: a developer's shell must not decide which model a scenario is scripted on.
 delete process.env.AI_TEXT_FALLBACK_MODELS;
+delete process.env.AI_WRITING_MODEL;
+delete process.env.AI_WRITING_FALLBACK_MODELS;
 
 let pass = 0, fail = 0;
 const print = console.log.bind(console);
@@ -28,8 +37,8 @@ const stubAt = (abs, exports) => { const p = require.resolve(abs); require.cache
 stubAt(path.join(ROOT, 'server/services/adminNotifier.js'), { notifyAdmins: async (category, title, body, data) => { pages.push({ category, title, data }); } });
 
 const AT = require(path.join(ROOT, 'server/services/aiText.js'));
-const { generateText, fallbackModels, AiUnavailableError, isAiBusy, _internals } = AT;
-const { settings, chainFor, capFor, floorFor, retryWaitFor, classify, planNext } = _internals;
+const { generateText, fallbackModels, writing, writingChain, AiUnavailableError, isAiBusy, _internals } = AT;
+const { settings, chainFor, capFor, floorFor, retryWaitFor, classify, planNext, configFor } = _internals;
 
 // ── the log: every [aiText] / [aiHealth] line is captured, so the suite can read what an operator would read ──
 const logs = [];
@@ -39,7 +48,21 @@ const logsSince = (i) => logs.slice(i);
 let unhandled = 0;
 process.on('unhandledRejection', () => { unhandled++; });
 
-const P = 'gemini-2.5-flash', F1 = 'gemini-2.5-flash-lite', F2 = 'gemini-3.1-flash-lite';
+// ── the model ids: READ FROM THE MODULE, never re-typed, so a storm scripted on "the primary" is scripted on the model
+// the call really asks first. The literal ids are asserted ONCE, in the contract block (the verified and the measured
+// defaults), and nowhere else.
+//   P, F1, F2    the DEFAULT chain: what generateText walks when the caller names no `models` (DEFAULT_PRIMARY, then
+//                fallbackModels()). It is also the RESEARCH lanes' chain — employerResearch passes
+//                [its gemini-2.5-flash, ...fallbackModels()]. Every generic policy scenario walks it; their `lane` is
+//                only the log label (aiText picks no chain by lane — the caller does).
+//   WP, WF1, WF2 the DOCUMENT-WRITING chain, writingChain(): what the letter and résumé lanes walk. ⚠️ The same three
+//                ids in a DIFFERENT ORDER (WP is the default chain's last fallback, WF1 its primary), so a script keyed
+//                by the wrong constant tests the wrong model: keep the two sets apart.
+const [P, F1, F2] = chainFor('research');
+const [WP, WF1, WF2] = writingChain();
+const rx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** "gemini-2.5-flash-lite" → "Gemini-2.5-Flash-Lite": how an operator might type it into an env variable. */
+const titled = (id) => String(id).replace(/(^|-)([a-z])/g, (m, a, b) => a + b.toUpperCase());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── the failures Google actually sends (shapes from the SDK: GoogleGenerativeAIFetchError carries .status) ────
@@ -116,10 +139,26 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
 
 (async () => {
   print('── the contract surface and its defaults ──');
-  ok('exports exactly generateText, fallbackModels, AiUnavailableError, isAiBusy, _internals',
-    JSON.stringify(Object.keys(AT).sort()) === JSON.stringify(['AiUnavailableError', '_internals', 'fallbackModels', 'generateText', 'isAiBusy']), Object.keys(AT));
-  ok('the primary is gemini-2.5-flash, and the VERIFIED default fallbacks are exactly [gemini-2.5-flash-lite, gemini-3.1-flash-lite]',
-    _internals.DEFAULT_PRIMARY === P && JSON.stringify(fallbackModels()) === JSON.stringify([F1, F2]) && JSON.stringify(chainFor('letter')) === JSON.stringify([P, F1, F2]), fallbackModels());
+  ok('exports exactly generateText, fallbackModels, writing, writingChain, AiUnavailableError, isAiBusy, _internals',
+    JSON.stringify(Object.keys(AT).sort()) === JSON.stringify(['AiUnavailableError', '_internals', 'fallbackModels', 'generateText', 'isAiBusy', 'writing', 'writingChain'])
+    && typeof writing === 'function' && typeof writingChain === 'function', Object.keys(AT));
+  // The ONE place the default chain's ids are typed: P/F1/F2 above are read from chainFor, so this pins what they are.
+  ok('the DEFAULT chain (no `models`; the research lanes\' chain) is gemini-2.5-flash, then the VERIFIED fallbacks exactly [gemini-2.5-flash-lite, gemini-3.1-flash-lite]',
+    _internals.DEFAULT_PRIMARY === 'gemini-2.5-flash' && JSON.stringify(fallbackModels()) === JSON.stringify(['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite'])
+    && JSON.stringify(chainFor('letter')) === JSON.stringify(['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.1-flash-lite'])
+    && JSON.stringify([P, F1, F2]) === JSON.stringify([_internals.DEFAULT_PRIMARY, ...fallbackModels()]), { chain: [P, F1, F2], fallbacks: fallbackModels() });
+  // …and the ONE place the writing chain's ids are typed: the order the 2026-09-18 blind evaluation chose.
+  ok('the WRITING chain (letters + résumés) defaults to exactly [gemini-3.1-flash-lite, gemini-2.5-flash, gemini-2.5-flash-lite] — WRITING_PRIMARY then WRITING_FALLBACKS',
+    JSON.stringify(writingChain()) === JSON.stringify(['gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])
+    && _internals.WRITING_PRIMARY === 'gemini-3.1-flash-lite' && Object.isFrozen(_internals.WRITING_FALLBACKS)
+    && JSON.stringify([WP, WF1, WF2]) === JSON.stringify([_internals.WRITING_PRIMARY, ..._internals.WRITING_FALLBACKS]), writingChain());
+  ok('the writing chain has its OWN order: not the default chain (whose primary is the writing chain\'s first fallback)',
+    JSON.stringify([WP, WF1, WF2]) !== JSON.stringify([P, F1, F2]) && WF1 === P && WP === F2, { writing: [WP, WF1, WF2], def: [P, F1, F2] });
+  ok('WRITING_MODEL_CONFIG names exactly one model — gemini-2.5-flash, the writing chain\'s first fallback — with thinkingConfig { thinkingBudget: 0 } and nothing else, frozen all the way down',
+    JSON.stringify(Object.keys(_internals.WRITING_MODEL_CONFIG)) === JSON.stringify(['gemini-2.5-flash']) && 'gemini-2.5-flash' === WF1
+    && JSON.stringify(_internals.WRITING_MODEL_CONFIG[WF1]) === JSON.stringify({ thinkingConfig: { thinkingBudget: 0 } })
+    && Object.isFrozen(_internals.WRITING_MODEL_CONFIG) && Object.isFrozen(_internals.WRITING_MODEL_CONFIG[WF1]) && Object.isFrozen(_internals.WRITING_MODEL_CONFIG[WF1].thinkingConfig),
+    _internals.WRITING_MODEL_CONFIG);
   ok('default timing: a 2000 ms pause + up to 800 ms jitter, an 8 s floor, a 180 s budget, caps 60 s first / 40 s after',
     settings.retryWaitMs === 2000 && settings.retryJitterMs === 800 && settings.minAttemptMs === 8000 && _internals.DEFAULT_BUDGET_MS === 180000
     && capFor(undefined, 0) === 60000 && [1, 2, 3, 9].every((i) => capFor(undefined, i) === 40000), settings);
@@ -143,6 +182,10 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
   // The real pause would make this suite 20 s long; its default is asserted above. No jitter below: exact numbers.
   settings.retryWaitMs = 30; settings.retryJitterMs = 0;
 
+  // ⚠️ FROM HERE TO "AI_TEXT_FALLBACK_MODELS", EVERY SCENARIO WALKS THE DEFAULT CHAIN (P → F1 → F2): none of them names
+  // `models`. They prove the POLICY (the pause, the fallback, 404, 429, quota, hangs, the budget), which is the same on
+  // any chain. The incident's letter lane itself now walks the writing chain (WP → WF1 → WF2): its version of these
+  // storms is in "the writing chain through generateText" below.
   print('── the incident: the primary 503s, then answers — ONE pause, no fallback ──');
   {
     const sdk = fakeSdk({ [P]: [E503(), 'Dear Amazon'] });
@@ -155,9 +198,9 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
       && JSON.stringify(Object.keys(retries[0]).sort()) === JSON.stringify(['attempt', 'kind', 'model', 'nextModel', 'waitMs'])
       && JSON.stringify(retries[0]) === JSON.stringify({ model: P, attempt: 1, kind: 'transient', nextModel: P, waitMs: 30 }), retries);
     const step = logsSince(mark).filter((l) => l.startsWith('[aiText]'));
-    ok('one log line for the retry, in the house format "[aiText] letter: gemini-2.5-flash transient in Nms -> retrying gemini-2.5-flash in 30ms", with Google\'s words and NOT its 130-char URL prefix',
-      step.length === 2 && STEP_RE.test(step[0]) && /-> retrying gemini-2\.5-flash in 30ms \| \[503 Service Unavailable\] This model is currently experiencing high demand/.test(step[0]) && !/generativelanguage/.test(step[0]), step);
-    ok('…and the success after a retry says who answered: "[aiText] letter: answered by gemini-2.5-flash after 2 attempts"', step[1] === '[aiText] letter: answered by gemini-2.5-flash after 2 attempts', step);
+    ok(`one log line for the retry, in the house format "[aiText] letter: ${P} transient in Nms -> retrying ${P} in 30ms", with Google's words and NOT its 130-char URL prefix`,
+      step.length === 2 && STEP_RE.test(step[0]) && new RegExp(`^\\[aiText\\] letter: ${rx(P)} transient in \\d+ms -> retrying ${rx(P)} in 30ms \\| \\[503 Service Unavailable\\] This model is currently experiencing high demand`).test(step[0]) && !/generativelanguage/.test(step[0]), step);
+    ok(`…and the success after a retry says who answered: "[aiText] letter: answered by ${P} after 2 attempts"`, step[1] === `[aiText] letter: answered by ${P} after 2 attempts`, step);
 
     const sdk2 = fakeSdk({ [P]: [E503_TEXT(), 'ok'] });
     const out2 = await run({ lane: 'letter', prompt: 'p', sdk: sdk2 });
@@ -174,16 +217,16 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
     const sdk = fakeSdk({ [P]: [E503(), E503()], [F1]: ['From lite'] });
     const retries = []; const mark = logs.length;
     const out = await run({ lane: 'letter', prompt: 'p', sdk, onRetry: (i) => retries.push(i) });
-    ok('answered by gemini-2.5-flash-lite: model recorded, fellBack true, attempts 3', out.r && out.r.model === F1 && out.r.fellBack === true && out.r.attempts === 3 && out.r.text === 'From lite', out);
-    ok('calls: primary, primary, flash-lite — and gemini-3.1-flash-lite never called', JSON.stringify(modelsOf(sdk)) === JSON.stringify([P, P, F1]), modelsOf(sdk));
+    ok(`answered by the first fallback (${F1}): model recorded, fellBack true, attempts 3`, out.r && out.r.model === F1 && out.r.fellBack === true && out.r.attempts === 3 && out.r.text === 'From lite', out);
+    ok(`calls: primary, primary, first fallback — and the second fallback (${F2}) never called`, JSON.stringify(modelsOf(sdk)) === JSON.stringify([P, P, F1]), modelsOf(sdk));
     ok('the move to the fallback is immediate (waitMs 0, no pause between the calls)', retries.length === 2 && JSON.stringify(retries[1]) === JSON.stringify({ model: P, attempt: 2, kind: 'transient', nextModel: F1, waitMs: 0 }) && gap(sdk, 1, 2) < 25, { retries, gap: gap(sdk, 1, 2) });
     const lines = logsSince(mark);
-    ok('logs "-> falling back to gemini-2.5-flash-lite" and "answered by gemini-2.5-flash-lite after 3 attempts"',
+    ok(`logs "-> falling back to ${F1}" and "answered by ${F1} after 3 attempts"`,
       lines.some((l) => STEP_RE.test(l) && l.includes(`${P} transient`) && l.includes(`-> falling back to ${F1}`)) && lines.includes(`[aiText] letter: answered by ${F1} after 3 attempts`), lines);
 
     const sdk2 = fakeSdk({ [P]: [E503(), E503()], [F1]: [E503(F1)], [F2]: ['From 3.1'] });
     const out2 = await run({ lane: 'resume_doc', prompt: 'p', sdk: sdk2 });
-    ok('a busy fallback is not retried: straight on to gemini-3.1-flash-lite (4 calls, one on flash-lite)', out2.r && out2.r.model === F2 && JSON.stringify(modelsOf(sdk2)) === JSON.stringify([P, P, F1, F2]) && out2.r.attempts === 4, { out2, m: modelsOf(sdk2) });
+    ok(`a busy fallback is not retried: straight on to ${F2} (4 calls, one on ${F1})`, out2.r && out2.r.model === F2 && JSON.stringify(modelsOf(sdk2)) === JSON.stringify([P, P, F1, F2]) && out2.r.attempts === 4, { out2, m: modelsOf(sdk2) });
   }
 
   print('── a model that is GONE (404) is skipped, never fatal ──');
@@ -194,8 +237,8 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
     ok('a gone fallback is skipped and the next model answers', out.r && out.r.model === F2 && JSON.stringify(modelsOf(sdk)) === JSON.stringify([P, P, F1, F2]), { out, m: modelsOf(sdk) });
     ok('…with ONE call to the gone model (no same-model retry for a 404)', modelsOf(sdk).filter((m) => m === F1).length === 1);
     const lines = logsSince(mark);
-    ok('…logged "-> skipped (gone), falling back to gemini-3.1-flash-lite" plus a loud line naming AI_TEXT_FALLBACK_MODELS — and NO page (a skipped fallback is not an outage)',
-      lines.some((l) => STEP_RE.test(l) && l.includes(`${F1} gone`) && l.includes(`-> skipped (gone), falling back to ${F2}`)) && lines.some((l) => /fallback gemini-2\.5-flash-lite no longer exists — fix AI_TEXT_FALLBACK_MODELS/.test(l)) && pages.length === pagesBefore, { lines, pages });
+    ok(`…logged "-> skipped (gone), falling back to ${F2}" plus a loud line naming AI_TEXT_FALLBACK_MODELS — and NO page (a skipped fallback is not an outage)`,
+      lines.some((l) => STEP_RE.test(l) && l.includes(`${F1} gone`) && l.includes(`-> skipped (gone), falling back to ${F2}`)) && lines.some((l) => new RegExp(`fallback ${rx(F1)} no longer exists — fix AI_WRITING_FALLBACK_MODELS \\(document lanes\\) or AI_TEXT_FALLBACK_MODELS \\(research\\)`).test(l)) && pages.length === pagesBefore, { lines, pages });
 
     const sdk2 = fakeSdk({ [P]: [E404(P)], [F1]: ['From lite'] });
     const retries = [];
@@ -259,8 +302,21 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
       out5.e instanceof AiUnavailableError && out5.e.kind === 'busy' && out5.e.retryable !== false && sdk5.calls.length === 1 && noted.length === noted1,
       { kind: out5.e && out5.e.kind, calls: sdk5.calls.length, noted: noted.slice(noted1) });
     ok('…and each step logs as "rate", naming the fallback it moved to',
-      logs.some((l) => /\[aiText\] letter: gemini-2\.5-flash rate in \d+ms -> rate-limited, falling back to gemini-2\.5-flash-lite/.test(l)));
+      logs.some((l) => new RegExp(`\\[aiText\\] letter: ${rx(P)} rate in \\d+ms -> rate-limited, falling back to ${rx(F1)}`).test(l)));
     AH.noteAiFailure = realNote;
+  }
+
+  print('── AI_WRITING_MODEL "none" / "off" is not a model: the default primary leads ──');
+  {
+    const saved = process.env.AI_WRITING_MODEL;
+    const def = AT.writingChain();
+    const out = {};
+    for (const v of ['none', ' OFF ', 'Off', 'none ']) { process.env.AI_WRITING_MODEL = v; out[v] = AT.writingChain(); }
+    if (saved === undefined) delete process.env.AI_WRITING_MODEL; else process.env.AI_WRITING_MODEL = saved;
+    // "none" is a valid-looking id: taken literally it would be CALLED first on every document build, 404, page the
+    // operator as a gone primary, and fall back — a switch that looks like "off" but costs a failed call each time.
+    ok('"none" / "off" (any case, any spaces) → the default chain, never a model named "none"',
+      Object.values(out).every((c) => JSON.stringify(c) === JSON.stringify(def) && !c.includes('none') && !c.includes('off')), out);
   }
 
   print('── aiHealth.noteAiFailure: an override names the failure; without one nothing changed ──');
@@ -306,7 +362,7 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
 
     const sdkF = fakeSdk({ [P]: [E503(), E503()], [F1]: [E429(F1)] });
     const outF = await run({ lane: 'letter', prompt: 'p', sdk: sdkF });
-    ok('quota on a FALLBACK stops the chain there too (gemini-3.1-flash-lite never called)', outF.e && outF.e.kind === 'quota' && JSON.stringify(modelsOf(sdkF)) === JSON.stringify([P, P, F1]), modelsOf(sdkF));
+    ok(`quota on a FALLBACK stops the chain there too (${F2} never called)`, outF.e && outF.e.kind === 'quota' && JSON.stringify(modelsOf(sdkF)) === JSON.stringify([P, P, F1]), modelsOf(sdkF));
 
     const pagesBefore2 = pages.length;
     const sdk2 = fakeSdk({ [P]: [EKEY()] });
@@ -396,9 +452,10 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
     const out = await run({ lane: 'letter', prompt: 'p', sdk, onRetry: (i) => retries.push(i) });
     const e = out.e;
     ok('AiUnavailableError, kind busy, isAiBusy true, retryable true, lane "letter", an Error', e instanceof AiUnavailableError && e instanceof Error && e.name === 'AiUnavailableError' && e.kind === 'busy' && isAiBusy(e) && e.retryable === true && e.lane === 'letter', e && { kind: e.kind, lane: e.lane });
-    ok('attempts lists EVERY call in order: primary ×2, flash-lite, 3.1-flash-lite — all transient, each with its ms',
+    ok(`attempts lists EVERY call in order: primary ×2, ${F1}, ${F2} — all transient, each with its ms`,
       JSON.stringify(att(e).map((a) => [a.model, a.kind])) === JSON.stringify([[P, 'transient'], [P, 'transient'], [F1, 'transient'], [F2, 'transient']]) && att(e).every((a) => Number.isFinite(a.ms) && a.ms >= 0), att(e));
-    ok('the message says AI_BUSY and names the models; the cause is the last provider error', e && /^AI_BUSY: letter got no answer from gemini-2\.5-flash, gemini-2\.5-flash-lite, gemini-3\.1-flash-lite \(4 attempts, no model left\)/.test(e.message) && e.cause instanceof Error, e && e.message);
+    ok('the message says AI_BUSY and names the models in chain order; the cause is the last provider error',
+      e && new RegExp(`^AI_BUSY: letter got no answer from ${[P, F1, F2].map(rx).join(', ')} \\(4 attempts, no model left\\)`).test(e.message) && e.cause instanceof Error, e && e.message);
     ok('onRetry three times (one per retry/fallback), never after the last failure', retries.length === 3 && retries.map((r) => r.nextModel).join() === [P, F1, F2].join(), retries);
     const steps = logsSince(mark).filter((l) => STEP_RE.test(l));
     ok('one log line per failed attempt (4), the last one "-> giving up (no model left)"', steps.length === 4 && steps[3].includes('-> giving up (no model left)'), steps);
@@ -427,39 +484,44 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
   {
     const withEnv = (v, fn) => { if (v === undefined) delete process.env.AI_TEXT_FALLBACK_MODELS; else process.env.AI_TEXT_FALLBACK_MODELS = v; try { return fn(); } finally { delete process.env.AI_TEXT_FALLBACK_MODELS; } };
     const J = (x) => JSON.stringify(x);
-    ok('spaces trimmed, duplicates and empty entries dropped, order kept', withEnv(' gemini-2.5-flash-lite , gemini-2.5-flash-lite,, gemini-3.1-flash-lite ', () => J(fallbackModels())) === J([F1, F2]));
+    ok('spaces trimmed, duplicates and empty entries dropped, order kept', withEnv(` ${F1} , ${F1},, ${F2} `, () => J(fallbackModels())) === J([F1, F2]));
     ok('unset, empty, blank and all-commas → the verified default', [undefined, '', '   ', ' , ,, '].every((v) => withEnv(v, () => J(fallbackModels())) === J([F1, F2])));
-    ok('the primary listed again: fallbackModels returns it, but the chain never tries it twice', withEnv('gemini-2.5-flash, gemini-2.5-flash-lite', () => J(fallbackModels()) === J([P, F1]) && J(chainFor('letter')) === J([P, F1])));
-    ok('"models/" and capitals are normalised: " models/Gemini-2.5-Flash-Lite " → gemini-2.5-flash-lite', withEnv(' models/Gemini-2.5-Flash-Lite ', () => J(fallbackModels())) === J([F1]));
+    ok('the primary listed again: fallbackModels returns it, but the chain never tries it twice', withEnv(`${P}, ${F1}`, () => J(fallbackModels()) === J([P, F1]) && J(chainFor('letter')) === J([P, F1])));
+    ok(`"models/" and capitals are normalised: " models/${titled(F1)} " → ${F1}`, withEnv(` models/${titled(F1)} `, () => J(fallbackModels())) === J([F1]) && titled(F1) !== F1);
     ok('junk ids are ignored (spaces inside, symbols, > 48 chars — the stored model column is VARCHAR(48)); nothing usable → the default',
       withEnv('gemini 2.5, $$$, ' + 'g'.repeat(49), () => J(fallbackModels())) === J([F1, F2]) && withEnv('gemini-x, ' + 'g'.repeat(49), () => J(fallbackModels())) === J(['gemini-x']));
     ok('"none" / "off" → no fallback at all: the chain is the primary alone', withEnv('none', () => J(fallbackModels()) === '[]' && J(chainFor('letter')) === J([P])) && withEnv(' OFF ', () => J(fallbackModels())) === '[]');
     ok('a fresh array every time: editing one cannot change the default', (() => { try { const a = fallbackModels(); a.push('evil'); a[0] = 'x'; return J(fallbackModels()) === J([F1, F2]); } catch { return false; } })());
 
-    process.env.AI_TEXT_FALLBACK_MODELS = 'gemini-3.1-flash-lite';
+    process.env.AI_TEXT_FALLBACK_MODELS = F2;
     const sdk = fakeSdk({ [P]: [E503(), E503()] });
     const out = await run({ lane: 'letter', prompt: 'p', sdk });
     process.env.AI_TEXT_FALLBACK_MODELS = 'none';
     const sdk2 = fakeSdk({ [P]: [E503(), E503()] });
     const out2 = await run({ lane: 'letter', prompt: 'p', sdk: sdk2 });
     delete process.env.AI_TEXT_FALLBACK_MODELS;
-    ok('read at CALL time: the env chain is the one walked (primary ×2 → gemini-3.1-flash-lite)', out.r && out.r.model === F2 && JSON.stringify(modelsOf(sdk)) === JSON.stringify([P, P, F2]), modelsOf(sdk));
+    ok(`read at CALL time: the env chain is the one walked (primary ×2 → ${F2})`, out.r && out.r.model === F2 && JSON.stringify(modelsOf(sdk)) === JSON.stringify([P, P, F2]), modelsOf(sdk));
     ok('"none": two primary tries, then busy', out2.e && isAiBusy(out2.e) && sdk2.calls.length === 2, modelsOf(sdk2));
     const sdk3 = fakeSdk({ 'model-a': [E503('model-a'), E503('model-a')] });
     const out3 = await run({ lane: 'letter', prompt: 'p', sdk: sdk3, models: [' Model-A ', 'model-a', 'model-b'] });
     ok('an explicit `models` list IS the chain (cleaned, deduped): model-a ×2 → model-b', out3.r && out3.r.model === 'model-b' && out3.r.fellBack === true && JSON.stringify(modelsOf(sdk3)) === JSON.stringify(['model-a', 'model-a', 'model-b']), modelsOf(sdk3));
   }
 
-  print('── the config and the prompt reach EVERY model unchanged ──');
+  // With NO `modelConfig` (the default chain, and the research lanes — employerResearch passes none) every model gets
+  // the lane's config exactly as given. The writing chain's one per-model difference (thinking OFF for gemini-2.5-flash)
+  // is proven in "configFor" and "the writing chain through generateText" below.
+  print('── the config and the prompt reach EVERY model unchanged (no modelConfig) ──');
   {
     const config = { temperature: 0.7, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: { type: 'object', properties: { cover_letter: { type: 'string' } }, required: ['cover_letter'] }, thinkingConfig: { thinkingBudget: 1024 } };
     const snap = JSON.stringify(config);
     const prompt = { contents: [{ role: 'user', parts: [{ text: 'Write to Amazon' }] }], tools: [{ googleSearch: {} }] };
     const sdk = fakeSdk({ [P]: [E503(), E503()], [F1]: [E400(F1)], [F2]: ['{"cover_letter":"x"}'] });
     const out = await run({ lane: 'letter', prompt, config, sdk });
-    ok('a 400 on a fallback (it refused the request) moves on at once: flash-lite called ONCE, then 3.1-flash-lite answers', out.r && out.r.model === F2 && JSON.stringify(modelsOf(sdk)) === JSON.stringify([P, P, F1, F2]), modelsOf(sdk));
+    ok(`a 400 on a fallback (it refused the request) moves on at once: ${F1} called ONCE, then ${F2} answers`, out.r && out.r.model === F2 && JSON.stringify(modelsOf(sdk)) === JSON.stringify([P, P, F1, F2]), modelsOf(sdk));
     ok('every model got the same generationConfig — temperature, maxOutputTokens, responseMimeType, responseSchema, thinkingConfig — and the caller\'s object is not mutated',
       sdk.calls.length === 4 && sdk.calls.every((c) => JSON.stringify(c.cfg) === snap) && JSON.stringify(config) === snap, sdk.calls.map((c) => c.cfg));
+    ok(`…it is the lane's VERY object on every call (no copy, no per-model merge) — including ${WF1}, the model the WRITING chain turns thinking off for, which keeps the lane's own thinkingBudget 1024 here`,
+      sdk.calls.every((c) => c.cfg === config) && sdk.calls.some((c) => c.model === WF1 && c.cfg.thinkingConfig.thinkingBudget === 1024), sdk.calls.map((c) => [c.model, c.cfg === config]));
     ok('the prompt is passed through untouched: the SAME request object (contents + tools) to every model', sdk.calls.every((c) => c.prompt === prompt));
     const sdk2 = fakeSdk({ [P]: [E503()] });
     await run({ lane: 'letter', prompt: 'plain string', config: { temperature: 0.55 }, sdk: sdk2 });
@@ -492,6 +554,249 @@ setTimeout(() => { print('TEST TIMEOUT'); process.exit(2); }, 60 * 1000).unref()
     if (saved) require.cache[genaiPath] = saved; else delete require.cache[genaiPath];
     ok('with no `sdk`, the require.cache copy in place AT THE CALL is used — swapped between calls, the second call sees the new one',
       a.r && a.r.text === 'from A' && b.r && b.r.text === 'from B' && A.calls.length === 1 && B.calls.length === 1, { a, b });
+  }
+
+  // ═══ THE DOCUMENT-WRITING CHAIN (2026-09-18) ═══════════════════════════════════════════════════════════════════════
+  // The letter and résumé lanes (letter, letter_legacy, job_hub_letter, resume_doc, resume_builder) spread
+  // aiText.writing() into generateText: the measured chain, plus thinking OFF for gemini-2.5-flash. Everything below
+  // restores the chain variables it sets (the suite runs with all of them cleared).
+  const CHAIN_VARS = ['AI_WRITING_MODEL', 'AI_WRITING_FALLBACK_MODELS', 'AI_TEXT_FALLBACK_MODELS'];
+  const clearChainVars = () => { for (const k of CHAIN_VARS) delete process.env[k]; };
+  /** Runs fn with exactly `vars` set (every other chain variable cleared), and clears them again even if fn throws. */
+  const withVars = (vars, fn) => {
+    clearChainVars();
+    for (const [k, v] of Object.entries(vars)) if (v !== undefined) process.env[k] = v;
+    try { return fn(); } finally { clearChainVars(); }
+  };
+  const J = (x) => JSON.stringify(x);
+  const WDEF = J([WP, WF1, WF2]);
+  const chainWith = (vars) => withVars(vars, () => J(writingChain()));
+
+  print('── the WRITING chain: writingChain(), AI_WRITING_MODEL, AI_WRITING_FALLBACK_MODELS ──');
+  {
+    ok('AI_WRITING_MODEL: spaces, capitals and "models/" are normalised (" Models/Gemini-9-Test " → gemini-9-test), and it LEADS the measured fallbacks',
+      chainWith({ AI_WRITING_MODEL: ' Models/Gemini-9-Test ' }) === J(['gemini-9-test', WF1, WF2]), chainWith({ AI_WRITING_MODEL: ' Models/Gemini-9-Test ' }));
+    ok(`AI_WRITING_MODEL naming one of the default fallbacks: it leads and is NEVER tried a second time as a fallback (${WF1} → [${WF1}, ${WF2}]; " models/${titled(WF2)} " → [${WF2}, ${WF1}])`,
+      chainWith({ AI_WRITING_MODEL: WF1 }) === J([WF1, WF2]) && chainWith({ AI_WRITING_MODEL: ` models/${titled(WF2)} ` }) === J([WF2, WF1]),
+      [chainWith({ AI_WRITING_MODEL: WF1 }), chainWith({ AI_WRITING_MODEL: ` models/${titled(WF2)} ` })]);
+    const junkIds = ['gemini 3.1', '$$$', 'g'.repeat(49), `${WF1},${WF2}`, '-dash-first'];
+    ok('AI_WRITING_MODEL junk (a space inside, symbols, > 48 chars — the stored model column is VARCHAR(48) —, a comma LIST, a leading dash) → the measured primary',
+      junkIds.every((v) => chainWith({ AI_WRITING_MODEL: v }) === WDEF), junkIds.map((v) => chainWith({ AI_WRITING_MODEL: v })));
+    ok('AI_WRITING_MODEL at exactly 48 characters is still an id (the VARCHAR(48) boundary)', chainWith({ AI_WRITING_MODEL: 'g'.repeat(48) }) === J(['g'.repeat(48), WF1, WF2]));
+    ok('AI_WRITING_MODEL unset, empty or blank → the measured default chain', [undefined, '', '   '].every((v) => chainWith({ AI_WRITING_MODEL: v }) === WDEF));
+
+    ok('AI_WRITING_FALLBACK_MODELS: spaces trimmed, capitals and "models/" normalised, duplicates and empty entries dropped, ORDER KEPT',
+      chainWith({ AI_WRITING_FALLBACK_MODELS: ` models/${titled(WF2)} , ${WF2},, ${WF1.toUpperCase()} ` }) === J([WP, WF2, WF1]),
+      chainWith({ AI_WRITING_FALLBACK_MODELS: ` models/${titled(WF2)} , ${WF2},, ${WF1.toUpperCase()} ` }));
+    ok('AI_WRITING_FALLBACK_MODELS listing the primary again: the primary is NEVER tried twice',
+      chainWith({ AI_WRITING_FALLBACK_MODELS: `${WP}, ${WF1}` }) === J([WP, WF1]) && chainWith({ AI_WRITING_FALLBACK_MODELS: `${titled(WP)}, ${WF2}, models/${WP}` }) === J([WP, WF2])
+      && chainWith({ AI_WRITING_MODEL: 'gemini-9-test', AI_WRITING_FALLBACK_MODELS: `gemini-9-test, ${WF2}` }) === J(['gemini-9-test', WF2]));
+    ok('AI_WRITING_FALLBACK_MODELS junk only → the measured fallbacks; junk mixed with an id → just the usable id(s)',
+      chainWith({ AI_WRITING_FALLBACK_MODELS: 'gemini 2.5, $$$, ' + 'g'.repeat(49) }) === WDEF
+      && chainWith({ AI_WRITING_FALLBACK_MODELS: 'gemini-9-test, $$$, ' + 'g'.repeat(49) }) === J([WP, 'gemini-9-test']));
+    ok('AI_WRITING_FALLBACK_MODELS "none" / " OFF " / "Off" → the primary ALONE (the operator\'s "no fallback" switch), the env primary too',
+      ['none', ' OFF ', 'Off'].every((v) => chainWith({ AI_WRITING_FALLBACK_MODELS: v }) === J([WP]))
+      && chainWith({ AI_WRITING_MODEL: 'gemini-9-test', AI_WRITING_FALLBACK_MODELS: 'none' }) === J(['gemini-9-test']));
+    ok('AI_WRITING_FALLBACK_MODELS unset, empty, blank or all-commas → the measured fallbacks',
+      [undefined, '', '   ', ' , ,, '].every((v) => chainWith({ AI_WRITING_FALLBACK_MODELS: v }) === WDEF));
+    ok('both variables together: exactly the operator\'s chain', chainWith({ AI_WRITING_MODEL: WF2, AI_WRITING_FALLBACK_MODELS: `${WF1}, ${WF2}` }) === J([WF2, WF1]));
+
+    // Read at CALL time: set AFTER the module loaded, the very next call sees it; unset, the default is back.
+    clearChainVars();
+    const before = writingChain();
+    process.env.AI_WRITING_MODEL = 'gemini-9-test'; process.env.AI_WRITING_FALLBACK_MODELS = WF2;
+    const during = writingChain(); const duringW = writing().models;
+    clearChainVars();
+    const after = writingChain(); const afterW = writing().models;
+    ok('read at CALL time, not at load: set after the module loaded, the next writingChain()/writing() walks the env chain; unset, the measured default is back',
+      J(before) === WDEF && J(during) === J(['gemini-9-test', WF2]) && J(duringW) === J(during) && J(after) === WDEF && J(afterW) === WDEF, { before, during, duringW, after });
+  }
+
+  print('── writing(): { models, modelConfig } — a FRESH chain every call ──');
+  {
+    const w = writing();
+    ok('exactly { models, modelConfig }: models = writingChain(), modelConfig = WRITING_MODEL_CONFIG itself',
+      J(Object.keys(w).sort()) === J(['modelConfig', 'models']) && Array.isArray(w.models) && J(w.models) === WDEF && J(w.models) === J(writingChain())
+      && w.modelConfig === _internals.WRITING_MODEL_CONFIG, w);
+    const a = writing(), b = writing();
+    let edited = true;
+    try { a.models.push('evil'); a.models[0] = 'x'; a.models.reverse(); } catch { edited = false; }
+    ok('a FRESH models array on every call: two calls never share one, and editing one (push, assign, reverse) cannot change the next',
+      edited && a.models !== b.models && J(b.models) === WDEF && J(writing().models) === WDEF && J(writingChain()) === WDEF, { edited: a.models, next: writing().models });
+    const c = writingChain(); c.length = 0;
+    ok('writingChain() is fresh too: emptying one leaves the next whole, and no two calls share an array', J(writingChain()) === WDEF && writingChain() !== writingChain());
+    let threw = 0;
+    for (const edit of [
+      () => { a.modelConfig[WF1].thinkingConfig.thinkingBudget = 4096; },
+      () => { a.modelConfig[WP] = { thinkingConfig: { thinkingBudget: 1 } }; },
+      () => { delete a.modelConfig[WF1]; },
+    ]) { try { edit(); } catch { threw++; } }
+    ok(`…and modelConfig cannot be edited through it (frozen: every write throws in strict mode) — the next call still turns thinking OFF for ${WF1} and nothing else`,
+      threw === 3 && J(writing().modelConfig) === J({ [WF1]: { thinkingConfig: { thinkingBudget: 0 } } }), { threw, next: writing().modelConfig });
+  }
+
+  print(`── configFor: thinking OFF for ${WF1} — and ONLY for it ──`);
+  {
+    const MC = writing().modelConfig;
+    const lane = { temperature: 0.7, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: { type: 'object', properties: { cover_letter: { type: 'string' } }, required: ['cover_letter'] } };
+    const snap = J(lane);
+    const out = configFor(lane, MC, WF1);
+    ok(`${WF1}: the lane's config with thinkingConfig { thinkingBudget: 0 } laid over it, in a NEW object (the lane's own is not touched)`,
+      out !== lane && J(out) === J({ ...lane, thinkingConfig: { thinkingBudget: 0 } }) && out.responseSchema === lane.responseSchema && J(lane) === snap && !('thinkingConfig' in lane), out);
+    const laneT = { temperature: 0.2, thinkingConfig: { thinkingBudget: 1024, includeThoughts: true } };
+    const snapT = J(laneT);
+    const outT = configFor(laneT, MC, WF1);
+    ok('a lane with its OWN thinkingConfig: merged ONE level down — the budget becomes 0, its other thinking settings (includeThoughts) survive, and the lane\'s thinkingConfig object is not touched',
+      J(outT) === J({ temperature: 0.2, thinkingConfig: { thinkingBudget: 0, includeThoughts: true } }) && outT.thinkingConfig !== laneT.thinkingConfig && J(laneT) === snapT, outT);
+    const others = [WP, WF2, 'gemini-9-test'];
+    ok(`every other model (${others.join(', ')}) gets the lane's VERY object back — no copy, no thinkingConfig added, a lane's own thinking untouched`,
+      others.every((m) => configFor(lane, MC, m) === lane && configFor(laneT, MC, m) === laneT) && !('thinkingConfig' in configFor(lane, MC, WP)), others.map((m) => configFor(lane, MC, m)));
+    ok(`no usable modelConfig (the default and research chains pass none): every model — ${WF1} included — gets the lane's very object`,
+      [undefined, null, {}, 'junk'].every((mc) => configFor(lane, mc, WF1) === lane && configFor(laneT, mc, WF1) === laneT));
+    ok(`no lane config: ${WF1} still gets thinking OFF ({ thinkingConfig: { thinkingBudget: 0 } }); any other model gets undefined, as before`,
+      J(configFor(undefined, MC, WF1)) === J({ thinkingConfig: { thinkingBudget: 0 } }) && configFor(undefined, MC, WP) === undefined && configFor(undefined, MC, WF2) === undefined);
+    ok('a modelConfig entry that is not an object is ignored: the lane\'s object goes through', configFor(lane, { [WF1]: 'x' }, WF1) === lane && configFor(lane, { [WF1]: null }, WF1) === lane);
+  }
+
+  print('── the writing chain through generateText: every storm lands on the model the LANE really asks first ──');
+  {
+    // Called exactly as the document lanes call it: their lane and config, with aiText.writing() spread in. Page
+    // REQUESTS are read off a spy on aiHealth.noteAiFailure (its real throttle would swallow a second page of a kind).
+    const AH = require(path.join(ROOT, 'server/services/aiHealth.js'));
+    const realNote = AH.noteAiFailure;
+    const noted = [];
+    AH.noteAiFailure = (err, where, override) => { noted.push({ kind: (override && override.kind) || AH.classifyAiError(err), where }); };
+    const laneCfg = () => ({ temperature: 0.7, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: { type: 'object', properties: { cover_letter: { type: 'string' } }, required: ['cover_letter'] } });
+    const thinkingOff = (cfg) => !!(cfg && cfg.thinkingConfig && cfg.thinkingConfig.thinkingBudget === 0);
+    try {
+      {
+        const config = laneCfg(); const snap = J(config);
+        const sdk = fakeSdk({ [WP]: [E503(WP), 'Dear Amazon'] });
+        const retries = [];
+        const out = await run({ lane: 'letter', prompt: 'write it', config, ...writing(), sdk, onRetry: (i) => retries.push(i) });
+        ok(`the incident on TODAY's letter chain: the writing primary ${WP} 503s, the ~2 s pause (30 ms here), it answers — no fallback`,
+          out.r && out.r.text === 'Dear Amazon' && out.r.model === WP && out.r.attempts === 2 && out.r.fellBack === false && J(modelsOf(sdk)) === J([WP, WP]) && gap(sdk, 0, 1) >= 28
+          && retries.length === 1 && J(retries[0]) === J({ model: WP, attempt: 1, kind: 'transient', nextModel: WP, waitMs: 30 }), { out, m: modelsOf(sdk), retries });
+        ok(`…both calls to ${WP} carry the lane's VERY config object — no thinkingConfig added — and it is not mutated`,
+          sdk.calls.length === 2 && sdk.calls.every((x) => x.cfg === config && !('thinkingConfig' in x.cfg)) && J(config) === snap, sdk.calls.map((x) => x.cfg));
+      }
+      {
+        const config = laneCfg(); const snap = J(config); const mark = logs.length;
+        const sdk = fakeSdk({ [WP]: [E503(WP), E503(WP)], [WF1]: ['{"cover_letter":"thinking off"}'] });
+        const retries = [];
+        const out = await run({ lane: 'letter', prompt: 'p', config, ...writing(), sdk, onRetry: (i) => retries.push(i) });
+        ok(`${WP} 503 twice → the FIRST writing fallback ${WF1} writes it: model recorded, fellBack true, attempts 3, ${WF2} never called`,
+          out.r && out.r.model === WF1 && out.r.fellBack === true && out.r.attempts === 3 && J(modelsOf(sdk)) === J([WP, WP, WF1]), { out, m: modelsOf(sdk) });
+        ok('…the move to it is immediate (waitMs 0, no pause)', retries.length === 2 && J(retries[1]) === J({ model: WP, attempt: 2, kind: 'transient', nextModel: WF1, waitMs: 0 }) && gap(sdk, 1, 2) < 25, { retries, g: gap(sdk, 1, 2) });
+        const c = sdk.calls[2];
+        ok(`⚠️ the call to ${WF1} carries thinkingConfig { thinkingBudget: 0 } laid over EVERY field of the lane's config, and the lane's object is not mutated`,
+          !!c && c.cfg !== config && J(c.cfg) === J({ ...config, thinkingConfig: { thinkingBudget: 0 } }) && J(config) === snap && !('thinkingConfig' in config), c && c.cfg);
+        ok(`…while both calls to ${WP} got the lane's very object, with no thinkingConfig`, sdk.calls.slice(0, 2).every((x) => x.cfg === config && !('thinkingConfig' in x.cfg)), sdk.calls.map((x) => x.cfg));
+        ok(`…and the log says who wrote it: "[aiText] letter: answered by ${WF1} after 3 attempts"`, logsSince(mark).includes(`[aiText] letter: answered by ${WF1} after 3 attempts`), logsSince(mark));
+      }
+      {
+        const config = { ...laneCfg(), thinkingConfig: { thinkingBudget: 2048, includeThoughts: false } };
+        const snap = J(config);
+        const sdk = fakeSdk({ [WP]: [E503(WP), E503(WP)], [WF1]: [E503(WF1)], [WF2]: ['{"cover_letter":"thin but here"}'] });
+        const out = await run({ lane: 'resume_doc', prompt: 'p', config, ...writing(), sdk });
+        ok(`${WP} busy ×2, ${WF1} busy (not retried) → the last resort ${WF2} writes it (4 calls)`,
+          out.r && out.r.model === WF2 && out.r.attempts === 4 && J(modelsOf(sdk)) === J([WP, WP, WF1, WF2]), { out, m: modelsOf(sdk) });
+        const byModel = (m) => sdk.calls.filter((x) => x.model === m);
+        ok(`⚠️ ONLY the call to ${WF1} has thinking OFF (budget 0, the lane's includeThoughts kept); ${WP} and ${WF2} get the lane's very object with ITS thinkingConfig (2048) untouched`,
+          byModel(WF1).length === 1 && J(byModel(WF1)[0].cfg.thinkingConfig) === J({ thinkingBudget: 0, includeThoughts: false }) && byModel(WF1)[0].cfg.temperature === 0.7
+          && [...byModel(WP), ...byModel(WF2)].length === 3 && [...byModel(WP), ...byModel(WF2)].every((x) => x.cfg === config && x.cfg.thinkingConfig.thinkingBudget === 2048)
+          && sdk.calls.filter((x) => thinkingOff(x.cfg)).map((x) => x.model).join() === WF1 && J(config) === snap,
+          sdk.calls.map((x) => [x.model, x.cfg && x.cfg.thinkingConfig]));
+      }
+      {
+        const sdk = fakeSdk({ [WP]: [E503(WP), E503(WP)], [WF1]: [E503(WF1)], [WF2]: [E503(WF2)] });
+        const out = await run({ lane: 'letter', prompt: 'p', config: laneCfg(), ...writing(), sdk });
+        const e = out.e;
+        ok('every writing model busy → AiUnavailableError kind busy (retryable), every call listed in the WRITING order',
+          e instanceof AiUnavailableError && isAiBusy(e) && e.retryable === true
+          && J(att(e).map((a) => [a.model, a.kind])) === J([[WP, 'transient'], [WP, 'transient'], [WF1, 'transient'], [WF2, 'transient']]), e ? att(e) : out);
+        ok('…and the message names the writing chain in its order',
+          !!e && new RegExp(`^AI_BUSY: letter got no answer from ${[WP, WF1, WF2].map(rx).join(', ')} \\(4 attempts, no model left\\)`).test(e.message), e && e.message);
+      }
+      {
+        const n0 = noted.length;
+        const sdk = fakeSdk({ [WP]: [E429(WP)] });
+        const out = await run({ lane: 'letter', prompt: 'p', config: laneCfg(), ...writing(), sdk });
+        ok(`depleted credits on ${WP}: kind quota after exactly ONE call (every model shares the key), and the operator is paged`,
+          out.e instanceof AiUnavailableError && out.e.kind === 'quota' && J(modelsOf(sdk)) === J([WP]) && noted.length === n0 + 1 && noted[n0].kind === 'quota' && noted[n0].where === 'aiText.letter',
+          { e: out.e && out.e.kind, m: modelsOf(sdk), noted: noted.slice(n0) });
+      }
+      {
+        const n0 = noted.length;
+        const sdk = fakeSdk({ [WP]: [ERATE(WP)] });
+        const out = await run({ lane: 'resume_builder', prompt: 'p', config: laneCfg(), ...writing(), sdk });
+        ok(`one model's 429 on ${WP}: handed to ${WF1} at once (no pause, no page), which answers with thinking OFF`,
+          out.r && out.r.model === WF1 && J(modelsOf(sdk)) === J([WP, WF1]) && gap(sdk, 0, 1) < 25 && thinkingOff(sdk.calls[1].cfg) && !thinkingOff(sdk.calls[0].cfg) && noted.length === n0,
+          { out, m: modelsOf(sdk), noted: noted.slice(n0) });
+      }
+      {
+        const n0 = noted.length;
+        const sdk = fakeSdk({ [WP]: [E404(WP)] });
+        const retries = [];
+        const out = await run({ lane: 'letter', prompt: 'p', config: laneCfg(), ...writing(), sdk, onRetry: (i) => retries.push(i) });
+        ok(`${WP} shut down (a 404 — its earliest shutdown is 2027-05-07): skipped at once, ${WF1} writes it, nothing fails`,
+          out.r && out.r.model === WF1 && out.r.fellBack === true && J(modelsOf(sdk)) === J([WP, WF1]) && retries.length === 1 && retries[0].kind === 'gone' && retries[0].waitMs === 0, { out, retries });
+        ok('…and the operator is paged once (kind gone): every build of the lane now runs on a fallback', noted.length === n0 + 1 && noted[n0].kind === 'gone' && noted[n0].where === 'aiText.letter', noted.slice(n0));
+      }
+      {
+        process.env.AI_WRITING_FALLBACK_MODELS = 'none';
+        const spread = writing();
+        clearChainVars();
+        const sdk = fakeSdk({ [WP]: [E503(WP), E503(WP)] });
+        const out = await run({ lane: 'letter', prompt: 'p', config: laneCfg(), ...spread, sdk });
+        ok(`AI_WRITING_FALLBACK_MODELS=none: the writing primary alone — two tries on ${WP}, then busy`, out.e && isAiBusy(out.e) && J(modelsOf(sdk)) === J([WP, WP]), modelsOf(sdk));
+      }
+      {
+        // The lanes spread writing() when they build the call, so the env in force THEN is the chain walked.
+        process.env.AI_WRITING_MODEL = ` models/${titled(WF1)} `;
+        const spread = writing();
+        clearChainVars();
+        const config = laneCfg();
+        const sdk = fakeSdk({ [WF1]: [E503(WF1), E503(WF1)] });
+        const out = await run({ lane: 'letter', prompt: 'p', config, ...spread, sdk });
+        ok(`AI_WRITING_MODEL=${WF1} at call time: it leads, gets the primary's one paused retry, then ${WF2} — ${WF1} never again as a fallback`,
+          out.r && out.r.model === WF2 && J(modelsOf(sdk)) === J([WF1, WF1, WF2]) && J(writing().models) === WDEF, modelsOf(sdk));
+        ok(`…and thinking OFF follows the MODEL, not the position: both calls to ${WF1} as PRIMARY carry thinkingBudget 0; ${WF2} gets the lane's very object`,
+          sdk.calls.length === 3 && thinkingOff(sdk.calls[0].cfg) && thinkingOff(sdk.calls[1].cfg) && sdk.calls[2].cfg === config, sdk.calls.map((x) => [x.model, x.cfg && x.cfg.thinkingConfig]));
+      }
+    } finally {
+      AH.noteAiFailure = realNote;
+      clearChainVars();
+    }
+  }
+
+  print('── the RESEARCH chain is untouched by the writing variables (and the reverse) ──');
+  {
+    const variants = [
+      { AI_WRITING_MODEL: 'gemini-9-test', AI_WRITING_FALLBACK_MODELS: 'none' },
+      { AI_WRITING_FALLBACK_MODELS: `${WF2}, gemini-9-test` },
+      { AI_WRITING_MODEL: WF2, AI_WRITING_FALLBACK_MODELS: 'off' },
+    ];
+    const seen = variants.map((v) => withVars(v, () => ({ fb: J(fallbackModels()), def: J(chainFor('research')), w: J(writingChain()) })));
+    ok(`fallbackModels() stays [${F1}, ${F2}] and the default chain [${P}, ${F1}, ${F2}] under every AI_WRITING_* setting — while writingChain() does follow them`,
+      seen.every((s) => s.fb === J([F1, F2]) && s.def === J([P, F1, F2]) && s.w !== WDEF), seen);
+    ok('…and AI_TEXT_FALLBACK_MODELS (the research variable) does not move the writing chain',
+      ['none', 'gemini-9-test', `${F2}, ${F1}`].every((v) => chainWith({ AI_TEXT_FALLBACK_MODELS: v }) === WDEF), ['none', 'gemini-9-test'].map((v) => chainWith({ AI_TEXT_FALLBACK_MODELS: v })));
+
+    // A research call built exactly as employerResearch builds it — [its model, ...fallbackModels()], no modelConfig,
+    // the conventions config with its own thinking budget — while the writing variables are set.
+    const config = { temperature: 0.2, topP: 0.9, maxOutputTokens: 8192, thinkingConfig: { thinkingBudget: 1024 } };
+    const snap = J(config);
+    process.env.AI_WRITING_MODEL = 'gemini-9-test'; process.env.AI_WRITING_FALLBACK_MODELS = 'none';
+    const models = [P, ...fallbackModels()];
+    const sdk = fakeSdk({ [P]: [E503(), E503()] });
+    let out;
+    try { out = await run({ lane: 'research', prompt: 'p', config, models, sdk }); } finally { clearChainVars(); }
+    ok(`a research call under the writing variables still walks the research chain: ${P} ×2 → ${F1}`,
+      out.r && out.r.model === F1 && J(models) === J([P, F1, F2]) && J(modelsOf(sdk)) === J([P, P, F1]), modelsOf(sdk));
+    ok(`…and its ${P} keeps the research lane's own thinkingBudget 1024 — thinking OFF is a WRITING-chain setting, never a research one`,
+      sdk.calls.every((x) => x.cfg === config) && sdk.calls.filter((x) => x.model === P).length === 2 && sdk.calls.every((x) => x.cfg.thinkingConfig.thinkingBudget === 1024) && J(config) === snap,
+      sdk.calls.map((x) => [x.model, x.cfg.thinkingConfig]));
   }
 
   print('── hygiene ──');

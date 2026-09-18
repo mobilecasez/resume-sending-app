@@ -4680,14 +4680,14 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
 
         console.log(`[aiHub] Generating cover letter for job "${job.title}" at "${employer?.name}"`);
         // ⚠️ THROUGH aiText, like every other paid letter (2026-09-18: a 503 "high demand" spike failed Home's
-        // Amazon letter on its one model). It waits, retries the primary once, then walks the verified fallback
-        // chain — all BEFORE the charge below, so a letter no model could write costs nothing. GEMINI_FLASH_MODEL
-        // stays the primary (it is env-overridable here, and the fallbacks follow it).
-        const { text: coverLetterText } = await aiText.generateText({
+        // Amazon letter on its one model). It waits, retries the primary once, then walks the measured document
+        // chain (aiText.writing — cost first at equal quality) — all BEFORE the charge below, so a letter no model
+        // could write costs nothing.
+        const { text: coverLetterText, model: writtenBy } = await aiText.generateText({
             lane: 'job_hub_letter',
             prompt,
             config: {},
-            models: [GEMINI_FLASH_MODEL, ...aiText.fallbackModels()],
+            ...aiText.writing(),
         });
         // An empty answer is not a letter, and must never be the thing a unit is spent on.
         if (!coverLetterText) throw new Error('AI_EMPTY_OUTPUT');
@@ -4744,6 +4744,9 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
             // What the letter was actually written FROM. An admin checking "is this working" needs
             // to see the inputs, because a bland letter is usually a thin résumé, not a bad prompt.
             inputs: adminTest ? {
+                // Which model actually wrote it — the one way to confirm, in production and for free, what the document
+                // chain is using right now (aiText logs only retries and fallbacks). Admin tests only.
+                model: writtenBy || null,
                 resume_chars: resumeText.length,
                 resume_source: resumeMeta.parsed_text ? 'parsed_text' : 'raw_text',
                 job_skills: skillsList,

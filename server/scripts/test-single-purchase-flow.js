@@ -30,7 +30,7 @@ process.env.USE_ASYNC_JOBS = 'false';               // drive the synchronous lan
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
 // What the AI was asked to do. Every counter here must stay flat across downloads.
-const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null, models: [], failModel: null };
+const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null, models: [], configs: [], failModel: null };
 
 // What was actually rendered — "bytes exist" is asserted with these, not with the HTTP status.
 const rendered = { pdf: 0, docx: 0, clPdf: 0, clDocx: 0 };
@@ -180,8 +180,10 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
     getGenerativeModel(params) {
       return { generateContent: async () => {
         ai.resumeCalls++;
-        // T16b: which model was asked, and a scripted failure for it (a 503 storm, a depleted key).
+        // T16b: which model was asked, with which generationConfig (index-aligned with ai.models), and a scripted
+        // failure for it (a 503 storm, a depleted key).
         ai.models.push(params && params.model);
+        ai.configs.push(params && params.generationConfig);
         const scripted = ai.failModel ? ai.failModel(params && params.model) : null;
         if (scripted) throw scripted;
         if (ai.onModelCall) ai.onModelCall();   // T12: the phone gives up while the model is still writing
@@ -693,6 +695,10 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
     ent.gate = { allowed: false, message: 'no' }; att0 = ent.attempts.length;
     const admin = await hub(16, { adminTest: true });
     ok('the admin test stays free: no gate, no charge', admin.statusCode === 200 && admin.body.adminTest === true && ent.attempts.length === att0, { status: admin.statusCode });
+    // The live check an operator uses after a model switch: the admin test names the model that wrote the letter.
+    const WCHAIN0 = require(path.join(ROOT, 'server', 'services', 'aiText.js')).writingChain()[0];
+    ok('…and it names the model that WROTE it (the document chain\'s primary on a quiet day)',
+      admin.body.inputs && admin.body.inputs.model === WCHAIN0, admin.body.inputs && admin.body.inputs.model);
     ent.gate = { allowed: true, remaining: 5 };
 
     ok('⚠️ NO CREDIT was priced, charged or refunded anywhere in the Job Hub lane',
@@ -719,12 +725,25 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
   console.log('\n── T16b · ⚠️ the Job Hub letter rides out a Gemini 503 spike — and says so honestly when it cannot ──');
   {
     // 2026-09-18: Home's Amazon letter died on two back-to-back 503 "high demand" answers from ONE model. This lane
-    // made ONE call to ONE model — the same failure, with nothing to fall back on. It now goes through aiText.
+    // made ONE call to ONE model — the same failure, with nothing to fall back on. It now goes through aiText, and
+    // since 2026-09-18 (the blind evaluation — see WRITING_PRIMARY in aiText.js) on the measured DOCUMENT chain,
+    // `...aiText.writing()`: gemini-3.1-flash-lite first, then gemini-2.5-flash with thinking OFF, then
+    // gemini-2.5-flash-lite. gemini-2.5-flash is no longer the primary — it is the FIRST FALLBACK.
     const AH = require(path.join(ROOT, 'server', 'controllers', 'aiHubController.js'));
+    // The SAME aiText instance the controller calls: both resolve to this one file in require.cache (nothing in this
+    // suite stubs or reloads it), so the chain read below is the chain the lane walks.
     const AT = require(path.join(ROOT, 'server', 'services', 'aiText.js'));
     const saved = { wait: AT._internals.settings.retryWaitMs, jitter: AT._internals.settings.retryJitterMs };
     AT._internals.settings.retryWaitMs = 20; AT._internals.settings.retryJitterMs = 0;   // the 2 s pause, shrunk
-    const [P, F1] = [process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash', AT.fallbackModels()[0]];
+    // Model ids come from the module, never re-hard-coded: P = the writing primary, F1 = its first fallback
+    // (gemini-2.5-flash on the measured chain — the one model aiText.writing() turns thinking off for).
+    const CHAIN = AT.writingChain();
+    const [P, F1] = CHAIN;
+    // What generateJobCoverLetter passes as its own generationConfig (`config: {}` in aiHubController). Every model
+    // gets exactly this, except gemini-2.5-flash, which gets thinkingConfig { thinkingBudget: 0 } merged over it.
+    const LANE_CONFIG = {};
+    const THINK_OFF = { ...LANE_CONFIG, thinkingConfig: { thinkingBudget: 0 } };
+    const noThinking = (c) => !!c && typeof c === 'object' && !('thinkingConfig' in c);
     const e503 = () => Object.assign(new Error('[GoogleGenerativeAI Error]: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.'), { status: 503 });
     const eDry = () => Object.assign(new Error('[GoogleGenerativeAI Error]: [429 Too Many Requests] Your prepayment credits are depleted. [RESOURCE_EXHAUSTED]'), { status: 429 });
     db.hubJob = { id: 'hub-1', title: 'Backend Engineer', employer_id: null, location: 'Pune', responsibilities: 'Build APIs' };
@@ -735,33 +754,48 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
     };
     ent.sub = null; ent.gate = { allowed: true, remaining: 3 }; ent.consumeFor = () => 'plan';
 
-    ai.models.length = 0; ai.failModel = (m) => (m === P ? e503() : null);
+    ai.models.length = 0; ai.configs.length = 0; ai.failModel = (m) => (m === P ? e503() : null);
     let c0 = ent.consumed.length;
     const rode = await hub(16);
     ok('the primary 503s twice → the first fallback writes it → 200 with the letter',
       rode.statusCode === 200 && !!rode.body.coverLetter && JSON.stringify(ai.models) === JSON.stringify([P, P, F1]), { status: rode.statusCode, models: ai.models });
+    // NEW (2026-09-18): the lane spreads aiText.writing() — its models AND its per-model config. The first fallback
+    // (gemini-2.5-flash) must be asked with thinking OFF, laid over the lane's config; the primary gets the lane's
+    // config untouched. A lane that passed only `models` (dropping modelConfig) would bill thinking tokens again.
+    ok('⚠️ …the first fallback was asked with thinkingConfig { thinkingBudget: 0 } merged over the lane\'s config; the primary with the lane\'s config and NO thinkingConfig',
+      ai.configs.length === 3
+      && JSON.stringify(ai.configs[0]) === JSON.stringify(LANE_CONFIG) && noThinking(ai.configs[0])
+      && JSON.stringify(ai.configs[1]) === JSON.stringify(LANE_CONFIG) && noThinking(ai.configs[1])
+      && JSON.stringify(ai.configs[2]) === JSON.stringify(THINK_OFF), { models: ai.models, configs: ai.configs });
     ok('…charged exactly ONE unit, once the letter existed', ent.consumed.length === c0 + 1, ent.consumed.slice(c0));
 
-    ai.models.length = 0; ai.failModel = () => e503();
+    ai.models.length = 0; ai.configs.length = 0; ai.failModel = () => e503();
     c0 = ent.consumed.length; let att0 = ent.attempts.length; let logMark = db.log.length;
     const busy = await hub(16);
     ok('⚠️ every model busy → 503 reason ai_busy, retryable, and the sentence says nothing was charged',
       busy.statusCode === 503 && busy.body.reason === 'ai_busy' && busy.body.retryable === true && /Nothing was charged/.test(busy.body.error || ''), { status: busy.statusCode, body: busy.body });
     ok('…and it is TRUE: no unit consumed, no charge attempted, no usage lock taken',
       ent.consumed.length === c0 && ent.attempts.length === att0 && lockTakenSince(logMark) === 0, { consumed: ent.consumed.slice(c0), attempts: ent.attempts.slice(att0) });
-    ok('…after the whole verified chain was tried (primary twice, then every fallback)',
-      ai.models.length === 2 + AT.fallbackModels().length && ai.models[0] === P && ai.models[1] === P, ai.models);
+    // Retargeted 2026-09-18: the chain walked is aiText.writingChain() (the lane passes aiText.writing()), not the
+    // old [gemini-2.5-flash, ...fallbackModels()]. Primary twice, then every writing fallback once, in order.
+    ok('…after the whole measured writing chain was tried (primary twice, then every fallback)',
+      CHAIN.length >= 3 && JSON.stringify(ai.models) === JSON.stringify([P, P, ...CHAIN.slice(1)]), { chain: CHAIN, models: ai.models });
+    ok('⚠️ …and on the way down only gemini-2.5-flash ran with thinking off: every other model got the lane\'s config, NO thinkingConfig',
+      ai.configs.length === ai.models.length
+      && ai.models.every((m, i) => (m === F1
+        ? JSON.stringify(ai.configs[i]) === JSON.stringify(THINK_OFF)
+        : JSON.stringify(ai.configs[i]) === JSON.stringify(LANE_CONFIG) && noThinking(ai.configs[i]))), { models: ai.models, configs: ai.configs });
 
-    ai.models.length = 0; ai.failModel = () => eDry();
+    ai.models.length = 0; ai.configs.length = 0; ai.failModel = () => eDry();
     c0 = ent.consumed.length;
     const down = await hub(16);
-    ok('a key with no credit left → 503 ai_down, NOT retryable, after ONE call (every model shares the key)',
-      down.statusCode === 503 && down.body.reason === 'ai_down' && down.body.retryable === false && ai.models.length === 1, { status: down.statusCode, body: down.body, models: ai.models });
+    ok('a key with no credit left → 503 ai_down, NOT retryable, after ONE call to the primary (every model shares the key)',
+      down.statusCode === 503 && down.body.reason === 'ai_down' && down.body.retryable === false && ai.models.length === 1 && ai.models[0] === P, { status: down.statusCode, body: down.body, models: ai.models });
     ok('…and nothing was charged', ent.consumed.length === c0);
 
     // ⚠️ The client LEAVES while the model is still writing (an older build with a shorter timeout, during a spike).
     // This lane stores nothing, so the letter would be thrown away: it must not be charged for.
-    ai.failModel = null; ai.models.length = 0; ent.consumeFor = () => 'plan';
+    ai.failModel = null; ai.models.length = 0; ai.configs.length = 0; ent.consumeFor = () => 'plan';
     const gone = mkRes();
     ai.onModelCall = () => { gone.emit('close'); };
     c0 = ent.consumed.length; att0 = ent.attempts.length; logMark = db.log.length;
@@ -773,7 +807,7 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
     const stayed = await hub(16);
     ok('…while a client that stays is served and charged as before', stayed.statusCode === 200 && !!stayed.body.coverLetter && ent.consumed.length === c0 + 1);
 
-    ai.failModel = null; ai.models.length = 0; ent.consumeFor = null;
+    ai.failModel = null; ai.models.length = 0; ai.configs.length = 0; ent.consumeFor = null;
     AT._internals.settings.retryWaitMs = saved.wait; AT._internals.settings.retryJitterMs = saved.jitter;
   }
 

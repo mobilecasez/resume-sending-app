@@ -209,8 +209,9 @@ async function saveResumeRow(userId, resumeData, tailoredFor) {
 // its own prompt, so it folds employerResearch.RESEARCH_REV in instead — see docResearchRev. The two
 // lanes therefore never share a fingerprint, and a builder-lane document is never a doc-lane free hit.
 const RESEARCH_REV = 'none';
-// The résumé lanes' FIRST choice. Since 2026-09-18 it is not always the model that writes the document: aiText falls back
-// when it is busy, and the stored row names whoever actually answered (callGemini's `model`). ⚠️ Never hashed — see
+// ⚠️ NO LONGER THE MODEL THAT WRITES THE RÉSUMÉ. Since 2026-09-18 both résumé lanes walk aiText.writing() — the measured
+// document chain, cost first at equal quality (see aiText WRITING_PRIMARY) — and the stored row names whoever actually
+// answered (callGemini's `model`). This is only the id recorded if an answer ever arrived without one. ⚠️ Never hashed — see
 // generationFingerprint: a document a fallback wrote is the same free cache hit as one this model wrote.
 const RESUME_MODEL = 'gemini-2.5-flash';
 
@@ -477,7 +478,7 @@ const isAiUnavailable = (e) => !!e && (e instanceof aiText.AiUnavailableError ||
 /**
  * What a provider retry is shown as — aiText's onRetry, told through this build's own reporter, in plain words:
  *   the primary was busy and is asked again after a pause → "Google's AI is busy — trying again"
- *   the next model in the chain                            → "Switching to a faster model"
+ *   the next model in the chain                            → "Switching to a backup model"
  *   a cut-off answer asked for again (TRUNCATED_OUTPUT)    → "Taking another pass at it" (the lanes' own words for it)
  * ⚠️ AT THE BAR'S CURRENT POSITION, NUDGED: a retry re-labels the stage it happens in, it is not a stage of its own. A pct
  * behind the last tick is dropped (a bar never walks backwards), and one past 84 would claim the designing (86) or
@@ -485,7 +486,7 @@ const isAiUnavailable = (e) => !!e && (e instanceof aiText.AiUnavailableError ||
  */
 function resumeAiRetryNotice(report) {
     return ({ model, nextModel, kind }) => {
-        const label = nextModel && nextModel !== model ? 'Switching to a faster model'
+        const label = nextModel && nextModel !== model ? 'Switching to a backup model'
             : kind === 'transient' ? 'Google\'s AI is busy — trying again' : 'Taking another pass at it';
         const at = typeof report.at === 'function' ? report.at() : 0;
         return report('retry', label, Math.max(at, Math.min(at + 2, 84)));
@@ -542,7 +543,7 @@ async function callGemini(prompt, { temperature = 0.4 } = {}) {
         prompt,
         config: { temperature, maxOutputTokens: 32768, responseMimeType: 'application/json' },
         // The lane's own first choice, then the operator's fallbacks (AI_TEXT_FALLBACK_MODELS, else the verified two).
-        models: [RESUME_MODEL, ...aiText.fallbackModels()],
+        ...aiText.writing(),   // the measured document chain: cost first at equal quality (see aiText WRITING_PRIMARY)
         budgetMs: deadline - Date.now(),
         attemptCapsMs: RESUME_AI_CAPS_MS,
         onRetry: build.report ? resumeAiRetryNotice(build.report) : undefined,

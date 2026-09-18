@@ -46,14 +46,46 @@
 
 const aiHealth = require('./aiHealth');
 
-/** What every paid lane calls today (LETTER_MODEL, RESUME_MODEL, CONVENTIONS_MODEL are all this id). */
+/** The RESEARCH lanes' primary, and the head of the default chain for any caller that names no models. The paid DOCUMENT
+ *  lanes do not use it since 2026-09-18 — they walk writing() (see WRITING_PRIMARY). */
 const DEFAULT_PRIMARY = 'gemini-2.5-flash';
 /**
- * The VERIFIED fallback chain (2026-09-18, production key, letter config). Change it only after proving each id is
+ * The RESEARCH / default fallback chain (2026-09-18, production key, letter config). Change it only after proving each id is
  * CALLABLE with the lanes' real config: the models API lists ids this key cannot call (gemini-2.5-pro → 404).
  * gemini-3-flash-preview answered too (12.2 s / 32.2 s) but it is a preview model, so nothing depends on it.
  */
 const DEFAULT_FALLBACKS = Object.freeze(['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite']);
+
+// ── The DOCUMENT-WRITING chain (letters and résumés — the paid lanes) ─────────────────────────────
+// ⚠️ CHOSEN BY MEASUREMENT, NOT BY NEWNESS (2026-09-18). The owner's rule: cost first, as long as the result is the
+// same. Each candidate wrote the EXACT production prompts (the Home Amazon letter; an Infosys résumé under the India
+// playbook) three times; anonymised outputs were scored blind by six judges plus two fact auditors, and cost per
+// document was measured from real token counts (thinking included — Google bills it as output) at the official prices.
+//
+//   model                          letter  India résumé  $/letter  $/résumé  answered
+//   gemini-3.1-flash-lite            7.7        6.8        0.0012    0.0040     6/6   ← best or tied-best on BOTH
+//   gemini-2.5-flash, thinking OFF   7.7        5.2        0.0016    0.0077     6/6
+//   gemini-2.5-flash (the old primary) 5.7      4.7        0.0053    0.0142     6/6   ← thinking cost 3x and INVENTED more
+//   gemini-2.5-flash-lite            5.3        3.2        0.0004    0.0014     6/6   ← cheapest, but thin: 2 bullets a role
+//   gemini-3-flash-preview           6.3        4.3        0.0148    0.0132     5/6
+//   gemini-3.8 / 3.7 / 3.6 / 3.5-flash — 0/6, 0/6, 1/6, 0/6 answered that day (503 "high demand", 150 s hangs), and
+//     3.6–3.8 cost $0.75/$3.75 per 1M only until 2026-12-31 ($1.50/$7.50 after); 3.5-flash is $1.50/$9.00.
+//
+// So: the flash-lite that writes as well as anything for a quarter of the old price leads; 2.5-flash WITH THINKING OFF
+// (a different model family, so a different capacity pool, and judged better than with thinking) backs it up; the
+// cheapest model is the last resort — a thinner document beats "Google's AI is busy". Research lanes are NOT on this
+// chain (they use Google Search grounding, which this evaluation did not cover) and keep their own models.
+// ⚠️ gemini-3.1-flash-lite's EARLIEST SHUTDOWN is 2027-05-07 (Google names gemini-3.5-flash-lite as its successor, which
+// scored 4.3 / 4.3 here — re-measure before switching). A shut-down primary is a 404: skipped, paged once, and every
+// build lands on the backup — nothing fails. AI_WRITING_MODEL / AI_WRITING_FALLBACK_MODELS change it without a deploy.
+const WRITING_PRIMARY = 'gemini-3.1-flash-lite';
+const WRITING_FALLBACKS = Object.freeze(['gemini-2.5-flash', 'gemini-2.5-flash-lite']);
+/** Per-model generationConfig for the writing chain, laid over the lane's own config for that model only. */
+const WRITING_MODEL_CONFIG = Object.freeze({
+    // Thinking tokens are billed as output: 1,450 of them per letter tripled its cost and the judges scored the letters
+    // LOWER (more invented detail). Off, the same model wrote the best-fidelity letters of the evaluation.
+    'gemini-2.5-flash': Object.freeze({ thinkingConfig: Object.freeze({ thinkingBudget: 0 }) }),
+});
 
 /** The whole chain's wall budget when the caller names none. A lane passes what its own deadline has left. */
 const DEFAULT_BUDGET_MS = 180 * 1000;
@@ -94,7 +126,7 @@ function cleanModelId(v) {
 
 const dedupe = (list) => [...new Set(list)];
 
-/** The lane's first choice. Every lane uses the same model today; this is the one place a lane-specific one goes. */
+/** The default chain's first choice (the research lanes'). Document lanes pass their own chain — writing(). */
 function primaryFor(/* lane */) {
     return DEFAULT_PRIMARY;
 }
@@ -111,6 +143,31 @@ function fallbackModels() {
     if (/^\s*(none|off)\s*$/i.test(raw)) return [];
     const list = dedupe(raw.split(',').map(cleanModelId).filter(Boolean));
     return list.length ? list : [...DEFAULT_FALLBACKS];
+}
+
+/** A comma list of model ids from the environment: null when unset or empty, [] for "none" / "off", else the usable ids. */
+function envModelList(raw) {
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    if (/^\s*(none|off)\s*$/i.test(raw)) return [];
+    const list = dedupe(raw.split(',').map(cleanModelId).filter(Boolean));
+    return list.length ? list : null;
+}
+
+/**
+ * The chain every paid DOCUMENT lane walks (see WRITING_PRIMARY): env AI_WRITING_MODEL for the primary and
+ * AI_WRITING_FALLBACK_MODELS for the backups ("none" = primary only), else the measured default. A fresh array.
+ */
+function writingChain() {
+    // "none" / "off" is a valid-looking id that would be CALLED (and 404) — there is no "no primary", so it means default.
+    const envPrimary = /^\s*(none|off)\s*$/i.test(String(process.env.AI_WRITING_MODEL || '')) ? null : cleanModelId(process.env.AI_WRITING_MODEL);
+    const primary = envPrimary || WRITING_PRIMARY;
+    const fromEnv = envModelList(process.env.AI_WRITING_FALLBACK_MODELS);
+    return dedupe([primary, ...(fromEnv === null ? WRITING_FALLBACKS : fromEnv)]);
+}
+
+/** What a document lane spreads into generateText: `{ models, modelConfig }` — the chain and its per-model config. */
+function writing() {
+    return { models: writingChain(), modelConfig: WRITING_MODEL_CONFIG };
 }
 
 /**
@@ -231,6 +288,20 @@ function isAiBusy(err) {
  * for the full cap. Ours is cleared in finally, and it is NOT unref'd: a call awaited by a script must keep the
  * process alive until it settles.
  */
+/**
+ * The generationConfig one model is called with: the lane's `config`, with that model's own entry from `modelConfig`
+ * laid over it (thinkingConfig merged one level down, so a lane's other thinking settings survive). No entry, no copy
+ * worth making: the lane's object goes through untouched, exactly as before per-model config existed.
+ */
+function configFor(config, modelConfig, model) {
+    const extra = modelConfig && typeof modelConfig === 'object' ? modelConfig[model] : null;
+    if (!extra || typeof extra !== 'object') return config;
+    const base = config && typeof config === 'object' ? config : {};
+    const out = { ...base, ...extra };
+    if (base.thinkingConfig && extra.thinkingConfig) out.thinkingConfig = { ...base.thinkingConfig, ...extra.thinkingConfig };
+    return out;
+}
+
 async function attemptOnce({ Sdk, apiKey, model, prompt, config, capMs }) {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     let timer = null;
@@ -397,7 +468,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Throws AiUnavailableError (see the class). A missing key throws one of kind 'auth' whose message is exactly
  * 'GEMINI_API_KEY not set', which is the message the lanes already test for, before any SDK call is made.
  */
-async function generateText({ lane, prompt, config, models, budgetMs, attemptCapsMs, onRetry, sdk } = {}) {
+async function generateText({ lane, prompt, config, models, modelConfig, budgetMs, attemptCapsMs, onRetry, sdk } = {}) {
     const laneName = String(lane || 'ai');
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new AiUnavailableError('auth', { lane: laneName, attempts: [], message: 'GEMINI_API_KEY not set' });
@@ -422,7 +493,7 @@ async function generateText({ lane, prompt, config, models, budgetMs, attemptCap
         at = { index: at.index, tries: at.tries + 1 };
         const started = Date.now();
         try {
-            const text = await attemptOnce({ Sdk, apiKey, model, prompt, config, capMs: Math.min(cap, left) });
+            const text = await attemptOnce({ Sdk, apiKey, model, prompt, config: configFor(config, modelConfig, model), capMs: Math.min(cap, left) });
             const n = attempts.length + 1;
             if (n > 1) console.log(`[aiText] ${laneName}: answered by ${model} after ${n} attempts`);
             return { text, model, attempts: n, fellBack: at.index > 0 };
@@ -445,7 +516,7 @@ async function generateText({ lane, prompt, config, models, budgetMs, attemptCap
             // would be noise, so it is a loud log line instead.
             if (kind === 'gone') {
                 if (at.index === 0) aiHealth.noteAiFailure(err, `aiText.${laneName}`);
-                else console.error(`[aiText] ${laneName}: fallback ${model} no longer exists — fix AI_TEXT_FALLBACK_MODELS`);
+                else console.error(`[aiText] ${laneName}: fallback ${model} no longer exists — fix AI_WRITING_FALLBACK_MODELS (document lanes) or AI_TEXT_FALLBACK_MODELS (research)`);
             }
 
             const next = planNext({ chain, at, kind, nextIndex: attempts.length, caps: attemptCapsMs, deadline, now: Date.now() });
@@ -464,11 +535,13 @@ async function generateText({ lane, prompt, config, models, budgetMs, attemptCap
 module.exports = {
     generateText,
     fallbackModels,
+    writing,
+    writingChain,
     AiUnavailableError,
     isAiBusy,
     _internals: {
         settings, DEFAULT_PRIMARY, DEFAULT_FALLBACKS, DEFAULT_BUDGET_MS, DEFAULT_CAPS_MS,
         primaryFor, chainFor, cleanModelId, capFor, floorFor, retryWaitFor, classify, planNext, attemptOnce, snippet,
-        DEPLETED_RE, TELL_RETRY_CAP_MS,
+        DEPLETED_RE, TELL_RETRY_CAP_MS, WRITING_PRIMARY, WRITING_FALLBACKS, WRITING_MODEL_CONFIG, configFor, envModelList,
     },
 };

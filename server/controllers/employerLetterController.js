@@ -56,9 +56,10 @@ const playbookMod = () => require('../services/cvPlaybook');
 const aiTextMod = () => require('../services/aiText');
 
 /**
- * The letter lane's FIRST choice — the head of the chain aiText walks, followed by aiText.fallbackModels().
- * ⚠️ NOT NECESSARILY THE MODEL THAT WROTE A STORED LETTER: since 2026-09-18 a busy primary hands the letter to a
- * fallback, and the stored row records whoever actually answered (writeLetterText's `model`).
+ * ⚠️ NO LONGER THE MODEL THAT WRITES THE LETTER. Since 2026-09-18 the letter walks aiText.writing() — the measured
+ * document chain, cost first at equal quality (gemini-3.1-flash-lite, then 2.5-flash with thinking off, then
+ * 2.5-flash-lite; see aiText WRITING_PRIMARY) — and the stored row records whoever actually answered
+ * (writeLetterText's `model`). This is only the id recorded if an answer ever arrived without one.
  * ⚠️ ≤ 48 chars — user_employer_documents.model is VARCHAR(48) and Postgres refuses, not truncates.
  */
 const LETTER_MODEL = 'gemini-2.5-flash';
@@ -1076,11 +1077,11 @@ async function writeLetterText(prompt, { deadline, budgetMs, report, pct }) {
         lane: 'letter',
         prompt,
         config: letterGenerationConfig(),
-        models: [LETTER_MODEL, ...aiText.fallbackModels()],
+        ...aiText.writing(),   // the measured document chain: cost first at equal quality (see aiText WRITING_PRIMARY)
         budgetMs: Math.max(0, Math.min(budgetMs, deadline - Date.now())),
         // Awaited by aiText, and anything it throws is ignored there — a progress write can never break a build.
         onRetry: ({ model: was, kind, nextModel }) => (typeof report === 'function' ? report('retry',
-            nextModel !== was ? 'Switching to a faster model'
+            nextModel !== was ? 'Switching to a backup model'
                 : kind === 'transient' ? "Google's AI is busy — trying again" : 'Taking another pass at it',
             pct) : undefined),
     });
