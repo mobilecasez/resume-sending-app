@@ -16,6 +16,7 @@ const pdf  = require('pdf-parse');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const dbConfig = require('../db-config');
 const jobService = require('../server/services/jobService');
+const resumeText = require('./resumeText');   // docx / doc / odt / rtf / txt — Node built-ins only
 
 function ensureDbConnection() {
     if (!dbConfig.rawDb()) {
@@ -182,6 +183,7 @@ const PERMANENT_SRC = [
     'credits are depleted', 'billing', 'payment required',
     'API key not valid', 'API_KEY_INVALID', 'PERMISSION_DENIED',
     'no readable r', 'no vision reader', 'too large to read',   // vision itself already refused it
+    'unsupported document',                                       // resumeText refused the file (a format, a password)
 ].join('|');
 
 const RETRYABLE_RE = new RegExp(`(${RETRYABLE_SRC})`, 'i');
@@ -237,7 +239,9 @@ async function extractTextFromPDF(absolutePath) {
  * what comes back is ordinary text that flows into the same parser.
  */
 const VISION_MIME = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.heic': 'image/heic' };
-const VISION_MAX_BYTES = 18 * 1024 * 1024;   // inline data has a hard ceiling; stay under it
+// inline data has a hard ceiling; stay under it. ⚠️ ONE NUMBER (review, 2026-09-20): this is also the size the
+// résumé upload accepts (services/resumeText.MAX_UPLOAD_BYTES), so the gate can never refuse a file this could read.
+const VISION_MAX_BYTES = resumeText.MAX_UPLOAD_BYTES;
 
 async function extractTextWithVision(absolutePath) {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -381,11 +385,30 @@ async function _parseResume(userId, relativeResumePath) {
         // 2. Build absolute path
         const absolutePath = path.join(__dirname, '..', relativeResumePath);
 
-        // 3. Extract text from PDF
+        // 3. Extract the text — by what the file IS (its bytes), not by what its name says.
+        // ⚠️ WORD, OPENDOCUMENT, RTF AND PLAIN TEXT ARE READ HERE NOW (2026-09-19, services/resumeText.js). Before,
+        // every file went to pdf-parse and then to the vision reader, which knows PDF and images only — so a .docx
+        // "failed" with 'no vision reader for .docx' long after the upload had said yes. The upload now refuses a
+        // file this cannot read; this branch is for everything it accepted, and for older uploads it never checked.
         let rawText = '';
         let readVia = 'text-layer';
-        try { rawText = await extractTextFromPDF(absolutePath); }
-        catch (e) { console.warn(`[resumeParser] text layer unreadable for user ${userId}: ${e.message}`); }
+        const fileBuf = await fs.readFile(absolutePath);
+        const fmt = resumeText.sniff(fileBuf);
+        if (!fmt.ok) {
+            // Permanent by construction: 'unsupported document' is in PERMANENT_SRC, so the sweeper never retries it.
+            throw new Error(`unsupported document: ${fmt.message}`);
+        }
+        if (resumeText.TEXT_KINDS.has(fmt.kind)) {
+            try { rawText = resumeText.extractText(fileBuf, fmt.kind); }
+            catch (e) { throw new Error(`unsupported document: ${e.message}`); }
+            readVia = fmt.kind;
+            if (rawText.replace(/\s+/g, ' ').trim().length < 50) {
+                throw new Error(`the document contains no readable résumé content (${fmt.label})`);
+            }
+        } else {
+            try { rawText = await extractTextFromPDF(absolutePath); }
+            catch (e) { console.warn(`[resumeParser] text layer unreadable for user ${userId}: ${e.message}`); }
+        }
 
         // No embedded text — the file is a scan, a photo, or an image-only export. Read it visually
         // rather than declaring the CV unreadable, which is what used to happen.
@@ -517,4 +540,7 @@ async function retryStuckResumes({ limit = 5, includeOldErrors = true, log = con
     return { considered: (rows || []).length, retried: targets.length, users: targets.map((t) => t.user_id) };
 }
 
-module.exports = { triggerResumeParsingBackground, retryStuckResumes, isTransientError, _parseResume };
+// markParsePending: the upload marks the NEW file 'pending' BEFORE it answers (profileController.uploadResume). The
+// background parse used to be the first to say so, a moment after the response — so a build started straight after
+// a re-upload could read the PREVIOUS CV's 'done' row as if it were this one.
+module.exports = { triggerResumeParsingBackground, retryStuckResumes, isTransientError, _parseResume, markParsePending: upsertPending };

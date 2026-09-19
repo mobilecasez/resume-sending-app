@@ -1797,6 +1797,49 @@ async function runPostgresMigrations(db) {
         )`);
         console.log('✅ Migration 046: employer document design/identity + hidden targets + research cache done');
 
+        // ── Migration 047: THE MAKE YOURS WIZARD'S PROGRESS, ON THE SERVER ───────────────────────
+        // "Pick up where you left off" was derived from the files on disk alone, so it vanished after an app
+        // restart once every file was there — although the wizard's last step (a real résumé) had never
+        // succeeded (user 616, 2026-09-19). One row per user who wrote through the wizard: typed notes, the
+        // chosen lane, skipped photo/signature, the build job (so a reopened wizard rejoins it instead of
+        // charging again), and the two ends — finished_at (a wizard build charged and saved) and closed_at
+        // (the profile completed through Account Settings). See server/services/onboardingProgress.js — the
+        // table and the backfill SQL are defined THERE, once, and the service creates the table lazily too.
+        {
+            const { TABLE_SQL, BACKFILL_SQL } = require('./server/services/onboardingProgress');
+            await col(TABLE_SQL);
+            // Accounts that opened the wizard before this existed and never got a résumé with content: their
+            // "Pick up where you left off" comes back. ⚠️ ONCE, EVER: the statement claims the system_schedule marker
+            // 'm047_onboarding_backfill' (Migration 016's table) and inserts only when it claimed it — re-run on every
+            // boot it would re-open the wizard for anyone who had since merely opened it. Production: user 616 only.
+            await col(BACKFILL_SQL);
+        }
+        console.log('✅ Migration 047: user_onboarding (wizard progress) done');
+
+        // ── Migration 048: HOME'S "DESIGNING FOR" ROW, SHARED BY THE USER'S PHONES ───────────────
+        // The saved chip row lived only in one phone's AsyncStorage, so the owner's second phone seeded its own row
+        // from the live ranking and showed a different row (2026-09-19: user 1 on b203, then b209, minutes apart).
+        // One JSONB row per user, written compare-and-set on `rev`. Table defined ONCE in server/services/homeRoster.js,
+        // which also creates it lazily (this migration races app.listen).
+        {
+            const { TABLE_SQL: HOME_ROSTER_SQL } = require('./server/services/homeRoster');
+            await col(HOME_ROSTER_SQL);
+        }
+        console.log('✅ Migration 048: user_home_roster done');
+
+        // ── Migration 049: ONE DEVICE, ONE ACCOUNT — and the admin's alert device kept apart ─────
+        // POST /api/user/push-token now takes the token OFF every other account on that phone. Two nullable columns:
+        // users.admin_alert_token (where an admin's alerts go — signing the owner's phone into a test account must not
+        // page nobody) and users.push_token_moved_at (the admin user screen says "phone on another account" instead of
+        // "notifications off"). Defined ONCE in server/services/expoPushService.js, which also adds them lazily (this
+        // migration races app.listen). No backfill: saveDeviceToken fills admin_alert_token the first time it moves
+        // an admin's token, and until then the admin's alerts read expo_push_token exactly as before.
+        {
+            const { PUSH_COLUMNS_SQL } = require('./server/services/expoPushService');
+            for (const sql of PUSH_COLUMNS_SQL) await col(sql);
+        }
+        console.log('✅ Migration 049: users.admin_alert_token + users.push_token_moved_at done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

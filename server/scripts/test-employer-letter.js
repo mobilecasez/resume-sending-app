@@ -128,7 +128,21 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
     return { response: { text: () => next, candidates: [{ finishReason: 'STOP' }] } };
   } }; } },
 } };
-const PARA = (n) => `Paragraph ${n} about **Node.js** and **PostgreSQL** work the candidate did across payment systems, reliability, observability and careful delivery for teams that ship every week without drama or heroics, with clear ownership of services from design review through production support and steady mentoring.`;
+// ⚠️ Each paragraph DIFFERENT, as a letter's are (review round 3, 2026-09-20): they used to differ only by their number — one
+// paragraph written four times, which the writer's near-copy rule (letterText.isNearDuplicate) now rightly refuses.
+const PARA_WORK = [
+  'on the payments ledger: I rebuilt the settlement pipeline for card and bank payouts, cut reconciliation from two days to four hours, and wrote the runbooks the finance team still follows at every month-end close across both European entities.',
+  'on search, moving product lookup from nightly batch jobs to streaming indexes, so merchants saw their price changes within seconds and a whole class of stale-catalogue support tickets simply disappeared from the queue that spring.',
+  'on reliability: I led the incident review programme, set service-level objectives for eleven services, and paired with on-call engineers until paging volume fell by half within one quarter, without adding a single new hire.',
+  'on people, mentoring six junior developers through their first production launches, running weekly design clinics, and helping two of them grow into leads who now own the fraud and identity services end to end.',
+  'on cost: an audit of storage tiers, connection pooling and query plans trimmed the monthly database bill by thirty percent, while the busiest customer dashboards actually got faster during the same eight-week effort.',
+  'on migrations, retiring a fragile monolith schema in eleven reversible steps, shadow-writing every table and comparing results daily, so not one customer noticed the switch to partitioned storage over that long winter.',
+  'on security: I introduced secret rotation, least-privilege roles and audit trails for administrative queries, which passed an external penetration test and a PCI assessment on the first attempt, ahead of the regulator\'s deadline.',
+  'on analytics, designing event pipelines that feed near-real-time funnels for marketing, while the same warehouse models now drive demand forecasting for inventory planners in three regions and the quarterly board pack.',
+  'on mobile: a lean GraphQL gateway in front of legacy endpoints halved payload sizes for the iOS and Android apps and let designers ship offline-friendly screens for travelling sales staff in rural areas.',
+  'on hiring, rewriting our interview loop around realistic pairing exercises, training twelve interviewers, and shortening time-to-offer from five weeks to under three without lowering the bar for any of the senior roles.',
+];
+const PARA = (n) => `Paragraph ${n} about **Node.js** and **PostgreSQL** work ${PARA_WORK[(n - 1) % PARA_WORK.length]}`;
 // ai-cover-letter-v2's answer, in its own shape (to, employer_name, position, addresses, subject, cover_letter). A key set
 // to undefined is left out of the JSON — how a scenario says "the model did not give one".
 const GOOD = (over = {}) => JSON.stringify({ to: 'Hiring Manager', employer_name: 'Acme Corporation', position: 'Senior Backend Engineer', addresses: [], subject: 'Application for Senior Backend Engineer — Jane Doe', cover_letter: [PARA(1), PARA(2), PARA(3), PARA(4)].join('\n\n'), ...over });
@@ -1212,8 +1226,10 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
       rStub.renderPreviews = realRP;
     }
     const elK = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
+    // RETARGETED 2026-09-19 (the Airbus letter): the key ends with LETTER_REPAIR_REV for a REPAIRED letter only — a clean
+    // letter's parts are exactly what they were (pinned by value in "── ⚠️ A LETTER STORED WITH JSON IN IT ──" below).
     ok('⚠️ the page key carries coverLetterRenderer.PREVIEW_REV, read per call, and the card\'s name is the page\'s',
-      /const previewRev = String\(clRenderer\.PREVIEW_REV \|\| ''\);/.test(elK) && /t\.generic \? photoVer : '-', previewRev\]\.join\('\|'\)/.test(elK)
+      /const previewRev = String\(clRenderer\.PREVIEW_REV \|\| ''\);/.test(elK) && /t\.generic \? photoVer : '-', previewRev, \.\.\.\(body\.repaired \? \[letterText\.LETTER_REPAIR_REV\] : \[\]\)\]\.join\('\|'\)/.test(elK)
       && /const cardOf = \(page\) => page\.replace\(\/\\\.jpg\$\/, `\.w\$\{THUMB_W\}\.jpg`\);/.test(elK));
   }
 
@@ -1379,11 +1395,209 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     ok('the brand readings live in the core controller (docId downloads never depend on the feature file)',
       typeof CL.researchBrandOf === 'function' && typeof CL.letterBrandOf === 'function' && typeof CL.withSharedLetterBrand === 'function');
     const clC = stripL(fsSync.readFileSync(path.join(ROOT, 'server/controllers/coverLetterController.js'), 'utf8'));
+    // RETARGETED 2026-09-19 (the Airbus letter): the brand is laid on, THEN the stored letter is repaired (a copy).
     ok('⚠️ employerLetterDocFor (docId PDF / DOCX) lays the shared brand on before savedLetterInput reads it; the read is cachedBrandFor and nothing that bills or writes',
-      /withSharedLetterBrand\(doc\) : LETTER_DOC_GONE/.test(clC)
+      /return LETTER_DOC_GONE;\s*const branded = await withSharedLetterBrand\(doc\);\s*const payload = letterText\.repairedLetterPayload\(branded\.payload\);/.test(clC)
       && (() => { const b = (clC.match(/async function withSharedLetterBrand\(doc\) \{[\s\S]*?\n\}/) || [''])[0]; return b.length > 100 && /cachedBrandFor\(domain\)/.test(b) && !/getEmployerResearch|researchBrand\(|brandCallFor|INSERT|UPDATE/.test(b); })());   // researchBrandOf is the READER; researchBrand( is the website call
     ok('⚠️ the feature file adopts it at BOTH of its loads (the post-build thumb prerender and employerLetterCards) — before letterCardsFor hashes the brand, so a thumb is the file the download would produce',
       (elC.match(/await withSharedLetterBrand\((cl|clMod\(\)), await employerDocs(Mod\(\))?\.getById\(/g) || []).length === 2 && /async function withSharedLetterBrand\(cl, doc\)/.test(elC));
+  }
+
+  console.log('── ⚠️ A LETTER STORED WITH JSON IN IT (2026-09-19: "it started showing some json in paragraph 5,6") ──');
+  {
+    // Production, user 1, Home → Airbus (user_employer_documents 15, gemini-2.5-flash, grounded): the answer was TWO JSON
+    // objects with the model's chatter between them. The parser read one span from the first "{" to the last "}", and the
+    // stored (and charged) letter was nine paragraphs: the real four, then '"', "}", "Rishi, I have completed the cover
+    // letter …", "Here is the JSON output:", a ```json block, and the letter again. fixtures/letter-doc15-raw.txt is that
+    // answer (test-letter-json.js proves it reproduces the stored letter byte for byte through the old parser);
+    // fixtures/letter-doc15-stored.html is what production stored.
+    const LT = require(path.join(ROOT, 'server/utils/letterText.js'));
+    const DOC15_RAW = fsSync.readFileSync(path.join(ROOT, 'server/scripts/fixtures/letter-doc15-raw.txt'), 'utf8');
+    const DOC15_STORED = fsSync.readFileSync(path.join(ROOT, 'server/scripts/fixtures/letter-doc15-stored.html'), 'utf8');
+    const DOC15_CLEAN = LT.repairLetterHtml(DOC15_STORED).html;   // the four real paragraphs, as the read side repairs them
+    const JUNK = /```|"cover_letter"|"employer_name"|Here is the JSON|I have completed the cover letter|<br>\}/;
+    const paras = (h) => (String(h).match(/<\/p>/g) || []).length;
+    const unstyled = (h) => String(h).replace(/<p style="[^"]*">/g, '<p>');
+    const AIRBUS = (title) => buildBody({ employer: 'Airbus', country: 'United Kingdom', job: { ...JOB, company: 'Airbus', title, website: 'airbus.test' } });
+    // Answers that PARSE but are not a letter even after the cleaning: nine distinct paragraphs, and a JSON object inline.
+    const NINE = GOOD({ cover_letter: [1, 2, 3, 4, 5, 6, 7, 8, 9].map(PARA).join('\n\n') });
+    const INLINE = GOOD({ cover_letter: `${PARA(1)} {"to": "HR", "subject": "S"}\n\n${PARA(2)}` });
+
+    // 1. the Airbus answer itself → the four paragraphs, first try, charged once.
+    reset(); ai.queue = [DOC15_RAW];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Cyber Security Manager'));
+    const pA = (store.puts[0] || { payload: {} }).payload;
+    ok('⚠️ the Airbus answer (two JSON objects + chatter) → 200, ONE AI call, charged once, stored once',
+      r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1, { status: r.statusCode, calls: ai.calls.length, body: r.body });
+    ok('⚠️ …and the stored letter is FOUR paragraphs with no fence, no JSON key, no chatter, nothing twice (it was nine)',
+      paras(pA.coverLetterHtml) === 4 && !JUNK.test(pA.coverLetterHtml) && !LT.looksContaminatedHtml(pA.coverLetterHtml), pA.coverLetterHtml && pA.coverLetterHtml.slice(-300));
+    ok('…exactly the four real paragraphs production stored first (the write side and the read-side repair agree)',
+      unstyled(pA.coverLetterHtml) === DOC15_CLEAN, { stored: unstyled(pA.coverLetterHtml).slice(-160), repaired: DOC15_CLEAN.slice(-160) });
+    ok('…with the FIRST object\'s one-line fields: the addressee, the subject and all nine researched offices',
+      pA.hiringManager === 'Head of Cybersecurity' && pA.subject === 'Application for Cyber Security Manager — Rishi Samadhiya' && pA.locations.length === 9, { to: pA.hiringManager, subject: pA.subject, n: pA.locations && pA.locations.length });
+    ok('…and the thumbnails were rendered from that clean letter', rendered.previews.length === 1 && rendered.previews[0].data.bodyHtml === pA.coverLetterHtml);
+
+    // 1b. ⚠️ (review round 3, 2026-09-20) the same answer with ONE literal " in its first copy ("14+ years 27""). That quote
+    // flipped the escaper's in-string parity, the extractor found no end of copy 1, ran on into copy 2, and the second copy's
+    // first paragraph (without the quote) passed every exact-copy test: five paragraphs, stored and charged.
+    const DOC15_ODD = DOC15_RAW.replace('**14+ years**', '**14+ years 27"**');
+    reset(); ai.queue = [DOC15_ODD];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Cyber Defence Manager'));
+    const pO = (store.puts[0] || { payload: {} }).payload;
+    const oddText = LT.repairLetterHtml(pO.coverLetterHtml || '').html.replace(/<[^>]+>/g, ' ');
+    ok('⚠️ the Airbus answer with one literal " in its first copy → 200, ONE AI call, charged once, FOUR paragraphs (it was five)',
+      r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1 && paras(pO.coverLetterHtml) === 4
+        && !JUNK.test(pO.coverLetterHtml) && !LT.looksContaminatedHtml(pO.coverLetterHtml), { status: r.statusCode, calls: ai.calls.length, paras: paras(pO.coverLetterHtml) });
+    ok('…copy 1\'s words (its quote kept, "14+ years" once, "consideration" once) and copy 1\'s fields',
+      (oddText.match(/14\+ years/g) || []).length === 1 && /14\+ years 27(?:"|&quot;)/.test(pO.coverLetterHtml) && (oddText.match(/Thank you for your consideration/g) || []).length === 1
+        && pO.hiringManager === 'Head of Cybersecurity' && pO.subject === 'Application for Cyber Security Manager — Rishi Samadhiya' && pO.locations.length === 9,
+      { subject: pO.subject, n: pO.locations && pO.locations.length });
+    reset(); ai.queue = [DOC15_ODD];
+    r = await call(CL.generateCoverLetterDetails, 7, { recipientEmail: 'hr@airbus.test', websiteUrl: 'airbus.test', position: 'Cyber Security Manager', companyName: 'Airbus' });
+    ok('⚠️ …and the Jobs lane (Letters page / Job Hub) reads it the same: four paragraphs, charged once',
+      r.statusCode === 200 && r.body.success === true && paras(r.body.coverLetterHtml) === 4 && !JUNK.test(r.body.coverLetterHtml) && ent.consumed.length === 1,
+      { status: r.statusCode, paras: r.body && paras(r.body.coverLetterHtml) });
+    // A paragraph written NEARLY twice inside the letter itself: the near-copy goes before anything is stored or charged.
+    const P1x = PARA(1).replace('two days', 'two full days');
+    reset(); ai.queue = [GOOD({ cover_letter: [PARA(1), PARA(2), PARA(3), PARA(4), P1x].join('\n\n') })];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Security Operations Analyst'));
+    const pN = (store.puts[0] || { payload: {} }).payload;
+    ok('⚠️ a letter with a near-copy of its first paragraph → stored as its 4 paragraphs, one call, charged once',
+      r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && paras(pN.coverLetterHtml) === 4 && !/two full days/.test(pN.coverLetterHtml),
+      { status: r.statusCode, paras: paras(pN.coverLetterHtml) });
+
+    // 2. an answer that is not a letter → asked ONCE more, on the same primary; the second answer is stored and charged.
+    reset(); ai.queue = [NINE, GOOD()];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Security Architect'), { __jobId: 'job-airbus-retry' });
+    ok('⚠️ an answer that fails the letter check (nine paragraphs) → asked once more: 2 calls, the second letter stored, charged ONCE',
+      r.statusCode === 200 && ai.calls.length === 2 && ai.calls.every((c) => c.cfg.model === P) && ent.consumed.length === 1 && store.puts.length === 1
+        && paras(store.puts[0].payload.coverLetterHtml) === 4, { status: r.statusCode, calls: ai.calls.map((c) => c.cfg.model), consumed: ent.consumed.length });
+    ok('…and the retry is on the bar in plain words', stages.some((s) => s.stage === 'retry' && s.label === 'Taking another pass at it'), stages.map((s) => s.label));
+
+    // 3. two answers that are not letters → the honest ending: nothing charged, nothing stored, never a third ask.
+    reset(); ai.queue = [NINE, INLINE, GOOD()];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Security Engineer'));
+    ok('⚠️ two answers that fail the letter check → 500 failed, and the answer SAYS nothing was charged',
+      r.statusCode === 500 && r.body.success === false && r.body.reason === 'failed' && /Nothing was charged/.test(r.body.error), r.body);
+    ok('⚠️ …exactly TWO AI calls (the third answer was never asked for), no consume, no put, no charge to give back',
+      ai.calls.length === 2 && ai.queue.length === 1 && ent.consumed.length === 0 && store.puts.length === 0 && passSpy.claimCalls.length === 0 && (world.refunds || []).length === 0,
+      { calls: ai.calls.length, left: ai.queue.length, consumed: ent.consumed.length, puts: store.puts.length });
+    // The writer's own ending, straight: its words, its reason code, and no err.reason (the lanes' 402 / 503 mapping untouched).
+    let wErr = null;
+    reset(); ai.queue = [INLINE, NINE];
+    try { await CL.writeLegacyLetter({ raw_text: 'x' }, 'airbus.test', 'Security Engineer'); } catch (e) { wErr = e; }
+    ok('the writer\'s ending: LEGACY_LETTER_UNUSABLE, userFacing, err.letterCheck set, no err.reason',
+      !!wErr && wErr.message === CL._internals.LEGACY_LETTER_UNUSABLE && wErr.userFacing === true && wErr.letterCheck === 'too_many_paragraphs' && !('reason' in wErr) && ai.calls.length === 2,
+      wErr && { message: wErr.message, check: wErr.letterCheck, calls: ai.calls.length });
+    // Answers that do not PARSE keep v2's three tries (above, "three unusable answers"); one of each still stops at three.
+    reset(); ai.queue = ['not json', NINE, 'Sorry, I cannot help with that.'];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Security Lead'));
+    ok('a mix (no JSON, not a letter, no JSON) → still three answers at most, then 500 failed, nothing charged',
+      r.statusCode === 500 && r.body.reason === 'failed' && ai.calls.length === 3 && ent.consumed.length === 0 && store.puts.length === 0, { status: r.statusCode, calls: ai.calls.length });
+
+    // 4. the Jobs section's letter (POST /generate-cover-letter-details → the Letters page and the Job Hub) shares the
+    // writer: the Airbus answer is its four paragraphs there too.
+    reset(); ai.queue = [DOC15_RAW]; world.brandProfile = { brand_color: '#00205b', font_name: 'Lato' };
+    r = await call(CL.generateCoverLetterDetails, 7, { recipientEmail: 'hr@airbus.test', websiteUrl: 'airbus.test', position: 'Cyber Security Manager', companyName: 'Airbus' });
+    ok('⚠️ the Jobs lane (Letters page / Job Hub) hands back the same four clean paragraphs, charged once',
+      r.statusCode === 200 && r.body.success === true && paras(r.body.coverLetterHtml) === 4 && !JUNK.test(r.body.coverLetterHtml)
+        && unstyled(r.body.coverLetterHtml) === DOC15_CLEAN && ent.consumed.length === 1, { status: r.statusCode, error: r.body && r.body.error });
+
+    // 4b. ⚠️ (review, 2026-09-19) a closing that only SOUNDS like the model is the letter's own: stored with it, first try.
+    // And the prompt's own template, or a stub, is never stored or charged in place of the letter.
+    const SOUNDS = 'I hope this cover letter shows why I am prepared to relocate to **Berlin, Germany** to join **Acme GmbH**. Thank you for your consideration.';
+    reset(); ai.queue = [GOOD({ cover_letter: [PARA(1), PARA(2), PARA(3), SOUNDS].join('\n\n') })];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Platform Engineer'));
+    const pS = (store.puts[0] || { payload: {} }).payload;
+    ok('⚠️ a letter closing "I hope this cover letter shows why I am prepared to relocate …" → stored WITH that closing (4 paragraphs), one call, charged once',
+      r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && paras(pS.coverLetterHtml) === 4
+        && /I hope this cover letter shows why I am prepared to relocate to <strong>Berlin, Germany<\/strong>/.test(pS.coverLetterHtml),
+      { status: r.statusCode, calls: ai.calls.length, paras: paras(pS.coverLetterHtml), tail: String(pS.coverLetterHtml || '').slice(-160) });
+    const TEMPLATE = JSON.stringify({ to: 'Hiring manager name if found, otherwise most relevant title e.g. Head of Engineering', employer_name: 'Full official company name',
+      position: 'Target position exactly as provided', addresses: ['HQ full street address, postal code, city, country'],
+      subject: 'Application for [Target Position] — [User Full Name from metadata]', cover_letter: 'PARAGRAPH 1 text\n\nPARAGRAPH 2 text\n\nPARAGRAPH 3 text\n\nPARAGRAPH 4 text' }, null, 2);
+    reset(); ai.queue = [GOOD() + '\n\nThe output follows this format:\n\n' + TEMPLATE];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Data Engineer'));
+    const pT = (store.puts[0] || { payload: {} }).payload;
+    ok('⚠️ the letter, then the prompt\'s template echoed back → the LETTER is stored with its own subject (not "PARAGRAPH 1 text"), one call, charged once',
+      r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && paras(pT.coverLetterHtml) === 4
+        && !/PARAGRAPH \d text|\[Target Position\]/.test(JSON.stringify(pT)) && pT.subject === 'Application for Senior Backend Engineer — Jane Doe',
+      { status: r.statusCode, subject: pT.subject, letter: String(pT.coverLetterHtml || '').slice(0, 80) });
+    reset(); ai.queue = [TEMPLATE, GOOD()];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Data Architect'));
+    ok('⚠️ the template ALONE → refused before any charge, asked once more: 2 calls, the real letter stored, charged ONCE',
+      r.statusCode === 200 && ai.calls.length === 2 && ent.consumed.length === 1 && store.puts.length === 1
+        && !/PARAGRAPH \d text/.test(store.puts[0].payload.coverLetterHtml), { status: r.statusCode, calls: ai.calls.length, consumed: ent.consumed.length });
+    reset(); ai.queue = [GOOD({ cover_letter: 'Please see the letter below.' }), GOOD({ cover_letter: PARA(1) }), GOOD()];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Data Scientist'));
+    ok('⚠️ two stubs ("Please see the letter below.", one paragraph) → 500 "Nothing was charged", 2 calls, nothing consumed or stored',
+      r.statusCode === 500 && /Nothing was charged/.test(r.body.error) && ai.calls.length === 2 && ent.consumed.length === 0 && store.puts.length === 0,
+      { status: r.statusCode, calls: ai.calls.length, consumed: ent.consumed.length, body: r.body });
+
+    // 4c. ⚠️ ROUND 2 (review, 2026-09-19), through the Home lane: the model's WRAPPER inside cover_letter ("Sure! Here is the
+    // cover letter you asked for." first, "I hope this helps!" last) used to be stored — and charged — as a card; a closing
+    // that NAMES A FORMAT with no JSON anywhere ("… in the requested format.") used to be cut out of the letter silently.
+    const WRAPPED = ['Sure! Here is the cover letter you asked for.', PARA(1), PARA(2), PARA(3), PARA(4), 'I hope this helps!'].join('\n\n');
+    reset(); ai.queue = [GOOD({ cover_letter: WRAPPED })];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Security Analyst'));
+    const pW = (store.puts[0] || { payload: {} }).payload;
+    ok('⚠️ "Sure! Here is the cover letter …" first + "I hope this helps!" last → stored WITHOUT them (the 4 paragraphs), one call, charged once',
+      r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && store.puts.length === 1 && paras(pW.coverLetterHtml) === 4
+        && !/Sure!|Here is the cover letter|hope this helps/i.test(pW.coverLetterHtml) && !LT.looksContaminatedHtml(pW.coverLetterHtml),
+      { status: r.statusCode, calls: ai.calls.length, paras: paras(pW.coverLetterHtml), head: String(pW.coverLetterHtml || '').slice(0, 120) });
+    const FORMAT_CLOSING = 'Please let me know if you would like my certificates in the requested format.';
+    reset(); ai.queue = [GOOD({ cover_letter: [PARA(1), PARA(2), PARA(3), PARA(4), FORMAT_CLOSING].join('\n\n') })];
+    r = await call(EL.buildEmployerLetter, 7, AIRBUS('Security Consultant'));
+    const pF = (store.puts[0] || { payload: {} }).payload;
+    ok('⚠️ a letter closing "… my certificates in the requested format." → stored WITH that closing (5 paragraphs), one call, charged once',
+      r.statusCode === 200 && ai.calls.length === 1 && ent.consumed.length === 1 && paras(pF.coverLetterHtml) === 5
+        && pF.coverLetterHtml.includes(FORMAT_CLOSING) && LT.repairLetterHtml(pF.coverLetterHtml).repaired === false,
+      { status: r.statusCode, calls: ai.calls.length, paras: paras(pF.coverLetterHtml), tail: String(pF.coverLetterHtml || '').slice(-120) });
+
+    // 5. the letter ALREADY stored with the junk: every read repairs it — the cards, the PDF designs, the Original, the Word
+    // file and the history row — and the row itself is never written.
+    reset();
+    const bad = { id: store.nextId++, user_id: 7, kind: 'cover_letter', employer_key: 'airbus stored', employer_name: 'Airbus Stored', job_url: '', job_title: 'Cyber Security Manager',
+      input_fingerprint: 'fp-doc15', environment: 'Production', payload: { coverLetterHtml: DOC15_STORED, subject: 'Application for Cyber Security Manager — Rishi Samadhiya', companyName: 'Airbus', companyAddress: 'Floor 2, Wellington House, 125-30 Strand, UK', hiringManager: 'Head of Cybersecurity', position: 'Cyber Security Manager', locations: [] },
+      research: null, design: { kind: 'cover_letter', mode: 'a4', ranked: [{ id: 'ats_pro', score: 90 }, { id: 'standard', score: 80 }] }, updated_at: new Date('2026-09-19T16:42:39Z') };
+    store.rows.push(bad);
+    const clean = { ...bad, id: store.nextId++, employer_key: 'airbus clean', employer_name: 'Airbus Clean', payload: { ...bad.payload, coverLetterHtml: DOC15_CLEAN } };
+    store.rows.push(clean);
+    const thumbsOf = () => new Set(fsSync.readdirSync(path.join(THUMBS, '7')).filter((n) => n.startsWith('cl_')));
+    let res5 = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(bad.id), ids: 'ats_pro' } }), res5);
+    ok('⚠️ the cards of the stored Airbus letter are rendered from the REPAIRED letter',
+      res5.statusCode === 200 && rendered.previews.length === 1 && rendered.previews[0].data.bodyHtml === DOC15_CLEAN && !JUNK.test(rendered.previews[0].data.bodyHtml), rendered.previews.map((p) => p.data.bodyHtml.slice(-80)));
+    ok('…and the stored row is untouched (a read never writes)', bad.payload.coverLetterHtml === DOC15_STORED && store.puts.length === 0);
+    const before = thumbsOf(); rendered.previews = [];
+    res5 = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(bad.id), ids: 'ats_pro' } }), res5);
+    ok('…a second look is a cache hit (the repaired key is stable)', res5.statusCode === 200 && rendered.previews.length === 0);
+    // The same doc, its payload healed by a save (same id, same updated_at): a clean letter's key has no repair mark, so its
+    // card is NOT the repaired one's file — the mark is in the key of a repaired letter only.
+    bad.payload = { ...bad.payload, coverLetterHtml: DOC15_CLEAN }; rendered.previews = [];
+    res5 = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(bad.id), ids: 'ats_pro' } }), res5);
+    const after = thumbsOf();
+    ok('⚠️ LETTER_REPAIR_REV is in a REPAIRED letter\'s thumb key only: the healed letter (same id, same updated_at) is a new key',
+      rendered.previews.length === 1 && [...after].filter((n) => !before.has(n)).length >= 1, { renders: rendered.previews.length });
+    bad.payload = { ...bad.payload, coverLetterHtml: DOC15_STORED };
+    rendered.previews = [];
+    res5 = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(clean.id), ids: 'ats_pro' } }), res5);
+    rendered.previews = [];
+    res5 = mkRes(); await EL.employerLetterCards(mkReq(7, {}, { query: { doc: String(clean.id), ids: 'ats_pro' } }), res5);
+    ok('a clean letter\'s cards cache exactly as before (second look renders nothing)', res5.statusCode === 200 && rendered.previews.length === 0);
+
+    hist.length = 0; rendered.pdf = 0; rendered.rich = 0; rendered.docx = 0;
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'ats_pro', docId: bad.id });
+    ok('⚠️ the PDF of the stored Airbus letter (docId) prints the repaired letter, and the history row freezes the repaired text',
+      r.statusCode === 200 && rendered.pdfArgs.data.bodyHtml === DOC15_CLEAN && hist.length === 1 && hist[0].payload.coverLetterHtml === DOC15_CLEAN, { status: r.statusCode, body: r.body });
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bad.id });
+    ok('⚠️ …the Original (PDFKit) too', r.statusCode === 200 && rendered.rich === 1 && rendered.richArgs[1] === DOC15_CLEAN, rendered.richArgs && String(rendered.richArgs[1]).slice(-80));
+    r = await call(CL.generateCoverLetterTemplateDocx, 7, { template: 'german', docId: String(bad.id) });
+    ok('⚠️ …and the Word file', r.statusCode === 200 && rendered.docx === 1 && rendered.docxArgs.data.bodyHtml === DOC15_CLEAN, r.body);
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', coverLetterHtml: DOC15_STORED, companyName: 'Airbus' });
+    ok('⚠️ a frozen copy re-downloaded through the classic lane (download_history 13 is one) reaches the Original repaired',
+      r.statusCode === 200 && rendered.rich === 2 && rendered.richArgs[1] === DOC15_CLEAN, r.body);
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: clean.id });
+    ok('a clean letter reaches the Original as the very same string', r.statusCode === 200 && rendered.richArgs[1] === clean.payload.coverLetterHtml);
   }
 
   console.log('── helpers ──');

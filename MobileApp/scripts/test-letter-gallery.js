@@ -15,6 +15,12 @@
 // commit as the sheet's close never appears — the tap reads as a dead button. The screen waits for the
 // sheet's onDismiss (with a net under it); these scenarios hold it to that, and to running exactly once.
 //
+// ⚠️ AND THE SEND PILL (2026-09-19): doc mode's top-right corner opens the Send page for THAT letter, the design on
+// screen and the page layout picked in the sheet — navigation only (the router stub records every push), never a
+// second download control, never a request of its own. ⚠️ And (2026-09-20) the classic picker has it too: the Job Hub's
+// and the Review screen's letters open this same page with the same Download; its pill hands the letter the Download
+// would send to the Send page (letterSend's CLASSIC_SEND_KEY) and opens it with classic=1 (section 6).
+//
 // ⚠️ RUN IT AGAINST ANOTHER COPY of the screen to prove it still catches the bug — the mutation proof:
 //   LETTER_SRC=/tmp/pre-fix/templates.tsx node MobileApp/scripts/test-letter-gallery.js
 'use strict';
@@ -144,6 +150,9 @@ const isModal = (n) => n.type === 'Modal';
 const WIN = 390;
 let OS = 'ios';
 let ctxStash, doc, locked, calls, alerts;
+let pushes = [];
+let stashWrites = [];
+const CLASSIC_SEND_KEY = (fs.readFileSync(path.join(APP, 'services/letterSend.ts'), 'utf8').match(/export const CLASSIC_SEND_KEY = '([^']+)'/) || [])[1];
 const jsonRes = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 const OPEN = { metered: false, paid: true, unlimited: true, remaining: null, passes: 0, ownsEmployer: false, employer: null };
 const SHUT = { metered: false, paid: false, unlimited: false, remaining: null, passes: 0, ownsEmployer: false, employer: null };
@@ -170,10 +179,17 @@ Module._load = function (request) {
   if (request === 'expo-linear-gradient') return { LinearGradient: 'LinearGradient' };
   if (request === '@expo/vector-icons') return { Ionicons: 'Ionicons' };
   if (request === 'expo-router') return {
-    useRouter: () => ({ back() {}, push() {}, replace() {}, canGoBack: () => true }),
+    // A RECORDING push (2026-09-19): the Send pill navigates, and the suite has to see where to.
+    useRouter: () => ({ back() {}, push(arg) { pushes.push(arg); }, replace() {}, canGoBack: () => true }),
     useLocalSearchParams: () => params,
   };
-  if (request === '@react-native-async-storage/async-storage') return { __esModule: true, default: { getItem: async () => (ctxStash ? JSON.stringify(ctxStash) : null) } };
+  if (request === '@react-native-async-storage/async-storage') return { __esModule: true, default: {
+    getItem: async () => (ctxStash ? JSON.stringify(ctxStash) : null),
+    // Recorded (2026-09-20): the classic Send pill leaves its letter here for the Send page.
+    setItem: async (k, v) => { stashWrites.push({ k, v }); },
+  } };
+  // The ONE key the Send page reads, taken from letterSend.ts itself — a pill writing any other key is a failure here.
+  if (request === '../../services/letterSend') return { CLASSIC_SEND_KEY };
   if (request === 'expo-secure-store') return { getItemAsync: async () => JSON.stringify({ token: 'tok' }) };
   if (request === 'expo-file-system/legacy') return { downloadAsync: async () => ({ status: 200, uri: 'file://c.pdf' }), cacheDirectory: 'file:///c/' };
   if (request === 'expo-sharing') return { isAvailableAsync: async () => false, shareAsync: async () => {} };
@@ -219,7 +235,7 @@ async function openLetters(o = {}) {
   rafs.length = 0;
   OS = o.os || 'ios';
   locked = !!o.locked;
-  calls = []; alerts = [];
+  calls = []; alerts = []; pushes = []; stashWrites = [];
   params = o.params || {};
   doc = o.doc === undefined ? null : o.doc;
   ctxStash = o.ctx === undefined
@@ -246,6 +262,8 @@ async function openLetters(o = {}) {
     /** iOS reports the sheet's slide-out as finished. */
     async dismissed() { const m = sheet(); if (m && typeof m.props.onDismiss === 'function') m.props.onDismiss(); await flush(); },
     text: () => textOf(c.tree),
+    /** The Send pill at the top right (doc mode only) — outside every sheet. */
+    sendPill: () => findOne(c.tree, (n) => n.type === 'TouchableOpacity' && textOf(n) === 'Send', isModal),
   };
   return h;
 }
@@ -264,6 +282,8 @@ async function openLetters(o = {}) {
     ok('the region chips stay at the top, as on the resume gallery', /USA \/ Canada/.test(textOf(findOne(h.c.tree, (n) => n.type === 'ScrollView' && n.props.horizontal && !n.props.pagingEnabled))));
     ok('…without the caption row that ate a line above them', !/Target country \/ region/i.test(h.text()));
     ok('the classic lead line still tells them how to use the pager', /Swipe to compare/.test(h.text()));
+    // 2026-09-20: the classic picker has its Send pill too (section 6 drives it).
+    ok('the classic picker shows the Send pill as well (its letter has the same Download)', !!h.sendPill());
 
     await h.press(h.dlButton());
     ok('the Download button opens the sheet', h.sheetOpen());
@@ -368,6 +388,19 @@ async function openLetters(o = {}) {
     ok('…and the old separate "Ranked for" row is gone', !/Ranked for/.test(t));
     ok('doc mode has no region chips', !/USA \/ Canada/.test(t));
     ok('still exactly one download control outside the sheet', h.footerControls().length === 1);
+
+    // ⚠️ THE OWNER (2026-09-19): "there is space on the top right corner … show a button Send".
+    const pill = h.sendPill();
+    ok('⚠️ doc mode shows a Send pill in the top bar', !!pill, h.text().slice(0, 120));
+    ok('…a pill with the send icon, not a second download control', !!pill && !!findOne(pill, (n) => n.type === 'Ionicons' && n.props.name === 'send')
+      && h.footerControls().length === 1);
+    const topBar = findOne(h.c.tree, (n) => n.type === 'View' && n.children.some((k) => k && k.$el && k.type === 'Text' && textOf(k) === 'Cover Letter'));
+    ok('…and it sits in the top bar beside the title (the old empty corner)', !!topBar && topBar.children.includes(pill));
+    await h.press(pill);
+    ok('⚠️ tapping Send opens the Send page with THIS letter, the design on screen and the page layout',
+      pushes.length === 1 && pushes[0].pathname === '/(cover-letter)/send' && pushes[0].params.docId === '42'
+      && pushes[0].params.template === 'exec_leader' && pushes[0].params.mode === 'onepage', pushes);
+    ok('⚠️ …and generates, downloads and charges NOTHING by itself', h.gens().length === 0 && !h.sheetOpen() && !h.payOpen(), h.gens());
     const reason = findOne(h.c.tree, (n) => n.type === 'Text' && n.props.numberOfLines === 2 && n.props.maxFontSizeMultiplier);
     ok('the fit reason is a fixed two-line slot (the pager cannot jump between designs)',
       !!reason && Array.isArray(reason.props.style) && reason.props.style.some((x) => x && x.minHeight > 0), reason && reason.props);
@@ -377,6 +410,65 @@ async function openLetters(o = {}) {
     await h.dismissed();
     const g = h.gens();
     ok('⚠️ the download still carries the docId, so the server bills THAT document', g.length === 1 && g[0].body.docId === 42 && g[0].body.template === 'exec_leader', g[0] && g[0].body);
+    h.c.unmount();
+  }
+
+  console.log('── 5. the Send pill follows the page on screen, and is gone when the letter is ──');
+  {
+    const docOf = () => ({ id: 42, employer: 'Nordex', payload: { coverLetterHtml: '<p>Dear Nordex</p>', companyName: 'Nordex SE' }, design: { ranked: [{ id: 'standard', score: 90 }], mode: 'onepage' } });
+    const h = await openLetters({ params: { docId: '42' }, ctx: null, doc: docOf() });
+    await h.press(h.dlButton());
+    await h.press(h.row(/^A4 Pages/));
+    await h.press(h.sendPill());
+    ok('⚠️ the page layout picked in the download sheet travels to the Send page (the PDF it attaches)',
+      pushes.length === 1 && pushes[0].params.mode === 'a4' && pushes[0].params.template === 'standard', pushes);
+    h.c.unmount();
+  }
+  {
+    const h = await openLetters({ params: { docId: '42' }, ctx: null, doc: 'gone' });
+    ok('a letter that is no longer saved has no Send pill (nothing to send)', !h.sendPill() && /no longer saved/.test(h.text()));
+    h.c.unmount();
+  }
+
+  console.log('── 6. ⚠️ the CLASSIC picker\'s Send pill: the letter the Download would send, handed to the Send page ──');
+  // 2026-09-20 (the completeness review): the Job Hub's and the Review screen's letters open this page WITHOUT a docId —
+  // same preview, same Download — and had no Send. Their letter has no id, so the pill hands the letter itself over.
+  {
+    ok('the key comes from letterSend.ts itself', typeof CLASSIC_SEND_KEY === 'string' && CLASSIC_SEND_KEY.length > 5, CLASSIC_SEND_KEY);
+    const h = await openLetters({ ctx: { coverLetterHtml: '<p>Dear team</p>', companyName: 'Nordex SE', companyAddress: 'Hamburg', employer: 'Nordex', jobUrl: 'https://jobs.nordex.com/9', position: 'Service Technician' } });
+    const pill = h.sendPill();
+    ok('⚠️ the classic picker shows the Send pill in the top bar', !!pill && !!findOne(pill, (n) => n.type === 'Ionicons' && n.props.name === 'send'), h.text().slice(0, 120));
+    const topBar = findOne(h.c.tree, (n) => n.type === 'View' && n.children.some((k) => k && k.$el && k.type === 'Text' && textOf(k) === 'Cover Letter'));
+    ok('…in the old empty corner, beside the title', !!topBar && topBar.children.includes(pill));
+    ok('…and it is not a second download control', h.footerControls().length === 1);
+    // Go to the second design (its dot under the pager) and pick A4 in the sheet: both travel.
+    const dots = findAll(h.c.tree, (n) => n.type === 'TouchableOpacity' && n.props.hitSlop === 8, isModal);
+    ok('the pager has a dot per design', dots.length === 3, dots.length);
+    if (dots[1]) await h.press(dots[1]);
+    await h.press(h.dlButton());
+    await h.press(h.row(/^A4 Pages/));
+    // The sheet stays open until a format is picked or it is swiped away — close it the way a thumb would.
+    const sheet = h.sheet();
+    if (sheet && sheet.props.onRequestClose) sheet.props.onRequestClose();
+    await flush();
+    await h.press(h.sendPill());
+    await flush();
+    ok('⚠️ the letter is left under CLASSIC_SEND_KEY — exactly what the Download sends, plus the posting and the design name',
+      stashWrites.length === 1 && stashWrites[0].k === CLASSIC_SEND_KEY && (() => {
+        const v = JSON.parse(stashWrites[0].v);
+        return v.coverLetterHtml === '<p>Dear team</p>' && v.companyName === 'Nordex SE' && v.companyAddress === 'Hamburg' && v.employer === 'Nordex'
+          && v.jobUrl === 'https://jobs.nordex.com/9' && v.position === 'Service Technician' && v.designName === 'ATS Professional';
+      })(), stashWrites);
+    ok('⚠️ …then the Send page opens with classic=1, the design on screen and the layout picked in the sheet',
+      pushes.length === 1 && pushes[0].pathname === '/(cover-letter)/send' && pushes[0].params.classic === '1'
+        && pushes[0].params.template === 'ats_pro' && pushes[0].params.mode === 'a4' && !('docId' in pushes[0].params), pushes);
+    ok('⚠️ …and generates, downloads and charges NOTHING by itself', h.gens().length === 0 && !h.payOpen(), h.gens());
+    h.c.unmount();
+  }
+  {
+    // The picker could not build its previews: no letter on screen, so nothing to send.
+    const h = await openLetters({ ctx: null });
+    ok('a classic picker with no letter has no Send pill', !h.sendPill() && /No cover letter found/.test(h.text()));
     h.c.unmount();
   }
 

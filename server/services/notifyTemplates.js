@@ -19,7 +19,17 @@
 //   '/(discover)' + { sort:'match' } → Explore, best matches first
 //   '/(ai-hub)'                      → Job Hub dashboard (optional { tab:'search'|'saved'|'myjobs' })
 //   'profile'  + { section }           → App.js profile screen via the AsyncStorage handoff
-//   'help'                           → in-app tutorial
+//   'help'                           → the step-by-step in-app GUIDE (stills), not the film
+//   'tutorial' + { film, until? }    → the narrated tutorial, opened ON the named clip. film/until are
+//                                      journey step keys (server/services/journey.js STEPS:
+//                                      profile | resume | save_job | cover_letter | apply); `until`
+//                                      plays on through the following clips up to that one.
+//                                      ⚠️ Every 'tutorial' template MUST name its film (asserted by
+//                                      tools/test-notify-templates.js) — without one the tap opens
+//                                      clip 01 "Set up your profile", whatever the push was about.
+//                                      ⚠️ Builds ≤209 ignore film/until and open 01 anyway: copy that
+//                                      describes the named clip must be gated on
+//                                      opensNamedClip(state.appVersion) (see how_it_works).
 //   'support'  + { focus:'1' }        → Help & support; focus opens the "what went wrong" picker
 //   'usage'                          → Plans & Usage (quota, trial state, bonus)
 //   'rewards'                        → Earn free credits
@@ -62,6 +72,22 @@ const firstName = (ctx) => {
 const greet = (ctx, named, plain) => { const n = firstName(ctx); return n ? named(n) : plain; };
 const S = (ctx) => (ctx && ctx.state) || {};
 const J = (ctx) => (ctx && ctx.job) || null;
+
+// The build number an install last reported. The app sends "4.6 (209)" — version, then the build in
+// brackets (MobileApp/services/analytics.ts; iOS and Android report the same shared build number).
+// A bare version ("3.4") predates the build-number format and yields 0, the same way the build-aware
+// segments in adminUserOps.js read it with split_part; so does a missing or junk value.
+const buildOf = (appVersion) => {
+  const m = /\((\d{1,7})\)/.exec(String(appVersion == null ? '' : appVersion));
+  return m ? Number(m[1]) : 0;
+};
+// ⚠️ 2026-09-19 — the first app build whose push router forwards { film, until } to the tutorial
+// (MobileApp/services/pushRouting.ts). Every build up to 209 drops them and opens clip 01, whatever
+// the push names. If build 210 ships WITHOUT that router change, raise this to the build that does:
+// copy gated on it describes a clip the tap would not open.
+const TUTORIAL_FILM_MIN_BUILD = 210;
+/** Will this install open the clip a 'tutorial' push names? Unknown build → no (the safe answer). */
+const opensNamedClip = (appVersion) => buildOf(appVersion) >= TUTORIAL_FILM_MIN_BUILD;
 
 // ── the catalogue ────────────────────────────────────────────────────────────
 const TEMPLATES = [
@@ -318,19 +344,47 @@ const TEMPLATES = [
   {
     key: 'how_it_works',
     label: 'How CVApplyr works (explainer video)',
-    description: 'Opens the 1:27 explainer film in-app. For users who signed up and then stalled. '
-      + 'Builds older than the tutorial screen fall back to the step-by-step guide, so this is safe '
-      + 'to send while the fleet is mixed.',
+    description: 'Opens the in-app tutorial on clip 04 "Cover letter" and plays straight on into 05 '
+      + '"Auto Fill & apply" (68 s) — the part this push is about. For users who signed up and then stalled. '
+      + 'Builds 158–209 ignore the clip and open 01, so they get the original "whole thing in 90 seconds" '
+      + 'text; only build 210+ gets the text about the two clips (the preview shows the first recipient\'s). '
+      + 'Builds older than the tutorial screen fall back to the step-by-step guide, so this is safe to '
+      + 'send while the fleet is mixed.',
     category: 'reminders',
     notifType: 'reminder',
     route: 'tutorial',
-    params: () => ({}),
-    // Curiosity, then the payoff, then the cost of looking — in that order. "90 seconds" is the
-    // permission-giver: the reason someone taps now instead of resolving to look later and never
-    // doing it. It is also true (1:27), which matters more than it sounds: a nudge that overstates
-    // itself is the last one a person opens.
+    // ⚠️ 2026-09-19 — THE PUSH NAMES ITS CLIP. It used to send no params at all, so a tap landed on
+    // clip 01 "Set up your profile" and the owner had to hunt through the chapter strip for the
+    // form-filling part the title promised (production: every tap on a five-clip build opened
+    // 'profile'). 04 → 05 is the letter being written and then Auto Fill attaching it to the form —
+    // exactly "fill a job form for you". To show only the form fill, make this { film: 'apply' }:
+    // the app reads the clip from here, so that change needs no app release.
+    // Backward compatible by construction: builds ≤209 drop every tutorial param and open 01 as
+    // before; builds before 158 do not know 'tutorial' and open the guide. Same key, category and
+    // suggestWhen — who gets this push, and when, is unchanged.
+    params: () => ({ film: 'cover_letter', until: 'apply' }),
+    // Curiosity, then the payoff, then the cost of looking — in that order. The cost ("about a
+    // minute", "90 seconds") is the permission-giver: the reason someone taps now instead of
+    // resolving to look later and never doing it.
+    // ⚠️ 2026-09-19 — THE BODY DESCRIBES WHAT THE TAP PLAYS, AND THAT DEPENDS ON THE BUILD. On build
+    // 210+ the tap opens clips 04 + 05 (68 s), so the body names those two: the old "whole thing in
+    // 90 seconds — set up once, then find a job…" promised set-up and job search and landed on
+    // "Step 4 of 5 · Cover letter". But every build up to 209 drops `params` and lands on clip 01
+    // "Set up your profile" — and that is nearly the whole fleet until 210 spreads (last 14 days:
+    // 4.5 (201) alone was 85 users). Sending them the 04→05 copy would promise a letter and a form
+    // fill and show them profile set-up. So the copy follows the recipient's build: 210+ gets the
+    // two-clip line; anything older, or unknown, gets the original line UNCHANGED, which is what it
+    // has always opened on. A nudge that overstates itself is the last one a person opens.
+    // Reading state.appVersion here is also what makes adminUserOps.stateTierFor() build this
+    // template's state at the 'basic' tier (the light tier has no build) — keep the read INLINE in
+    // this function: moved into a helper, the tier scan cannot see it, every recipient would render
+    // with appVersion null, and 210+ would never get the new line (tools/test-notify-templates.js
+    // pins both the split and the tier). Change `params` and this TOGETHER. Title unchanged on every
+    // build — it was already about the form fill.
     title: () => 'Watch the app fill a job form for you ▶️',
-    body: () => 'The whole thing in 90 seconds — set up once, then find a job and apply without typing it all out again.',
+    body: (ctx) => (opensNamedClip(S(ctx).appVersion)
+      ? 'The AI writes your cover letter, then Auto Fill fills in the application form — about a minute to watch.'
+      : 'The whole thing in 90 seconds — set up once, then find a job and apply without typing it all out again.'),
     suggestWhen: (s) => {
       if (nOf(s.applications)) return { suggested: false, reason: 'Already applied — they know how it works.' };
       if (nOf(s.searches)) return { suggested: false, reason: 'Already searched — partly activated.' };
@@ -638,4 +692,5 @@ function describe(tpl, state, ctx) {
   };
 }
 
-module.exports = { PREF_CATEGORIES, TEMPLATES, get, keys, all, relevanceFor, render, describe, invalidCategories };
+module.exports = { PREF_CATEGORIES, TEMPLATES, get, keys, all, relevanceFor, render, describe, invalidCategories,
+  buildOf, TUTORIAL_FILM_MIN_BUILD };

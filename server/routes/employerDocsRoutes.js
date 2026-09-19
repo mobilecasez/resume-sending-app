@@ -16,6 +16,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const docs = require('../services/employerDocs');
+const letterText = require('../utils/letterText');
 
 const KINDS = new Set(['resume', 'cover_letter']);
 const kindOf = (v) => (KINDS.has(v) ? v : null);
@@ -353,7 +354,17 @@ router.get('/:id', authenticateToken, async (req, res) => {
     const design = kind
       ? await designFor(req.user.id, kind, doc, { country: req.query.country, website: req.query.website }, req)
       : null;
-    return res.json({ success: true, doc: { ...metaOf(doc, { stale: false, design }), payload: doc.payload || {} } });
+    // ⚠️ A LETTER STORED WITH THE MODEL'S JSON IN IT IS SERVED REPAIRED (2026-09-19: the Airbus letter's Customize page showed
+    // "Here is the JSON output:" and a ```json block as paragraphs 5 and 6). letterText.repairedLetterPayload acts only on a
+    // strong signal and hands a clean payload back as the same object. Nothing is written here (this route never writes):
+    // the editor sends back what it was served, so the row heals on the user's next save.
+    let payload = doc.payload || {};
+    if (kind === 'cover_letter') {
+      const repaired = letterText.repairedLetterPayload(payload);
+      if (repaired !== payload) console.log(`[employerDocs] letter doc ${doc.id} served repaired (the model's JSON / chatter / a repeated paragraph taken out) — the row heals on its next save`);
+      payload = repaired;
+    }
+    return res.json({ success: true, doc: { ...metaOf(doc, { stale: false, design }), payload } });
   } catch (e) {
     console.error('[employerDocs] get route failed:', e.message);
     return res.status(500).json({ success: false, reason: 'failed' });

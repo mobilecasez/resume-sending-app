@@ -21,6 +21,7 @@
 'use strict';
 
 const H = require('./docxHelpers');
+const { repairLetterHtml } = require('./letterText');
 
 let RT = null, CLT = null, RES_TPL = [], CL_TPL = [];
 try { RT = require('./resumeTemplates'); RES_TPL = RT.TEMPLATES || []; } catch (e) { /* keep defaults */ }
@@ -171,8 +172,17 @@ function withLetterLines(d) {
   return out;
 }
 
+// ⚠️ A letter stored with the model's JSON, its chatter or a paragraph written twice (2026-09-19, the Airbus letter) goes
+// into the Word file REPAIRED, exactly as the PDF designs print it (coverLetterTemplates.bodyToHtml). A clean letter passes
+// through as the very same object (letterText.repairLetterHtml acts only on a strong signal).
+function withRepairedBody(d) {
+  if (typeof d.bodyHtml !== 'string') return d;
+  const r = repairLetterHtml(d.bodyHtml);
+  return r.repaired ? { ...d, bodyHtml: r.html } : d;
+}
+
 async function buildCoverLetterDocx(data = {}, opts = {}) {
-  const dd = withLetterLines(data || {});
+  const dd = withLetterLines(withRepairedBody(data || {}));
   const tplId = CL_LAYOUTS[opts.template] ? opts.template : 'standard';
   const brand = brandOf(opts);
   // `branded` tells the ATS / German layouts to paint their ink-coloured rule in the accent too — which

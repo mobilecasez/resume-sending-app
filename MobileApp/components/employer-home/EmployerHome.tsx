@@ -68,7 +68,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Animated, Easing,
-  ActivityIndicator, RefreshControl, Alert, Image,
+  ActivityIndicator, RefreshControl, Alert, Image, AppState, type AppStateStatus,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -94,11 +94,15 @@ import EmployerChip from './EmployerChip';
 import { useHomeBuilds, forgetHomeBuilds, type HomeBuildJob } from './useHomeBuilds';
 import { useDocList, useTargetDoc, useDocDeck, cachedDocImage, warmDocImages, type DocLoaders } from './useTargetDoc';
 import {
-  fetchTargets, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS,
+  fetchTargetAnswer, fetchHomeCards, fetchTemplateCatalogue, bestDesignForCountry, LETTER_DESIGNS,
   fetchDownloadHistory, cachedDownloadHistory, redownload, gradFor, savePendingListing,
-  hideTarget, unhideTarget, untrackEmployer, fetchHiddenKeys, jobKeyForUrl,
-  Target, HomeCard, HomeCards, DownloadHistory as HistoryPayload, DownloadHistoryItem,
+  hideTarget, unhideTarget, untrackEmployer, fetchHiddenKeys, jobKeyForUrl, warmJobListings,
+  Target, HomeCard, HomeCards, DownloadHistory as HistoryPayload, DownloadHistoryItem, type TargetAnswer,
 } from '../../services/employerHomeService';
+import {
+  planRow, rowAccounts, readRoster, keepRoster, editRoster, rosterCopy, rosterRow, rosterPlace, rosterRemove, rosterSelect,
+  forgetRosterCopy, listAnswer, fetchRemoteRoster, savedRowOf, type Roster, type RemoteRoster,
+} from '../../services/homeRoster';
 import {
   trackEmployer, checkBuildGate, gateJobFor, signedInAccount,
   type BuildGate, type DocKind, type InflightMeta,
@@ -111,7 +115,7 @@ import {
 import { buildFor, getBuilds, subscribeBuilds, storeKeyOf, type BuildPhase } from '../../services/homeBuilds';
 import DownloadHistory from './DownloadHistory';
 import DownloadPaywallSheet from '../downloads/DownloadPaywallSheet';
-import { fetchProfileSnapshot, ProfileSetup } from '../../services/profileSetupService';
+import { fetchProfileSnapshot, cachedSetup, consumeProfileChanged, makeYoursOf, ProfileSetup } from '../../services/profileSetupService';
 import { fetchSubscriptionStatus } from '../../services/subscriptionService';
 import { track } from '../../services/analytics';
 
@@ -356,20 +360,29 @@ function forgetAccountCache() {
   libPages.clear();
   forgetDocs();
   forgetHomeBuilds();
+  // The saved chip row in memory is that account's; its stored copy stays under its own key (homeRoster).
+  forgetRosterCopy();
 }
 
 // signedInAccount lives in services/homeAddEmployer — ONE definition, shared with the in-flight records.
 
-/** Make the module cache belong to whoever is signed in now. True when another account's was wiped. */
-async function claimAccountCache(): Promise<boolean> {
+/**
+ * Make the module cache belong to whoever is signed in now. `wiped` = another account's was wiped; `who` = the
+ * account this read actually saw (null = none could be read).
+ * ⚠️ AN UNREADABLE SESSION IS NOT ANOTHER ACCOUNT (2026-09-19). signedInAccount answers null when SecureStore
+ * throws, and one such read used to count as an account switch: it wiped the employers added here, the saved
+ * documents and the builds on screen, and the chip row came back with its selection gone. Only a DIFFERENT
+ * account that can actually be read wipes now; a null changes nothing, and nothing is saved under it.
+ */
+async function claimAccountCache(): Promise<{ wiped: boolean; who: string | null }> {
   const who = await signedInAccount();
-  if (who === cacheOwner) return false;
+  if (who === null || who === cacheOwner) return { wiped: false, who };
   // The first claim after the bundle loads has no owner to compare against: anything already here was
   // added moments ago by whoever is signed in now, so it is adopted rather than wiped.
-  const wipe = cacheOwner !== null || who === null;
+  const wipe = cacheOwner !== null;
   cacheOwner = who;
   if (wipe) forgetAccountCache();
-  return wipe;
+  return { wiped: wipe, who };
 }
 
 /**
@@ -404,6 +417,11 @@ function rememberAdded(t: Target, replacesKey?: string) {
     addedEmployers = [t, ...addedEmployers.filter((a) => a.key !== t.key && !(h && hostOf(a.website) === h))];
   }
   addedEmployers = addedEmployers.filter((a, i, all) => all.findIndex((b) => b.key === a.key) === i).slice(0, 8);
+}
+
+/** An employer the user added on this screen (this session): a first saved row always keeps it (homeRoster seedFrom). */
+function addedHere(key: string): boolean {
+  return addedEmployers.some((a) => a.key === key);
 }
 
 /**
@@ -685,12 +703,19 @@ export default function EmployerHome({
   // NOT get to invent a third definition of "complete" (the API and the journey already disagree).
   const [setup, setSetup] = useState<ProfileSetup | null>(null);
   const lastLoad = useRef(0);
-  // The employer the user actually TAPPED, held by key. empIdx alone is a position into a list
-  // that is re-fetched and re-sorted by match on every focus, so a background refresh could slide
-  // a different company under the same index — the ribbon and the CTA would silently rename
-  // themselves to an employer the user never chose. Stays null until they pick, so the default
-  // (best match first) is still free to move.
+  // The chip on screen, held by KEY. empIdx alone is a position, and a position into a row that changes
+  // under it names a different company — the ribbon and the CTA would silently rename themselves to an
+  // employer the user never chose.
+  // ⚠️ KEPT BY KEY FROM THE FIRST LOAD ON, NOT ONLY AFTER A TAP (2026-09-19). It used to stay null until the
+  // user tapped, so "the default (best match first) is still free to move" — and every load re-ranked the row,
+  // so the chip the user was reading could change under them. The row is a SAVED list now (services/homeRoster:
+  // the owner's row refilled itself with the Moroccan Ministry, then with Konnekt ×3, after he emptied it), and
+  // the selection is saved with it: a remount or a relaunch opens on the same chip. When the chip itself leaves,
+  // the one that slid into its place is selected — never "back to the first".
   const pickedKey = useRef<string | null>(null);
+  // HARNESS ONLY (loaders): the preview's saved row lives with the mount, in memory — its fixtures re-seed it
+  // on every open, and nothing of it reaches storage. A signed-in row is homeRoster's (per account).
+  const previewRoster = useRef<Roster | null>(null);
 
   const kind = kindOfMode(mode);
   // When the saved documents were last asked for: listToken re-reads the chips' dots, docToken the
@@ -742,7 +767,42 @@ export default function EmployerHome({
   const kindRef = useRef(kind);
   kindRef.current = kind;
 
-  const loadTargets = loaders?.targets || fetchTargets;
+  // ⚠️ THE USER'S HANDS ON HOME (2026-09-20 review): every touch on the screen, every pick, every time Home loses focus.
+  // Another phone's row (adopted by a load, or put in place by a 409 — services/homeRoster savedRowOf) brings its
+  // selection with it ONLY while this has not moved since the load or the resume that found it: the chip under a finger,
+  // behind a build or behind a Customize never changes because the other phone was used last. (It used to move a few
+  // seconds after a cold start — once the whole dashboard had answered — under whatever the user had started on.)
+  const acts = useRef(0);
+  const noteTouch = useCallback(() => { acts.current++; }, []);
+  const focused = useRef(false);
+  useFocusEffect(useCallback(() => {
+    focused.current = true;
+    return () => { focused.current = false; acts.current++; };
+  }, []));
+
+  /**
+   * A SAVED row on screen before (or without) a load's merge: the early paint, and a phone picked up again. `follow`:
+   * the row is another phone's, and its selection comes with it (the caller has checked that the user's hands are off
+   * the screen). Otherwise the chip already picked stays, or the row's own selection when none is.
+   */
+  const paintSaved = useStableFn((r: Roster, follow: boolean) => {
+    const t = mergeAdded(rosterRow(r).filter((x) => !removedNow(x.key)), pickedKey);
+    if (follow && r.selected && t.some((x) => x.key === r.selected)
+      && !String(pickedKey.current || '').startsWith(PENDING)) pickedKey.current = r.selected;
+    if (!pickedKey.current) pickedKey.current = r.selected;
+    let j = pickedKey.current ? t.findIndex((x) => x.key === pickedKey.current) : -1;
+    if (j < 0) j = 0;
+    pickedKey.current = t[j]?.key ?? null;
+    targetsRef.current = t;
+    setTargets(t);
+    empIdxRef.current = j;
+    setEmpIdx(j);
+  });
+
+  // The harness's fixture list is a COMPLETE answer (listAnswer); a signed-in load reports what each read said.
+  const loadTargets: () => Promise<TargetAnswer> = loaders
+    ? () => Promise.resolve().then(() => loaders.targets()).then(listAnswer)
+    : fetchTargetAnswer;
   const loadCards = loaders?.cards || fetchHomeCards;
   const loadPaid = loaders?.paid || (async () => { try { const st = await fetchSubscriptionStatus(); return !!st?.subscription; } catch { return false; } });
   const loadHistory = loaders?.history || fetchDownloadHistory;
@@ -771,14 +831,66 @@ export default function EmployerHome({
     lastLoad.current = Date.now();
     const seq = ++loadSeq.current;
     const { loaders, loadTargets, loadCards, loadPaid, loadSetup } = live.current;
-    const [fetched, c, cat, wiped] = await Promise.all([
+    // ⚠️ BEFORE the merge below: another account's added employers (and its saved row) must never lead this
+    // row. The preview harness has no account, and claiming would wipe its fixtures on every load.
+    const claiming = loaders ? Promise.resolve({ wiped: false, who: null as string | null }) : claimAccountCache();
+    // Set once this load has put its own row on screen: the early paint below must never land over it.
+    let committed = false;
+    // The user's hands (acts) as this load begins: another phone's row moves the selection only if they stay off.
+    const actsAt = acts.current;
+    // The server's copy of the row (homeRoster: shared by the user's phones), read with the session the claim saw —
+    // alongside the answer, not after it. The preview harness has no account, so none.
+    const remoteP: Promise<RemoteRoster | null | undefined> = loaders
+      ? Promise.resolve(undefined)
+      : claiming.then(({ who }) => fetchRemoteRoster(who)).catch(() => undefined);
+    // ⚠️ THE SAVED ROW PAINTS AS SOON AS STORAGE ANSWERS (2026-09-19) — on a cold start, and on every remount
+    // (the Dashboard toggle and the HomeBoundary fallback both unmount this screen). The network answer behind it
+    // is the whole dashboard (user 1: 255 employers, 1,676 postings), and waiting for it drew skeleton chips, then
+    // a row whose selection had gone back to the first chip. ⚠️ ONLY AFTER THE ACCOUNT IS READ: the in-memory row
+    // survives a sign-out, and a remount that painted it before the claim would show the previous account's
+    // employers to the next one.
+    // ⚠️ …AND THEN THE SERVER'S ROW, THE MOMENT IT ANSWERS (2026-09-20 review). When another phone wrote since, its row
+    // used to wait for the whole dashboard (seconds, for user 1) and then replace this phone's row — selection and all —
+    // under a user who had already tapped Build or Customize on the old one. It is one small row: it comes on screen as
+    // soon as it answers (a phone with no row of its own paints from it too), before the user has touched anything —
+    // and not at all once they have (acts), while a build for the chip on screen runs, or while a chip is being added.
+    if (!loaders && !targetsRef.current.length) {
+      claiming.then(async ({ who }) => {
+        // An unreadable session (null) is no account switch (claimAccountCache): the row is still cacheOwner's.
+        const { acct, owner } = rowAccounts(who, cacheOwner);
+        if (!owner) return;
+        const saved = await readRoster(owner);
+        let warm: Promise<void> | null = null;
+        if (saved && saved.keys.length) {
+          // The posting text docLookupOf reads synchronously must be in memory before any chip exists.
+          await (warm = warmJobListings());
+          if (committed || !alive.current || seq !== loadSeq.current || targetsRef.current.length || cacheOwner !== owner) return;
+          paintSaved(rosterCopy(owner) || saved, false);
+        }
+        // Only for the account this load READ: the server's copy was fetched with that session.
+        if (!acct) return;
+        const remote = await remoteP;
+        const untouched = () => !committed && alive.current && seq === loadSeq.current && cacheOwner === owner
+          && acts.current === actsAt && !selBuildingRef.current && !String(pickedKey.current || '').startsWith(PENDING);
+        if (!untouched()) return;
+        // `peek`: a 409's hand-over and a deleted row are the load's to act on, not this paint's.
+        const other = savedRowOf(owner, rosterCopy(owner) || saved, remote, { peek: true });
+        if (!other.adopted || !other.row || !other.row.keys.length) return;
+        await (warm || warmJobListings());
+        if (!untouched()) return;
+        // Kept now, so what the user does next edits THIS row; the load merges its answer into it (same revision).
+        keepRoster(acct, other.row);
+        paintSaved(other.row, true);
+      }).catch(() => {});
+    }
+    const [answer, c, cat, claim, remote] = await Promise.all([
       loadTargets(),
       loadCards(),
       (loaders?.catalogue || fetchTemplateCatalogue)().catch(() => [] as HomeCard[]),
-      // ⚠️ BEFORE the merge below: another account's added employers must never lead this row.
-      // The preview harness has no account, and claiming would wipe its fixtures on every load.
-      loaders ? Promise.resolve(false) : claimAccountCache(),
+      claiming,
+      remoteP,
     ]);
+    const wiped = claim.wiped;
     if (wiped) {
       pickedKey.current = null;
       // The documents on screen were the previous account's: ask again for this one.
@@ -786,23 +898,83 @@ export default function EmployerHome({
       setDocToken((n) => n + 1);
     }
     // Nothing came back at all: if that was the server refusing the session, the cache goes too.
-    if (!loaders && !fetched.length && c === null && (await sessionRejected())) {
+    let refused = false;
+    if (!loaders && !answer.ranked.length && c === null && (await sessionRejected())) {
       forgetAccountCache();
       cacheOwner = null;
       pickedKey.current = null;
+      refused = true;
     }
     if (seq !== loadSeq.current) return undefined;
     if (cat.length) setSlots(cat);
+
+    // ── THE ROW: the saved one, merged with this answer (services/homeRoster) ──
+    // ⚠️ NOT REPLACED BY IT. This used to be `setTargets(fetchTargets())` — a fresh top 12 on every focus, pull
+    // and remount — so a chip the user removed was replaced by the next one down the ranking, and a failed read
+    // replaced the whole row. Now a chip leaves only when the user took it away, and only genuinely new
+    // postings / saved cards / employers join, at the end.
+    // `acct`: the account this answer is SAVED under — only one this load actually read. `owner`: the account whose
+    // saved row it is MERGED into. ⚠️ AN UNREADABLE SESSION (claim.who null) IS NO ACCOUNT SWITCH (claimAccountCache
+    // keeps cacheOwner's module cache on it too), so the row on screen is still cacheOwner's: it is merged against
+    // THAT saved row — it used to be merged against nothing, i.e. replaced by the raw ranking for one load — and
+    // nothing is saved under it (homeRoster rowAccounts, 2026-09-19 review).
+    const { acct, owner } = !loaders && !refused ? rowAccounts(claim.who, cacheOwner) : { acct: null, owner: null };
+    const stored = owner ? await readRoster(owner) : undefined;
+    // ⚠️ …and a screen that has gone writes NOTHING (2026-09-19 review): its pickedKey is the chip it showed, and a
+    // remount has since saved its own selection — a stale load finishing late put the old one back, so the next open
+    // jumped back to it. The mounted screen runs its own load.
+    if (seq !== loadSeq.current || !alive.current) return undefined;
+    // ⚠️ SYNCHRONOUS FROM HERE TO THE SAVE. A removal, an Undo or an add can land between two awaits, and a
+    // merge of a copy read before it would write that edit away — so the row is taken from memory NOW.
+    committed = true;
+    // null = no saved row yet; ⚠️ undefined = none could be READ (no account, or storage threw) — see planRow.
+    // ⚠️ THIS DEVICE'S ROW OR THE SERVER'S (2026-09-20, homeRoster savedRowOf): the server's when this device has none or
+    // another phone wrote since — the owner's second phone used to seed a row of its own from the ranking. The server's
+    // copy counts only for the account this load READ (acct): `remote` was fetched with that session.
+    const picked = !loaders && owner ? savedRowOf(owner, rosterCopy(owner) || stored, acct ? remote : undefined) : null;
+    const savedRow: Roster | null | undefined = loaders ? previewRoster.current : picked ? picked.row : undefined;
+    // The chip the user was on — this row's own selection, or the one saved with the row.
+    const before = wiped ? [] : targetsRef.current;
+    const plan = planRow(savedRow, answer, { removed: removedNow, added: addedHere, shown: before.length, refused });
+    const m = plan.merged;
+    // ⚠️ ANOTHER PHONE'S ROW WAS TAKEN — by this load (adopted), or by a write of this phone's the server refused since
+    // (replaced: a 409 put the other phone's row in place, this phone's unsent edits laid over it). Its selection is the
+    // user's LATEST pick on any phone (savedRowOf keeps this phone's own when that is the later one), so the screen goes
+    // to it. ⚠️ A 409 USED TO LEAVE THE SCREEN ON ITS OLD CHIP (2026-09-20 review), and the save below then stamped that
+    // chip as a brand-new pick, which beat the pick the user had really made on the other phone.
+    // ⚠️ NOT UNDER THE USER'S HANDS (acts): once they touched Home during this load, or while a build for the chip on
+    // screen runs, or while a chip is being added, the chip on screen stays.
+    const handsOn = acts.current !== actsAt || selBuildingRef.current || String(pickedKey.current || '').startsWith(PENDING);
+    if (picked && (picked.adopted || picked.replaced) && !handsOn
+      && m.roster.selected && m.row.some((x) => x.key === m.roster.selected)) pickedKey.current = m.roster.selected;
+    if (!pickedKey.current) pickedKey.current = before[empIdxRef.current]?.key ?? m.roster.selected ?? null;
+    const oldAt = pickedKey.current ? before.findIndex((x) => x.key === pickedKey.current) : -1;
     // Employers added on this screen lead, whether or not the server has them yet — and a chip removed
     // here stays gone even when this answer was read before the server heard about the removal.
-    const t = mergeAdded(fetched.filter((x) => !removedNow(x.key)), pickedKey);
+    // ⚠️ With nothing to merge into (no saved row could be read, or both stores failed) the row on screen STAYS
+    // (planRow.keep) — a refused session empties it (above).
+    const t = plan.keep ? before : mergeAdded(refused ? [] : m.row, pickedKey);
+    let j = pickedKey.current ? t.findIndex((x) => x.key === pickedKey.current) : -1;
+    if (j < 0) {
+      // ⚠️ THE NEIGHBOUR, NEVER THE FIRST CHIP: their chip left the row (removed, hidden, untracked — by the
+      // user, somewhere), so the one that slid into its place is on screen, as when they remove it here.
+      const saved = m.roster.selected ? t.findIndex((x) => x.key === m.roster.selected) : -1;
+      j = oldAt >= 0 ? Math.min(oldAt, t.length - 1) : saved;
+      if (j < 0) j = 0;
+    }
+    pickedKey.current = t[j]?.key ?? null;
+    // ⚠️ A LOAD NEVER STAMPS A PICK (2026-09-20 review). The row keeps the chip on screen, under the row's OWN pick time:
+    // a screen that merely still shows a chip has picked nothing. Stamped "now", a stale chip beat the pick the user made
+    // on the other phone since — and that phone jumped to it. Only the user's own pick is stamped (the selKey effect).
+    const kept = rosterSelect(m.roster, pickedKey.current, m.roster.selectedAt);
+    if (loaders) previewRoster.current = kept;
+    // ⚠️ Storage that could not be read (undefined) is never seeded over: that would erase the saved row (planRow.save).
+    // Only under an account this load READ (acct) — never under the cacheOwner an unreadable session fell back to.
+    else if (acct && plan.save) keepRoster(acct, kept);
     targetsRef.current = t;
     setTargets(t);
-    if (pickedKey.current) {
-      const j = t.findIndex((x) => x.key === pickedKey.current);
-      setEmpIdx(j >= 0 ? j : 0);
-      if (j < 0) pickedKey.current = null; // their employer dropped off the list
-    }
+    empIdxRef.current = j;
+    setEmpIdx(j);
     // ⚠️ Only the server's own 'none' may arm the build-my-resume lane — see fetchHomeCards.
     // A transient failure leaves cards AND noResume exactly as they were: at worst the user sees
     // the retry state, never a CTA that would spend a generation rewriting a resume they have.
@@ -818,7 +990,9 @@ export default function EmployerHome({
     setLoading(false);
     const paid = await loadPaid();
     if (seq === loadSeq.current) { setIsPaid(paid); setPaidRead(true); }
-    loadSetup().then((st) => setSetup(st)).catch(() => {});
+    // ⚠️ A FAILED READ NEVER HIDES THE BUTTON (2026-09-19): null used to replace the setup on screen, and with it
+    // "Pick up where you left off". Only an answer replaces an answer.
+    loadSetup().then((st) => { if (st && alive.current) setSetup(st); }).catch(() => {});
     return { cards: c, targets: t };
   }, []);
 
@@ -940,14 +1114,30 @@ export default function EmployerHome({
   // here on its own, NOT through load(): its 60 s throttle is what hid a PDF downloaded from the gallery
   // (see refreshHistory). The kind on screen comes from kindRef, which moves with the state.
   const focusCount = useRef(0);
+  /**
+   * ⚠️ THE PROFILE'S `setup` IS RE-READ ON EVERY FOCUS, OUTSIDE load()'S 60 s THROTTLE (2026-09-19). Coming back from
+   * the Make Yours wizard within a minute used to show the setup from BEFORE it — "One thing left: your signature"
+   * while the signature had just been saved (user 616). One small GET; a failed one leaves the button as it was.
+   */
+  const refreshSetup = useStableFn(async () => {
+    const st = await live.current.loadSetup().catch(() => null);
+    if (st && alive.current) setSetup(st);
+  });
+  // The button paints at once from this account's last known setup, before the first read answers.
+  useEffect(() => {
+    if (loaders) return;
+    cachedSetup().then((st) => { if (st && alive.current) setSetup((cur) => cur || st); }).catch(() => {});
+  }, [loaders]);
   useFocusEffect(useCallback(() => {
-    load();
+    // Back from a wizard that just built the résumé: the pages on Home are of the OLD one — reload them, now.
+    if (!loaders && consumeProfileChanged()) load(true, true);
+    else load().then((r) => { if (r === undefined && focusCount.current > 1) refreshSetup(); });
     if (focusCount.current++ > 0) {
       setDocToken((n) => n + 1);
       setListToken((n) => n + 1);
       refreshHistory(modeOfKind(kindRef.current));
     }
-  }, [load, refreshHistory]));
+  }, [load, refreshHistory, refreshSetup, loaders]));
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -956,6 +1146,40 @@ export default function EmployerHome({
     await load(true);
     setRefreshing(false);
   };
+
+  /**
+   * ⚠️ A PHONE PICKED UP AGAIN SHOWS THE ACCOUNT'S ROW AT ONCE (2026-09-20 review). A load runs only on focus (60 s
+   * throttle) or a pull, so a phone brought back from the background kept its old row until some later navigation — and
+   * then the row and its selection changed under the user. Back from the background, only the server's copy is read (one
+   * small row, never the dashboard): when another phone wrote since, its row and its pick come on screen now, before
+   * anything has been touched — and not at all once something has (acts), while a build for the chip on screen runs, or
+   * while a chip is being added. The next load merges its answer into it as usual. A READ; nothing is built or charged.
+   */
+  const resumeRow = useStableFn(async () => {
+    const acct = cacheOwner;
+    if (loaders || !acct || !focused.current || !targetsRef.current.length) return;
+    const at = acts.current;
+    // fetchRemoteRoster reads nothing unless the session still names this account.
+    const remote = await fetchRemoteRoster(acct);
+    if (!remote || !remote.roster) return;
+    const local = rosterCopy(acct) || (await readRoster(acct));
+    if (!alive.current || !focused.current || cacheOwner !== acct || acts.current !== at || selBuildingRef.current
+      || String(pickedKey.current || '').startsWith(PENDING)) return;
+    const other = savedRowOf(acct, local, remote, { peek: true });
+    if (!other.adopted || !other.row || !other.row.keys.length) return;
+    keepRoster(acct, other.row);
+    paintSaved(other.row, true);
+  });
+  useEffect(() => {
+    if (loaders) return;
+    let last: AppStateStatus = AppState.currentState;
+    const sub = AppState.addEventListener('change', (next) => {
+      const was = last;
+      last = next;
+      if (next === 'active' && was === 'background') resumeRow().catch(() => {});
+    });
+    return () => sub.remove();
+  }, [loaders, resumeRow]);
 
   /* ── the selected employer's own document ── */
 
@@ -1232,6 +1456,7 @@ export default function EmployerHome({
 
   // Picking an employer "reshapes" the page — the scan pulse the mockup plays over the card.
   const pickEmployer = (i: number) => {
+    acts.current++;
     if (i === empIdx) return;
     setEmpIdx(i);
     pickedKey.current = targets[i]?.key || null;
@@ -1369,12 +1594,39 @@ export default function EmployerHome({
     if (sel !== undefined) { empIdxRef.current = sel; setEmpIdx(sel); }
   };
 
+  /**
+   * The user's own change to the SAVED row (services/homeRoster) — the X, an Undo, an add, a restored posting, a
+   * pick. ⚠️ Every flow that changes the row on screen for the user says so here too, or the next load's merge
+   * (which only ever keeps or appends) would not know: a removed chip would sit in the saved row until a read
+   * showed it hidden, and an Undo'd one would be missing from it. The harness's row lives with the mount; a
+   * signed-in one is the account's; with no account read yet nothing is kept.
+   */
+  const editRow = (fn: (r: Roster) => Roster) => {
+    if (live.current.loaders) {
+      if (previewRoster.current) previewRoster.current = fn(previewRoster.current);
+      return;
+    }
+    editRoster(cacheOwner, fn).catch(() => {});
+  };
+  /** The keys on screen in front of a chip — where rosterPlace puts it in the saved row. */
+  const keysBefore = (list: Target[], at: number) => list.slice(0, Math.max(0, at)).map((x) => x.key);
+
+  // ⚠️ THE SELECTION IS SAVED WITH THE ROW: a tap, a build the user watched land, a removed chip's neighbour, an
+  // add — whatever put a chip on screen, a remount or a relaunch opens on it again. A key the saved row does not
+  // keep (a pending add) leaves the saved selection as it was.
+  const selKey = targets[empIdx]?.key ?? null;
+  useEffect(() => {
+    if (selKey) editRow((r) => rosterSelect(r, selKey));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selKey]);
+
   /** Put a new chip row on screen and keep the user's pin on the chip it names. */
   const applyTargets = (next: Target[]) => {
     let sel: number | undefined;
     if (pickedKey.current) {
       const j = next.findIndex((x) => x.key === pickedKey.current);
-      sel = j >= 0 ? j : 0;
+      // Their chip is not in this row: the one now in its place (see load), never the first.
+      sel = j >= 0 ? j : Math.max(0, Math.min(empIdxRef.current, next.length - 1));
     }
     commitTargets(next, sel);
   };
@@ -1383,6 +1635,7 @@ export default function EmployerHome({
   const selectAt = (j: number) => {
     const t = targetsRef.current[j];
     if (!t) return;
+    acts.current++;
     pickedKey.current = t.key;
     if (j === empIdxRef.current) return;
     empIdxRef.current = j;
@@ -1591,6 +1844,9 @@ export default function EmployerHome({
     };
     removedKeys.set(t.key, Date.now() + REMOVED_HOLD_MS);
     addedEmployers = addedEmployers.filter((a) => a.key !== t.key);
+    // Out of the saved row NOW, not when the exit has played: a remount inside the exit clears its timer, and the
+    // next mount would paint the chip the user just removed. Its place closes up and is never refilled.
+    editRow((ro) => rosterRemove(ro, t.key));
     if (pending) {
       // Tracking has not answered: the add flow untracks it when it does (removedAdds).
       removedAdds.set(rk, r);
@@ -1617,6 +1873,9 @@ export default function EmployerHome({
   /** The exit has played: close the row up, keeping the selection on the chip the user was on. */
   const dropChip = (rk: string) => {
     delete exitTimers.current[rk];
+    // The saved row loses it even when this screen has gone (an Undo the server refused can answer after that).
+    const leaving = targetsRef.current.find((x) => rkOf(x) === rk);
+    if (leaving) editRow((ro) => rosterRemove(ro, leaving.key));
     if (!alive.current) return;
     setExiting((m) => {
       if (!m[rk]) return m;
@@ -1646,6 +1905,16 @@ export default function EmployerHome({
     if (r.addedAt >= 0 && !addedEmployers.some((a) => a.key === t.key)) {
       LOCAL.add(t);
       addedEmployers = [...addedEmployers.slice(0, r.addedAt), t, ...addedEmployers.slice(r.addedAt)].slice(0, 8);
+    }
+    // ⚠️ BACK INTO THE SAVED ROW, IN ITS OLD PLACE, WITH A HOLD. The un-hide / re-track is sent only after the
+    // removal it undoes has settled, so a load in between still reads the chip as hidden or untracked — the hold
+    // is what keeps that read from taking it away again. Under the identity tracking gave it (`as`), the server's
+    // own copy replaces this one once it is read (provisional).
+    {
+      const shownNow = targetsRef.current;
+      const i0 = shownNow.findIndex((x) => rkOf(x) === r.rk);
+      const front = keysBefore(shownNow, i0 >= 0 ? i0 : Math.min(Math.max(0, r.at), shownNow.length));
+      editRow((ro) => rosterPlace(ro, t, { after: front, replaces: r.t.key, hold: true, provisional: !!as }));
     }
     if (!alive.current) return;
     const list = targetsRef.current;
@@ -1759,6 +2028,7 @@ export default function EmployerHome({
     const wanted = mine.filter((d) => hidden.has(jobKeyForUrl(d.jobUrl))).slice(0, PREWARM_MAX);
     if (!wanted.length) return false;
     const back: string[] = [];
+    const backChips: Target[] = [];
     for (const d of wanted) {
       // ⚠️ jobKeyForUrl, never a hand-rolled spelling: a key spelled any other way names a chip that never
       // appears, and the hide it is meant to lift stays where it is.
@@ -1770,8 +2040,25 @@ export default function EmployerHome({
       if (!ok) continue;
       removedKeys.delete(key);
       back.push(key);
+      backChips.push(posting);
     }
     if (!back.length) return false;
+    // ⚠️ INTO THE SAVED ROW BEFORE THE READ, right behind the employer's own chip. The saved row never refills from
+    // the ranking — an old posting no longer counts as new — so a restored posting that waited for the read to
+    // bring it back would never come back at all. Held, so a read made before the un-hide landed cannot take it
+    // away; provisional, so the server's own chip for that posting replaces this stand-in once it is read.
+    {
+      const shownNow = targetsRef.current;
+      const at = shownNow.findIndex((x) => x.key === real.key);
+      let front = keysBefore(shownNow, at >= 0 ? at + 1 : 0);
+      for (const p of backChips) {
+        // A posting chip carries no employer site (the dashboard's never do), so its lookup is spelled the same.
+        const chip: Target = { ...p, website: null };
+        const after = front;
+        editRow((ro) => rosterPlace(ro, chip, { after, hold: true, provisional: true }));
+        front = [...front, chip.key];
+      }
+    }
     // The row is read again so the restored postings arrive as the server's own chips, and the newest one
     // is the chip on screen. ⚠️ A READ. Nothing on this path spends anything.
     const got = await load(true).catch(() => undefined);
@@ -1810,7 +2097,8 @@ export default function EmployerHome({
     const pending: Target = {
       key: PENDING + (host || name.toLowerCase()), jobId: null, employerId: null,
       company: name, website, role: '', match: null, country,
-      initial: name.charAt(0).toUpperCase() || '?', colors: gradFor(name), skills: [],
+      // By code point: charAt(0) of an emoji-led name is half an emoji (homeRoster keeps the letter in the saved row).
+      initial: (Array.from(name)[0] || '').toUpperCase() || '?', colors: gradFor(name), skills: [],
     };
     // Adding it again IS the answer to an earlier removal: nothing about that removal holds any more.
     // ⚠️ AND THE CHIPS IT REMOVED COME BACK OFF THE "removed" LIST TOO, or the next load would filter out
@@ -1859,7 +2147,9 @@ export default function EmployerHome({
         const e = r.employer;
         const real: Target = {
           ...pending, key: 'emp_' + e.employerId, employerId: e.employerId, company: e.name || name,
-          website: e.website || website, initial: e.logoInitial || pending.initial, colors: e.logoColor,
+          website: e.website || website, colors: e.logoColor,
+          // The server's letter is name[0] — half of an emoji-led name — so it is taken only when it is whole.
+          initial: e.logoInitial && !/[\uD800-\uDFFF]/.test(e.logoInitial) ? e.logoInitial : pending.initial,
         };
         removedKeys.delete(real.key);
         const gone = removedAdds.get(rk);
@@ -1876,6 +2166,14 @@ export default function EmployerHome({
         rememberAdded(real, pending.key);
         if (pickedKey.current === pending.key) pickedKey.current = real.key;
         if (alive.current) applyTargets(mergeAdded(targetsRef.current, pickedKey));
+        // ⚠️ INTO THE SAVED ROW, where it stands on screen (the front), the moment it HAS an identity — a pending
+        // chip is never kept. Held, so a dashboard read made before the track landed cannot drop it; provisional,
+        // so the dashboard's own copy of the employer takes over its snapshot once (as mergeAdded's swap does).
+        {
+          const shownNow = targetsRef.current;
+          const at = shownNow.findIndex((x) => x.key === real.key || x.key === pending.key);
+          editRow((ro) => rosterPlace(ro, real, { after: keysBefore(shownNow, at), replaces: pending.key, hold: true, provisional: true }));
+        }
         return real;
       }
       // ⚠️ The auth middleware answers an expired token with 403, which the service reports as 'network';
@@ -2391,7 +2689,7 @@ export default function EmployerHome({
   });
 
   return (
-    <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
+    <View style={s.root} onLayout={(e) => setRootH(e.nativeEvent.layout.height)} onTouchStart={noteTouch}>
       <Animated.ScrollView
         ref={scrollRef}
         style={[s.scroll, { marginBottom: -footBleed }]}
@@ -2463,7 +2761,9 @@ export default function EmployerHome({
               </TouchableOpacity>
             )}
           </View>
-          {loading ? (
+          {/* The saved row paints before the network answers (load's early paint), so a row in hand is shown
+              even while loading — the skeleton is only for a row we do not have yet. */}
+          {loading && !targets.length ? (
             <View style={s.chipsRow}><View style={s.chipSkeleton} /><View style={s.chipSkeleton} /></View>
           ) : targets.length ? (
             <ScrollView ref={chipRowRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipsRow}>
@@ -2674,20 +2974,27 @@ export default function EmployerHome({
               viewport and anything placed after </MeshStage> is below the fold on first paint —
               a CTA that has to be seen "right below the slider" cannot live down there. */}
           {!!setup && (() => {
+            // ⚠️ AN UNFINISHED WIZARD IS THE SERVER'S FACT, NOT THIS SCREEN'S GUESS (2026-09-19). The owner's words:
+            // "that option should always be there till the time he either finish it using make my resume or complete
+            // the profile by going to the account settings". It used to be derived from the four file/field booleans
+            // alone, so once every file was on disk the button turned into "Customize your resume" over an EMPTY
+            // résumé — after a restart, on every device. `setup.wizard` (server/services/onboardingProgress.js) is
+            // 'open' until a wizard build is charged and saved ('finished') or Account Settings completes the profile
+            // ('closed'); while it is open this is "Pick up where you left off" on BOTH tabs, even if setup.complete.
+            const wz = setup.wizard || null;
             // ⚠️ NAME WHAT IS ACTUALLY LEFT. `setup` carries four real booleans from the server, so
             // saying "Make yours" to someone who finished two steps last week tells them their work
-            // is gone. In wizard order, so the sentence matches the screens they will see.
-            const left = ([
-              [setup.profile, 'your details'], [setup.photo, 'a photo'],
-              [setup.signature, 'your signature'], [setup.resume, 'your experience'],
-            ] as Array<[boolean, string]>).filter(([done]) => !done).map(([, n]) => n);
-            const started = setup.profile || setup.photo || setup.signature || setup.resume;
+            // is gone. In wizard order, so the sentence matches the screens they will see. An open wizard names its
+            // own list — the skips it stored, and "building your resume".
             // ⚠️ ONCE THE PROFILE IS COMPLETE THIS DOOR IS THE EDITOR, NOT THE WIZARD. The wizard used to
             // stay the destination for a finished profile too ("rebuilding from fresh notes is a thing
             // people do repeatedly") — but with a document per employer, what a finished profile wants
             // from this button is to change the words, and the editor opens on the employer's OWN
             // version when the chip on screen has one. "Edit details" at the top still reaches the builder.
-            const complete = !!setup.complete;
+            // A wizard FINISHED by its build counts as complete (its photo / signature may have been skipped); an OPEN
+            // one never does. An account with no wizard row keeps the old rule. The rule itself is makeYoursOf —
+            // pure, in services/profileSetupService, so a test runs it.
+            const { complete, started, left } = makeYoursOf(setup);
             // ⚠️ ON THE COVER LETTER TAB A FINISHED PROFILE'S DOOR IS THE LETTER'S EDITOR. This block used to ignore
             // `mode`: it read "Customize your resume" under a cover letter, and a tap opened the RESUME editor (the
             // owner's report, 2026-09-19). A letter is customized only when there is one — the saved letter on
@@ -2725,7 +3032,7 @@ export default function EmployerHome({
               : left.length && started ? 'Pick up where you left off' : 'Make your Resume';
             const go = () => {
               try { Haptics.selectionAsync(); } catch {}
-              track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join(''), complete, doc: letterTab ? !!doc : !!resumeDoc, mode });
+              track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join(''), complete, doc: letterTab ? !!doc : !!resumeDoc, mode, wizard: wz ? wz.state : 'none', step: wz ? wz.stepKey : '' });
               if (complete && letterTab) {
                 // The letter on screen, in ITS editor — the zoom's Customize door, so the two cannot drift apart.
                 // Editing a saved letter never spends a generation; a letter still on its way says so.

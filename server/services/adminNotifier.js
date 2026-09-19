@@ -44,9 +44,13 @@ async function setSettings(patch = {}) {
     return next;
 }
 
+// ⚠️ An admin's alert device is users.admin_alert_token, NOT only expo_push_token (2026-09-20): signing the owner's
+// phone into a test account moves expo_push_token to that account (one device, one account), and reading only that
+// column paged NOBODY from then on — install, registration, purchase and "AI service is down" alike, with no error.
+// expoPushService.adminAlertTargets() is the one definition (supportService.pushAdmins reads it too).
 async function getAdminTargets() {
     try {
-        return await dbConfig.query(`SELECT id, expo_push_token FROM users WHERE role = 'admin' AND expo_push_token IS NOT NULL AND expo_push_token <> ''`) || [];
+        return await require('./expoPushService').adminAlertTargets(dbConfig);
     } catch { return []; }
 }
 
@@ -62,7 +66,7 @@ async function notifyAdmins(category, title, body, data = {}) {
                 const res = await sendPushNotification(a.expo_push_token, title, body, { ...data, adminAlert: true },
                     { userId: a.id, source: 'admin_alert', audience: 'admin' });
                 if (res === true) sent++;
-                else if (res === 'stale') { try { await dbConfig.run(`UPDATE users SET expo_push_token = NULL WHERE id = ?`, [a.id]); } catch {} }
+                else if (res === 'stale') { try { await require('./expoPushService').clearStaleToken(a.id, a.expo_push_token, dbConfig); } catch {} }
             } catch {}
             // in-app bell history (no extra push — push already sent above)
             try { require('../controllers/notificationsController').createNotification(a.id, 'admin_alert', title, body, null, { category, ...data }, { push: false }); } catch {}

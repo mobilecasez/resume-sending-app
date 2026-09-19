@@ -384,11 +384,12 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
         if (resumePath && fsSync.existsSync(resumePath)) {
             const resumeBuffer = await fs.readFile(resumePath);
             const resumeBase64 = resumeBuffer.toString('base64');
-            const resumeFilename = `${sanitizeName(user.full_name)}_Resume.pdf`;
-            
+            // Named and typed from the stored file — a Word résumé is not a ".pdf" (server/utils/resumeFile.js).
+            const { filename: resumeFilename, contentType: resumeType } = require('./server/utils/resumeFile').resumeAttachmentOf(resumePath, sanitizeName(user.full_name));
+
             message += [
         `--${boundary}`,
-        'Content-Type: application/pdf',
+        `Content-Type: ${resumeType}`,
         'Content-Transfer-Encoding: base64',
         `Content-Disposition: attachment; filename="${resumeFilename}"`,
         '',
@@ -775,7 +776,9 @@ app.post('/api/user/push-token', authenticateToken, async (req, res) => {
     try {
         const token = String((req.body && req.body.token) || '').trim();
         if (!token || !/^Expo(nent)?PushToken\[/.test(token)) return res.status(400).json({ error: 'valid expo push token required' });
-        await dbConfig.run('UPDATE users SET expo_push_token = ? WHERE id = ?', [token.slice(0, 300), req.user.id]);
+        // ⚠️ One device, one account (2026-09-20): the token is also taken OFF every other account that held it — a
+        // phone signed into a second account was still getting the first one's pushes (expoPushService.saveDeviceToken).
+        await require('./server/services/expoPushService').saveDeviceToken(req.user.id, token);
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1389,17 +1392,47 @@ function createTransporter(smtpUser, smtpPass) {
 }
 
 // API endpoint for file uploads (protected)
-app.post('/api/upload-profile', authenticateToken, upload.fields([
+// noteProfileBefore reads the profile before this write lands: an open Make Yours wizard is closed only by the write
+// that COMPLETED the profile (server/services/onboardingProgress.js).
+app.post('/api/upload-profile', authenticateToken, require('./server/services/onboardingProgress').noteProfileBefore, upload.fields([
     { name: 'resume', maxCount: 1 },
     { name: 'photo', maxCount: 1 },
     { name: 'signature', maxCount: 1 }
 ]), async (req, res) => {
     try {
         const userId = req.user.id;
-        
+
         console.log('Upload request from user:', userId);
         console.log('Files received:', req.files);
-        
+
+        // ⚠️ THE RÉSUMÉ IS CHECKED BEFORE ANYTHING IS COMMITTED (2026-09-20) — the same gate the app's own upload
+        // uses (server/utils/resumeFile.vetUploadedResume → services/resumeText). This endpoint used to store
+        // whatever bytes arrived, point users.resume_path at them, and leave the background parser to find out much
+        // later that nothing could be read: the user's good CV was gone and the screen said "uploaded successfully".
+        // A file the server cannot read is refused here with the sentence to show, nothing in this request is saved,
+        // and a file it can read is stored under its REAL extension (the send paths name the attachment from it).
+        if (req.files && req.files['resume'] && req.files['resume'][0]) {
+            const vetted = await require('./server/utils/resumeFile').vetUploadedResume(req.files['resume'][0].path);
+            if (!vetted.ok) {
+                // ⚠️ SAY WHAT ELSE WENT WITH IT (review, 2026-09-20). The website posts the résumé, the photo and the
+                // signature as ONE request (public/profile.html saveProfile), so refusing the CV throws the other two
+                // away — and this answered with the CV's sentence alone, while the page went on showing the photo the
+                // user had just picked as though it had been saved. Nothing silently disappears: the refusal names
+                // every file it discarded, and `discarded` lets the page put its previews back (it does).
+                const discarded = [];
+                for (const field of ['photo', 'signature']) {
+                    for (const f of req.files[field] || []) { await fs.unlink(f.path).catch(() => {}); }
+                    if ((req.files[field] || []).length) discarded.push(field);
+                }
+                const alsoWent = discarded.length
+                    ? ` Your new ${discarded.join(' and ')} ${discarded.length > 1 ? 'were' : 'was'} not saved either — please choose ${discarded.length > 1 ? 'them' : 'it'} again with a CV we can read.`
+                    : '';
+                console.warn(`[upload-profile] résumé refused for user ${userId} (${vetted.fmt.reason}) — "${req.files['resume'][0].originalname}"; the CV on file is unchanged${discarded.length ? `; ${discarded.join(' + ')} discarded with it` : ''}`);
+                return res.status(vetted.status).json({ ...vetted.body, error: vetted.body.error + alsoWent, discarded });
+            }
+            req.files['resume'][0].path = vetted.path;
+        }
+
         // Process photo to circular format if uploaded
         if (req.files['photo']) {
             try {
@@ -1477,6 +1510,8 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
         if (resumeUploaded) {
             triggerResumeParsingBackground(userId, files.resume);
         }
+        // A profile completed here (not in the Make Yours wizard) closes an unfinished wizard. Never throws.
+        await require('./server/services/onboardingProgress').afterProfileWrite(req, userId);
 
         res.json({
             success: true,
@@ -1585,7 +1620,7 @@ app.post('/api/save-settings', authenticateToken, async (req, res) => {
 });
 
 // API endpoint to update user personal details (protected)
-app.post('/api/update-user-details', authenticateToken, async (req, res) => {
+app.post('/api/update-user-details', authenticateToken, require('./server/services/onboardingProgress').noteProfileBefore, async (req, res) => {
     try {
         const userId = req.user.id;
         const { fullName, dateOfBirth, phoneNumber, address, city, country, zipcode, gender } = req.body;
@@ -1628,6 +1663,8 @@ app.post('/api/update-user-details', authenticateToken, async (req, res) => {
                 [fullName, dateOnly, phoneNumber || null, address || null, userId]
             );
         }
+        // A profile completed here (not in the Make Yours wizard) closes an unfinished wizard. Never throws.
+        await require('./server/services/onboardingProgress').afterProfileWrite(req, userId);
 
         res.json({
             success: true,
@@ -3902,6 +3939,24 @@ app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (re
         } catch (err) {
             console.error('Error deleting hidden Home targets:', err.message);
         }
+        // …and the saved "Designing for" row (Migration 048), for the same reason: it names that account's employers.
+        try {
+            await dbConfig.run('DELETE FROM user_home_roster WHERE user_id = ?', [userId]);
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted the Home roster for user ${userId}`);
+        } catch (err) {
+            console.error('Error deleting the Home roster:', err.message);
+        }
+        // …and the Make Yours wizard's progress (Migration 047, server/services/onboardingProgress.js): the typed
+        // experience notes (work history in the user's own words) and the stored skips / finished / closed marks. The
+        // row outlives the soft delete, so a re-registration onto this row inherited "you skipped your signature" and
+        // even "finished" — the wizard never asked the new account for a signature, and Home called a profile with no
+        // photo, signature or CV complete. Swallowed like the rest (the table may not exist on an older database).
+        try {
+            await dbConfig.run('DELETE FROM user_onboarding WHERE user_id = ?', [userId]);
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted the wizard progress for user ${userId}`);
+        } catch (err) {
+            console.error('Error deleting the wizard progress:', err.message);
+        }
 
         // Log account deletion event
         await logSecurityEvent('account', 'ACCOUNT_DELETED', userId, true, {
@@ -3931,10 +3986,14 @@ app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (re
                 google_refresh_token = NULL,
                 microsoft_access_token = NULL,
                 microsoft_refresh_token = NULL,
-                apple_user_id = NULL
+                apple_user_id = NULL,
+                expo_push_token = NULL
             WHERE id = ?`,
             [now, userId, userId]
         );
+        // ⚠️ expo_push_token above (2026-09-20): a deleted account kept its phone's push address, and the reward-nudge
+        // and uninstall-check target lists do not filter deleted_at — so a deleted account could still be pushed.
+        // Signing back in re-registers the device (App.js registers on every sign-in).
         console.log(`🗑️ [ACCOUNT DELETE] Soft-deleted user account ${userId} (${user.email})`);
 
         // Clear auth cookie if it exists
@@ -4153,6 +4212,10 @@ app.use('/api', jobRoutes);
 app.use('/api/ai-hub', aiHubRoutes);
 app.use('/api/resume-builder', resumeBuilderRoutes);
 app.use('/api/employer-docs', require('./server/routes/employerDocsRoutes'));   // per-employer tailored documents (read/edit only)
+// ⚠️ The letter's Send page (2026-09-19): email a saved letter from the user's own Gmail / Outlook. Its own router so
+// employerDocsRoutes stays read/edit only ("never generates, never charges") — sending attaches rendered PDFs, which
+// are gated and claimed exactly like a Download (see server/controllers/letterSendController.js).
+app.use('/api/employer-docs', require('./server/routes/letterSendRoutes'));
 app.use('/api/downloads', require('./server/routes/downloads'));
 app.use('/api', require('./server/routes/resumeScoreRoutes'));   // résumé score popup (additive)
 app.use('/api', require('./server/routes/journeyRoutes'));       // activation journey coach (additive)

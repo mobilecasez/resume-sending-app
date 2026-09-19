@@ -26,9 +26,16 @@
 //
 // ⚠️ THE CANVAS IS 2x AND EXPORTS AT 2x. A signature captured at 1x is visibly ragged once it is
 // scaled onto a printed A4 letterhead.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+//
+// ⚠️ A DRAWN SIGNATURE IS NEVER THROWN AWAY BY "NEXT" (2026-09-19). It used to be saved only by this
+// component's own "Use this" — and the wizard's footer "Next" was always enabled, so the owner drew his
+// signature, tapped Next, and it was gone: reopening the wizard asked for it again. The studio now says
+// when it holds ink nobody has saved (onDirty) and hands the wizard commit(), which exports and uploads
+// exactly as "Use this" does and resolves only once the upload has answered — so Next waits for it, and
+// stays on the step if it failed.
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput,
+  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput, Alert,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
@@ -378,8 +385,11 @@ const PAGE = `<!doctype html><html><head>
   };
   window.__name=function(n){ name=String(n||''); if(mode==='type') galSoon(); };
   window.__pick=function(i){ pick=Math.max(0,Math.min(styles.length-1,i|0)); if(mode==='type') gallery(); };
-  window.__export=function(){
-    if(mode==='type'){
+  // Exports the tab it is asked for (the one on screen when none is named): a commit can save the ink of the tab the
+  // user left for one with nothing on it. The drawn canvas keeps its pixels while hidden (size() skips a 0-wide pad).
+  window.__export=function(m){
+    var md=(m==='type'||m==='draw')?m:mode;
+    if(md==='type'){
       var text=(name||'').trim();
       if(!text){ post({type:'empty'}); return; }
       var st=styles[pick]||styles[0];
@@ -391,11 +401,11 @@ const PAGE = `<!doctype html><html><head>
       // Room for the slant and the swash on every side, or a descender lands on the crop edge.
       o.width=Math.ceil(w+st.size*X*1.4); o.height=Math.ceil(st.size*X*2.4);
       sign(o.getContext('2d'), st, text, st.size*X*0.4, o.height*0.60, X);
-      post({type:'sig',data:trim(o).toDataURL('image/png')});
+      post({type:'sig',mode:'type',data:trim(o).toDataURL('image/png')});
       return;
     }
     if(!drawn()){ post({type:'empty'}); return; }
-    post({type:'sig',data:trim(c).toDataURL('image/png')});
+    post({type:'sig',mode:'draw',data:trim(c).toDataURL('image/png')});
   };
   // Trim to the ink with a small margin — a signature centred in a huge transparent canvas renders
   // as a speck on a letterhead.
@@ -423,17 +433,61 @@ const PAGE = `<!doctype html><html><head>
 
 export type SigMode = 'draw' | 'type';
 
-export default function SignatureStudio({
-  name, existing, onCaptured, onEmpty,
-}: {
+/** What a commit came to: saved (uploaded), empty (no ink / no name), failed (the UPLOAD failed — the wizard's
+ *  saveSignature has already said so), stuck (the PAD could not hand the signature over: the page never answered, its
+ *  process died, or the image could not be written — nothing has told the user yet, so the caller must), or clean
+ *  (there was nothing unsaved to commit). */
+export type SigCommit = 'saved' | 'empty' | 'failed' | 'stuck' | 'clean';
+/** What the pad holds, for sigToCommit. `typeKey` is the name and the hand on screen ("Rishi|0"); `savedTypeKey` the
+ *  one last saved from the gallery (null: none). */
+export type SigPad = {
+  mode: SigMode; drawnUnsaved: boolean; typeTapped: boolean;
+  name: string; hands: number; typeKey: string; savedTypeKey: string | null;
+};
+
+/**
+ * WHICH TAB A COMMIT SAVES — or null when nothing on the pad is unsaved. Pure, so the suite runs it.
+ * ⚠️ THE HAND ON SCREEN IS A CHOICE ALREADY MADE (review round 2, 2026-09-19). The gallery opens with hand #1 ticked and
+ * "Use this" lit — yet only a TAP counted as unsaved, so Next on the hand the screen showed as chosen found nothing
+ * to save, the wizard stored the signature as SKIPPED, and letters went out unsigned: the owner's "not saved
+ * signature", again. So on the "Pick a hand" tab, a name in a hand is unsaved until exactly that name in exactly that
+ * hand was saved.
+ * ⚠️ AND WORK LEFT ON THE OTHER TAB IS NOT THROWN AWAY: ink drawn before switching to a tab with nothing on it (the
+ * name cleared), or a hand TAPPED before switching to an empty pad, is what gets saved. A hand merely looked at and
+ * left is not (the pad on screen is empty; that is a skip).
+ * ⚠️ …BUT THE UNTAPPED HAND ON SCREEN IS A CHOICE ONLY WHEN THE USER SAID "NEXT" (review round 4, 2026-09-20). Counted
+ * everywhere, it made "Skip for now", the back arrow, the step dots and the close/swipe guard upload the pre-ticked
+ * hand #1 — a cursive signature the user had just turned down, which then signed every letter. So `handOnScreen` is
+ * off unless the caller is Next: without it, only drawn ink or a TAPPED hand is unsaved work.
+ */
+export function sigToCommit(s: SigPad, handOnScreen = false): SigMode | null {
+  const typeReady = !!s.name.trim() && s.hands > 0 && s.typeKey !== s.savedTypeKey;
+  if (s.mode === 'type') return typeReady && (handOnScreen || s.typeTapped) ? 'type' : s.drawnUnsaved ? 'draw' : null;
+  if (s.drawnUnsaved) return 'draw';
+  return typeReady && s.typeTapped ? 'type' : null;
+}
+
+export type SignatureStudioHandle = {
+  /** Ink or a tapped hand that nobody has saved yet (sigToCommit without handOnScreen) — what the leave guard saves. */
+  isDirty: () => boolean;
+  /** Export + upload what is on the pad — the same path as "Use this" — and resolve once the upload answered.
+   *  `handOnScreen`: the untapped hand the gallery shows ticked counts too — for the wizard's Next, and nothing else. */
+  commit: (opts?: { handOnScreen?: boolean }) => Promise<SigCommit>;
+};
+
+const SignatureStudio = forwardRef<SignatureStudioHandle, {
   /** What the typed hands are set in — the name from step one, editable here. */
   name: string;
   /** An already-saved signature, so "you have one" is visible rather than assumed. */
   existing?: string | null;
-  /** A file:// path to a PNG on disk, ready to upload. */
-  onCaptured: (uri: string) => void;
+  /** A file:// path to a PNG on disk, ready to upload. Resolve false when the upload failed (the ink stays unsaved). */
+  onCaptured: (uri: string) => void | boolean | Promise<void | boolean>;
   onEmpty?: () => void;
-}) {
+  /** Called when the pad starts / stops holding something unsaved. */
+  onDirty?: (dirty: boolean) => void;
+}>(function SignatureStudio({
+  name, existing, onCaptured, onEmpty, onDirty,
+}, ref) {
   const web = useRef<WebView>(null);
   const [ready, setReady] = useState(false);
   const [mode, setMode] = useState<SigMode>('draw');
@@ -442,6 +496,66 @@ export default function SignatureStudio({
   const [busy, setBusy] = useState(false);
   const [styles, setStyles] = useState<string[]>([]);
   const [signAs, setSignAs] = useState(name);
+  // Unsaved work, PER TAB: a stroke since the last save (draw), a hand TAPPED since then (type); with the name and hand
+  // on screen and the last ones saved from the gallery. What a commit saves — and so "dirty" — is sigToCommit's answer
+  // ("dirty" without handOnScreen: the untapped hand on screen never arms the leave guard).
+  const unsaved = useRef<Record<SigMode, boolean>>({ draw: false, type: false });
+  const modeRef = useRef<SigMode>('draw');
+  modeRef.current = mode;
+  const signAsRef = useRef(signAs);
+  signAsRef.current = signAs;
+  const handsRef = useRef(0);
+  handsRef.current = styles.length;
+  const pickRef = useRef(0);   // the page opens with hand #1 ticked; a tap says which ('style')
+  const savedTypeKey = useRef<string | null>(null);
+  const typeKeyOf = useCallback(() => `${signAsRef.current.trim()}|${pickRef.current}`, []);
+  const toCommit = useCallback((handOnScreen = false): SigMode | null => sigToCommit({
+    mode: modeRef.current, drawnUnsaved: unsaved.current.draw, typeTapped: unsaved.current.type,
+    name: signAsRef.current, hands: handsRef.current, typeKey: typeKeyOf(), savedTypeKey: savedTypeKey.current,
+  }, handOnScreen), [typeKeyOf]);
+  const dirty = useRef(false);
+  const syncDirty = useCallback(() => {
+    const v = toCommit() !== null;
+    if (dirty.current === v) return;
+    dirty.current = v;
+    onDirty?.(v);
+  }, [onDirty, toCommit]);
+  const setDirty = useCallback((v: boolean, which: SigMode = modeRef.current) => {
+    unsaved.current[which] = v;
+    syncDirty();
+  }, [syncDirty]);
+  // The tab, the name and the hands on offer each change what a commit would save.
+  useEffect(() => { syncDirty(); }, [mode, signAs, styles.length, syncDirty]);
+  // The commit() waiting for this export's answer (the "Use this" button waits through the same path).
+  const pending = useRef<((r: SigCommit) => void) | null>(null);
+  // The tab that export was asked for, and the name and hand it had then (recorded as saved when its upload lands).
+  const exporting = useRef<{ mode: SigMode; key: string } | null>(null);
+  const settle = useCallback((r: SigCommit) => {
+    const p = pending.current;
+    pending.current = null;
+    if (p) p(r);
+  }, []);
+
+  /**
+   * ⚠️ A PAD WHOSE PAGE HAS DIED IS RELOADED, NOT LEFT BLANK AND "DIRTY" (review, 2026-09-20). iOS kills a WKWebView's
+   * content process under memory pressure (the photo picker on this same step, a long spell in the background) and
+   * react-native-webview does not reload it; the pad went blank while `unsaved.draw` stayed true, so every Next and back
+   * waited 8 s for an export nobody could answer and then did nothing. The page is remounted (a new key) with a clean
+   * slate — its ink went with the process — and a commit still waiting on it settles 'stuck' so the caller can say so.
+   * The export watchdog comes here too: a page that has not answered in 8 s is one nobody can use.
+   */
+  const [pageKey, setPageKey] = useState(0);
+  const resetPage = useCallback(() => {
+    setReady(false);
+    setDrawn(false);
+    setSmooth(false);
+    setBusy(false);
+    unsaved.current = { draw: false, type: false };
+    pickRef.current = 0;              // the new page opens with hand #1 ticked again
+    syncDirty();
+    setPageKey((k) => k + 1);
+    settle('stuck');
+  }, [settle, syncDirty]);
 
   const send = useCallback((js: string) => { web.current?.injectJavaScript(`${js};true;`); }, []);
 
@@ -453,21 +567,83 @@ export default function SignatureStudio({
     let msg: any = null;
     try { msg = JSON.parse(e?.nativeEvent?.data || '{}'); } catch { return; }
     if (msg.type === 'ready') { setStyles(msg.styles || []); setReady(true); return; }
-    if (msg.type === 'state') { setDrawn(!!msg.drawn); return; }
-    if (msg.type === 'style') return;
-    if (msg.type === 'empty') { setBusy(false); onEmpty?.(); return; }
+    if (msg.type === 'state') { setDrawn(!!msg.drawn); setDirty(!!msg.drawn, 'draw'); return; }
+    if (msg.type === 'style') { pickRef.current = Math.max(0, Number(msg.i) || 0); setDirty(true, 'type'); return; }
+    if (msg.type === 'empty') {
+      setBusy(false);
+      // A commit from the wizard's Next finds nothing to save — that is not an error to shout about.
+      if (pending.current) settle('empty'); else onEmpty?.();
+      return;
+    }
     if (msg.type !== 'sig' || !msg.data) return;
+    // ⚠️ THE PAGE HAS ANSWERED: from here the UPLOAD's own result settles the commit (review, 2026-09-19). The request
+    // leaves `pending`, so the 8 s watchdog — which is for a WebView that never answers — cannot fail a signature whose
+    // upload is merely slow (on 3G, Next "did nothing" and the pad then turned into the saved image by itself).
+    const waiting = pending.current;
+    pending.current = null;
+    const sent = exporting.current;
+    let result: SigCommit = 'failed';
     try {
       const base64 = String(msg.data).replace(/^data:image\/png;base64,/, '');
       const uri = `${cacheDirectory}signature_${base64.length}.png`;
       await writeAsStringAsync(uri, base64, { encoding: EncodingType.Base64 });
-      onCaptured(uri);
+      const up = await onCaptured(uri);
+      result = up === false ? 'failed' : 'saved';
+      if (result === 'saved') {
+        // What was saved IS the signature now: the hand it was (if a hand), and neither tab's older work is pending.
+        if ((msg.mode || (sent && sent.mode)) === 'type' && sent) savedTypeKey.current = sent.key;
+        unsaved.current.draw = false;
+        unsaved.current.type = false;
+        syncDirty();
+      }
     } catch {
-      onEmpty?.();
+      // The image could not be written (or handed over): no upload was tried, so no upload alert was shown — 'stuck',
+      // which every caller turns into a sentence (it used to be a silent 'failed').
+      result = 'stuck';
+      if (!waiting) onEmpty?.();
     } finally {
       setBusy(false);
+      if (waiting) waiting(result);
     }
-  }, [onCaptured, onEmpty]);
+  }, [onCaptured, onEmpty, setDirty, syncDirty]);
+
+  /**
+   * The one export path: "Use this" and the wizard's commit() both come through here.
+   * ONE AT A TIME: a second ask while an export (or its upload) is still going JOINS it — the leave guard can commit
+   * while Next's upload is in flight, and two exports would be two uploads of the same ink.
+   */
+  const inflight = useRef<Promise<SigCommit> | null>(null);
+  const exportNow = useCallback((which: SigMode): Promise<SigCommit> => {
+    if (inflight.current) return inflight.current;
+    exporting.current = { mode: which, key: typeKeyOf() };
+    const run = new Promise<SigCommit>((resolve) => {
+      pending.current = resolve;
+      setBusy(true);
+      send(`window.__export(${JSON.stringify(which)})`);
+      // The page always answers ('sig' or 'empty'); a WebView that has gone away must not hang the step — it is
+      // reloaded and the commit settles 'stuck' (resetPage).
+      setTimeout(() => { if (pending.current === resolve) resetPage(); }, 8000);
+    });
+    const joined = run.then((r) => { inflight.current = null; return r; });
+    inflight.current = joined;
+    return joined;
+  }, [send, resetPage, typeKeyOf]);
+
+  /** "Use this": the studio's own button, so the studio says what went wrong (the upload's own alert is the wizard's). */
+  const saveNow = useCallback(async () => {
+    const r = await exportNow(modeRef.current);
+    if (r === 'empty') onEmpty?.();
+    else if (r === 'stuck') Alert.alert('Your signature is not saved', 'The signature pad stopped working. Please try again.');
+  }, [exportNow, onEmpty]);
+
+  useImperativeHandle(ref, () => ({
+    isDirty: () => dirty.current,
+    // Saves the tab sigToCommit names — the hand on screen counts only when the caller says so (Next), else a tapped one.
+    commit: async (opts?: { handOnScreen?: boolean }) => {
+      const which = ready ? toCommit(!!(opts && opts.handOnScreen)) : null;
+      return which ? exportNow(which) : 'clean';
+    },
+  }), [exportNow, ready, toCommit]);
 
   const canSave = mode === 'draw' ? drawn : !!signAs.trim() && !!styles.length;
 
@@ -506,7 +682,11 @@ export default function SignatureStudio({
       <View style={s.padOuter}>
         <View style={[s.pad, mode === 'type' && s.padTall]}>
           <WebView
+            key={pageKey}
             ref={web}
+            // A page whose process died is reloaded clean (resetPage) — iOS and Android each report it their own way.
+            onContentProcessDidTerminate={resetPage}
+            onRenderProcessGone={resetPage}
             source={{ html: PAGE }}
             originWhitelist={['*']}
             javaScriptEnabled
@@ -564,7 +744,7 @@ export default function SignatureStudio({
           style={[s.save, (!canSave || busy) && s.saveOff]}
           activeOpacity={0.9}
           disabled={!canSave || busy}
-          onPress={() => { setBusy(true); send('window.__export()'); }}
+          onPress={() => { saveNow(); }}
         >
           {busy
             ? <ActivityIndicator size="small" color="#04211C" />
@@ -577,7 +757,9 @@ export default function SignatureStudio({
       )}
     </View>
   );
-}
+});
+
+export default SignatureStudio;
 
 const s = StyleSheet.create({
   wrap: { gap: 10 },

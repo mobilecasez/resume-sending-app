@@ -8,6 +8,7 @@ const TemplateCoverLetterGenerator = require('../../template-cover-letter-genera
 const PDFKit = require('pdfkit');
 const cheerio = require('cheerio');
 const { sendEmailViaZeptoMail } = require('../services/zeptomailService');
+const { resumeAttachmentOf } = require('../utils/resumeFile');   // a Word résumé goes out as .docx, never as a broken ".pdf"
 const { notifyEmailSent, notifyError, notifyEmailReply } = require('./notificationsController');
 const CryptoJS = require('crypto-js');
 const jobService = require('../services/jobService');
@@ -37,14 +38,17 @@ function decryptOAuthToken(encryptedToken) {
         const bytes = CryptoJS.AES.decrypt(encryptedToken, ENCRYPTION_KEY);
         const decrypted = bytes.toString(CryptoJS.enc.Utf8);
         
+        // ⚠️ LENGTHS ONLY, NEVER CHARACTERS (2026-09-19). These lines used to print the first 20 characters of the
+        // stored token, the first 4 of ENCRYPTION_KEY and the first 10 of the DECRYPTED OAuth token on every send —
+        // and the letter's Send page calls this on every message. A prefix of a secret in the logs is a leak.
         if (!decrypted) {
-            console.error('⚠️ Decryption produced empty result! Encrypted token starts with:', encryptedToken.substring(0, 20));
-            console.error('⚠️ ENCRYPTION_KEY length:', ENCRYPTION_KEY.length, 'first 4 chars:', ENCRYPTION_KEY.substring(0, 4));
+            console.error('⚠️ Decryption produced empty result! Encrypted token length:', encryptedToken.length);
+            console.error('⚠️ ENCRYPTION_KEY length:', ENCRYPTION_KEY.length);
             return encryptedToken;
         }
-        
+
         // Validate the decrypted token looks reasonable (should contain dots for JWTs or start with known prefixes)
-        console.log('🔑 Decrypted token starts with:', decrypted.substring(0, 10), 'length:', decrypted.length, 'has dots:', decrypted.includes('.'));
+        console.log('🔑 Decrypted token length:', decrypted.length, 'has dots:', decrypted.includes('.'));
         
         return decrypted;
     } catch (error) {
@@ -414,11 +418,12 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
         if (resumePath && fsSync.existsSync(resumePath)) {
             const resumeBuffer = await fs.readFile(resumePath);
             const resumeBase64 = resumeBuffer.toString('base64');
-            const resumeFilename = `${sanitizeName(user.full_name)}_Resume.pdf`;
-            
+            // Named and typed from the stored file — a Word résumé is not a ".pdf" (server/utils/resumeFile.js).
+            const { filename: resumeFilename, contentType: resumeType } = resumeAttachmentOf(resumePath, sanitizeName(user.full_name));
+
             message += [
                 `--${boundary}`,
-                'Content-Type: application/pdf',
+                `Content-Type: ${resumeType}`,
                 'Content-Transfer-Encoding: base64',
                 `Content-Disposition: attachment; filename="${resumeFilename}"`,
                 '',
@@ -500,12 +505,12 @@ async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, r
         if (resumePath && fsSync.existsSync(resumePath)) {
             const resumeBuffer = await fs.readFile(resumePath);
             const resumeBase64 = resumeBuffer.toString('base64');
-            const resumeFilename = `${sanitizeName(user.full_name)}_Resume.pdf`;
-            
+            const { filename: resumeFilename, contentType: resumeType } = resumeAttachmentOf(resumePath, sanitizeName(user.full_name));
+
             attachments.push({
                 '@odata.type': '#microsoft.graph.fileAttachment',
                 name: resumeFilename,
-                contentType: 'application/pdf',
+                contentType: resumeType,
                 contentBytes: resumeBase64
             });
         }
@@ -574,11 +579,181 @@ async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, r
 
         console.log('✅ Email sent successfully via Microsoft Graph API');
         return { success: true };
-        
+
     } catch (error) {
         console.error('❌ Error sending email via Microsoft Graph API:', error);
         throw error;
     }
+}
+
+// ── SENDING FROM THE USER'S OWN MAILBOX — the letter's Send page (2026-09-19) ─────────────────────────────
+// The owner's ask: "user should be able to use the connected gmail or microsoft account to send the email… and it
+// should allow user to add email id and send that". letterSendController sends ONE message to up to five addresses,
+// with the letter and the résumé attached, through these four helpers. sendEmailViaGmail / sendEmailViaMicrosoft
+// above stay exactly as they are for the older flows (executeSendWork, the Job Hub compose); they could not carry
+// this message:
+//   • one recipient, and a raw `Subject:` line — every stored letter subject has a "—" in it (6/6 in prod), and raw
+//     8-bit bytes in a message declared 7bit are exactly what mail servers mangle;
+//   • hard-coded "<Name>_Resume.pdf / application/pdf" names — a Word file the user swapped in would go out labelled
+//     as a PDF.
+// ⚠️ THE MESSAGE IS BUILT BY NODEMAILER'S OWN COMPOSER (already a dependency): RFC 2047 subjects, quoted-printable
+// bodies and RFC 2231 file names — never hand-joined header strings.
+// ⚠️ NO FALLBACK TO OUR SMTP / ZEPTOMAIL HERE. The page promises the mail leaves THEIR mailbox (it lands in their
+// Sent folder, replies come back to them). A failure is reported (classifyMailError) and nothing is charged — a copy
+// quietly sent from cv@cvapplyr.com instead would be a different promise than the one the user tapped.
+// ⚠️ NOTHING HERE CLEARS TOKENS. The old helpers null a token on invalid_grant; this path only REPORTS 'reconnect':
+// the Send page then offers Reconnect, and /auth/link-* overwrites the tokens. A send must not be what disconnects
+// an account the Account settings screen still shows as connected.
+
+/**
+ * Which mailbox this user can send from: { provider: 'google' | 'microsoft' | null, ready, reconnect? }.
+ * Decided from the TOKENS, not users.oauth_provider alone — a failed refresh elsewhere nulls the tokens and leaves
+ * the provider, so the provider by itself says "connected" about an account that can no longer send. When both
+ * accounts hold tokens, oauth_provider (the most recent sign-in or link) picks.
+ */
+function mailAccountOf(user) {
+    if (!user) return { provider: null, ready: false };
+    const g = !!(user.google_refresh_token || user.google_access_token);
+    const m = !!(user.microsoft_refresh_token || user.microsoft_access_token);
+    const pref = user.oauth_provider;
+    if (pref === 'microsoft' && m) return { provider: 'microsoft', ready: true };
+    if (pref === 'google' && g) return { provider: 'google', ready: true };
+    if (g) return { provider: 'google', ready: true };
+    if (m) return { provider: 'microsoft', ready: true };
+    if (pref === 'google' || pref === 'microsoft') return { provider: pref, ready: false, reconnect: true };
+    return { provider: null, ready: false };
+}
+
+/**
+ * One RFC 5322 message → Buffer. msg: { from?, to: string[], subject, text, attachments: [{ filename, contentType,
+ * content: Buffer }], messageDomain? }. The HTML part is textToHtml(text) — the same paragraphs the old helpers sent.
+ * `from` is optional: Gmail writes the signed-in address itself; a display name only rides along when we know it.
+ */
+function buildMimeMessage(msg) {
+    const MailComposer = require('nodemailer/lib/mail-composer');
+    const domain = String(msg.messageDomain || 'mail.cvapplyr.com').replace(/[^a-z0-9.-]/gi, '') || 'mail.cvapplyr.com';
+    const mail = new MailComposer({
+        ...(msg.from ? { from: msg.from } : {}),
+        to: msg.to,
+        subject: msg.subject,
+        text: msg.text,
+        html: textToHtml(msg.text),
+        // A Message-ID on OUR domain would read as a forged header next to a gmail.com From; the sender's own domain.
+        messageId: `<${require('crypto').randomBytes(12).toString('hex')}.${Date.now()}@${domain}>`,
+        attachments: (msg.attachments || []).map((a) => ({ filename: a.filename, contentType: a.contentType, content: a.content })),
+    });
+    return new Promise((resolve, reject) => {
+        mail.compile().build((err, out) => (err ? reject(err) : resolve(out)));
+    });
+}
+
+/**
+ * An error thrown BY THE SEND REQUEST ITSELF (not the token refresh or the MIME build before it) is marked `sendIssued`:
+ * past that point a dropped connection or a 5xx can mean the provider took the message and only its answer was lost —
+ * classifyMailError then says 'unknown_outcome', never "nothing was sent" (2026-09-19).
+ */
+function markSendIssued(e) {
+    if (e && typeof e === 'object') e.sendIssued = true;
+    return e;
+}
+
+/** Gmail: the whole message through the media-upload endpoint (35 MB) — never the ~5 MB `raw` JSON field. */
+async function sendViaConnectedGmail(user, msg) {
+    const oauth2Client = await createOAuth2Client(user);   // refreshes an expired access token first
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const mime = await buildMimeMessage(msg);
+    let r;
+    try {
+        r = await gmail.users.messages.send({ userId: 'me', media: { mimeType: 'message/rfc822', body: mime } });
+    } catch (e) { throw markSendIssued(e); }
+    return { provider: 'google', id: (r && r.data && r.data.id) || null };
+}
+
+/** Outlook: Graph /me/sendMail — every recipient, every file with its REAL content type, kept in Sent Items. */
+async function sendViaConnectedOutlook(user, msg) {
+    const accessToken = await getValidMicrosoftAccessToken(user);
+    if (!accessToken) { const e = new Error('No Microsoft access token available'); e.mailReason = 'reconnect'; throw e; }
+    const payload = JSON.stringify({
+        message: {
+            subject: msg.subject,
+            body: { contentType: 'HTML', content: textToHtml(msg.text) },
+            toRecipients: (msg.to || []).map((address) => ({ emailAddress: { address } })),
+            attachments: (msg.attachments || []).map((a) => ({
+                '@odata.type': '#microsoft.graph.fileAttachment',
+                name: a.filename, contentType: a.contentType, contentBytes: Buffer.from(a.content).toString('base64'),
+            })),
+        },
+        saveToSentItems: true,
+    });
+    let response;
+    try {
+        response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: payload,
+        });
+    } catch (e) { throw markSendIssued(e); }
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const code = data && data.error && typeof data.error.code === 'string' ? data.error.code : '';
+        const e = new Error(`Microsoft Graph ${response.status}${code ? ` ${code}` : ''}`);
+        e.status = response.status;
+        e.graphCode = code;
+        throw markSendIssued(e);
+    }
+    return { provider: 'microsoft', id: null };
+}
+
+/**
+ * A provider failure → what the user can do about it:
+ *   'reconnect'     the sign-in behind the account expired or was revoked (sign in again)
+ *   'scope'         the account never granted CVApplyr permission to send
+ *   'bad_recipient' the provider refused an address
+ *   'too_big'       the provider refused the size
+ *   'provider_busy' rate limits, or 5xx / network BEFORE the send request went out — nothing was sent, try again shortly
+ *   'unknown_outcome' the connection dropped or a 5xx came back AFTER the send request went out (err.sendIssued):
+ *                   the provider may have taken the message — the user checks their Sent folder before sending again
+ *   'send_failed'   anything else
+ * ⚠️ A RATE LIMIT IS A REFUSAL, EVEN MID-SEND. 429 / *RateLimitExceeded / ApplicationThrottled are the provider saying
+ * no before it processed anything, so they stay 'provider_busy'. So do failures to CONNECT (DNS, refused, connect
+ * timeout): a request that never reached the provider cannot have been sent.
+ */
+function classifyMailError(err) {
+    if (!err) return 'send_failed';
+    if (typeof err.mailReason === 'string') return err.mailReason;
+    const resp = err.response || {};
+    const status = Number(err.status || resp.status || (typeof err.code === 'number' ? err.code : 0)) || 0;
+    const data = resp.data && typeof resp.data === 'object' ? resp.data : {};
+    const inner = data.error && typeof data.error === 'object' ? data.error : {};
+    const cause = err.cause && typeof err.cause === 'object' ? err.cause : {};   // Node fetch: TypeError('fetch failed') { cause }
+    const text = [
+        err.message, typeof err.code === 'string' ? err.code : '', err.graphCode,
+        typeof data.error === 'string' ? data.error : '', data.error_description, inner.message, inner.status,
+        ...(Array.isArray(inner.errors) ? inner.errors.map((x) => x && x.reason) : []),
+        cause.message, typeof cause.code === 'string' ? cause.code : '',
+    ].filter((x) => typeof x === 'string' && x).join(' | ');
+    if (status === 401 || /invalid_grant|refresh failed|refresh token|No Microsoft access token|InvalidAuthenticationToken|unauthorized_client|invalid_client|Login Required|token has been expired or revoked/i.test(text)) return 'reconnect';
+    if (/ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficientPermissions|Insufficient Permission|ErrorAccessDenied|Access is denied/i.test(text)) return 'scope';
+    if (status === 413 || /ErrorMessageSizeExceeded|too large|exceeds the maximum/i.test(text)) return 'too_big';
+    if (/Invalid To header|ErrorInvalidRecipients|Recipient address required|invalid recipient|Invalid recipient/i.test(text)) return 'bad_recipient';
+    if (status === 429 || /rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded|ApplicationThrottled/i.test(text)) return 'provider_busy';
+    const neverConnected = /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT/i.test(text);
+    const transport = /ETIMEDOUT|ECONNRESET|ESOCKETTIMEDOUT|EPIPE|socket hang up|other side closed|UND_ERR_|fetch failed|network timeout|aborted/i.test(text);
+    if (err.sendIssued && !neverConnected && (status >= 500 || (!status && transport))) return 'unknown_outcome';
+    if (status >= 500 || neverConnected || transport || /backendError|ServiceUnavailable/i.test(text)) return 'provider_busy';
+    if (status === 403) return 'scope';
+    return 'send_failed';
+}
+
+/** The one entry point: the connected account's provider, or a thrown error carrying mailReason. Never SMTP. */
+async function sendWithConnectedAccount(user, msg) {
+    const acct = mailAccountOf(user);
+    if (!acct.ready) {
+        const e = new Error('No connected mail account');
+        e.mailReason = acct.provider ? 'reconnect' : 'no_mail_account';
+        throw e;
+    }
+    return acct.provider === 'microsoft' ? sendViaConnectedOutlook(user, msg) : sendViaConnectedGmail(user, msg);
 }
 
 // Helper function: Create SMTP transporter
@@ -1630,7 +1805,7 @@ const sendApplications = async (req, res) => {
                                 path: filePath,
                             },
                             {
-                                filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
+                                filename: resumeAttachmentOf(resumePath, sanitizeName(user.full_name)).filename,
                                 path: resumePath,
                             }
                         ],
@@ -1913,7 +2088,7 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
         // Path-based attachment list (used by the SMTP transports).
         const pathAttachments = [
             ...(incCL  ? [{ filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`, path: filePath }]   : []),
-            ...(incRes ? [{ filename: `${sanitizeName(user.full_name)}_Resume.pdf`,       path: resumePath }] : []),
+            ...(incRes ? [{ filename: resumeAttachmentOf(resumePath, sanitizeName(user.full_name)).filename, path: resumePath }] : []),
         ];
 
         // Generate email body and subject
@@ -2214,7 +2389,7 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
                     htmlBody: textToHtml(emailBody),
                     attachments: [
                         ...(incCL  ? [{ filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`, content: coverLetterBuffer.toString('base64'), contentType: 'application/pdf' }] : []),
-                        ...(incRes ? [{ filename: `${sanitizeName(user.full_name)}_Resume.pdf`,       content: resumeBuffer.toString('base64'),      contentType: 'application/pdf' }] : []),
+                        ...(incRes ? [{ filename: resumeAttachmentOf(resumePath, sanitizeName(user.full_name)).filename, content: resumeBuffer.toString('base64'), contentType: resumeAttachmentOf(resumePath, sanitizeName(user.full_name)).contentType }] : []),
                     ]
                 });
 
@@ -2870,5 +3045,10 @@ module.exports = {
     createCoverLetterPDFFromHTML,
     generateCoverLetterPDF,
     sendReply,
-    getValidMicrosoftAccessToken   // reused by the background reply poller
+    getValidMicrosoftAccessToken,  // reused by the background reply poller
+    // The letter's Send page (letterSendController): the user's OWN mailbox, no SMTP fallback — see the block above them.
+    mailAccountOf,
+    buildMimeMessage,
+    sendWithConnectedAccount,
+    classifyMailError,
 };

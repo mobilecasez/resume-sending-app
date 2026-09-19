@@ -32,6 +32,12 @@ export type Target = {
   website?: string | null;
   /** Where the posting is, when a store said so — steers the rule-ranked design region. Never guessed. */
   country?: string | null;
+  /**
+   * When it reached this user, on the SERVER's clock: a dashboard posting's jobs.created_at, a saved card's
+   * saved_at. Only the saved "Designing for" row reads it (services/homeRoster): a posting newer than any the row
+   * has seen may join it; an older one never refills a place the user emptied.
+   */
+  arrivedAt?: string | null;
 };
 
 export type HomeCard = { id: string; name: string; accent?: string; ats?: number | null; image?: string | null };
@@ -47,9 +53,9 @@ export const gradFor = (s?: string): [string, string] => {
   return AV[h % AV.length];
 };
 /** At most this many postings per employer in the chip row. */
-const PER_EMPLOYER = 3;
-/** The whole chip row. */
-const MAX_CHIPS = 12;
+export const PER_EMPLOYER = 3;
+/** The whole chip row, as the ranking offers it (services/homeRoster keeps what the user does with it). */
+export const MAX_CHIPS = 12;
 /** At most this many employer-level (no posting) chips lead the row; any others queue behind the postings. */
 const LEAD_EMPLOYER_CHIPS = 4;
 
@@ -79,7 +85,14 @@ export const jobKeyForUrl = (url: string): string => {
   return 'job_' + (cleanJobUrl(raw) || raw);
 };
 
-const initialOf = (s?: string | null) => (s || '?').trim().charAt(0).toUpperCase();
+/**
+ * A chip's letter, by CODE POINT. ⚠️ charAt(0) of "🚀 Rocket Lab" is HALF an emoji — a lone surrogate that draws as "�"
+ * and that the server's jsonb refuses inside a saved row (homeRoster, 2026-09-20 review). The server's own logoInitial is
+ * computed the same broken way (name[0]), so it is taken only when it is whole.
+ */
+const initialOf = (s?: string | null) => (Array.from((s || '?').trim())[0] || '?').toUpperCase();
+const logoInitialOf = (given: unknown, name?: string | null) =>
+  (typeof given === 'string' && given && !/[\uD800-\uDFFF]/.test(given) ? given : initialOf(name));
 
 async function token(): Promise<string | undefined> {
   try {
@@ -325,8 +338,59 @@ export async function untrackEmployer(employerId: string): Promise<boolean> {
   return !!(j && j.__ok && j.success === true);
 }
 
+/**
+ * Everything one Home load read about the chip row: the ranked row itself (fetchTargets), AND what the saved row
+ * (services/homeRoster) needs to merge it without guessing.
+ * ⚠️ A FAILED READ IS REPORTED AS FAILED (…Ok false, its list null), never as an empty answer. The row used to be
+ * replaced by whatever came back, so a timed-out dashboard read (user 1's is 255 employers and 1,676 postings,
+ * against a 15 s timeout) turned the whole row into saved cards, and a failed hidden-list read brought every
+ * hidden posting back — and moved the selection off a chip that was no longer in the top 12 (2026-09-19).
+ */
+export type TargetAnswer = {
+  /** fetchTargets' row, exactly: the top MAX_CHIPS. What the first complete load seeds the saved row from. */
+  ranked: Target[];
+  /** Every chip the ranking would offer, in its order, before the MAX_CHIPS cut (hidden ones left out). */
+  candidates: Target[];
+  /** Every chip either store could make — every posting, no per-employer cap, hidden or not — so a chip already
+   *  on the row can refresh its match % when the ranking no longer offers it. */
+  pool: Target[];
+  dashOk: boolean;
+  savedOk: boolean;
+  hiddenOk: boolean;
+  /** The server's hidden list; null when it could not be read. */
+  hidden: string[] | null;
+  /** This device's own hides / un-hides still in flight or in their grace (localHide) — they beat the server's list. */
+  localHidden: Record<string, boolean>;
+  /** Every employer this user tracks, from a dashboard read that answered; null when it did not. */
+  trackedEmployerIds: string[] | null;
+  /** …of those, the ones whose search has settled (not pending / processing). */
+  settledEmployerIds: string[] | null;
+  /** Every saved card's chip key; null when the read failed OR may have been cut short (see SAVED_READ_LIMIT). */
+  savedKeys: string[] | null;
+  /** The newest posting (jobs.created_at) and saved card (saved_at) in this answer — ms, the server's clock. */
+  postMax: number | null;
+  savedMax: number | null;
+};
+
+/**
+ * GET /discover/saved-jobs lists at most this many, newest first (server discoverController.savedJobs LIMIT 500).
+ * ⚠️ A full page may have cut the oldest cards off, so it is no evidence that a card missing from it was unsaved.
+ */
+const SAVED_READ_LIMIT = 500;
+
+const msOf = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : Date.parse(String(v));
+  return Number.isFinite(n) ? n : null;
+};
+
 /** The employer chips: best-matching open role per company, strongest match first. */
 export async function fetchTargets(): Promise<Target[]> {
+  return (await fetchTargetAnswer()).ranked;
+}
+
+/** fetchTargets' ranking, with what each read actually said (see TargetAnswer). Never throws. */
+export async function fetchTargetAnswer(): Promise<TargetAnswer> {
   const [dash, saved, hiddenJ] = await Promise.all([
     getJson('/ai-hub/dashboard'),
     getJson('/discover/saved-jobs'),
@@ -338,8 +402,15 @@ export async function fetchTargets(): Promise<Target[]> {
   const hidden: Set<string> | null = hiddenJ && Array.isArray(hiddenJ.keys)
     ? new Set<string>(hiddenJ.keys.filter((k: any) => typeof k === 'string'))
     : null;
+  const dashOk = !!dash && Array.isArray(dash.dashboard);
+  const savedOk = !!saved && Array.isArray(saved.jobs);
   const out: Target[] = [];
   const employerChips: Target[] = [];
+  const pool: Target[] = [];
+  const tracked: string[] = [];
+  const settled: string[] = [];
+  let postMax: number | null = null;
+  let savedMax: number | null = null;
 
   // (A) tracked employers — one chip per POSTING, not per company. Two roles at the same employer
   // are two different applications: they want different resumes and different letters, so
@@ -347,6 +418,11 @@ export async function fetchTargets(): Promise<Target[]> {
   // ⚠️ Capped per employer so one company with a large careers page cannot fill the whole row.
   for (const row of (dash?.dashboard || [])) {
     const e = row?.employer;
+    // Every row the dashboard lists is an employer this user tracks (status 'watching') — settled or not.
+    if (e && e.id != null && String(e.id)) {
+      tracked.push(String(e.id));
+      if (row.status !== 'pending' && row.status !== 'processing') settled.push(String(e.id));
+    }
     if (!e || !Array.isArray(e.jobs)) continue;
     const colors: [string, string] = Array.isArray(e.logoColor) && e.logoColor.length >= 2
       ? [e.logoColor[0], e.logoColor[1]] : gradFor(e.name);
@@ -358,27 +434,29 @@ export async function fetchTargets(): Promise<Target[]> {
       // chip it would lead the row, then vanish the moment its postings stream in. (A processing row
       // that already has partial postings still shows them below; this only stops the empty stand-in.)
       if (row.status === 'pending' || row.status === 'processing') continue;
-      employerChips.push({
+      const chip: Target = {
         key: 'emp_' + e.id,
         jobId: null,
         employerId: String(e.id),
         company: e.name || 'Employer',
         role: '',
-        initial: e.logoInitial || initialOf(e.name),
+        initial: logoInitialOf(e.logoInitial, e.name),
         colors,
         match: null,
         skills: [],
         location: '',
         website: e.domain ? 'https://' + e.domain : null,
         country: typeof e.country === 'string' && e.country.trim() ? e.country.trim() : null,
-      });
+      };
+      employerChips.push(chip);
+      pool.push(chip);
       continue;
     }
     const ranked = [...e.jobs].sort((a: any, b: any) => (b?.matchScore ?? -1) - (a?.matchScore ?? -1));
     // A posting the user removed does not use up one of its employer's PER_EMPLOYER places.
+    // (Past the cap every posting still goes into `pool` — only the ranking stops at PER_EMPLOYER.)
     let taken = 0;
     for (const j of ranked) {
-      if (taken >= PER_EMPLOYER) break;
       if (!j) continue;
       const posting: Target = {
         key: 'job_' + (cleanJobUrl(j.applyUrl || j.url) || j.id || `${e.id}_${(j.title || '').toLowerCase()}`),
@@ -387,13 +465,18 @@ export async function fetchTargets(): Promise<Target[]> {
         applyUrl: j.applyUrl || j.url || null,
         company: e.name || 'Employer',
         role: j.title || e.subInfo || 'Open role',
-        initial: e.logoInitial || initialOf(e.name),
+        initial: logoInitialOf(e.logoInitial, e.name),
         colors,
         match: typeof j.matchScore === 'number' && j.matchScore >= 0 ? j.matchScore : null,
         skills: Array.isArray(j.skills) ? j.skills.slice(0, 3) : [],
         location: j.location || '',
         country: typeof j.country === 'string' && j.country.trim() ? j.country.trim() : null,
+        arrivedAt: typeof j.createdAt === 'string' && j.createdAt ? j.createdAt : null,
       };
+      const at = msOf(j.createdAt);
+      if (at !== null && (postMax === null || at > postMax)) postMax = at;
+      pool.push(posting);
+      if (taken >= PER_EMPLOYER) continue;
       if (hiddenNow(posting.key, hidden)) continue;
       taken++;
       out.push(posting);
@@ -406,13 +489,19 @@ export async function fetchTargets(): Promise<Target[]> {
   // Deduped on the CLEANED URL, which is what the server's UNIQUE index uses. Company+title looked
   // reasonable but misses on capitalisation and on "Senior Engineer (m/w/d)" vs "Senior Engineer".
   const seen = new Set(out.map((t) => cleanJobUrl(t.applyUrl)).filter(Boolean));
+  const savedKeys: string[] = [];
   for (const c of (saved?.jobs || [])) {
+    if (!c) continue;
     const company = c.company || c.employer_name || '';
     const title = c.title || 'Open role';
     const k = cleanJobUrl(c.job_url || c.id);
+    // Every saved card counts as still saved — shown or not — so only an unsave can read as one.
+    savedKeys.push('job_' + (k || c.job_url || c.id));
+    const at = msOf(c.saved_at);
+    if (at !== null && (savedMax === null || at > savedMax)) savedMax = at;
     if (!company || (k && seen.has(k))) continue;
     if (k) seen.add(k);
-    out.push({
+    const card: Target = {
       key: 'job_' + (k || c.job_url || c.id),
       jobId: null,
       jobUrl: c.job_url || c.id || null,
@@ -425,7 +514,10 @@ export async function fetchTargets(): Promise<Target[]> {
       skills: Array.isArray(c.skills) ? c.skills.slice(0, 3) : [],
       location: c.location || '',
       country: typeof c.country === 'string' && c.country.trim() ? c.country.trim() : null,
-    });
+      arrivedAt: typeof c.saved_at === 'string' && c.saved_at ? c.saved_at : null,
+    };
+    out.push(card);
+    pool.push(card);
   }
 
   // Postings: scored first, best match leading; unscored keep their order behind them.
@@ -441,11 +533,30 @@ export async function fetchTargets(): Promise<Target[]> {
   // one of the 12 slots (and one of the 4 lead places) while showing nothing.
   const shown = (t: Target) => !hiddenNow(t.key, hidden);
   const leads = employerChips.filter(shown);
-  return [
+  const candidates = [
     ...leads.slice(0, LEAD_EMPLOYER_CHIPS),
     ...out.filter(shown),
     ...leads.slice(LEAD_EMPLOYER_CHIPS),
-  ].slice(0, MAX_CHIPS);
+  ];
+  // This device's hides and un-hides that still outrank the server's list, as they stand now.
+  const localHidden: Record<string, boolean> = {};
+  const now = Date.now();
+  localHide.forEach((l, k) => { if (l.until > now) localHidden[k] = l.hidden; });
+  return {
+    ranked: candidates.slice(0, MAX_CHIPS),
+    candidates,
+    pool,
+    dashOk,
+    savedOk,
+    hiddenOk: !!hidden,
+    hidden: hidden ? Array.from(hidden) : null,
+    localHidden,
+    trackedEmployerIds: dashOk ? tracked : null,
+    settledEmployerIds: dashOk ? settled : null,
+    savedKeys: savedOk && saved.jobs.length < SAVED_READ_LIMIT ? savedKeys : null,
+    postMax: dashOk ? postMax : null,
+    savedMax: savedOk ? savedMax : null,
+  };
 }
 
 export type HomeCards = {

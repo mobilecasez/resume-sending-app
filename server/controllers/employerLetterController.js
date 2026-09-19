@@ -40,6 +40,7 @@ const entitlements = require('../services/entitlements');
 const jobService = require('../services/jobService');
 const clTemplates = require('../utils/coverLetterTemplates');
 const clRenderer = require('../utils/coverLetterRenderer');
+const letterText = require('../utils/letterText');   // pure, no dependencies: a stored letter's repair on read
 const { emit } = require('../services/track');
 
 // ⚠️ LAZY, ON PURPOSE. coverLetterRoutes.js requires this file at boot, and these modules belong to
@@ -722,9 +723,14 @@ async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) 
     const brandHash = sha(JSON.stringify({ accent: accent || null, font: brandFont })).slice(0, 16);
     const updatedMs = new Date(doc.updated_at || 0).getTime() || 0;
     const previewRev = String(clRenderer.PREVIEW_REV || '');   // read per call: the renderer owns it
+    // ⚠️ A LETTER STORED WITH THE MODEL'S JSON IN IT (2026-09-19, the Airbus letter) IS RENDERED REPAIRED — and under a key
+    // of its own: LETTER_REPAIR_REV joins the key ONLY for a repaired letter, so its old junk cards are never served again
+    // while every clean letter keeps its key, and its cached cards, exactly as before (letterText.repairLetterHtml hands a
+    // clean letter back untouched).
+    const body = letterText.repairLetterHtml(p.coverLetterHtml);
     const dir = thumbDirOf(userId);
     const pageOf = (t) => path.join(dir, `cl_${sha(['cl', userId, doc.id, updatedMs, t.id, senderHash, brandHash,
-        t.generic ? photoVer : '-', previewRev].join('|'))}.jpg`);
+        t.generic ? photoVer : '-', previewRev, ...(body.repaired ? [letterText.LETTER_REPAIR_REV] : [])].join('|'))}.jpg`);
     const cardOf = (page) => page.replace(/\.jpg$/, `.w${THUMB_W}.jpg`);
     const uriOf = (buf) => `data:${imageMimeOf(buf)};base64,${buf.toString('base64')}`;
     const read = (file) => fs.readFile(file).then((buf) => (buf && buf.length ? buf : null), () => null);
@@ -760,7 +766,7 @@ async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) 
     if (missing.length) {
         try {
             const photo = missing.some((t) => t.generic) ? await cl.loadCLPhotoDataUri(userId) : null;
-            const data = { sender, company: { name: companyName, address: p.companyAddress || '' }, bodyHtml: p.coverLetterHtml, ...cl.letterLinesOf(p) };
+            const data = { sender, company: { name: companyName, address: p.companyAddress || '' }, bodyHtml: body.repaired ? body.html : p.coverLetterHtml, ...cl.letterLinesOf(p) };
             const rendered = await clRenderer.renderPreviews(data, { photo, brandColor: accent, brandFont }, missing);
             await fs.mkdir(dir, { recursive: true });
             for (const r of rendered || []) {
@@ -1484,6 +1490,12 @@ async function buildEmployerLetter(req, res) {
             const attempts = (e.cause && Array.isArray(e.cause.attempts)) ? e.cause.attempts : [];
             console.warn(`[employerLetter] "${company}" letter for user ${userId} ended as ${ending.body.reason} after ${attempts.length} AI attempts (${attempts.map((a) => `${a.model} ${a.kind}`).join(', ') || 'none'}) — nothing charged, nothing stored`);
             return res.status(ending.status).json(ending.body);
+        }
+        // The writer's answers were not a letter (JSON, the model's chatter, a paragraph twice — its letter check failed
+        // twice, 2026-09-19): its own words, which say nothing was charged — true only from before the charge, like above.
+        if (!chargedAt && e && e.letterCheck && e.userFacing) {
+            console.warn(`[employerLetter] "${company}" letter for user ${userId} failed the letter check (${e.letterCheck}) — nothing charged, nothing stored`);
+            return res.status(500).json({ success: false, reason: 'failed', error: e.message });
         }
         const isTimeout = e && (e.message === 'AI_TIMEOUT' || /timeout|ETIMEDOUT/i.test(e.message || ''));
         return res.status(isTimeout ? 504 : 500).json({

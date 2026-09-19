@@ -291,6 +291,14 @@ const only = (got, want) => got.length === want.length && want.every((w, i) => g
   const stageEnd = homeSrc.search(/\n\s*<\/MeshStage>/);
   ok('the mint button block is where it was (inside the hero)', !!mintSrc && stageEnd > mintAt, { mintAt, stageEnd });
   const mintJs = toJs('const __mint = () => (' + mintSrc.slice(1, -1) + ');');
+  // ⚠️ 2026-09-19: the block reads its complete / started / left from makeYoursOf (services/profileSetupService) —
+  // the owner's "Pick up where you left off until the wizard is finished or Account Settings completes the profile".
+  // The SHIPPED function is cut out and run here, not a stand-in, so the block is tested with the real rule.
+  const psSrc = fs.readFileSync(path.join(APP, 'services/profileSetupService.ts'), 'utf8');
+  const myAt = psSrc.indexOf('export function makeYoursOf(');
+  const myBody = myAt >= 0 ? braceSpan(psSrc, psSrc.indexOf(' {\n', myAt) + 1) : '';
+  const makeYoursOf = myBody ? runIn(toJs('function makeYoursOf(setup: any) ' + myBody) + '; return makeYoursOf;', {}) : null;
+  ok('makeYoursOf is where the block expects it (profileSetupService)', typeof makeYoursOf === 'function');
 
   const LETTER = { docId: 7, kind: 'cover_letter', employer: 'Acme', stale: false };
   const RESUME_DOC = { docId: 9, kind: 'resume', employer: 'Beta', stale: false };
@@ -300,7 +308,7 @@ const only = (got, want) => got.length === want.length && want.every((w, i) => g
     const scope = {
       React: FakeReact, s: new Proxy({}, { get: () => ({}) }), MAKE_MINT: ['#0f0', '#0ff'], MAKE_INK: '#04211C',
       TouchableOpacity: 'TouchableOpacity', LinearGradient: 'LinearGradient', Ionicons: 'Ionicons', Text: 'Text',
-      Haptics: { selectionAsync() {} }, track: (n, p) => log.push('track:' + n + ':' + (p && p.mode)),
+      Haptics: { selectionAsync() {} }, track: (n, p) => log.push('track:' + n + ':' + (p && p.mode)), makeYoursOf,
       setup: o.setup || DONE, mode: o.mode, doc: o.doc || null, docPending: !!o.docPending, selBuilding: !!o.selBuilding,
       target: { company: o.company || 'Acme', role: '' },
       cachedCurrentDoc: () => o.cachedResume || null, docLookupOf: (t) => t,
@@ -352,6 +360,31 @@ const only = (got, want) => got.length === want.length && want.every((w, i) => g
     ok('…and the resume tab never opens a letter', !base.log.includes('openLetterEditor') && !d.log.includes('openLetterEditor'));
     const wiz = await mint({ mode: 'resume', setup: { profile: false, photo: false, signature: false, resume: false, complete: false } });
     ok('an untouched profile → "Make your Resume" → the wizard (unchanged)', wiz.label === 'Make your Resume' && wiz.log.includes('push:/(onboarding)'), wiz);
+    // ⚠️ 2026-09-19, user 616: every file on disk (setup.complete) — but the wizard's build never succeeded.
+    const open = { ...DONE, wizard: { state: 'open', stepKey: 'build', left: ['building your resume'] } };
+    const o616 = await mint({ mode: 'resume', setup: open });
+    ok('⚠️ an OPEN wizard over a "complete" profile → "Pick up where you left off", "One thing left — building your resume.", → the wizard',
+      o616.label === 'Pick up where you left off' && /One thing left — building your resume\./.test(String(o616.sub)) && o616.log.includes('push:/(onboarding)'), o616);
+    const oLetter = await mint({ mode: 'letter', setup: open, doc: LETTER });
+    ok('…on the Cover letter tab too (the profile is one profile), never the letter editor', oLetter.label === 'Pick up where you left off' && !oLetter.log.includes('openLetterEditor'), oLetter);
+    const fin = await mint({ mode: 'resume', setup: { ...DONE, photo: false, complete: false, wizard: { state: 'finished', left: [] } } });
+    const closed = await mint({ mode: 'resume', setup: { ...DONE, wizard: { state: 'closed', left: [] } } });
+    ok('finished by a wizard build (even with a skipped photo), or closed by Account Settings → "Customize your resume"',
+      fin.label === 'Customize your resume' && closed.label === 'Customize your resume', { fin: fin.label, closed: closed.label });
+    // ⚠️ Review round 2, 2026-09-19: a wizard CLOSED the way the server really closes one — photo skipped, no date of
+    // birth (both optional in the wizard), no résumé built yet — so the checklist's setup.complete is FALSE and the
+    // wizard's own list still has "building your resume". It used to stay "Pick up · your details and a photo".
+    const realClosed = { profile: false, photo: false, signature: true, resume: true, complete: false,
+      wizard: { state: 'closed', stepKey: 'build', left: ['building your resume'] } };
+    const rc = await mint({ mode: 'resume', setup: realClosed });
+    ok('⚠️ closed by Account Settings with setup.complete FALSE (no DOB, skipped photo) → "Customize your resume", the editor — not "Pick up", not the wizard',
+      rc.label === 'Customize your resume' && !rc.log.includes('push:/(onboarding)')
+      && rc.log.includes('push:' + JSON.stringify({ pathname: '/(resume-builder)/preview', params: { from: 'home' } })), rc);
+    // An account that never wrote through the wizard ('none'): the sentence names what the WIZARD will open on.
+    const noneBuild = await mint({ mode: 'resume', setup: { profile: false, photo: true, signature: true, resume: true, complete: false,
+      wizard: { state: 'none', stepKey: 'build', left: ['building your resume'] } } });
+    ok('…no progress row, no DOB, nothing built: "Pick up … building your resume" (where the wizard opens), never "your details"',
+      noneBuild.label === 'Pick up where you left off' && /One thing left — building your resume\./.test(String(noneBuild.sub)), noneBuild);
   }
 
   /* ════════════════════ PART 3 — the letter doors: none may be a silent no-op ════════════════════ */

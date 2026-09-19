@@ -11,6 +11,9 @@
 //   'profile'                  → App.js Account Settings, via the AsyncStorage handoff key that
 //                                App.js ALREADY consumes ('onboarding_focus_target')
 //   'help'                     → AsyncStorage flag HomeScreen can read to open the in-app guide
+//   'tutorial'    (+ { film, until })
+//                              → the narrated tutorial, opened ON that clip (and playing on to
+//                                `until`); the push's own nid rides along for watch attribution
 //   'support'     (+ { focus, issue, threadId })
 //                              → Help & support; a thread id opens that conversation, focus opens
 //                                the "what went wrong" picker
@@ -35,6 +38,8 @@ try { AsyncStorage = require('@react-native-async-storage/async-storage').defaul
  *  stays require-able from a plain node test. */
 export type PushRouter = {
   push?: (href: any) => void;
+  /** Used only for `reuse` actions — see handleNotificationRoute. */
+  navigate?: (href: any) => void;
   canDismiss?: () => boolean;
   dismissAll?: () => void;
 };
@@ -54,6 +59,9 @@ export type PushRouteAction = {
   handoff?: 'profile' | 'help';
   /** The profile section to open, or 'help'. */
   target?: string;
+  /** navigate only: if this screen is ALREADY the one on top, hand it the new params instead of
+   *  stacking a second copy on it (router.navigate rather than router.push). */
+  reuse?: boolean;
   /** Why nothing happened — for logs/tests. */
   reason?: string;
 };
@@ -97,6 +105,15 @@ const REWARDS = '/(rewards)';
 const TUTORIAL = '/(tutorial)';
 /** Thread ids are integers from a SERIAL column — anything else is not one of ours. */
 const THREAD_ID_RE = /^[0-9]{1,12}$/;
+/**
+ * The tutorial's clips, by key, in film order — the keys of FILMS in app/(tutorial)/index.tsx, which
+ * are in turn the server's journey step keys (server/services/journey.js). Duplicated rather than
+ * imported so this module stays require-able from plain node; test-push-routing.js fails the moment
+ * the two lists disagree.
+ */
+export const TUTORIAL_FILMS = ['profile', 'resume', 'save_job', 'cover_letter', 'apply'];
+/** The server's push id (crypto.randomUUID). Anything else is not one of ours. */
+const NID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // App.js's profile screen understands these focus targets (HomeScreen/OnboardingChecklist use the
 // same set). Anything else is ignored and falls back to 'profile'.
@@ -125,6 +142,17 @@ function str(v: any): string {
   if (v == null) return '';
   if (typeof v === 'string') return v.trim();
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return '';
+}
+
+/** A tutorial clip: its key ('cover_letter'), or its on-screen number ('4' / '04'). Anything else → ''.
+ *  Strict on purpose — an unrecognised value must drop the param (open at 01, as before), never be
+ *  guessed into some other clip. */
+function filmKey(v: any): string {
+  const s = str(v).toLowerCase();
+  if (!s) return '';
+  if (TUTORIAL_FILMS.indexOf(s) >= 0) return s;
+  if (/^0?[1-9]$/.test(s)) return TUTORIAL_FILMS[parseInt(s, 10) - 1] || '';
   return '';
 }
 
@@ -228,9 +256,33 @@ export function resolveRoute(data: any): PushRouteAction {
     // while the fleet is mixed opens the guide on old builds and the video on new ones. Both are
     // sensible; neither is a dead tap. Renaming it would strand every un-updated device on
     // 'unknown-route' -> do nothing.
+    //
+    // ⚠️ 2026-09-19 — OPEN THE CLIP THE PUSH IS ABOUT. This case used to return `params: {}` whatever
+    // the payload said, so the screen fell back to clip 01 "Set up your profile": the owner tapped
+    // "Watch the app fill a job form for you" and had to hunt through the chapter strip for the
+    // form-filling part. The clip now travels as EXTRA params on the same wire value, which is what
+    // keeps this backward compatible: builds ≤209 still drop them and open 01, exactly as before.
+    //   film  — the clip to open on (a key or its 1..5 number); unknown → dropped → 01
+    //   until — keep playing through the following clips up to this one; kept only AFTER `film`
+    //   nid   — the push's own id, stamped at the top level of every payload. The screen credits
+    //           the watch to the campaign with it — it never had it before, so 0 of the tutorial
+    //           events in production could be attributed to a push. Also a per-tap nonce: a second
+    //           tap of the same push kind is a new nid, so the screen sees it as a new request.
+    // `reuse`: when the tutorial is already on top, retarget THAT player instead of stacking a
+    // second one on it (the first kept playing underneath — nothing paused it).
     case 'tutorial':
-    case 'video':
-      return { kind: 'navigate', pathname: TUTORIAL, params: {} };
+    case 'video': {
+      const params: Record<string, string> = {};
+      const film = filmKey(p.film);
+      if (film) {
+        params.film = film;
+        const until = filmKey(p.until);
+        if (until && TUTORIAL_FILMS.indexOf(until) > TUTORIAL_FILMS.indexOf(film)) params.until = until;
+      }
+      const nid = str((data as any).nid);
+      if (nid && NID_RE.test(nid)) params.nid = nid;
+      return { kind: 'navigate', pathname: TUTORIAL, params, reuse: true };
+    }
 
     case 'help':
     case 'guide':
@@ -270,7 +322,14 @@ export async function handleNotificationRoute(data: any, router: PushRouter | nu
       return action;
     }
 
-    router?.push?.({ pathname: action.pathname, params: action.params || {} });
+    const href = { pathname: action.pathname, params: action.params || {} };
+    // `reuse` → router.navigate. In expo-router 6 a NAVIGATE to the route already on top keeps its
+    // key and REPLACES its params (the screen re-renders with the new ones); from anywhere else it
+    // appends a new route exactly like push. PUSH always appends, so a tutorial push tapped while
+    // the tutorial was open mounted a second player over a first one that kept talking. Routers
+    // without navigate (older shapes, tests) fall back to push — today's behaviour.
+    if (action.reuse && router && typeof router.navigate === 'function') router.navigate(href);
+    else router?.push?.(href);
   } catch { /* never crash on a notification tap */ }
   return action;
 }

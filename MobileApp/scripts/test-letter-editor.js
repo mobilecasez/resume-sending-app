@@ -161,6 +161,239 @@ const AI_LETTER = [P1, P2, P3].map((p) => PSTYLE + p + '</p>').join('');
     ok('numeric references decode (&#8217; is an apostrophe, not "&#8217;")', L.decodeEntities('It&#8217;s') === 'It' + String.fromCharCode(8217) + 's');
   }
 
+  console.log('── 2b. ⚠️ A LETTER STORED WITH THE MODEL\'S JSON IN IT shows only its paragraphs (2026-09-19: "json in paragraph 5,6") ──');
+  {
+    // Production doc 15 (Home → Airbus) as stored: its four paragraphs + '"<br>}<br>Rishi, I have completed the cover letter …',
+    // "Here is the JSON output:", a ```json block, and paragraphs 1–4 again — nine cards on this page. The server now serves it
+    // repaired (GET /api/employer-docs/:id); the cards repair it themselves too (letterHtml.withoutModelJunk, which MIRRORS
+    // server/utils/letterText.js), for a letter that reaches the page any other way.
+    const LT = require(path.join(ROOT, 'server/utils/letterText.js'));
+    const DOC15 = fs.readFileSync(path.join(ROOT, 'server/scripts/fixtures/letter-doc15-stored.html'), 'utf8');
+    const JUNK = /```|&quot;(?:cover_letter|employer_name|to|subject)&quot;|Here is the JSON|I have completed the cover letter|^\}|<br>\}/;
+    const cards = L.splitLetterParagraphs(DOC15);
+    ok('⚠️ the stored Airbus letter is FOUR paragraph cards (it was nine) — no fence, no JSON, no chatter, nothing twice',
+      cards.length === 4 && cards.every((c) => c.kind === 'p' && !JUNK.test(c.html)), cards.map((c) => c.html.slice(0, 50)));
+    const server = L.splitLetterParagraphs(LT.repairLetterHtml(DOC15).html);
+    ok('⚠️ …exactly the cards of the letter the SERVER serves repaired (the two repairs agree, card for card)',
+      JSON.stringify(cards) === JSON.stringify(server), { app: cards.map((c) => c.html.slice(-40)), server: server.map((c) => c.html.slice(-40)) });
+    ok('…the fourth ends at "consideration." (the JSON\'s closing quote and brace gone), the bold of every card kept',
+      /Thank you for your consideration\.$/.test(cards[3].html) && cards.map((c) => strongs(c.html)).join() === '8,16,9,2', cards.map((c) => strongs(c.html)));
+    ok('idempotent: the joined cards split into the same four cards', JSON.stringify(L.splitLetterParagraphs(L.joinLetterParagraphs(cards))) === JSON.stringify(cards));
+    // The same letter UNEDITED (<p style> blocks, as the build stored it) and with its quotes as &quot;.
+    const styled = DOC15.replace(/<p>/g, PSTYLE);
+    ok('the unedited shape (<p style>) → the same four cards', JSON.stringify(L.splitLetterParagraphs(styled)) === JSON.stringify(cards));
+    ok('…and with its quotes stored as &quot;', JSON.stringify(L.splitLetterParagraphs(DOC15.replace(/"/g, '&quot;'))) === JSON.stringify(cards));
+    // A clean letter's cards are the very same array the splitter built: nothing is rewritten without the strong signal.
+    const clean = L.splitLetterParagraphs(AI_LETTER);
+    ok('⚠️ a clean letter is untouched: withoutModelJunk hands its cards back as the SAME array', L.withoutModelJunk(clean) === clean && clean.length === 3);
+    const legit = '<p>I integrated external APIs (REST, gRPC, XML/JSON) and "shipped" weekly.</p><p>Here is what I would bring to your team:</p><p>I have completed over 40 projects for clients.</p>';
+    ok('…and a letter that merely MENTIONS JSON, quotes a word or starts "Here is what…" keeps every card',
+      L.splitLetterParagraphs(legit).length === 3 && !L.looksLikeModelJunk(L.splitLetterParagraphs(legit)));
+    // ⚠️ A LINE THAT ONLY SOUNDS LIKE THE MODEL (review, 2026-09-19): a closing like these is the letter's own. Alone it never
+    // triggers the backstop; in the Airbus junk it is not next to the JSON's opening, so it stays there too.
+    const SOUNDS = ['I hope this cover letter shows why I would be a strong fit for <strong>Airbus SE</strong>. Thank you for your consideration.',
+      'Please let me know if you need anything further; my portfolio is attached as requested.',
+      'Feel free to contact me; I have attached my résumé alongside this cover letter.'];
+    for (const s of SOUNDS) {
+      const letter = AI_LETTER + '<p>' + s + '</p>';
+      const c = L.splitLetterParagraphs(letter);
+      ok(`⚠️ a clean letter closing with ${JSON.stringify(s.slice(0, 36))}… keeps it (4 cards, not flagged)`, c.length === 4 && !L.looksLikeModelJunk(c) && c[3].html === s, c.length);
+    }
+    const closing = SOUNDS[0];
+    const P = DOC15.split('</p>').filter(Boolean).map((p) => p + '</p>');
+    const around = P.slice(0, 3).join('') + P[3].replace(/^<p>[\s\S]*?(?="<br>\})/, '<p>' + closing) + P.slice(4, 8).join('') + '<p>' + closing + '</p>';
+    const ac = L.splitLetterParagraphs(around);
+    ok('⚠️ the Airbus junk around a closing that SOUNDS like the model: 4 cards, the closing kept — and the server agrees card for card',
+      ac.length === 4 && ac[3].html === closing && JSON.stringify(ac) === JSON.stringify(L.splitLetterParagraphs(LT.repairLetterHtml(around).html)), ac.map((c) => c.html.slice(0, 40)));
+    // ⚠️ ROUND 2 (review, 2026-09-19): a line NAMING THE FORMAT is not junk on its words either — at the end or in the middle.
+    const FORMAT_CLOSINGS = ['Please let me know if you would like my certificates in the requested format.',
+      'Feel free to request my portfolio in the requested format.',
+      'Here are my references, available in the requested format.',
+      'I hope this letter shows my fit; I can share sample API contracts in JSON format.'];
+    for (const s of FORMAT_CLOSINGS) {
+      const last = L.splitLetterParagraphs(AI_LETTER + '<p>' + s + '</p>');
+      const P3 = AI_LETTER.split('</p>').filter(Boolean).map((p) => p + '</p>');
+      const mid = L.splitLetterParagraphs(P3[0] + P3[1] + '<p>' + s + '</p>' + P3[2]);
+      ok(`⚠️ ${JSON.stringify(s.slice(0, 40))}… kept as the last card and in the middle (4 cards, not flagged, the server agrees)`,
+        last.length === 4 && L.decodeEntities(last[3].html) === s && !L.looksLikeModelJunk(last) && mid.length === 4 && L.decodeEntities(mid[2].html) === s
+          && LT.repairLetterHtml(AI_LETTER + '<p>' + s + '</p>').repaired === false, { last: last.length, mid: mid.length });
+    }
+    // ⚠️ …and the model's WRAPPER inside the letter goes: its opener as the first card, its sign-off as the last.
+    const WRAPS = [['<p>Sure! Here is the cover letter you asked for.</p>', ''], ['<p>Certainly! Below is the tailored cover letter.</p>', ''],
+      ['<p>Sure!</p><p>Here is your cover letter.</p>', ''], ['', '<p>I hope this helps!</p>'], ['', '<p>Good luck with your application!</p>'],
+      ['<p>Sure! Here is the cover letter:</p>', '<p>Hope this helps. Good luck!</p>']];
+    const clean3 = L.splitLetterParagraphs(AI_LETTER);
+    for (const [pre, post] of WRAPS) {
+      const wrapped = pre + AI_LETTER + post;
+      const c = L.splitLetterParagraphs(wrapped);
+      ok(`⚠️ the model's wrapper ${JSON.stringify(L.decodeEntities((pre + post).replace(/<[^>]+>/g, ' ').trim()).slice(0, 44))} → the letter's 3 cards, exactly the server's repair`,
+        L.looksLikeModelJunk(L.splitLetterCards(wrapped)) && JSON.stringify(c) === JSON.stringify(clean3)
+          && JSON.stringify(c) === JSON.stringify(L.splitLetterParagraphs(LT.repairLetterHtml(wrapped).html)) && LT.repairLetterHtml(wrapped).repaired, c.map((x) => x.html.slice(0, 30)));
+    }
+    for (const s of ['Here is my cover letter for the Software Engineer role at Acme.', 'Of course, the output of my team speaks for itself.',
+      'I hope this helps explain why I am moving into platform engineering.', 'Good luck to the team with the launch; I would love to help ship the next one.']) {
+      const first = L.splitLetterParagraphs('<p>' + s + '</p>' + AI_LETTER);
+      const last = L.splitLetterParagraphs(AI_LETTER + '<p>' + s + '</p>');
+      ok(`a look-alike ${JSON.stringify(s.slice(0, 40))}… is kept first AND last (4 cards each, not flagged)`,
+        first.length === 4 && last.length === 4 && !L.looksLikeModelJunk(first) && !L.looksLikeModelJunk(last), { first: first.length, last: last.length });
+    }
+    // ⚠️ THE MIRROR CANNOT DRIFT: every rule the two sides share is the same regex, character for character.
+    const rulesOf = (src) => new Map([...src.matchAll(/^const ([A-Z_]+_RE) = (\/.+\/[a-z]*);$/gm)].map((m) => [m[1], m[2]]));
+    const app = rulesOf(fs.readFileSync(LETTER_HTML_SRC, 'utf8'));
+    const srv = rulesOf(fs.readFileSync(path.join(ROOT, 'server/utils/letterText.js'), 'utf8'));
+    const SHARED = ['FENCE_RE', 'BRACE_LINE_RE', 'LETTER_KEY_LINE_RE', 'JSON_STRING_LINE_RE', 'HEADING_RE', 'RULE_RE', 'LABEL_LINE_RE', 'PARA_LABEL_RE',
+      'PREAMBLE_RE', 'SURE_RE', 'DONE_RE', 'AFTERWORD_RE', 'HELPS_RE', 'ABOUT_FORMAT_RE', 'ABOUT_LETTER_RE', 'JSON_FORMAT_RE',
+      'INTRODUCER_RE', 'FORMAT_TAIL_RE', 'BARE_SURE_RE', 'HERE_RE', 'MODEL_LETTER_RE', 'MODEL_COVER_LETTER_RE'];
+    const drift = SHARED.filter((k) => !app.has(k) || app.get(k) !== srv.get(k));
+    ok('⚠️ the app\'s junk rules are the server\'s (server/utils/letterText.js), regex for regex', drift.length === 0, drift);
+
+    // ⚠️ A NEAR-COPY IS A COPY, ON BOTH SIDES (review round 3, 2026-09-20). The Airbus answer with one literal " in its first
+    // copy was stored as the letter + a fifth paragraph: the second copy's first, WITHOUT that quote — no exact copy, so no
+    // side dropped it. The rule (letterText.isNearDuplicate / letterHtml.isNearDuplicate): the same first 12 words, or 0.85 of
+    // the words shared. The two sides cannot drift: the same numbers, the same word rule, the same answers.
+    const numsOf = (src) => new Map([...src.matchAll(/^const (NEAR_DUP_OVERLAP|DUP_MIN_CHARS|NEAR_DUP_MAX_PARAGRAPHS|NEAR_DUP_MIN_WORDS) = ([\d.]+);/gm)].map((m) => [m[1], m[2]]));
+    const appN = numsOf(fs.readFileSync(LETTER_HTML_SRC, 'utf8'));
+    const srvN = numsOf(fs.readFileSync(path.join(ROOT, 'server/utils/letterText.js'), 'utf8'));
+    // ⚠️ NEAR_DUP_MIN_WORDS (round 5, 2026-09-20): the word-set test and "made of earlier cards" are PROSE tests, or a
+    // letterhead card and the signature card below it are "one paragraph written twice" and the signature goes.
+    ok('⚠️ the near-copy numbers are the server\'s (NEAR_DUP_OVERLAP, DUP_MIN_CHARS, NEAR_DUP_MAX_PARAGRAPHS, NEAR_DUP_MIN_WORDS)',
+      appN.size === 4 && appN.get('NEAR_DUP_OVERLAP') === '0.85' && appN.get('DUP_MIN_CHARS') === srvN.get('DUP_MIN_CHARS')
+      && srvN.get('NEAR_DUP_OVERLAP') === '0.85' && appN.get('NEAR_DUP_MAX_PARAGRAPHS') === String(LT.NEAR_DUP_MAX_PARAGRAPHS)
+      && appN.get('NEAR_DUP_MIN_WORDS') === srvN.get('NEAR_DUP_MIN_WORDS') && appN.get('NEAR_DUP_MIN_WORDS') === '25',
+      { app: [...appN], server: [...srvN], srvMax: LT.NEAR_DUP_MAX_PARAGRAPHS });
+    // ⚠️ AND NO "SAME OPENING" RULE ON EITHER SIDE (review round 4, 2026-09-20): round 3 called two paragraphs with the same
+    // first 12 words one paragraph, so a letter's own parallel openings ("In my role as Project Manager at METASYS SOFTWARE
+    // PVT. LTD. in Indore, I …") lost a card — and the next save wrote the letter back without it.
+    ok('⚠️ neither side has a "same first N words" shortcut any more (NEAR_DUP_LEAD is gone)',
+      !/NEAR_DUP_LEAD/.test(fs.readFileSync(LETTER_HTML_SRC, 'utf8')) && !/NEAR_DUP_LEAD/.test(fs.readFileSync(path.join(ROOT, 'server/utils/letterText.js'), 'utf8')));
+    // The word rule is a RegExp built from a string (ASCII \u escapes, no \p{…} — Hermes), so it is compared as its line.
+    // ⚠️ It is a single-character class walked from each end now (review 2026-09-20: `[^X]+$` tried from every character
+    // of a punctuation run cost its square, and the server reads letters a client sends) — the same characters, both sides.
+    const edgeOf = (src) => (src.match(/^const WORD_CHAR_RE = new RegExp\(.+\);$/m) || [null])[0];
+    const appEdge = edgeOf(fs.readFileSync(LETTER_HTML_SRC, 'utf8'));
+    ok('⚠️ …and so is the word rule (WORD_CHAR_RE, character for character)', !!appEdge && appEdge === edgeOf(fs.readFileSync(path.join(ROOT, 'server/utils/letterText.js'), 'utf8')), appEdge);
+    const trimOf = (src) => (src.match(/while \(a < b && !WORD_CHAR_RE\.test\(w\[a\]\)\) a\+\+;[\s\S]{0,120}?b--;/) || [null])[0];
+    ok('⚠️ …and both walk it the same way (trimWordEdges)', !!trimOf(fs.readFileSync(LETTER_HTML_SRC, 'utf8'))
+      && trimOf(fs.readFileSync(LETTER_HTML_SRC, 'utf8')) === trimOf(fs.readFileSync(path.join(ROOT, 'server/utils/letterText.js'), 'utf8')));
+    const key = (h) => L.decodeEntities(String(h).replace(/<[^>]+>/g, '')).replace(/\*\*/g, '').replace(/["“”]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const P4 = DOC15.split('</p>').filter(Boolean).slice(0, 4).map(key);
+    const LEAD = 'in my role as project manager at metasys software pvt. ltd. in indore, i ';
+    const PAIRS = [
+      [P4[0], P4[1]], [P4[1], P4[2]], [P4[0], P4[3]],                                    // a letter's own paragraphs: never
+      // ⚠️ nor two that only OPEN the same way, or one that QUOTES another (round 4) — both are a letter's own paragraphs
+      [LEAD + 'directed a portfolio of twelve client programmes worth four million dollars and cut schedule slippage by a third over two years.',
+        LEAD + 'also led the hiring of nine engineers and negotiated the vendor contracts that saved a quarter of the licence bill.'],
+      ['certified scrum master and pmp with fourteen years in enterprise software delivery',
+        'as a certified scrum master and pmp with fourteen years in enterprise software delivery, i have run programmes of up to forty engineers across three countries and introduced release trains that cut lead time by half.'],
+      [P4[0], key(P4[0].replace('14+ years', '14+ years 27'))],                           // the critic's near-copy: always
+      [P4[2], key(P4[2].replace('8+ developers', 'eight developers'))],
+      ['kind regards, rishi', 'kind regards, rishi s.'],                                  // short: the length gate is the caller's
+      ['', ''], ['one', 'two'],
+    ];
+    const answers = PAIRS.map(([a, b]) => [L.isNearDuplicate(a, b), LT.isNearDuplicate(a, b)]);
+    ok('⚠️ …and the same answer on every pair (the app\'s isNearDuplicate IS the server\'s)', answers.every(([a, s]) => a === s)
+      && answers.slice(0, 5).every(([a]) => a === false) && answers.slice(5, 7).every(([a]) => a === true), answers);
+    // The stored shape the old reading made of that answer: copy 1 (its quote in paragraph 1), the chatter, the fence, copy 2.
+    const ODD = DOC15.replace('14+ years', '14+ years 27"');
+    const oc = L.splitLetterParagraphs(ODD);
+    ok('⚠️ that letter as it would have been stored (a " in copy 1) → its FOUR cards: copy 2\'s near-copy of card 1 goes too',
+      oc.length === 4 && /14\+ years 27/.test(L.decodeEntities(oc[0].html)) && oc.every((c) => !JUNK.test(c.html))
+        && L.splitLetterCards(ODD).length === 9, oc.map((c) => c.html.slice(0, 40)));
+    ok('…exactly the cards of the letter the SERVER serves repaired', JSON.stringify(oc) === JSON.stringify(L.splitLetterParagraphs(LT.repairLetterHtml(ODD).html)));
+    const nearCopy =P.slice(0, 3).join('') + P[3].replace(/"<br>\}[\s\S]*<\/p>$/, '</p>') + P[0].replace('14+ years', '14+ full years');
+    const nc = L.splitLetterParagraphs(nearCopy);
+    ok('a clean letter with a near-copy of its first card (one word added) → flagged, and its 4 cards — the server agrees',
+      L.looksLikeModelJunk(L.splitLetterCards(nearCopy)) && nc.length === 4 && !/14\+ full years/.test(nc.map((c) => c.html).join(''))
+        && LT.looksContaminatedHtml(nearCopy) && JSON.stringify(nc) === JSON.stringify(L.splitLetterParagraphs(LT.repairLetterHtml(nearCopy).html)), nc.length);
+    ok('…while a clean letter\'s four cards are still the same array (no card is a near-copy of another)',
+      L.withoutModelJunk(L.splitLetterCards(LT.repairLetterHtml(DOC15).html)).length === 4 && !L.looksLikeModelJunk(L.splitLetterCards(LT.repairLetterHtml(DOC15).html)));
+    // ⚠️ AND A REAL LETTER NEVER LOSES A CARD TO THE NEAR-COPY RULE (review round 4, 2026-09-20). Round 3 dropped a card
+    // whenever two paragraphs opened with the same 12 words, or a later one QUOTED an earlier one — and Customize writes the
+    // cards back, so the card was gone from the row with the next save. Both shapes here are a letter's own paragraphs.
+    const KEEPERS = {
+      'the same long opening twice (the same employer and title)': ['<p>I am writing about the Delivery Lead role at Globex, a programme very close to the work I have run for the last decade.</p>',
+        '<p>In my role as Project Manager at METASYS SOFTWARE PVT. LTD. in Indore, I directed a portfolio of twelve client programmes worth four million dollars and cut schedule slippage by a third.</p>',
+        '<p>In my role as Project Manager at METASYS SOFTWARE PVT. LTD. in Indore, I also led the hiring of nine engineers and negotiated the vendor contracts that saved a quarter of the licence bill.</p>',
+        '<p>Thank you for your time; I would be glad to talk about how I can help Globex deliver its roadmap.</p>'],
+      'a headline paragraph quoted inside a longer one': ['<p>I am writing about the Delivery Lead role at Globex, which matches the programmes I have run for the last decade.</p>',
+        '<p>Certified Scrum Master and PMP with fourteen years in enterprise software delivery</p>',
+        '<p>As a Certified Scrum Master and PMP with fourteen years in enterprise software delivery, I have run programmes of up to forty engineers across three countries and cut lead time by half.</p>',
+        '<p>Thank you for considering my application; I would be glad to talk it through with your team.</p>'],
+      'German paragraphs with the same opening': ['<p>hiermit bewerbe ich mich um die Stelle als Projektleiter in Ihrem Team in München, die Sie auf Ihrer Karriereseite ausgeschrieben haben.</p>',
+        '<p>Während meiner Tätigkeit als Projektleiter bei der Siemens AG in München von 2019 bis 2022 habe ich die Einführung eines neuen ERP-Systems für drei Standorte verantwortet.</p>',
+        '<p>Während meiner Tätigkeit als Projektleiter bei der Siemens AG in München von 2019 bis 2022 habe ich außerdem ein Team von zwölf Entwicklerinnen aufgebaut und eingearbeitet.</p>',
+        '<p>Über eine Einladung zu einem Gespräch würde ich mich sehr freuen; vielen Dank für Ihre Zeit.</p>'],
+    };
+    for (const [name, ps] of Object.entries(KEEPERS)) {
+      const letter = ps.join('');
+      const c = L.splitLetterParagraphs(letter);
+      ok(`⚠️ ${name} → all four cards, not flagged — and the server agrees (nothing to repair)`,
+        c.length === 4 && !L.looksLikeModelJunk(L.splitLetterCards(letter)) && !LT.looksContaminatedHtml(letter) && !LT.repairLetterHtml(letter).repaired,
+        { cards: c.length, flagged: L.looksLikeModelJunk(L.splitLetterCards(letter)), server: LT.looksContaminatedHtml(letter) });
+    }
+    // ⚠️ A <br> IS A LINE BREAK TO BOTH SIDES (review round 4): the server's repair keyed a paragraph on its text with the
+    // <br> deleted, so it found no copy where the app (and its own signal) saw one — the app showed 3 cards of a letter
+    // every download printed 4 paragraphs of, and the next save wrote those 3 back.
+    const LINES = 'Led the settlement rebuild at Razorpay<br>Cut reconciliation errors by ninety percent<br>Mentored fourteen engineers across three teams<br>Shipped UPI autopay for the largest merchants';
+    const brLetter = `<p>I am writing about the Staff Engineer role on your payments platform, which is the work I have done for six years.</p><p>${LINES}</p>`
+      + `<p>Thank you for your time and consideration; I would be glad to walk your team through any of it.</p><p>${LINES.replace(/<br>/g, ', ').replace('fourteen', 'fifteen')}</p>`;
+    const brCards = L.splitLetterParagraphs(brLetter);
+    ok('⚠️ a near-copy of a card of <br> lines → 3 cards, and the server repairs to exactly those 3',
+      brCards.length === 3 && LT.looksContaminatedHtml(brLetter) && LT.repairLetterHtml(brLetter).repaired
+        && JSON.stringify(brCards) === JSON.stringify(L.splitLetterParagraphs(LT.repairLetterHtml(brLetter).html)),
+      { cards: brCards.length, repaired: LT.repairLetterHtml(brLetter).repaired });
+    // ⚠️ ROUND 5 (review, 2026-09-20) — the same four losses and two survivals as the server (server/scripts/
+    // test-letter-json.js section 6b), asked of the CARDS, because Customize writes the cards back: a card the backstop
+    // drops here is gone from the row with the next save.
+    const R5 = [
+      'With <strong>fourteen years</strong> of delivery leadership I am applying for the Cyber Security Manager position at Airbus SE, a brief that matches everything I have built since 2011.',
+      'In my role as Project Manager at METASYS SOFTWARE PVT. LTD. in Indore, I directed twelve client programmes worth four million dollars and cut schedule slippage by a third over two years.',
+      'I am genuinely interested in the strategic cybersecurity initiatives at Airbus SE and am prepared to relocate to Prestwick. Thank you for your consideration of my application.',
+    ];
+    const HEAD5 = 'Rishi Samadhiya<br>42 Vijay Nagar<br>Indore 452010<br>India<br>rishi@example.com<br>+91 98765 43210';
+    const SAME5 = 'I am available to start within four weeks and can relocate to Munich at my own expense.';
+    const R5KEEP = {
+      'a letterhead card and the same block signed at the bottom': [HEAD5, 'Dear Hiring Manager,', ...R5, 'Sincerely,<br>' + HEAD5],
+      'a closing card that repeats a sentence the body already ends with': ['Dear Hiring Manager,', R5[0] + ' ' + SAME5, R5[1], SAME5, 'Sincerely,<br>Rishi Samadhiya'],
+      'an applicant opening "Here is the letter of interest you asked me for …"':
+        ['Here is the letter of interest you asked me for on Tuesday, together with a note on my notice period.', ...R5, 'Sincerely,<br>Rishi Samadhiya'],
+    };
+    for (const [name, ps] of Object.entries(R5KEEP)) {
+      const letter = ps.map((t) => `<p>${t}</p>`).join('');
+      const c = L.splitLetterParagraphs(letter);
+      ok(`⚠️ ${name} → all ${ps.length} cards, not flagged — and the server agrees`,
+        c.length === ps.length && !L.looksLikeModelJunk(L.splitLetterCards(letter)) && !LT.looksContaminatedHtml(letter) && !LT.repairLetterHtml(letter).repaired,
+        { cards: c.length, want: ps.length, flagged: L.looksLikeModelJunk(L.splitLetterCards(letter)), server: LT.looksContaminatedHtml(letter) });
+    }
+    const R5GO = {
+      'the doc-15 wrapper as the last card': [[...R5, 'Rishi, I have completed the cover letter for the Cyber Security Manager position at Airbus.'], /I have completed the cover letter/],
+      'the doc-15 wrapper as the first card': [['Rishi, I have completed the cover letter for the Cyber Security Manager position at Airbus.', ...R5], /I have completed the cover letter/],
+      // One pass is not a fixed point on either side: a chatter card shielded by a "{" card before it, or by a key card
+      // after it, survived the first pass — the app showed it and the server served it.
+      'an opener shielded by a "{" card before it': [['{', 'Sure! Here is the cover letter you asked for.', ...R5, '}'], /Sure! Here is/],
+      'a sign-off shielded by a key card after it': [[...R5, 'I hope this helps!', '"subject": "Application for Cyber Security Manager"'], /hope this helps/],
+    };
+    for (const [name, [ps, gone]] of Object.entries(R5GO)) {
+      const letter = ps.map((t) => `<p>${t}</p>`).join('');
+      const c = L.splitLetterParagraphs(letter);
+      ok(`⚠️ ${name} → gone in ONE call, the three real cards left, and the server's repair reads the same`,
+        c.length === 3 && !c.some((x) => gone.test(x.html)) && !L.looksLikeModelJunk(c)
+          && JSON.stringify(c) === JSON.stringify(L.splitLetterParagraphs(LT.repairLetterHtml(letter).html)),
+        { cards: c.length, left: c.some((x) => gone.test(x.html)) });
+    }
+    // ⚠️ The detector and the repair count the same cards, so a letter can never be flagged for ever and repaired never.
+    {
+      const long5 = 'With fourteen years in enterprise software delivery I have run programmes of up to forty engineers and delivered custom solutions across many sectors and countries worldwide every year.';
+      const many = [long5, ...Array.from({ length: 23 }, (_, i) => `Line ${i}.`), long5.replace('every year', 'each year')];
+      const letter = many.map((t) => `<p>${t}</p>`).join('');
+      const cards = L.splitLetterCards(letter);
+      ok(`⚠️ ${many.length} cards, 2 of them long: flagged ⇒ a card actually goes (never one without the other), like the server`,
+        L.looksLikeModelJunk(cards) === (L.withoutModelJunk(cards).length !== cards.length)
+          && L.looksLikeModelJunk(cards) === LT.looksContaminatedHtml(letter),
+        { flagged: L.looksLikeModelJunk(cards), dropped: cards.length - L.withoutModelJunk(cards).length, server: LT.looksContaminatedHtml(letter) });
+    }
+  }
+
   console.log('── 3. ⚠️ THE FULL BOLD TRIP: card → Quill → PUT (server normaliser) → stored → cards → PDF designs + Word ──');
   const docs = require(path.join(ROOT, 'server/services/employerDocs.js'));
   const edr = require(path.join(ROOT, 'server/routes/employerDocsRoutes.js'));
@@ -198,6 +431,55 @@ const AI_LETTER = [P1, P2, P3].map((p) => PSTYLE + p + '</p>').join('');
     ok('⚠️ every PDF design (all 7) prints the same words bold', designsKeepBold);
     const d = await docxText(await buildCoverLetterDocx(data, { template: 'ats_pro' }));
     ok('⚠️ …and so does the Word file (bold runs for the bold words)', /Siemens/.test(d.boldText) && /Senior Backend Engineer/.test(d.boldText) && !/trade-offs/.test(d.boldText), d.boldText);
+  }
+
+  console.log('── 3b. ⚠️ WHAT THE USER TYPES IS NEVER FILTERED: Done → PUT → reload keeps it (review, 2026-09-19) ──');
+  {
+    // The first junk backstop ran on quillToBlocks: each of these came back as NO card, and edit.tsx's onRichDone then
+    // spliced the paragraph out and saved the letter without it (an added one was silently ignored).
+    const LT = require(path.join(ROOT, 'server/utils/letterText.js'));
+    const TYPED = [
+      'I hope this cover letter shows why I would be a strong fit. Thank you for your consideration.',
+      'Please let me know if you need anything further; I have attached my portfolio as requested.',
+      'Please let me know if you would like the letter in another language.',
+      'Feel free to contact me; I have attached my résumé alongside this cover letter.',
+      'Recently, I have completed the draft of our platform roadmap.',
+      'Of course, the output of my team speaks for itself.',
+      // ⚠️ ROUND 2 (review, 2026-09-19): the reload cut each of these ("names the format" on its words alone), and the next
+      // save of any field wrote the letter back without it.
+      'Please let me know if you would like my certificates in the requested format.',
+      'Feel free to request my portfolio in the requested format.',
+      'Here are my references, available in the requested format.',
+      'I hope this letter shows my fit; I can share sample API contracts in JSON format.',
+      'I hope this helps explain why I am moving into platform engineering.',
+    ];
+    const blocks = L.splitLetterParagraphs(AI_LETTER);
+    for (const typed of TYPED) {
+      const replacement = L.quillToBlocks('<p>' + typed + '</p><p><br></p>');
+      ok(`⚠️ Done on paragraph 3 = ${JSON.stringify(typed.slice(0, 40))}… → ONE card with those words (never none)`,
+        replacement.length === 1 && L.decodeEntities(replacement[0].html) === typed, replacement);
+      stored = null;
+      const sent = L.joinLetterParagraphs([blocks[0], blocks[1], ...replacement]);
+      const r = await callRoute('put', '/:id', { body: { payload: { coverLetterHtml: sent, subject: 'Application' } } });
+      const html = stored ? stored.coverLetterHtml : '';
+      const served = LT.repairLetterHtml(html);   // what GET /employer-docs/:id serves on the reload (the same function)
+      const back = L.splitLetterParagraphs(served.html);
+      ok('…PUT stores it, the reload serves it untouched, and it is still the third card',
+        r.statusCode === 200 && served.repaired === false && back.length === 3 && L.decodeEntities(back[2].html) === typed, { status: r.statusCode, repaired: served.repaired, cards: back.length });
+    }
+    // Even what no letter should hold is the user's to write: the typed box is never second-guessed (the letter as SERVED is
+    // what the backstop reads — see edit.tsx).
+    ok('quillToBlocks keeps typed JSON, a fence and "Here is the JSON output:" as the user wrote them',
+      L.quillToBlocks('<p>{"to": "HR"}</p><p>```json</p><p>Here is the JSON output:</p>').length === 3);
+    const EDIT_SRC = fs.readFileSync(path.join(APP, 'app/(cover-letter)/edit.tsx'), 'utf8');
+    ok('⚠️ edit.tsx: the junk backstop reads only the letter as served; an edited letter and a retried draft are split raw',
+      /bodyHtml === servedHtml \? splitLetterParagraphs\(bodyHtml\) : splitLetterCards\(bodyHtml\)/.test(EDIT_SRC)
+        && /setServedHtml\(typeof p\.coverLetterHtml === 'string' \? p\.coverLetterHtml : ''\);/.test(EDIT_SRC)
+        && /commitBlocks\(splitLetterCards\(bodyDraft\), opts\)/.test(EDIT_SRC)
+        && !/splitLetterParagraphs\(bodyDraft\)/.test(EDIT_SRC));
+    const LH_SRC = fs.readFileSync(LETTER_HTML_SRC, 'utf8');
+    ok('⚠️ letterHtml.ts: quillToBlocks is the raw splitter (never splitLetterParagraphs)',
+      /export function quillToBlocks\(quillHtml: string\): LetterBlock\[\] \{\n\s*return splitCards\(quillHtml\)/.test(LH_SRC));
   }
 
   console.log('── 4. ⚠️ EVERY PRINTED ELEMENT IS EDITABLE — and every edit reaches every design ──');

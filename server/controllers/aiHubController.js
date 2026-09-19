@@ -5171,6 +5171,12 @@ async function getJobCoverLetter(req, res) {
             }
             if (best) { row = { ...best, status: status || best.status }; }
         }
+        // ⚠️ A letter stored with the model's JSON, its chatter or a paragraph twice (2026-09-19, the Airbus letter on Home)
+        // is served repaired; a clean one is the very same row (utils/letterText.repairLetterHtml). Never written back here.
+        if (row && typeof row.cover_letter_html === 'string') {
+            const fixed = require('../utils/letterText').repairLetterHtml(row.cover_letter_html);
+            if (fixed.repaired) row = { ...row, cover_letter_html: fixed.html };
+        }
         return res.json({ coverLetter: row || null });
     } catch (e) {
         return res.status(500).json({ error: 'Failed to load cover letter' });
@@ -6570,9 +6576,9 @@ async function autofillFiles(req, res) {
             try {
                 const p = path.join(__dirname, '../../', user.resume_path);
                 const buf = await fs.readFile(p);
-                const ext = (path.extname(user.resume_path) || '.pdf').toLowerCase();
-                const mime = ext === '.pdf' ? 'application/pdf' : ext === '.doc' ? 'application/msword' : ext === '.docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/octet-stream';
-                out.resume = { base64: buf.toString('base64'), name: `${safe(user.full_name)}_Resume${ext}`, mime };
+                // Named and typed from the stored file (.odt / .rtf / .txt too since 2026-09-19 — server/utils/resumeFile.js).
+                const att = require('../utils/resumeFile').resumeAttachmentOf(user.resume_path, safe(user.full_name));
+                out.resume = { base64: buf.toString('base64'), name: att.filename, mime: att.contentType };
             } catch (e) { console.warn('[autofillFiles] uploaded resume read failed:', e.message); }
         }
         } // end which !== 'cover'

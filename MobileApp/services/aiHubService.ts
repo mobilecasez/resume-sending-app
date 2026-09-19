@@ -1655,7 +1655,7 @@ export type AdminNotifyPrefs = {
 };
 /** Why push cannot reach this user. null when it can. `fixable` = is it an admin's to fix at all. */
 export type AdminPushBlock = {
-  code: 'never_opened_app' | 'android_no_fcm' | 'notifications_off';
+  code: 'never_opened_app' | 'android_no_fcm' | 'notifications_off' | 'device_signed_into_other_account';
   label: string; detail: string; fixable: boolean;
 };
 export type AdminUserPush = {

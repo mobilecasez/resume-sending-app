@@ -99,11 +99,59 @@ eq('unknown platform that has opened the app → notifications_off',
 eq('android with no events at all → never_opened_app',
   (pushBlockReason(st({ platform: 'android', appVersion: '3.3' })) || {}).code, 'never_opened_app');
 
+// ── the token MOVED to another account on the same phone (one device, one account — 2026-09-20) ──
+// Nobody declined anything: someone else signed in on this user's phone. "Notifications are switched off … only the
+// user can reverse it in Settings" was the wrong answer for accounts 88/89 and 17/616, which share a phone.
+{
+  const MOVED = '2026-09-20T10:00:00.000Z';
+  const r = pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', firstEvent: DAY, lastEvent: DAY, pushTokenMovedAt: MOVED }));
+  eq('token moved → device_signed_into_other_account', r && r.code, 'device_signed_into_other_account');
+  ok('moved is not admin-fixable', r && r.fixable === false);
+  ok('moved never says notifications are off', !/switched off|declined/i.test(`${r && r.label} ${r && r.detail}`));
+  eq('moved beats the old-android branch',
+    (pushBlockReason(st({ platform: 'android', appVersion: '3.3', lastEvent: DAY, pushTokenMovedAt: MOVED })) || {}).code,
+    'device_signed_into_other_account');
+  eq('a token present wins over a stale moved stamp',
+    pushBlockReason(st({ hasPushToken: true, pushTokenMovedAt: MOVED })), null);
+  eq('no moved stamp → unchanged (notifications_off)',
+    (pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', lastEvent: DAY, pushTokenMovedAt: null })) || {}).code,
+    'notifications_off');
+
+  // ⚠️ REGRESSION (2026-09-20 review): the stamp is cleared by ONE thing only — this user registering a token again —
+  // so read as a mere presence it is permanent. A user who has OPENED THE APP SINCE the move and still has no token did
+  // not lose it to the other phone: they declined the permission, or their Android build could never register. The
+  // branch is fixable:false, so answering it there hides `android_no_fcm` — the one cause an admin can act on ("tell
+  // them to update"). Production stamps 17, 616, 88, 89, 118, 498 the first time the new code runs.
+  const LATER = '2026-09-21T10:00:00.000Z';
+  eq('moved, but the user has opened the app SINCE → the real cause, not the stale stamp',
+    (pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', firstEvent: DAY, lastEvent: LATER, pushTokenMovedAt: MOVED })) || {}).code,
+    'notifications_off');
+  eq('…and an old Android build still gets the answer an admin can act on',
+    (pushBlockReason(st({ platform: 'android', appVersion: '3.3', firstEvent: DAY, lastEvent: LATER, pushTokenMovedAt: MOVED })) || {}).code,
+    'android_no_fcm');
+  eq('opened at the same instant as the move → still the move (only a LATER open clears it)',
+    (pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', lastEvent: MOVED, pushTokenMovedAt: MOVED })) || {}).code,
+    'device_signed_into_other_account');
+  eq('moved with no events since → still the move',
+    (pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', firstEvent: DAY, lastEvent: null, pushTokenMovedAt: MOVED })) || {}).code,
+    'device_signed_into_other_account');
+  eq('an unparseable stamp never crashes and keeps the move answer',
+    (pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', lastEvent: LATER, pushTokenMovedAt: 'not-a-date' })) || {}).code,
+    'device_signed_into_other_account');
+  eq('an unparseable lastEvent keeps the move answer',
+    (pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', lastEvent: 'nonsense', pushTokenMovedAt: MOVED })) || {}).code,
+    'device_signed_into_other_account');
+  eq('a Date object for lastEvent works too (what the DB driver returns)',
+    (pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', lastEvent: new Date(LATER), pushTokenMovedAt: new Date(MOVED) })) || {}).code,
+    'notifications_off');
+}
+
 // ── shape contract: every branch is renderable ───────────────────────────────
 const ALL = [
   pushBlockReason(st({})),
   pushBlockReason(st({ platform: 'android', appVersion: '3.3', lastEvent: DAY })),
   pushBlockReason(st({ platform: 'ios', appVersion: '3.4', lastEvent: DAY })),
+  pushBlockReason(st({ platform: 'ios', appVersion: '4.6.0', lastEvent: DAY, pushTokenMovedAt: DAY })),
 ];
 for (const r of ALL) {
   ok(`${r.code}: has a non-empty label`, typeof r.label === 'string' && r.label.length > 3);
@@ -115,7 +163,7 @@ for (const r of ALL) {
   ok(`${r.code}: detail ends in a full stop`, /\.$/.test(r.detail));
 }
 const codes = ALL.map((r) => r.code);
-eq('all three branches are distinct', new Set(codes).size, 3);
+eq('all four branches are distinct', new Set(codes).size, 4);
 
 // ── defensive: garbage in ────────────────────────────────────────────────────
 eq('null state → null', pushBlockReason(null), null);

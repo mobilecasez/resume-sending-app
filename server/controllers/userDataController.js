@@ -325,7 +325,11 @@ const getReviewCoverLetters = async (req, res) => {
             reviewCoverLetters[emailKey] = {
                 companyName: letter.companyName,
                 recipientEmail: letter.recipientEmail,
-                coverLetterHtml: letter.coverLetterHtml,
+                // ⚠️ Served REPAIRED when the model's JSON, its chatter or a paragraph twice was stored in it (2026-09-19, the
+                // Airbus letter); a clean letter is the very same string (utils/letterText.repairLetterHtml).
+                coverLetterHtml: typeof letter.coverLetterHtml === 'string'
+                    ? require('../utils/letterText').repairLetterHtml(letter.coverLetterHtml).html
+                    : letter.coverLetterHtml,
                 subject: letter.subject,
                 address: letter.address,
                 date: letter.date,

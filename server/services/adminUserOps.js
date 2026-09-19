@@ -193,6 +193,25 @@ function pushBlockReason(state) {
   if (!state || state.hasPushToken) return null;
   const platform = String(state.platform || '').toLowerCase();
 
+  // ⚠️ First, because it is the one cause that is nobody's setting (2026-09-20): a device belongs to ONE account, so
+  // when someone else signs in on this user's phone, the token moves to them (expoPushService.saveDeviceToken stamps
+  // push_token_moved_at). Calling that "notifications are off" blamed a permission nobody declined.
+  // ⚠️ …but only while the user has NOT been back since (2026-09-20 review). The stamp is cleared by one thing only —
+  // this user registering a token again — so on its own it is permanent. A user who opened the app after the move and
+  // still has no token did not lose it to the other phone: they declined the permission, or they are on an Android
+  // build that could never register. Answering "their phone is signed into another account" there is a dead end
+  // (fixable: false) that hides `android_no_fcm`, the one answer an admin can act on. Every account the first run of
+  // the new code stamps (production: 17, 616, 88, 89, 118, 498) reaches that state the moment it opens the app.
+  if (state.pushTokenMovedAt && !(state.lastEvent && new Date(state.lastEvent) > new Date(state.pushTokenMovedAt))) {
+    return {
+      code: 'device_signed_into_other_account',
+      label: 'Their phone is signed into another account',
+      detail: 'Another account signed in on the phone this user had, so push now goes to that account. This user '
+        + 'becomes reachable again the next time they open the app signed in as themselves.',
+      fixable: false,
+    };
+  }
+
   if (!state.lastEvent && !state.firstEvent) {
     return {
       code: 'never_opened_app',
@@ -1022,7 +1041,7 @@ async function getUserOverview(userId) {
       app_version: state.appVersion,
       // null when push works. Otherwise the CAUSE, so the admin screen can stop saying only that a
       // token is missing and say why — see pushBlockReason().
-      block: pushBlockReason(state),
+      block: pushBlockReason({ ...state, pushTokenMovedAt: u.push_token_moved_at || null }),
       preferences: prefs,
     },
     completeness: state.completeness,

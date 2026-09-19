@@ -7,7 +7,17 @@ const letterV2 = require('../../ai-cover-letter-v2');
 const { researchEmployer } = require('../../ai-employer-researcher');
 const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
 const jobService = require('../services/jobService');
-const { generateCoverLetterPDF: generateRichCoverLetterPDF } = require('./emailController');
+const { generateCoverLetterPDF: generateRichCoverLetterPDFRaw } = require('./emailController');
+// A letter's text checked, cleaned and — for one already stored with a model's JSON in it — repaired where it is read
+// (see server/utils/letterText.js: the Airbus letter of 2026-09-19).
+const letterText = require('../utils/letterText');
+/**
+ * The PDFKit "Original" letter, with the stored letter REPAIRED on the way in (letterText.repairLetterHtml: a clean letter
+ * is handed over as the very same string). Every call below — the saved letter, the classic body, a history re-download of
+ * a frozen letter — reads the same repaired text the templated designs print (coverLetterTemplates.bodyToHtml does too).
+ */
+const generateRichCoverLetterPDF = (user, coverLetterHtml, ...rest) => generateRichCoverLetterPDFRaw(user,
+    typeof coverLetterHtml === 'string' ? letterText.repairLetterHtml(coverLetterHtml).html : coverLetterHtml, ...rest);
 const clTemplates = require('../utils/coverLetterTemplates');
 const clRenderer  = require('../utils/coverLetterRenderer');
 const { getEventCost } = require('../services/eventCosts');
@@ -577,6 +587,16 @@ const LEGACY_LETTER_MIN_TRY_MS = 20 * 1000;
 /** v2's user-safe failure, word for word: the letter lanes and the pollers already show exactly this. */
 const LEGACY_LETTER_FAILED = 'We could not finish generating your cover letter. Please try again.';
 /**
+ * ⚠️ A LETTER THAT PARSES IS NOT YET A LETTER (2026-09-19, the Airbus letter: JSON, the model's chatter and the letter
+ * twice, all "parsed", stored and charged). What the parser hands on is checked (letterText.letterProblem, on the text
+ * and on the HTML it becomes) before it goes anywhere: a failed check is asked ONCE more — the first answer and one more,
+ * inside the same budget, all before any lane charges — and then this, which says nothing was charged, and is true in
+ * every lane: each one charges only after the writer returns. It carries err.letterCheck (the reason) and no err.reason,
+ * so every lane's refusal mapping (402 quota / 503 AI) is untouched: it is a plain "could not finish".
+ */
+const LEGACY_LETTER_GATE_TRIES = 2;
+const LEGACY_LETTER_UNUSABLE = 'We could not finish writing your cover letter. Nothing was charged — please try again.';
+/**
  * The two answers for "Google could not write this letter" — aiText's final AiUnavailableError, after it waited,
  * retried and walked every fallback model. The same words as Home's letter lane (employerLetterController AI_BUSY
  * / AI_DOWN), so a user sees one story whichever screen they wrote from.
@@ -641,13 +661,23 @@ function escapeRawControlChars(raw) {
 }
 
 /**
- * The last resort, ai-cover-letter-v2's extractJsonFields unchanged: each known field pulled out on its own, for
- * the answer whose string values hold literal double quotes no parser can repair. cover_letter is always the last
- * field, so it runs to the last `"` before the final `}`.
+ * The last resort, ai-cover-letter-v2's extractJsonFields: each known field pulled out on its own, for the answer whose
+ * string values hold literal double quotes no parser can repair.
+ * ⚠️ ONE CHANGE (2026-09-19, the Airbus letter): cover_letter ends at ITS OWN closing quote — the first `"` followed by
+ * the object's `}` or the next `"key":` — never at the last `"` before the LAST `}` of the text. Handed an answer with a
+ * second JSON object after the first, that lastIndexOf ran the letter through the model's chatter, a ```json fence and
+ * the whole second object (whose letter it repeated). Only when no quote ends it that way does it fall back to that end.
+ * ⚠️ …AND THE SPACE BEFORE THAT `}` MAY BE AN ESCAPE (review round 3, 2026-09-20). This reads escapeRawControlChars' output,
+ * and a literal `"` inside the letter ("a 27" monitor") flips that walk's in-string parity for the rest of the text: every
+ * REAL newline between the letter's closing quote and its `}` becomes the two characters `\n`. The end test allowed only
+ * raw whitespace there, found no end, fell back to the last `"` of the whole answer — and the Airbus answer with one such
+ * quote came back as its four paragraphs + the second copy's first (a near-copy no dedupe caught), stored and charged. So
+ * the separators (the end, and the one-line fields' too) accept the escapes that walk writes: \n \r \t.
  */
+const SEP = '(?:\\s|\\\\[nrt])*';   // whitespace as the text had it, or as escapeRawControlChars rewrote it
 function extractLetterFields(raw) {
     const str = (key) => {
-        const m = raw.match(new RegExp(`"${key}"\\s*:\\s*"([\\s\\S]*?)"(?:\\s*,\\s*"[a-z_]+"\\s*:|\\s*\\})`, 'i'));
+        const m = raw.match(new RegExp(`"${key}"\\s*:\\s*"([\\s\\S]*?)"(?:${SEP},${SEP}"[a-z_]+"${SEP}:|${SEP}\\})`, 'i'));
         return m ? m[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t') : '';
     };
     const arr = (key) => {
@@ -662,39 +692,112 @@ function extractLetterFields(raw) {
         if (start === -1) return '';
         const quote = raw.indexOf('"', raw.indexOf(':', start) + 1);
         if (quote === -1) return '';
-        const close = raw.lastIndexOf('"', raw.lastIndexOf('}') - 1);
+        // Its own closing quote: unescaped, and followed by the end of the object or by the next key (across SEP).
+        const END = new RegExp(`"(?=${SEP}(?:\\}|,${SEP}"[A-Za-z_]+"${SEP}:))`, 'g');
+        END.lastIndex = quote + 1;
+        let own = -1;
+        for (let m = END.exec(raw); m; m = END.exec(raw)) {
+            if (raw[m.index - 1] !== '\\') { own = m.index; break; }
+        }
+        const close = own !== -1 ? own : raw.lastIndexOf('"', raw.lastIndexOf('}') - 1);
         return raw.slice(quote + 1, close).replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"');
     };
     return { to: str('to'), employer_name: str('employer_name'), position: str('position'), addresses: arr('addresses'), subject: str('subject'), cover_letter: letter() };
 }
 
 /**
- * The model's answer → { to, employer_name, position, addresses, subject, cover_letter }, or a throw (the retry).
- * ai-cover-letter-v2's parsing, stage for stage: fences off, the outermost {…}, JSON.parse, then the same parse
- * after escaping raw control characters, then the field extractor. ONE addition: an answer with no letter in it
- * (every stage "succeeded" on an object with no cover_letter) is a throw too — v2 handed it on, and the lane then
- * charged for an empty letter.
+ * One JSON object of the answer → the letter object in v2's shape, or null when it holds no letter. v2's three stages on
+ * it (JSON.parse; the same after escaping raw control characters; the field extractor), then the shapes a model writes
+ * instead of v2's: the letter one level down ({ "response": { …, "cover_letter" } }), under "coverLetter", as an array
+ * of paragraphs, or as the whole answer again, string-encoded ("cover_letter": "{\"to\": …, \"cover_letter\": …}" — read
+ * once more). A stage that throws is a stage that did not read it (`strict`: rethrown, v2's last-resort message).
  */
-function parseLegacyLetterJson(text) {
-    if (!text || String(text).trim() === '') throw new Error('Gemini returned an empty response');
-    const cleaned = String(text).replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start === -1 || end === -1) throw new Error('Gemini response did not contain a JSON object');
-    const json = cleaned.slice(start, end + 1);
-    let letter = null;
-    try { letter = JSON.parse(json); } catch (_) {
+function letterCandidateOf(json, { strict = false, nested = false } = {}) {
+    let o = null;
+    try { o = JSON.parse(json); } catch (_) {
         const sanitised = escapeRawControlChars(json);
-        try { letter = JSON.parse(sanitised); } catch (__) {
-            try { letter = extractLetterFields(sanitised); } catch (e3) {
-                throw new Error(`JSON parse failed after all recovery attempts: ${e3.message}`);
+        try { o = JSON.parse(sanitised); } catch (__) {
+            try { o = extractLetterFields(sanitised); } catch (e3) {
+                if (strict) throw new Error(`JSON parse failed after all recovery attempts: ${e3.message}`);
+                return null;
             }
         }
     }
-    if (!letter || typeof letter !== 'object' || !String(letter.cover_letter || '').trim()) {
-        throw new Error('Gemini response carried no cover_letter');
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    if (o.cover_letter == null && o.coverLetter == null) {
+        const inner = Object.values(o).find((v) => v && typeof v === 'object' && !Array.isArray(v) && (v.cover_letter != null || v.coverLetter != null));
+        if (!inner) return null;
+        o = inner;
     }
-    return letter;
+    let letter = o.cover_letter != null ? o.cover_letter : o.coverLetter;
+    if (Array.isArray(letter)) letter = letter.filter((p) => typeof p === 'string').join('\n\n');
+    if (typeof letter !== 'string' || !letter.trim()) return null;
+    if (!nested && /^\s*\{[\s\S]*\}\s*$/.test(letter)) {
+        const inner = letterCandidateOf(letter.trim(), { nested: true });
+        if (inner) return { ...o, ...inner };
+    }
+    return { ...o, cover_letter: letter };
+}
+
+/** A one-line field of the answer (to, subject, employer_name, position, an address), or '' when it is not one: JSON, a
+ *  fence or a paragraph where a line belongs, or the prompt's own slot ("Application for [Target Position] — [User Full
+ *  Name from metadata]") — then letterDetailsOf's own fallback fills it ("Hiring Manager", "Application for <position>"). */
+const LETTER_FIELD_MAX = 300;
+const letterFieldOf = (v) => (typeof v === 'string' && v.length <= LETTER_FIELD_MAX && !/```|\{\s*"|"\s*:\s*["[{]/.test(v)
+    && !letterText.hasPromptTemplate(v) ? v : '');
+
+/**
+ * The model's answer → { to, employer_name, position, addresses, subject, cover_letter }, or a throw (the retry).
+ *
+ * ⚠️ EVERY JSON OBJECT OF THE ANSWER IS READ ON ITS OWN (2026-09-19, the Airbus letter). v2 took ONE span, from the first
+ * "{" to the last "}". Gemini's grounded answer for Airbus was TWO objects with chatter between them ("Rishi, I have
+ * completed the cover letter …", "Here is the JSON output:", a ```json fence); that span could not be parsed, the field
+ * extractor ran the letter to the second object's closing quote, and all of it was stored and charged as the letter. Now:
+ *   1. every balanced {…} (letterText.jsonObjectsIn, string-aware) through v2's stages, each on its own (letterCandidateOf);
+ *   2. none held a letter → v2's own stages, exactly as before: fences off, the outermost {…} — so an answer whose quotes
+ *      never balance (a literal " inside the letter) still reaches the field extractor, and every old error stays;
+ *   3. each letter cleaned (letterText.cleanLetterText: fences, JSON lines, the model's chatter, markdown headings and
+ *      labels, a paragraph written twice — a clean letter is returned as the very same string), each one-line field kept
+ *      only when it IS one line (letterFieldOf);
+ *   4. of several, the FULLEST whose letter passes letterText.letterProblem (most words; of equals, the later), else the
+ *      last. writeLegacyLetter runs that same check and asks again when it fails — nothing is charged before.
+ *      ⚠️ Not "the last that passes" (review, 2026-09-19): the check had no lower bound then, so the real letter followed
+ *      by the prompt's template echoed back ("PARAGRAPH 1 text …", "Application for [Target Position]") or by a one-line
+ *      object was replaced by it — and stored and charged. The check now refuses those too ('template', 'too_short').
+ * An answer with no letter in it is a throw (v2 handed it on, and the lane then charged for an empty letter).
+ */
+function parseLegacyLetterJson(text) {
+    if (!text || String(text).trim() === '') throw new Error('Gemini returned an empty response');
+    const src = String(text);
+    const found = letterText.jsonObjectsIn(src).map((json) => letterCandidateOf(json)).filter(Boolean);
+    if (!found.length) {
+        const cleaned = src.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+        const start = cleaned.indexOf('{');
+        const end = cleaned.lastIndexOf('}');
+        if (start === -1 || end === -1) throw new Error('Gemini response did not contain a JSON object');
+        const one = letterCandidateOf(cleaned.slice(start, end + 1), { strict: true });
+        if (one) found.push(one);
+    }
+    if (!found.length) throw new Error('Gemini response carried no cover_letter');
+    const letters = found.map((o) => {
+        const cover_letter = letterText.cleanLetterText(o.cover_letter);
+        return {
+            ...o,
+            to: letterFieldOf(o.to),
+            employer_name: letterFieldOf(o.employer_name),
+            position: letterFieldOf(o.position),
+            subject: letterFieldOf(o.subject),
+            addresses: (Array.isArray(o.addresses) ? o.addresses : []).map(letterFieldOf).filter(Boolean),
+            cover_letter,
+        };
+    });
+    // A letter the cleaning emptied (it was only "Here is the JSON output:") is no letter.
+    const written = letters.filter((o) => o.cover_letter.trim());
+    if (!written.length) throw new Error('Gemini response carried no cover_letter');
+    const usable = written.filter((o) => !letterText.letterProblem(o.cover_letter));
+    if (!usable.length) return written[written.length - 1];
+    const wordsOf = (o) => o.cover_letter.trim().split(/\s+/).length;
+    return usable.reduce((best, o) => (wordsOf(o) >= wordsOf(best) ? o : best));
 }
 
 /**
@@ -707,6 +810,11 @@ function parseLegacyLetterJson(text) {
  *     outlive the poller. Kind 'other' (every model truncated or refused the request) is final too, as "could not
  *     finish".
  *   - the ANSWER was unusable (empty, no JSON, no letter) → asked again, up to LEGACY_LETTER_TRIES answers, like v2.
+ *   - the answer PARSED but is not a letter (letterText.letterProblem: JSON, a fence, the model's chatter, a paragraph
+ *     twice, far too long or too short, the prompt's own template — what the cleaning in parseLegacyLetterJson could not
+ *     take out) → asked once more
+ *     (LEGACY_LETTER_GATE_TRIES, inside the same LEGACY_LETTER_TRIES and budget), then LEGACY_LETTER_UNUSABLE: nothing
+ *     charged, nothing stored.
  * `report(stage, label)` (optional) puts each retry on the job in plain words. It is awaited by aiText, and
  * anything it throws is ignored there — a progress write can never break a letter.
  * `deadline` (optional, epoch ms) is a caller's own window: the letter's budget ends at the EARLIER of it and
@@ -732,6 +840,7 @@ async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsi
     const aiText = aiTextMod();
     const endsAt = Math.min(Date.now() + LEGACY_LETTER_BUDGET_MS, Number.isFinite(deadline) ? deadline : Infinity);
     let lastErr = null;
+    let gateFails = 0;   // answers that parsed but failed the letter check (LEGACY_LETTER_GATE_TRIES)
     for (let attempt = 1; attempt <= LEGACY_LETTER_TRIES; attempt++) {
         const left = endsAt - Date.now();
         if (left < LEGACY_LETTER_MIN_TRY_MS) break;
@@ -762,14 +871,34 @@ async function writeLegacyLetter(resumeMetadata, employerUrl, position, responsi
             console.warn(`[coverLetter] letter for ${url}: every model failed (${e.message}) — not asked again`);
             break;
         }
+        let letter;
         try {
-            const letter = parseLegacyLetterJson(out.text);
-            console.log(`[coverLetter] letter for ${url} written by ${out.model}${out.fellBack ? ' (a fallback model)' : ''} ✅`);
-            return { letter, model: out.model };
+            letter = parseLegacyLetterJson(out.text);
         } catch (e) {
             lastErr = e;
             console.warn(`[coverLetter] letter answer ${attempt}/${LEGACY_LETTER_TRIES} for ${url} unusable: ${e.message}`);
+            continue;
         }
+        // THE GATE (see LEGACY_LETTER_UNUSABLE): the cleaned text, and the HTML every lane stores from it.
+        const problem = letterText.letterProblem(letter.cover_letter)
+            || (letterText.looksContaminatedHtml(formatCoverLetterWithHTML(letter.cover_letter, {})) ? 'contaminated_html' : null);
+        if (!problem) {
+            console.log(`[coverLetter] letter for ${url} written by ${out.model}${out.fellBack ? ' (a fallback model)' : ''} ✅`);
+            return { letter, model: out.model };
+        }
+        gateFails++;
+        lastErr = Object.assign(new Error(`the letter failed its check: ${problem}`), { letterCheck: problem });
+        console.warn(`[coverLetter] letter answer ${attempt}/${LEGACY_LETTER_TRIES} for ${url} (${out.model}) failed its check (${problem})${gateFails < LEGACY_LETTER_GATE_TRIES ? ' — asking once more' : ' — not asked again'}`);
+        if (gateFails >= LEGACY_LETTER_GATE_TRIES) break;
+    }
+    // The last answer failed the check: the honest ending — nothing was charged (every lane charges after this returns).
+    if (lastErr && lastErr.letterCheck) {
+        console.error(`[coverLetter] the letter for ${url} failed its check ${gateFails}x (${lastErr.letterCheck}) — not handed on, nothing charged`);
+        const err = new Error(LEGACY_LETTER_UNUSABLE);
+        err.userFacing = true;
+        err.letterCheck = lastErr.letterCheck;
+        err.cause = lastErr;
+        throw err;
     }
     // Every answer unusable (or the budget spent on them): v2's user-safe message; the detail stays in the log.
     console.error('[coverLetter] the letter could not be finished:', lastErr ? lastErr.message : 'the letter budget ran out');
@@ -2137,12 +2266,23 @@ async function withSharedLetterBrand(doc) {
 
 // POST /api/cover-letter/preview-templates  — free previews; FORMATTING ONLY (no AI).
 // All regions render the same content in their visual template; Generic = branded original.
+/** The longest letter this lane renders — the stored letter's own cap (employerDocsRoutes' MAX_LETTER_HTML_BYTES). */
+const PREVIEW_HTML_MAX = 60000;
 async function previewCoverLetterTemplates(req, res) {
     const userId = req.user.id;
     const { region, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
     try {
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content to preview. Generate a cover letter first.' });
+        }
+        // ⚠️ AND A CAP ON WHAT IT RENDERS (review round 4, 2026-09-20). This is the free lane and it takes the letter from
+        // the REQUEST: every design of the region renders it, and each render reads it line by line and paragraph by
+        // paragraph (coverLetterTemplates.bodyToHtml → letterText.repairLetterHtml) on the one Node thread, so a body of a
+        // megabyte holds every other user's request for seconds. The same 60 KB the stored letter and the Send page allow
+        // (employerDocsRoutes' MAX_LETTER_HTML_BYTES, letterSendController's CLASSIC_HTML_MAX); the longest letter ever
+        // stored is 7.4 KB.
+        if (String(coverLetterHtml).length > PREVIEW_HTML_MAX) {
+            return res.status(413).json({ error: 'This cover letter is too long to preview. Shorten it and try again.' });
         }
         const rgn = region || 'generic';
         const sender = await buildCLSender(userId);
@@ -2218,8 +2358,14 @@ async function employerLetterDocFor(userId, req) {
     try {
         const doc = await require('../services/employerDocs').getById(userId, raw, req, { kind: 'cover_letter' });
         const html = doc && doc.payload && doc.payload.coverLetterHtml;
+        if (!(typeof html === 'string' && html.trim())) return LETTER_DOC_GONE;
         // A brand-less letter meets the shared row's brand here (withSharedLetterBrand), before savedLetterInput reads it.
-        return typeof html === 'string' && html.trim() ? withSharedLetterBrand(doc) : LETTER_DOC_GONE;
+        // ⚠️ And a letter stored with a model's JSON in it (2026-09-19, the Airbus letter) is REPAIRED here, so its PDF, its
+        // Word file, the Original and the history row recordLetter freezes all read the letter, not the junk. A copy — the
+        // row is not written; a clean letter is the same doc object (letterText.repairedLetterPayload).
+        const branded = await withSharedLetterBrand(doc);
+        const payload = letterText.repairedLetterPayload(branded.payload);
+        return payload === branded.payload ? branded : { ...branded, payload };
     } catch (e) {
         console.warn('[coverLetter] saved letter lookup failed:', e.message);
         return LETTER_DOC_GONE;
@@ -2258,6 +2404,81 @@ const LETTER_GONE_BODY = {
     reason: 'payload_gone',
 };
 
+/**
+ * The letter PDF itself → { fileName, filePath } in temp/. Both lanes, exactly as generateCoverLetterTemplatePdf always
+ * rendered them: `doc` (a saved Home letter, or null for the classic lane) decides the sender block, greeting, closing
+ * and brand; every other argument is what the handler already had in hand.
+ *
+ * ⚠️ MOVED HERE, NOT COPIED (2026-09-19). The letter's Send page attaches "the cover letter in its chosen design" —
+ * that must be the SAME file the Download button on the same page hands over, so both call this one function
+ * (renderSavedLetterPdf below is the Send page's door into it). A second copy of the render would drift the first time
+ * a design, a font or a sender line changed in one of them. Renders only: no gate, no charge, no record — callers own
+ * those, in that order.
+ */
+async function renderLetterPdfFile(userId, doc, { tplId, mode, coverLetterHtml, companyName, companyAddress, brandColor, brandFont, websiteUrl }) {
+    const tplMeta = clTemplates.TEMPLATES.find(t => t.id === tplId);
+    const tempDir = path.join(__dirname, '../../temp');
+
+    let fileName;
+    let filePath;
+    if (tplMeta && tplMeta.generic) {
+        // Exact original branded letter — produced by the original PDFKit generator.
+        const user  = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        const brand = brandColor || await lookupBrandColor(companyName, websiteUrl);
+        // A saved letter's Google font is set by the PDFKit generator too (resolveFontPaths downloads it, and
+        // falls back to Lato on its own); a font that is not on Google Fonts stays null, as before.
+        const richFont = doc && brandFont && brandFont.google ? brandFont.family : null;
+        // A saved letter's own sender / greeting / closing (richLetterArgsOf); the classic lane calls it as it always did.
+        const rich = doc ? richLetterArgsOf(user, doc.payload) : null;
+        const result = rich
+            ? await generateRichCoverLetterPDF(rich.user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont, rich.opts)
+            : await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont);
+        fileName = result.fileName;
+        filePath = result.filePath || path.join(tempDir, fileName);
+    } else {
+        // A saved letter prints its own sender block, greeting and closing (the same data its Home cards rendered).
+        const sender = doc ? await senderForLetter(userId, doc.payload) : await buildCLSender(userId);
+        const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml, ...(doc ? letterLinesOf(doc.payload) : {}) };
+        // Doc mode renders the saved letter in its employer's brand (the same opts the cards used); the
+        // classic lane's body carries no brand and renders exactly as it always has.
+        const pdf = await clRenderer.renderPdf(tplId, data, doc ? { mode, brandColor, brandFont } : { mode });
+        const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
+        fileName = `Cover_Letter_${safeCo}_${Date.now()}.pdf`;
+        await fs.mkdir(tempDir, { recursive: true });
+        filePath = path.join(tempDir, fileName);
+        await fs.writeFile(filePath, pdf);
+    }
+    return { fileName, filePath };
+}
+
+/**
+ * A SAVED employer letter (employerDocs shape, already through withSharedLetterBrand) rendered in `template` and
+ * `mode` exactly as the Download of that letter renders it: savedLetterInput reads the doc (never a client body), an
+ * unknown template falls back like the download's does. → { fileName, filePath, tplId, mode, input }.
+ * Renders only — the caller gates first (downloads.canDownload for doc.employer_name) and claims after.
+ */
+async function renderSavedLetterPdf(userId, doc, { template, mode } = {}) {
+    const input = savedLetterInput(doc, { mode });
+    const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
+    const { fileName, filePath } = await renderLetterPdfFile(userId, doc, { tplId, ...input });
+    return { fileName, filePath, tplId, mode: input.mode, input };
+}
+
+/**
+ * A CLASSIC letter — the preview opened WITHOUT a docId (the Job Hub, the Review screen, the old Home) — rendered exactly
+ * as that preview's own Download renders it (generateCoverLetterTemplatePdf's classic lane): renderLetterPdfFile with no
+ * doc, so the profile's sender block, no stored brand, and the letter text the page holds. → the renderSavedLetterPdf
+ * shape { fileName, filePath, tplId, mode, input }. Renders only — the Send page's classic lane gates first (the
+ * Download's resolved employer) and claims after (2026-09-20).
+ */
+async function renderClassicLetterPdf(userId, { template, mode, coverLetterHtml, companyName, companyAddress } = {}) {
+    const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
+    const m = mode === 'a4' || mode === 'onepage' ? mode : undefined;
+    const input = { coverLetterHtml, companyName: companyName || '', companyAddress: companyAddress || '', brandColor: null };
+    const { fileName, filePath } = await renderLetterPdfFile(userId, null, { tplId, mode: m, ...input });
+    return { fileName, filePath, tplId, mode: m, input };
+}
+
 async function generateCoverLetterTemplatePdf(req, res) {
     const userId = req.user.id;
     // A Home employer letter names itself by docId: render THAT saved letter, bill ITS employer.
@@ -2283,35 +2504,10 @@ async function generateCoverLetterTemplatePdf(req, res) {
         }
         if (!(await requirePaidForDownload(userId, res, passEmployer, req))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
-        const tplMeta = clTemplates.TEMPLATES.find(t => t.id === tplId);
 
-        let fileName;
-        if (tplMeta && tplMeta.generic) {
-            // Exact original branded letter — produced by the original PDFKit generator.
-            const user  = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
-            const brand = brandColor || await lookupBrandColor(companyName, websiteUrl);
-            // A saved letter's Google font is set by the PDFKit generator too (resolveFontPaths downloads it, and
-            // falls back to Lato on its own); a font that is not on Google Fonts stays null, as before.
-            const richFont = doc && brandFont && brandFont.google ? brandFont.family : null;
-            // A saved letter's own sender / greeting / closing (richLetterArgsOf); the classic lane calls it as it always did.
-            const rich = doc ? richLetterArgsOf(user, doc.payload) : null;
-            const result = rich
-                ? await generateRichCoverLetterPDF(rich.user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont, rich.opts)
-                : await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont);
-            fileName = result.fileName;
-        } else {
-            // A saved letter prints its own sender block, greeting and closing (the same data its Home cards rendered).
-            const sender = doc ? await senderForLetter(userId, doc.payload) : await buildCLSender(userId);
-            const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml, ...(doc ? letterLinesOf(doc.payload) : {}) };
-            // Doc mode renders the saved letter in its employer's brand (the same opts the cards used); the
-            // classic lane's body carries no brand and renders exactly as it always has.
-            const pdf = await clRenderer.renderPdf(tplId, data, doc ? { mode, brandColor, brandFont } : { mode });
-            const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
-            fileName = `Cover_Letter_${safeCo}_${Date.now()}.pdf`;
-            const tempDir = path.join(__dirname, '../../temp');
-            await fs.mkdir(tempDir, { recursive: true });
-            await fs.writeFile(path.join(tempDir, fileName), pdf);
-        }
+        const { fileName } = await renderLetterPdfFile(userId, doc, {
+            tplId, mode, coverLetterHtml, companyName, companyAddress, brandColor, brandFont, websiteUrl,
+        });
 
         // Charged only now — the file exists on this line.
         await downloads.claimDownload(userId, { employer: passEmployer }, req);
@@ -2441,6 +2637,11 @@ module.exports = {
     generateCoverLetterTemplatePdf,
     generateCoverLetterTemplateDocx,
     buildCoverLetterPdfForRegion,
+    // The letter's Send page (letterSendController) attaches the SAME PDF the Download renders, and records it the
+    // same way once it is charged — through these, never a copy (see renderLetterPdfFile).
+    renderSavedLetterPdf,
+    renderClassicLetterPdf,
+    recordLetter,
     // Exported for reuse ONLY (behaviour unchanged): employerLetterController writes Home's per-employer
     // letters with the same body formatter and renders their thumbnails from the same sender block,
     // photo and brand colour the downloads above use — so a card is the file they would download.
@@ -2480,5 +2681,7 @@ module.exports = {
     // exposed for tests / diagnostics only: the legacy letter's AI call and its parsing
     _internals: { LETTER_FALLBACKS, letterFallbacks, writeLegacyLetter, parseLegacyLetterJson, legacyAiRefusal, LEGACY_LETTER_MODEL, legacyLetterConfig, LEGACY_LETTER_BUDGET_MS,
         // the research bound (letterTiming.researchBudgetMs is the knob a suite shrinks) and "one tap, one job"'s claims
-        LETTER_RESEARCH_BUDGET_MS, letterTiming, boundedLetterResearch, letterClaims, LETTER_BUILD_TTL_MS, jobHubAddressOf },
+        LETTER_RESEARCH_BUDGET_MS, letterTiming, boundedLetterResearch, letterClaims, LETTER_BUILD_TTL_MS, jobHubAddressOf,
+        // the letter check (the Airbus letter, 2026-09-19): the per-object reading, the gate's words and its one extra ask
+        letterCandidateOf, extractLetterFields, LEGACY_LETTER_FAILED, LEGACY_LETTER_UNUSABLE, LEGACY_LETTER_GATE_TRIES, LEGACY_LETTER_TRIES },
 };

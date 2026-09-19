@@ -103,6 +103,8 @@ const FILES = {
   // The question before any spend, and the hint that points at the Tailor button (2026-09-14).
   'GenerateConfirmSheet.tsx': R('../components/employer-home/GenerateConfirmSheet.tsx'),
   'TailorHint.tsx': R('../components/employer-home/TailorHint.tsx'),
+  // The saved "Designing for" row (2026-09-19): the row never refills or resets itself.
+  'homeRoster.ts': R('../services/homeRoster.ts'),
 };
 
 console.log('── every file parses (a JSX slip here white-screens the app) ──');
@@ -520,8 +522,10 @@ ok('…guarded by a sequence (histSeq): only the newest read touches the list, t
 ok('…cached first, then the network', refreshSrc.indexOf('cachedDownloadHistory') > 0 && refreshSrc.indexOf('cachedDownloadHistory') < refreshSrc.indexOf('loadHistory('));
 ok('…and it does not collapse an open library (setHistOpen(false) belongs to the kind switch alone)',
   !/setHistOpen\(false\)/.test(refreshSrc) && /useEffect\(\(\) => \{ setHistLoading\(true\); setHistOpen\(false\); refreshHistory\(mode\); \}, \[mode, refreshHistory\]\);/.test(homeC));
+// ⚠️ RETARGETED (2026-09-19): the focus effect now also re-reads the profile's setup outside the throttle, and forces
+// a full reload once after the Make Yours wizard built a résumé (consumeProfileChanged) — test-onboarding-wizard.js.
 ok('⚠️ every focus after the first re-reads the library for the kind on screen, beside the still-throttled load()',
-  /useFocusEffect\(useCallback\(\(\) => \{\s*load\(\);\s*if \(focusCount\.current\+\+ > 0\) \{[\s\S]{0,200}refreshHistory\(modeOfKind\(kindRef\.current\)\);/.test(homeC));
+  /useFocusEffect\(useCallback\(\(\) => \{[\s\S]{0,260}?else load\(\)[\s\S]{0,160}?if \(focusCount\.current\+\+ > 0\) \{[\s\S]{0,200}refreshHistory\(modeOfKind\(kindRef\.current\)\);/.test(homeC));
 ok('⚠️ a landed build re-reads the shelf for its kind when that kind is on screen (the other kind\'s shelf is read by the mode switch)',
   /if \(job\.kind === kindRef\.current\) refreshHistory\(modeOfKind\(job\.kind\)\);/.test(homeC) && homeC.indexOf('if (job.kind === kindRef.current) refreshHistory(') > homeC.indexOf('const onLanded = useStableFn('));
 ok('load() still throttles ITSELF to 60 s (the documents) — the library read is the one outside it', /if \(!force && Date\.now\(\) - lastLoad\.current < 60_000\) return undefined;/.test(homeC));
@@ -596,11 +600,18 @@ ok('gender is the server\'s exact enum', /'Male', 'Female', 'Prefer Not to Say'/
 ok('the three uploads use the field names the server expects',
   /'profileImage'/.test(psvc) && /'signature'/.test(psvc) && /'resume'/.test(psvc));
 ok('⚠️ Content-Type is never set by hand on a multipart post', !/'Content-Type': 'multipart/.test(psvc));
-ok('the resume picker is restricted to PDF, which is what the parser can read',
-  /type: 'application\/pdf'/.test(wiz));
+// ⚠️ RETARGETED (2026-09-19): "it says upload pdf only... it should say both pdf or any type of document too". The
+// rule this encoded — offer only what the parser can read — is intact: the server now reads Word, OpenDocument,
+// RTF and plain text (services/resumeText.js), so the picker offers exactly those, from ONE list in the service.
+ok('the resume picker offers every format the server can READ — PDF and Word among them — from the service\'s one list',
+  /type: RESUME_PICKER_TYPES/.test(wiz) && /'application\/pdf'/.test(psvc) && /wordprocessingml\.document/.test(psvc) && /'application\/msword'/.test(psvc));
+ok('⚠️ …and "Choose a PDF" is gone: the copy names the formats that work', !/Choose a PDF/.test(wiz) && /RESUME_FORMATS_LINE/.test(wiz));
 ok('⚠️ generating is behind an explicit tap, never on step entry',
-  /onPress=\{onStart\}/.test(wiz) && !/useEffect\([\s\S]{0,120}build\(\)/.test(wiz));
-ok('it resumes at the first unfinished step', /!s\.setup\.profile \? 0 :/.test(wiz));
+  /onPress=\{plans \? onPlans : onStart\}/.test(wiz) && /onStart=\{start\}/.test(wiz) && !/useEffect\([\s\S]{0,120}build\(\)/.test(wiz));
+// ⚠️ RETARGETED (2026-09-19): the first unfinished step is the SERVER's (setup.wizard.step); the four-boolean rule
+// survives only for an older server that sends no `wizard`.
+ok('it resumes at the first unfinished step — the server\'s', /first = running \|\| ready \? LAST : w\.step;/.test(wiz)
+  && /!s\.setup\.profile \? 0 :/.test(wiz));
 ok('⚠️ the step override is __DEV__ ONLY, so it cannot skip a step for a real user',
   /__DEV__ && params\.step != null/.test(wiz));
 ok('…and it is clamped, so a hand-typed url cannot land off the end', /Math\.min\(3,/.test(wiz));
@@ -793,7 +804,8 @@ ok('…the button carries itself on colour instead, the same mint that brought t
 ok('…and the scroll padding still keeps content from running under it',
   /paddingBottom: 126 \+ insets\.bottom/.test(wiz));
 ok('…and the last step is still the only one that spends a generation',
-  /step === 3 && \(\s*<BuildStep/.test(wiz) && /onPress=\{onStart\}/.test(wiz));
+  /step === 3 && \(\s*<BuildStep/.test(wiz) && /onPress=\{plans \? onPlans : onStart\}/.test(wiz)
+  && (wiz.match(/generateResume\(/g) || []).length === 1);
 
 console.log('── ⚠️ the date of birth is picked, not typed ──');
 ok('it uses the picker the app already ships', /import DateTimePicker from '@react-native-community\/datetimepicker'/.test(wiz));
@@ -2482,6 +2494,999 @@ async function pageSizePhase() {
   ok('…and size=page is built in exactly one place: fetchDocCards', buildsPage.length === 1 && buildsPage[0] === path.join('services', 'employerDocs.ts'), buildsPage);
 }
 
+/**
+ * ⚠️ THE "DESIGNING FOR" ROW IS A SAVED ROSTER (2026-09-19). The owner (user 1, TestFlight b209) removed the four
+ * lead employers and hid eight postings at 16:11 IST; the reload twenty seconds later refilled the row with four
+ * government agencies (Moroccan Ministry of Employment, Department of Employment SA, Ministry of Labour, Iskur) and
+ * three strangers (MOM Ranch, Linum, N/A) — and at 22:02, on the letter tab, with Konnekt ×3 and three other Airbus
+ * roles. No server row had changed: fetchTargets simply ranked a fresh top 12 on every load. These run the REAL
+ * fetchTargetAnswer (against a fake server shaped like the production rows) and the REAL homeRoster merge, and
+ * replay that session.
+ */
+async function rosterPhase() {
+  console.log('── ⚠️ THE "DESIGNING FOR" ROW IS A SAVED ROSTER: NO REFILL, NO RESET, THE SELECTION KEPT BY KEY (2026-09-19) ──');
+  const rosterSrc = R('../services/homeRoster.ts');
+  const envSrcR = R('../app/(admin)/environment.tsx');
+  const rosterC = strip(rosterSrc);
+  const transpileR = (src) => ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText;
+  const loadR = (src, req) => { const m = { exports: {} }; new Function('module', 'exports', 'require', transpileR(src))(m, m.exports, req); return m.exports; };
+
+  // ── source: the screen commits the MERGED row, never the raw ranking ──
+  ok('homeRoster.ts is a new AI Hub file with the required first line',
+    rosterSrc.split('\n')[0] === '// AI Hub — new feature. Safe to delete without affecting existing app.');
+  ok('⚠️ load() merges the answer into the saved row and commits THAT (never the raw fetch) — through planRow',
+    /const plan = planRow\(savedRow, answer, \{ removed: removedNow, added: addedHere, shown: before\.length, refused \}\);\s*const m = plan\.merged;/.test(homeC)
+    && /const t = plan\.keep \? before : mergeAdded\(refused \? \[\] : m\.row, pickedKey\);/.test(homeC)
+    && !/\bmergeRoster\(/.test(homeC)
+    && !/fetched\.filter\(\(x\) => !removedNow\(x\.key\)\)/.test(homeC) && !/\bfetchTargets\b/.test(homeC));
+  ok('⚠️ …and a chip that left never sends the selection back to the first chip (no `setEmpIdx(j >= 0 ? j : 0)` + pin reset)',
+    !/setEmpIdx\(j >= 0 \? j : 0\)/.test(homeC) && !/if \(j < 0\) pickedKey\.current = null/.test(homeC)
+    && /j = oldAt >= 0 \? Math\.min\(oldAt, t\.length - 1\) : saved;/.test(homeC));
+  ok('⚠️ the row is taken from memory and saved in the SAME tick (an edit between two awaits cannot be written away)',
+    /const picked = !loaders && owner \? savedRowOf\(owner, rosterCopy\(owner\) \|\| stored, acct \? remote : undefined\) : null;\s*const savedRow: Roster \| null \| undefined = loaders \? previewRoster\.current : picked \? picked\.row : undefined;/.test(homeC)
+    && /else if \(acct && plan\.save\) keepRoster\(acct, kept\);/.test(homeC));
+  ok('⚠️ the saved row paints before the network answers — but only once the ACCOUNT has been read (or the one it still is)',
+    /claiming\.then\(async \(\{ who \}\) => \{\s*const \{ acct, owner \} = rowAccounts\(who, cacheOwner\);\s*if \(!owner\) return;\s*const saved = await readRoster\(owner\);/.test(homeC)
+    && /await \(warm = warmJobListings\(\)\);\s*if \(committed \|\|[^\n]*cacheOwner !== owner\) return;/.test(homeC) && /\{loading && !targets\.length \? \(/.test(home));
+  // ⚠️ REVIEW 2026-09-19 (round 1): an unreadable session merged against NOTHING (the raw ranking for one load), and a
+  // load that finished after its screen had gone saved its own stale selection over the remounted screen's.
+  const loadBody = (homeC.match(/const load = useCallback\([\s\S]*?\n  \}, \[\]\);/) || [''])[0];
+  const aliveAt = loadBody.indexOf('if (seq !== loadSeq.current || !alive.current) return undefined;');
+  ok('⚠️ load() picks its accounts through rowAccounts (an unreadable session merges against cacheOwner\'s row) and SAVES only under the account it read',
+    /const \{ acct, owner \} = !loaders && !refused \? rowAccounts\(claim\.who, cacheOwner\) : \{ acct: null, owner: null \};\s*const stored = owner \? await readRoster\(owner\) : undefined;/.test(loadBody)
+    && /else if \(acct && plan\.save\) keepRoster\(acct, kept\);/.test(loadBody) && !/keepRoster\(owner/.test(loadBody));
+  ok('⚠️ a load whose screen has GONE writes nothing: the alive check follows its LAST await and precedes the merge and the save',
+    aliveAt > loadBody.indexOf('await readRoster(owner)') && loadBody.indexOf('await readRoster(owner)') > 0
+    && aliveAt < loadBody.indexOf('committed = true;') && aliveAt < loadBody.indexOf('planRow(') && aliveAt < loadBody.indexOf('keepRoster(acct, kept)')
+    && !/\bawait\b/.test(loadBody.slice(aliveAt, loadBody.indexOf('keepRoster(acct, kept)'))), aliveAt);
+  ok('the preview harness keeps its roster with the mount, in memory (its fixture list is a complete answer)',
+    /\.then\(listAnswer\)/.test(homeC) && /if \(loaders\) previewRoster\.current = kept;/.test(homeC));
+  const rmBody = (homeC.match(/const removeChip = \(i: number\) => \{[\s\S]*?\n  \};/) || [''])[0];
+  const dropBody = fnBodyOf(homeC, 'dropChip');
+  const restoreBody = fnBodyOf(homeC, 'restoreChip');
+  const restorePostBody = fnBodyOf(homeC, 'restorePostings');
+  const addBody = fnBodyOf(homeC, 'addEmployerHere');
+  ok('⚠️ every user flow edits the saved row: the X at once, the exit, an Undo (held), an add (held, provisional), a restore (before its read)',
+    /editRow\(\(ro\) => rosterRemove\(ro, t\.key\)\);/.test(rmBody)
+    && dropBody.indexOf('rosterRemove(ro, leaving.key)') > 0 && dropBody.indexOf('rosterRemove(ro, leaving.key)') < dropBody.indexOf('if (!alive.current) return;')
+    && /rosterPlace\(ro, t, \{ after: front, replaces: r\.t\.key, hold: true, provisional: !!as \}\)/.test(restoreBody)
+    && restoreBody.indexOf('rosterPlace(') < restoreBody.indexOf('if (!alive.current) return;')
+    && /rosterPlace\(ro, real, \{ after: keysBefore\(shownNow, at\), replaces: pending\.key, hold: true, provisional: true \}\)/.test(addBody)
+    && restorePostBody.indexOf('rosterPlace(ro, chip, { after, hold: true, provisional: true })') > 0
+    && restorePostBody.indexOf('rosterPlace(ro, chip') < restorePostBody.indexOf('await load(true)'));
+  ok('⚠️ every selection (a tap, a landing, a neighbour, an add) is saved with the row',
+    /const selKey = targets\[empIdx\]\?\.key \?\? null;\s*useEffect\(\(\) => \{\s*if \(selKey\) editRow\(\(r\) => rosterSelect\(r, selKey\)\);/.test(homeC));
+  ok('⚠️ an unreadable session is NOT another account: only a different, readable one wipes',
+    /if \(who === null \|\| who === cacheOwner\) return \{ wiped: false, who \};/.test(homeC) && /const wipe = cacheOwner !== null;/.test(homeC)
+    && !/cacheOwner !== null \|\| who === null/.test(homeC) && /forgetRosterCopy\(\);/.test(fnBodyOf(homeC, 'forgetAccountCache')));
+  ok('the saved rows are cleared with the environment (they hold one backend\'s UUIDs and URLs)',
+    // (raw source: the file's comments hold a '/*' glob that the block-comment strip would eat the list with)
+    /^\s*'home_roster_v1:',/m.test(envSrcR.match(/export const PREFIXES_TO_CLEAR: string\[\] = \[[\s\S]*?\n\];/)?.[0] || '')
+    && /export const ROSTER_PREFIX = 'home_roster_v1:';/.test(rosterC));
+  ok('fetchTargets is still the ranking, now read off fetchTargetAnswer',
+    /export async function fetchTargets\(\): Promise<Target\[\]> \{\s*return \(await fetchTargetAnswer\(\)\)\.ranked;\s*\}/.test(svcC)
+    && /export async function fetchTargetAnswer\(\): Promise<TargetAnswer>/.test(svcC));
+  // The evidence rules stand on what the server actually sends — assert those facts, not our reading of them.
+  ok('⚠️ evidence the rules rest on: the dashboard lists EVERY watching employer (no LIMIT) and each posting\'s created_at; saved cards carry saved_at, 500 at most',
+    /WHERE ute\.user_id = \$1 AND ute\.status = 'watching'\s*ORDER BY ute\.updated_at DESC`/.test(jobSvcC)
+    && /createdAt: jRow\.created_at,/.test(jobSvcC)
+    && /ORDER BY saved_at DESC LIMIT 500/.test(discC) && /saved_at: savedAt/.test(discC)
+    && /const SAVED_READ_LIMIT = 500;/.test(svcC) && /savedKeys: savedOk && saved\.jobs\.length < SAVED_READ_LIMIT \? savedKeys : null,/.test(svcC));
+
+  // ── behaviour: the real service + the real roster, against a fake server ──
+  const store = new Map();
+  let storeThrows = false;
+  let storeReads = 0;
+  const asyncStore = { __esModule: true, default: {
+    getItem: async (k) => { storeReads++; if (storeThrows) throw new Error('storage'); return store.has(k) ? store.get(k) : null; },
+    setItem: async (k, v) => { if (storeThrows) throw new Error('storage'); store.set(k, v); },
+    removeItem: async (k) => { store.delete(k); },
+    multiRemove: async (ks) => { for (const k of ks) store.delete(k); },
+  } };
+  // The signed-in user the session names (the server-copy cases switch it to 616 mid-flight).
+  let sessionUser = 1;
+  const secure = { getItemAsync: async (k) => (k === 'userSession' ? JSON.stringify({ token: 'TKN', id: sessionUser }) : null), setItemAsync: async () => {} };
+  let ehs = null, RO = null, docs = null;
+  try {
+    const base = (id) => (id === './deviceId' ? { getDeviceId: async () => 'dev-1' } : /secure-store/.test(id) ? secure
+      : /async-storage/.test(id) ? asyncStore : /config/.test(id) ? { API_BASE: 'https://api.test' } : null);
+    ehs = loadR(svc, (id) => base(id) || {});
+    RO = loadR(rosterSrc, (id) => (/employerHomeService/.test(id) ? ehs : base(id) || {}));
+    docs = loadR(docSvcSrc, (id) => (/employerHomeService/.test(id) ? ehs : /homeAddEmployer/.test(id) ? { signedInAccount: async () => 'u:1' } : base(id) || {}));
+  } catch (e) { console.log('     (roster harness did not load: ' + String(e.message).split('\n')[0] + ')'); }
+  ok('homeRoster, employerHomeService and employerDocs load for real', !!(RO && typeof RO.mergeRoster === 'function' && ehs && typeof ehs.fetchTargetAnswer === 'function' && docs && typeof docs.docLookupOf === 'function'));
+  if (!RO || !ehs || !docs) return;
+
+  // The server, shaped like user 1's production rows (dashboard in ute.updated_at DESC order, jobs by match).
+  const T0 = Date.parse('2026-09-10T10:00:00Z');
+  const DAY = 86400000;
+  const iso = (t) => new Date(t).toISOString();
+  let jn = 0;
+  const job = (url, title, score, at = T0) => ({ id: 'jid-' + (++jn), title, applyUrl: url, matchScore: score, createdAt: iso(at), skills: ['Project Management'], location: 'Toulouse' });
+  const WD = 'https://ag.wd3.myworkdayjobs.com/Airbus/job/';
+  const J = {
+    amazon: job('https://www.amazon.jobs/en/jobs/10489696/software-development-engineer-ii-adbl183', 'Software Development Engineer II (ADBL183)', 100),
+    insp: job(WD + 'Maulte-Area/Airbus-Atlantic---Inspecteur-Qualit-A350--All-Gender-_JR10437331', 'Airbus Atlantic - Inspecteur Qualité A350 (All Gender)', 100),
+    arch: job(WD + 'Paris-Area/Architecte-cyberscurit--f-h-_JR10420133', 'Architecte cybersécurité (f/h)', 100),
+    spc: job(WD + 'Belfast/Senior-Programme-Coordinator_JR10438301', 'Senior Programme Coordinator', 100),
+    cyber: job(WD + 'Toulouse-Area/Cyber-Security-Manager_JR10438717', 'Cyber Security Manager', 100),
+    risk: job(WD + 'Toulouse-Area/RISK---PERFORMANCE-PROJECT-MANAGER--D-M-F-_JR10431111', 'RISK & PERFORMANCE PROJECT MANAGER (D/M/F)', 100),
+    pl: job(WD + 'Hamburg-Area/Project-Leader_JR10432222', 'Project Leader', 90),
+    iwell: job('https://www.wearedevelopers.com/jobs/ext/7195904/senior-net-entwickler-4-tage-woche-und-homeoffice-moglich', 'Senior .NET Developer', 100),
+    werken: job('https://jobs.werkenvoornederland.nl/job/Amersfoort-Software-Engineer-3818-LN/1354948357', 'Software Engineer', 95),
+    cvb: job('https://www.cvbankas.lt/project-manager-1', 'Project Manager', 90),
+    mom: job('https://www.jobberman.com/listings/project-manager-rrreg5', 'Project Manager', 90),
+    linum: job('https://www.gulftalent.com/saudi-arabia/jobs/project-manager-603427', 'Project Manager', 90),
+    na: job('https://www.gob.mx/inm/acciones-y-programas/trabaja-en-el-inm', 'N/A', 90),
+    sky1: job('https://skybluewaves.example/jobs/it-project-manager-1', 'IT Project Manager', 90),
+    sky2: job('https://skybluewaves.example/jobs/it-project-manager-2', 'IT Project Manager', 90),
+    k1: job('https://konnekt.example/jobs/project-management-1', 'project management', 90),
+    k2: job('https://konnekt.example/jobs/project-management-2', 'project management', 90),
+    k3: job('https://konnekt.example/jobs/software-development-3', 'software development', 90),
+  };
+  const ROCHE = 'https://roche.wd3.myworkdayjobs.com/roche-ext/job/Sant-Cugat-del-Valls/Senior-Software-Developer-Scrum-Master-C-_202605-112793-2/apply';
+  const LEADS_REMOVED = [['e-metasys', 'Metasys'], ['e-jig', 'jobsinghana'], ['e-emploi', 'Emploi.ma'], ['e-napes', 'NAPES']];
+  const LEADS_QUEUED = [['e-taechir', 'Moroccan Ministry of Employment (TAECHIR)'], ['e-dol', 'Department of Employment and Labour, South Africa'],
+    ['e-mol', 'Ministry of Labour'], ['e-iskur', 'Iskur'], ['e-ag9', 'Agency Nine'], ['e-ag10', 'Agency Ten']];
+  const row = (id, name, jobs, status = 'completed') => ({ status, employer: { id, name, logoColor: ['#123456', '#654321'], logoInitial: name.charAt(0), domain: null, jobs } });
+  const world = (o = {}) => {
+    const out = [];
+    for (const [id, name] of [...LEADS_REMOVED, ...LEADS_QUEUED]) if (!(o.untracked || []).includes(id)) out.push(row(id, name, []));
+    const emps = [
+      ['e-amazon', 'Amazon', [J.amazon]],
+      ['e-airbus', o.airbusName || 'Airbus', o.airbusJobs || [J.insp, J.arch, J.spc, J.cyber, J.risk, J.pl], o.airbusStatus],
+      ['e-iwell', 'iwell B.V.', [J.iwell]], ['e-werken', 'Werkenvoornederland', [J.werken]], ['e-cvb', 'cvbankas.lt', [J.cvb]],
+      ['e-mom', 'MOM Ranch', [J.mom]], ['e-linum', 'Linum Consult', [J.linum]], ['e-na', 'N/A', [J.na]],
+      ['e-sky', 'Sky Blue Waves Ltd', [J.sky1, J.sky2]], ['e-konnekt', 'Konnekt', [J.k1, J.k2, J.k3]],
+      ...(o.extra || []),
+    ];
+    for (const [id, name, jobs, status] of emps) if (!(o.untracked || []).includes(id)) out.push(row(id, name, jobs, status));
+    return o.reverse ? out.reverse() : out;
+  };
+  const savedCards = (extra = []) => [
+    { id: 's1', job_url: ROCHE, title: 'Senior Software Developer/Scrum Master C#', company: 'Roche', match: 100, skills: ['C#'], location: 'Sant Cugat', saved_at: iso(T0 - 5 * DAY) },
+    ...extra,
+  ];
+  const srv = { dash: world(), saved: savedCards(), hidden: [], roster: 'ok', rosterReqs: [] };
+  // ⚠️ THE SERVER'S COPY OF THE ROW, FOR REAL (2026-09-20): server/services/homeRoster.js's own handlers, over a fake
+  // db-config that runs its statements the way Postgres does — the compare-and-set INSERT (a seed) and UPDATE (a write
+  // made from a revision), jsonb's own key order (shorter keys first), so a row that comes back re-ordered must not read
+  // as a changed one, and ⚠️ jsonb's REFUSALS: a NUL escape and half a surrogate pair are not JSON it will store (both
+  // verified against a real Postgres 14 — "unsupported Unicode escape sequence" / "invalid input syntax for type json").
+  const dbPath = path.join(__dirname, '../../db-config.js');
+  const rosterRows = new Map();
+  const jsonbOrder = (v) => (Array.isArray(v) ? v.map(jsonbOrder) : v && typeof v === 'object'
+    ? Object.keys(v).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0)).reduce((o, k) => { o[k] = jsonbOrder(v[k]); return o; }, {}) : v);
+  const JSONB_REFUSES = /\\u0000|\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])|(?<!\\ud[89ab][0-9a-f]{2})\\ud[c-f][0-9a-f]{2}/i;
+  const asJsonb = (text) => { if (JSONB_REFUSES.test(text)) throw new Error('invalid input syntax for type json'); return text; };
+  const fakeDb = {
+    run: async (sql) => { if (!/^CREATE TABLE IF NOT EXISTS user_home_roster/.test(sql.trim())) throw new Error('unexpected run: ' + sql); return { changes: 0 }; },
+    get: async (sql, params) => {
+      const q = sql.replace(/\s+/g, ' ').trim();
+      if (q === 'SELECT roster, rev, updated_at FROM user_home_roster WHERE user_id = $1') {
+        const r = rosterRows.get(params[0]);
+        return r ? { roster: jsonbOrder(JSON.parse(r.text)), rev: r.rev, updated_at: new Date(0) } : null;
+      }
+      // A seed: inserted only when there is no row (ON CONFLICT DO NOTHING).
+      if (/^INSERT INTO user_home_roster \(user_id, roster, rev, updated_at\) VALUES \(\$1, \$2::jsonb, 1, NOW\(\)\) ON CONFLICT \(user_id\) DO NOTHING RETURNING rev$/.test(q)) {
+        const [uid, text] = params;
+        if (rosterRows.has(uid)) return null;
+        rosterRows.set(uid, { text: asJsonb(text), rev: 1 });
+        return { rev: 1 };
+      }
+      // A write made from a revision: an UPDATE, so a row that is GONE (a deleted account) is never re-inserted.
+      if (/^UPDATE user_home_roster SET roster = \$2::jsonb, rev = rev \+ 1, updated_at = NOW\(\) WHERE user_id = \$1 AND rev = \$3 RETURNING rev$/.test(q)) {
+        const [uid, text, base] = params;
+        const cur = rosterRows.get(uid);
+        if (!cur || cur.rev !== base) return null;
+        rosterRows.set(uid, { text: asJsonb(text), rev: cur.rev + 1 });
+        return { rev: cur.rev + 1 };
+      }
+      throw new Error('unexpected get: ' + q);
+    },
+  };
+  const Module = require('module');
+  const dbMod = new Module(dbPath);
+  dbMod.filename = dbPath; dbMod.loaded = true; dbMod.exports = fakeDb;
+  const realDbEntry = require.cache[dbPath];
+  require.cache[dbPath] = dbMod;
+  const hrPath = path.join(__dirname, '../../server/services/homeRoster.js');
+  delete require.cache[hrPath];
+  const HR = require(hrPath);
+  if (realDbEntry) require.cache[dbPath] = realDbEntry; else delete require.cache[dbPath];
+  const mkRes = () => ({ statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } });
+  const realFetch = global.fetch;
+  global.fetch = async (url, init) => {
+    const u = String(url);
+    const method = (init && init.method) || 'GET';
+    const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+    const fail = { ok: false, status: 500, json: async () => ({ error: 'x' }) };
+    if (/\/ai-hub\/home\/roster$/.test(u)) {
+      const entry = { method, body: init && init.body ? JSON.parse(init.body) : null, status: 0 };
+      srv.rosterReqs.push(entry);
+      if (srv.roster === 'fail') { entry.status = 500; return fail; }
+      if (srv.roster === 'gone') { entry.status = 404; return { ok: false, status: 404, json: async () => { throw new Error('Cannot GET'); } }; }
+      const res = mkRes();
+      const req = { user: { id: sessionUser }, headers: {}, body: entry.body || {} };
+      await (method === 'PUT' ? HR.putHomeRoster : HR.getHomeRoster)(req, res);
+      entry.status = res.statusCode;
+      const out = JSON.parse(JSON.stringify(res.body));
+      return { ok: res.statusCode < 300, status: res.statusCode, json: async () => out };
+    }
+    if (method !== 'GET' && /\/ai-hub\/home\/hidden-targets$/.test(u)) return reply({ success: true });
+    if (/\/ai-hub\/dashboard$/.test(u)) return srv.dash === 'fail' ? fail : reply({ dashboard: srv.dash });
+    if (/\/discover\/saved-jobs$/.test(u)) return srv.saved === 'fail' ? fail : reply({ success: true, jobs: srv.saved, count: srv.saved.length });
+    if (/\/ai-hub\/home\/hidden-targets$/.test(u)) return srv.hidden === 'fail' ? fail : reply({ keys: srv.hidden });
+    return fail;
+  };
+  const K = (j) => ehs.jobKeyForUrl(j.applyUrl);
+  const names = (list) => list.map((t) => t.company + (t.role ? ' · ' + t.role : ''));
+  const keysOf = (list) => list.map((t) => t.key);
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const ask = async () => ehs.fetchTargetAnswer();
+  const identity = (t) => t && JSON.stringify({ key: t.key, company: t.company, employerId: t.employerId, website: t.website ?? null, applyUrl: t.applyUrl ?? null, jobUrl: t.jobUrl ?? null, role: t.role, country: t.country ?? null, colors: t.colors, initial: t.initial });
+  try {
+    // ── the ranking is unchanged, and it still IS the row a first load shows ──
+    const a0 = await ask();
+    const fetched = await ehs.fetchTargets();
+    ok('fetchTargets() is exactly fetchTargetAnswer().ranked (the harness loader and older callers see the same row)', same(keysOf(fetched), keysOf(a0.ranked)));
+    ok('the fixture ranks like production did before the clean-up: four lead employers, then postings by match',
+      same(names(a0.ranked).slice(0, 5), ['Metasys', 'jobsinghana', 'Emploi.ma', 'NAPES', 'Amazon · Software Development Engineer II (ADBL183)']) && a0.ranked.length === 12,
+      names(a0.ranked));
+    ok('every read is reported as answered, and the posting / saved watermarks are the server\'s own times',
+      a0.dashOk && a0.savedOk && a0.hiddenOk && a0.postMax === T0 && a0.savedMax === T0 - 5 * DAY
+      && a0.trackedEmployerIds.includes('e-airbus') && a0.settledEmployerIds.includes('e-airbus') && a0.savedKeys.includes(ehs.jobKeyForUrl(ROCHE))
+      && a0.pool.some((t) => t.key === K(J.cyber)) && !a0.candidates.some((t) => t.key === K(J.cyber)));
+    // ⚠️ SEED (review 2026-09-19): an account that tracks MORE employers than a row holds (this fixture: 20, like user
+    // 1's 255) does not get the ranking's four LEAD employers (no posting) — those were the refill itself.
+    const seeded = RO.mergeRoster(null, a0);
+    ok('⚠️ SEED, an account tracking more than a row (20 > 12): the four lead employers are left out, and NOTHING refills their places',
+      seeded.persist && same(keysOf(seeded.row), keysOf(a0.ranked).slice(4)) && seeded.row.length === 8
+      && !seeded.row.some((t) => t.key.startsWith('emp_')) && seeded.roster.selected === K(J.amazon), names(seeded.row));
+    ok('…and they count as known: a freed place never brings them (or the queued agencies) back later',
+      LEADS_REMOVED.every(([id]) => seeded.roster.knownEmployers.includes(id))
+      && RO.mergeRoster(RO.rosterRemove(seeded.roster, K(J.amazon)), a0).roster.keys.every((k) => !k.startsWith('emp_')));
+    ok('…but an employer the user added on Home stays in the seed, where the ranking had it',
+      same(RO.mergeRoster(null, a0, { added: (k) => k === 'emp_e-jig' }).roster.keys.slice(0, 2), ['emp_e-jig', K(J.amazon)]));
+    // The row as a build before the roster had it on screen: the ranking's own 12 (a tracked list the seed cannot count).
+    const asShown = (a) => RO.mergeRoster(null, { ...a, trackedEmployerIds: null }).roster;
+    ok('(the row build 209 showed: the ranking\'s own 12, the four lead employers first)', same(asShown(a0).keys, keysOf(a0.ranked)));
+
+    // ── REPLAY 16:11 IST: the four lead employers removed (untracked), then eight postings hidden ──
+    let r = asShown(a0);
+    for (const [id] of LEADS_REMOVED) r = RO.rosterRemove(r, 'emp_' + id);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    const a1 = await ask();
+    ok('(the ranking alone refills those four places with the queued agencies — the incident reproduced)',
+      same(names(a1.ranked).slice(0, 4), LEADS_QUEUED.slice(0, 4).map((x) => x[1])), names(a1.ranked).slice(0, 4));
+    const m1 = RO.mergeRoster(r, a1);
+    ok('⚠️ after removing the four lead employers the row SHRINKS to the eight postings — no Moroccan Ministry, no Department of Employment, no Ministry of Labour, no Iskur',
+      m1.row.length === 8 && !m1.row.some((t) => LEADS_QUEUED.some(([id]) => t.employerId === id)) && same(keysOf(m1.row), keysOf(a0.ranked).slice(4)),
+      names(m1.row));
+    ok('…and the selection moved to the chip that slid into the first place, not to a stranger', m1.roster.selected === K(J.amazon));
+    const firstEight = [J.amazon, J.insp, J.arch, J.spc, J.iwell, { applyUrl: ROCHE }, J.werken, J.cvb].map(K);
+    r = m1.roster;
+    for (const k of firstEight) r = RO.rosterRemove(r, k);
+    srv.hidden = firstEight.slice();
+    const a2 = await ask();
+    ok('(the ranking alone now offers Airbus Cyber / RISK / Project Leader and MOM Ranch, Linum, N/A in their places)',
+      ['MOM Ranch', 'Linum Consult', 'N/A'].every((n) => a2.ranked.some((t) => t.company === n)) && a2.ranked.some((t) => t.key === K(J.cyber)), names(a2.ranked));
+    const m2 = RO.mergeRoster(r, a2);
+    ok('⚠️ the owner emptied his row, and it STAYS empty: nothing refills it from further down the ranking', m2.row.length === 0, names(m2.row));
+    // After 16:11:45 he hid those three too; at 22:02 the ranking offered Konnekt ×3 — the saved row still offers nothing.
+    srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na)];
+    const a3 = await ask();
+    ok('(22:02 replay: the ranking alone offers Konnekt ×3 and three other Airbus roles)',
+      a3.ranked.filter((t) => t.company === 'Konnekt').length === 3 && [J.cyber, J.risk, J.pl].every((j) => a3.ranked.some((t) => t.key === K(j))), names(a3.ranked));
+    const m3 = RO.mergeRoster(m2.roster, a3);
+    const m3b = RO.mergeRoster(m3.roster, a3);
+    // (No `removed` is passed to these merges: it is the hidden list and the untrack that hold, not the 5-minute overlay.)
+    ok('⚠️ …and the saved row takes none of them — on any load, however many times', m3.row.length === 0 && m3b.row.length === 0);
+
+    // ⚠️ THE FIXED BUILD'S FIRST LAUNCH FOR USER 1: its seed is the 22:02 row WITHOUT the four agencies he never picked.
+    const firstLaunch = RO.mergeRoster(null, a3);
+    ok('⚠️ first launch after the fix (the 22:02 answer): TAECHIR, Department of Employment SA, Ministry of Labour and Iskur are NOT seeded; the eight postings he saw keep their order',
+      firstLaunch.persist && same(keysOf(firstLaunch.row), keysOf(a3.ranked).slice(4)) && firstLaunch.row.length === 8
+      && !firstLaunch.row.some((t) => LEADS_QUEUED.some(([id]) => t.employerId === id)) && firstLaunch.roster.selected === K(J.cyber), names(firstLaunch.row));
+
+    // ── THE 22:02 ROW AS A SAVED ROW: Airbus Cyber picked (i = 4), then everything that used to move it ──
+    // (Saved as the screen had it — the four agencies in front — so each rule below runs on the owner's real 12.)
+    const s0 = { row: RO.rosterRow(asShown(a3)) };
+    let base = RO.rosterSelect(asShown(a3), K(J.cyber));
+    ok('the 22:02 row as the screen had it, and the owner\'s pick (Airbus · Cyber Security Manager, i = 4) is saved by key',
+      base.keys.indexOf(K(J.cyber)) === 4 && base.selected === K(J.cyber) && base.keys.length === 12, names(s0.row));
+    const cyberBefore = base.snap[K(J.cyber)];
+    const lookupBefore = JSON.stringify(docs.docLookupOf(cyberBefore));
+    const stable = (m, label) => ok(label, same(m.roster.keys, base.keys) && m.roster.selected === K(J.cyber), { keys: names(m.row), sel: m.roster.selected });
+
+    // Match scores reshuffled, the dashboard in another order (a re-search bumps ute.updated_at), geography reordering Airbus.
+    const shuffled = (j, s) => ({ ...j, matchScore: s });
+    srv.dash = world({
+      untracked: LEADS_REMOVED.map((x) => x[0]), reverse: true,
+      airbusJobs: [shuffled(J.pl, 100), shuffled(J.risk, 60), shuffled(J.cyber, 70), J.insp, J.arch, J.spc],
+      extra: [],
+    });
+    srv.dash.forEach((x) => { if (x.employer.id === 'e-konnekt') x.employer.jobs = [shuffled(J.k1, 40), shuffled(J.k2, 100), shuffled(J.k3, 55)]; });
+    const aShuffle = await ask();
+    ok('(the ranking alone reorders under a reshuffle)', !same(keysOf(aShuffle.ranked), base.keys));
+    const mShuffle = RO.mergeRoster(base, aShuffle);
+    stable(mShuffle, '⚠️ reshuffled match scores, a reordered dashboard, geography reordering an employer: the same chips, the same order, Airbus Cyber still selected');
+    ok('…and the chips carry the fresh match % (only match, skills, location and job id refresh)',
+      mShuffle.roster.snap[K(J.cyber)].match === 70 && mShuffle.roster.snap[K(J.k2)].match === 100);
+
+    // The failed reads (root cause 2).
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    srv.hidden = 'fail';
+    const aNoHidden = await ask();
+    const changed = aNoHidden.ranked.filter((t, i) => t.key !== base.keys[i]).length;
+    ok('(a failed hidden read makes the ranking alone change most of the row and bring hidden postings back — today\'s failure)',
+      !aNoHidden.hiddenOk && changed >= 6 && aNoHidden.ranked.some((t) => t.key === K(J.amazon)) && !aNoHidden.ranked.some((t) => t.key === K(J.cyber)), { changed });
+    stable(RO.mergeRoster(base, aNoHidden), '⚠️ a FAILED hidden read changes nothing: no hidden posting comes back, Airbus Cyber stays selected');
+    srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na)];
+    srv.dash = 'fail';
+    stable(RO.mergeRoster(base, await ask()), '⚠️ a FAILED dashboard read changes nothing (it used to turn the row into saved cards)');
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    srv.saved = 'fail';
+    stable(RO.mergeRoster(base, await ask()), 'a FAILED saved read changes nothing');
+    srv.dash = 'fail'; srv.hidden = 'fail';
+    stable(RO.mergeRoster(base, await ask()), 'every read failed (offline): the row stays exactly as it was');
+    srv.saved = savedCards(); srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na)];
+
+    // Background research changing the data under a chip.
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]), airbusStatus: 'processing', airbusJobs: [J.risk, J.pl] });
+    const aResearch = await ask();
+    const mResearch = RO.mergeRoster(base, aResearch);
+    stable(mResearch, '⚠️ Airbus being re-searched (its postings replaced by partial results without Cyber): the chip keeps its place and stays selected');
+    ok('…and its identity — and so the saved letter\'s lookup (docLookupOf) — is unchanged',
+      identity(mResearch.roster.snap[K(J.cyber)]) === identity(cyberBefore) && JSON.stringify(docs.docLookupOf(mResearch.roster.snap[K(J.cyber)])) === lookupBefore);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]), airbusJobs: [J.risk, J.pl, J.insp] });
+    stable(RO.mergeRoster(base, await ask()), 'Cyber evicted / deactivated on the server (missing from a dashboard that ANSWERED): still kept — only the user removes a chip');
+    srv.dash = world({
+      untracked: LEADS_REMOVED.map((x) => x[0]), airbusName: 'Airbus SE',
+      airbusJobs: [{ ...J.cyber, title: 'Cyber Security Manager (m/f/d)', matchScore: 88, country: 'France' }, J.risk, J.pl],
+    });
+    const mRenamed = RO.mergeRoster(base, await ask());
+    stable(mRenamed, 'the employer renamed in the background ("Airbus" → "Airbus SE") and the posting retitled: same chip');
+    ok('⚠️ …its company, title, country, site, URL and colours are FROZEN (the letter\'s identity), only its match moved',
+      identity(mRenamed.roster.snap[K(J.cyber)]) === identity(cyberBefore) && mRenamed.roster.snap[K(J.cyber)].company === 'Airbus'
+      && mRenamed.roster.snap[K(J.cyber)].match === 88 && JSON.stringify(docs.docLookupOf(mRenamed.roster.snap[K(J.cyber)])) === lookupBefore);
+
+    // What DOES take a chip away: the user, somewhere.
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na), K(J.cyber)];
+    const mHid = RO.mergeRoster(base, await ask());
+    ok('⚠️ Cyber hidden (from the other phone): it leaves, and the chip that slid into index 4 is selected — never the first chip',
+      !mHid.roster.keys.includes(K(J.cyber)) && mHid.roster.selected === K(J.risk) && mHid.roster.keys.indexOf(K(J.risk)) === 4 && mHid.roster.keys.length === 11,
+      { sel: mHid.roster.selected });
+    srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na)];
+    ok('the X on this device: gone at once, before the server has heard (removedNow)',
+      !RO.mergeRoster(base, await ask(), { removed: (k) => k === K(J.k1) }).roster.keys.includes(K(J.k1)));
+    srv.dash = world({ untracked: [...LEADS_REMOVED.map((x) => x[0]), 'e-airbus'] });
+    const mUntracked = RO.mergeRoster(base, await ask());
+    ok('⚠️ Airbus untracked (missing from a dashboard read that ANSWERED): its three chips leave, the neighbour is selected',
+      ![J.cyber, J.risk, J.pl].some((j) => mUntracked.roster.keys.includes(K(j))) && mUntracked.roster.keys.length === 9 && mUntracked.roster.selected === K(J.sky1));
+    const heldBase = RO.rosterPlace(RO.rosterRemove(base, K(J.cyber)), cyberBefore, { after: base.keys.slice(0, 4), hold: true, now: T0 });
+    const mHeld = RO.mergeRoster(heldBase, await ask(), { now: T0 + 60000 });
+    ok('…but a chip the user just put back (an Undo, a re-add) is HELD against that read',
+      mHeld.roster.keys.includes(K(J.cyber)) && !mHeld.roster.keys.includes(K(J.risk)) && mHeld.roster.keys.indexOf(K(J.cyber)) === 4);
+    ok('…until the hold runs out (5 min): then the read is believed',
+      !RO.mergeRoster(heldBase, await ask(), { now: T0 + RO.ROSTER_HOLD_MS + 1 }).roster.keys.includes(K(J.cyber)));
+    ok('the Undo went back to its OLD place (index 4), not the end', heldBase.keys.indexOf(K(J.cyber)) === 4 && same(heldBase.keys, base.keys));
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    const aNow = await ask();
+    const undoHide = RO.mergeRoster(heldBase, { ...aNow, hidden: [...aNow.hidden, K(J.cyber)], localHidden: { [K(J.cyber)]: true } }, { now: T0 + 60000 });
+    ok('⚠️ an Undo whose un-hide is not sent yet (this device still says hidden) survives the merge', undoHide.roster.keys.indexOf(K(J.cyber)) === 4);
+
+    // What may JOIN: only the new — at the end, never in a freed place.
+    const newJob = job(WD + 'Toulouse-Area/Brand-New-Role_JR10499999', 'Brand New Role', 100, T0 + DAY);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]), airbusJobs: [J.insp, J.arch, J.spc, J.cyber, J.risk, J.pl, newJob] });
+    const aNew = await ask();
+    ok('a full row (12) takes no new posting', !RO.mergeRoster(base, aNew).roster.keys.includes(K(newJob)) && RO.mergeRoster(base, aNew).roster.keys.length === 12);
+    const eleven = RO.rosterRemove(base, K(J.k3));
+    const mNew = RO.mergeRoster(eleven, aNew);
+    ok('⚠️ with room, a posting NEWER than any the row has seen joins at the END — the old ones ranked above it never do',
+      mNew.roster.keys.length === 12 && mNew.roster.keys[11] === K(newJob) && same(mNew.roster.keys.slice(0, 11), eleven.keys), names(mNew.row));
+    const mAgain = RO.mergeRoster(RO.rosterRemove(mNew.roster, K(J.k2)), aNew);
+    ok('…and once offered it is old: removing another chip refills nothing', mAgain.roster.keys.length === 11);
+    // ⚠️ REVIEW 2026-09-20 (the server copy): THE HIGH-WATER MARKS SURVIVE ANOTHER PHONE'S ROW. This phone passed the new
+    // posting over (its row was full) and moved its watermark; the other phone's row still carried the older one, and
+    // taking that row whole put the posting back among the NEW — into the first place the user freed, which is the very
+    // refill this file exists to stop.
+    const passedOver = { ...RO.mergeRoster(base, aNew).roster, rev: 4 };
+    const elsewhere = { ...base, rev: 5 };
+    const met = RO.pickSaved(passedOver, { roster: elsewhere, rev: 5 });
+    ok('⚠️ another phone\'s row is taken with THIS phone\'s watermarks: a posting already passed over never walks into a freed place',
+      met.adopted && met.row.postWatermark === passedOver.postWatermark && met.row.postWatermark > base.postWatermark
+      && !RO.mergeRoster(RO.rosterRemove(met.row, K(J.k3)), aNew).roster.keys.includes(K(newJob)),
+      { met: met.row.postWatermark, passedOver: passedOver.postWatermark, base: base.postWatermark });
+    const marksHere = { ...passedOver, savedWatermark: T0 + DAY, savedArmed: true, knownEmployers: ['e-here'] };
+    const marksThere = { ...base, rev: 6, savedWatermark: null, savedArmed: false, postArmed: false, knownEmployers: ['e-there'] };
+    const met2 = RO.pickSaved(marksHere, { roster: marksThere, rev: 6 }).row;
+    ok('…each mark the LATER of the two, "was it read" either of the two, and the employers already seen are the union',
+      met2.savedWatermark === T0 + DAY && met2.savedArmed === true && met2.postArmed === true
+      && met2.knownEmployers.includes('e-here') && met2.knownEmployers.includes('e-there'),
+      { saved: met2.savedWatermark, known: met2.knownEmployers.length });
+    const lateHidden = job('https://konnekt.example/jobs/new-but-hidden', 'hidden newcomer', 100, T0 + 2 * DAY);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]), extra: [['e-kk', 'KK', [lateHidden]]] });
+    srv.hidden = 'fail';
+    const withLast = { ...(await ask()) };
+    const lastHiddenRoster = { ...eleven, hidden: [...eleven.hidden, K(lateHidden)], knownEmployers: [...eleven.knownEmployers, 'e-kk'] };
+    ok('a posting the last good hidden list names never joins as "new" while the hidden read is failing',
+      !RO.mergeRoster(lastHiddenRoster, withLast).roster.keys.includes(K(lateHidden)));
+    srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na)];
+    const oldJobOfNewEmployer = job('https://newco.example/jobs/1', 'Engineer', 80, T0 - 30 * DAY);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]), extra: [['e-newco', 'NewCo', [oldJobOfNewEmployer]]] });
+    const aTracked = await ask();
+    const mTracked = RO.mergeRoster(base, aTracked);
+    ok('⚠️ an employer the user started tracking elsewhere joins even a FULL row (up to ROSTER_HARD_MAX), at the end',
+      mTracked.roster.keys.length === 13 && mTracked.roster.keys[12] === K(oldJobOfNewEmployer) && RO.ROSTER_HARD_MAX === 20);
+    ok('…once: the next load does not add it again', RO.mergeRoster(mTracked.roster, aTracked).roster.keys.length === 13);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]), extra: [['e-newco', 'NewCo', [oldJobOfNewEmployer], 'processing']] });
+    ok('…but not while its search is still running (a pending/processing row is not settled)', RO.mergeRoster(base, await ask()).roster.keys.length === 12);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    srv.saved = savedCards([{ id: 's2', job_url: 'https://jobs.example/saved-today', title: 'Saved Today', company: 'Saved Co', match: 50, saved_at: iso(T0 + DAY) }]);
+    const aSaved = await ask();
+    ok('a card saved since joins at the end while there is room, not when the row is full',
+      RO.mergeRoster(eleven, aSaved).roster.keys[11] === 'job_https://jobs.example/saved-today' && RO.mergeRoster(base, aSaved).roster.keys.length === 12);
+
+    // Saved-only chips: only an unsave takes them away — and only a COMPLETE saved read says so.
+    srv.hidden = []; srv.saved = savedCards();
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    const withRoche = RO.mergeRoster(null, await ask()).roster;
+    ok('(the Roche saved card is on a fresh row)', withRoche.keys.includes(ehs.jobKeyForUrl(ROCHE)));
+    srv.saved = [];
+    ok('⚠️ a saved card missing from a saved read that answered in full was unsaved: it leaves',
+      !RO.mergeRoster(withRoche, await ask()).roster.keys.includes(ehs.jobKeyForUrl(ROCHE)));
+    srv.saved = Array.from({ length: 500 }, (_, i) => ({ id: 'x' + i, job_url: 'https://jobs.example/other-' + i, title: 'Other', company: 'Other Co', match: 1, saved_at: iso(T0 - 100 * DAY) }));
+    ok('…but a saved read of 500 (the server\'s page — it may have cut the card off) is no evidence: it stays',
+      RO.mergeRoster(withRoche, await ask()).roster.keys.includes(ehs.jobKeyForUrl(ROCHE)));
+    srv.saved = savedCards();
+
+    // Adds, renames and the server's copy of a chip this device stood in for.
+    const pend = { key: 'emp_pending_newemployer.example', jobId: null, employerId: null, company: 'New Employer', role: '', initial: 'N', colors: ['#000000', '#111111'], match: null, skills: [], website: 'https://newemployer.example' };
+    ok('a pending add, and a posting with no URL, are never kept', !RO.persistable(pend) && !RO.persistable({ key: 'job_jid-9', jobId: 'jid-9', company: 'X', role: 'Y', initial: 'X', colors: ['#1', '#2'], match: 1, skills: [] })
+      && same(RO.rosterPlace(base, pend, { after: [] }), base));
+    const real = { ...pend, key: 'emp_e-newemp', employerId: 'e-newemp', company: 'New Employer' };
+    const added = RO.rosterPlace(base, real, { after: [], replaces: pend.key, hold: true, provisional: true, now: T0 });
+    ok('the tracked employer lands at the FRONT, held, and the selection stays where it was',
+      added.keys[0] === real.key && added.keys.length === 13 && added.selected === K(J.cyber) && added.hold[real.key] === T0 + RO.ROSTER_HOLD_MS);
+    const notYet = RO.mergeRoster(added, aNow, { now: T0 + 1000 });
+    ok('…a dashboard read that does not list it yet cannot drop it (the hold)', notYet.roster.keys[0] === real.key);
+    srv.dash = [row('e-newemp', 'New Employer Inc', []), ...world({ untracked: LEADS_REMOVED.map((x) => x[0]) })];
+    srv.dash[0].employer.domain = 'newemployer.example';
+    const mProv = RO.mergeRoster(notYet.roster, await ask(), { now: T0 + 2000 });
+    ok('…the dashboard\'s own copy replaces this device\'s stand-in ONCE (provisional), in the same place',
+      mProv.roster.keys[0] === real.key && mProv.roster.snap[real.key].company === 'New Employer Inc' && !mProv.roster.prov[real.key]);
+    srv.dash[0].employer.name = 'Renamed Again';
+    ok('…and from then on it is frozen like every other chip', RO.mergeRoster(mProv.roster, await ask(), { now: T0 + 3000 }).roster.snap[real.key].company === 'New Employer Inc');
+    const swapped = RO.rosterPlace(base, { ...cyberBefore, key: 'job_https://elsewhere.example/cyber' }, { after: base.keys.slice(0, 4), replaces: K(J.cyber), hold: true });
+    ok('a chip coming back under a NEW identity takes the old one\'s place and its selection (the pending → tracked swap)',
+      swapped.keys[4] === 'job_https://elsewhere.example/cyber' && !swapped.keys.includes(K(J.cyber)) && swapped.selected === 'job_https://elsewhere.example/cyber' && swapped.keys.length === 12);
+    // ⚠️ REVIEW 2026-09-20: ONE CAP ON BOTH SIDES. Nothing here capped the row — every add, Undo and restored posting
+    // goes in — while the server refuses a row over ROSTER_MAX_KEYS outright: a row that reached 65 chips was refused on
+    // every write from then on, for ever, and the other phone kept adopting the frozen copy.
+    let fat = base;
+    for (let i = 0; i < 60; i++) fat = RO.rosterPlace(fat, { ...cyberBefore, key: 'emp_fat-' + i, employerId: 'fat-' + i, applyUrl: null }, { after: [] });
+    ok('⚠️ 60 adds on a full row stay inside the server\'s own cap — the newest add and the selection are never the ones dropped',
+      fat.keys.length === RO.ROSTER_MAX_KEYS && RO.ROSTER_MAX_KEYS === HR.ROSTER_MAX_KEYS
+      && fat.keys[0] === 'emp_fat-59' && fat.selected === K(J.cyber) && fat.keys.includes(fat.selected)
+      && Object.keys(fat.snap).length === fat.keys.length && !!HR.acceptableRoster(fat),
+      { keys: fat.keys.length, sel: fat.selected });
+    ok('…and a key no server row could hold (over ROSTER_KEY_MAX_LEN) is never put on the row',
+      !RO.persistable({ ...cyberBefore, key: 'emp_' + 'x'.repeat(RO.ROSTER_KEY_MAX_LEN) })
+      && RO.ROSTER_KEY_MAX_LEN === HR.ROSTER_KEY_MAX_LEN);
+
+    // Seeding refuses an answer that would freeze a wrong row.
+    srv.dash = 'fail';
+    ok('no saved row + a failed dashboard read: shown, NOT kept (a seed would freeze a row of saved cards)', RO.mergeRoster(null, await ask()).persist === false);
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) }); srv.hidden = 'fail';
+    ok('no saved row + a failed hidden read: shown, NOT kept (a seed would freeze the hidden postings in)', RO.mergeRoster(null, await ask()).persist === false);
+    srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na)];
+
+    // ⚠️ REVIEW 2026-09-19 (round 1): A WATERMARK NEVER READ IS NOT "EVERYTHING IS NEW".
+    srv.hidden = []; srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) });
+    srv.saved = 'fail';
+    const sNoSaved = RO.mergeRoster(null, await ask());
+    ok('(a row saved while the saved-jobs read FAILED: its saved watermark was never read)',
+      sNoSaved.persist && sNoSaved.roster.savedArmed === false && sNoSaved.roster.savedWatermark === null && sNoSaved.roster.postArmed === true);
+    let freed = sNoSaved.roster;
+    for (const k of freed.keys.slice(0, 2)) freed = RO.rosterRemove(freed, k);
+    const augustCards = [
+      { id: 'aug1', job_url: 'https://jobs.example/august-1', title: 'Saved in August', company: 'August Co', match: 99, saved_at: '2026-08-01T09:00:00Z' },
+      { id: 'aug2', job_url: 'https://jobs.example/august-2', title: 'Saved in August too', company: 'August Two', match: 98, saved_at: '2026-08-02T09:00:00Z' },
+    ];
+    srv.saved = savedCards(augustCards);
+    const mArm = RO.mergeRoster(freed, await ask());
+    ok('⚠️ …the first saved read that answers ARMS it and adds NOTHING: no August card (nor Roche) walks into the two places the user just emptied',
+      same(mArm.roster.keys, freed.keys) && mArm.roster.savedArmed === true && mArm.roster.savedWatermark === T0 - 5 * DAY, names(mArm.row));
+    srv.saved = savedCards([...augustCards, { id: 'since', job_url: 'https://jobs.example/saved-since', title: 'Saved since', company: 'Since Co', match: 10, saved_at: iso(T0 + DAY) }]);
+    const mSince = RO.mergeRoster(mArm.roster, await ask());
+    ok('…and from then on a card saved SINCE joins, at the end',
+      mSince.roster.keys.length === freed.keys.length + 1 && mSince.roster.keys[freed.keys.length] === 'job_https://jobs.example/saved-since', names(mSince.row));
+    // The posting watermark: a row saved while its only postings were a search's partial results (no created_at).
+    const undated = (j) => ({ ...j, createdAt: null });
+    srv.saved = []; srv.dash = [row('e-solo', 'Solo', [undated(J.k1), undated(J.k2)], 'processing')];
+    const sPartial = RO.mergeRoster(null, await ask());
+    ok('(a row saved from partial results only — no created_at anywhere: the posting watermark was never read)',
+      sPartial.persist && sPartial.roster.postArmed === false && same(sPartial.roster.keys, [K(J.k1), K(J.k2)]));
+    srv.dash = [row('e-solo', 'Solo', [J.k1, J.k2, J.k3])];
+    const mDated = RO.mergeRoster(sPartial.roster, await ask());
+    ok('⚠️ …the first read that dates them ARMS it and adds nothing (the finished search\'s third posting does not walk in)',
+      same(mDated.roster.keys, sPartial.roster.keys) && mDated.roster.postArmed === true && mDated.roster.postWatermark === T0, names(mDated.row));
+    const storedSince = job('https://konnekt.example/jobs/stored-since', 'stored since', 100, T0 + DAY);
+    srv.dash = [row('e-solo', 'Solo', [J.k1, J.k2, J.k3, storedSince])];
+    ok('…then a posting stored since joins, at the end', RO.mergeRoster(mDated.roster, await ask()).roster.keys.slice(-1)[0] === K(storedSince));
+    // An EMPTY store is a read watermark: null there means "nothing was there", so a new user's first finds still join.
+    srv.dash = [row('e-solo', 'Solo', [])];
+    const sEmpty = RO.mergeRoster(null, await ask());
+    ok('an EMPTY store arms both watermarks (null = nothing was there)', sEmpty.roster.postArmed && sEmpty.roster.savedArmed && same(sEmpty.roster.keys, ['emp_e-solo']));
+    srv.dash = [row('e-solo', 'Solo', [J.k1])];
+    srv.saved = [{ id: 'first', job_url: 'https://jobs.example/first-save', title: 'First', company: 'First Co', match: 5, saved_at: iso(T0) }];
+    const mFirst = RO.mergeRoster(sEmpty.roster, await ask());
+    ok('…so a new user\'s first posting and first saved card still join',
+      mFirst.roster.keys.includes(K(J.k1)) && mFirst.roster.keys.includes('job_https://jobs.example/first-save') && mFirst.roster.keys[0] === 'emp_e-solo', names(mFirst.row));
+    ok('a row stored before the flags existed reads a null watermark as NEVER read (the safe side), a dated one as read',
+      await (async () => {
+        const legacy = JSON.parse(JSON.stringify(sEmpty.roster));
+        delete legacy.postArmed; delete legacy.savedArmed;
+        legacy.postWatermark = T0; legacy.savedWatermark = null;
+        store.set('home_roster_v1:u:legacy', JSON.stringify(legacy));
+        RO.forgetRosterCopy();
+        const back = await RO.readRoster('u:legacy');
+        RO.forgetRosterCopy(); store.delete('home_roster_v1:u:legacy');
+        return !!back && back.postArmed === true && back.savedArmed === false;
+      })());
+    srv.dash = world({ untracked: LEADS_REMOVED.map((x) => x[0]) }); srv.saved = savedCards();
+    srv.hidden = [...firstEight, K(J.mom), K(J.linum), K(J.na)];
+
+    // ⚠️ REVIEW 2026-09-19 (round 1): WHAT ONE LOAD DOES WITH THE ROW WHEN THE SESSION OR STORAGE CANNOT BE READ.
+    // load()'s own steps, with the real functions in its order: rowAccounts → readRoster → rosterCopy || stored → planRow.
+    const aLoad = await ask();
+    ok('rowAccounts: a readable session that owns the cache merges into AND saves under it', same(RO.rowAccounts('u:1', 'u:1'), { acct: 'u:1', owner: 'u:1' }));
+    ok('⚠️ rowAccounts: an UNREADABLE session (signedInAccount → null) merges against cacheOwner\'s row, and saves under nobody',
+      same(RO.rowAccounts(null, 'u:1'), { acct: null, owner: 'u:1' }));
+    ok('rowAccounts: no account ever read, or another account read mid-load: neither',
+      same(RO.rowAccounts(null, null), { acct: null, owner: null }) && same(RO.rowAccounts('u:616', 'u:1'), { acct: null, owner: null }));
+    store.clear(); RO.forgetRosterCopy();
+    RO.keepRoster('u:1', eleven); await RO.rosterWrites(); RO.forgetRosterCopy();
+    const stepLoad = async (who, last, shown, remote = null) => {
+      const { acct, owner } = RO.rowAccounts(who, last);
+      const stored = owner ? await RO.readRoster(owner) : undefined;
+      const savedRow = owner ? RO.savedRowOf(owner, RO.rosterCopy(owner) || stored, acct ? remote : undefined).row : undefined;
+      const plan = RO.planRow(savedRow, aLoad, { shown });
+      const row = plan.keep ? 'kept' : keysOf(plan.merged.row);
+      return { acct, stored, plan, row, saves: !!(acct && plan.save) };
+    };
+    ok('(what a load with no saved row to merge into put on screen: the raw ranking\'s seed — Konnekt software development back in the place the user emptied)',
+      RO.mergeRoster(null, aLoad).roster.keys.includes(K(J.k3)) && !eleven.keys.includes(K(J.k3)));
+    const unread = await stepLoad(null, 'u:1', eleven.keys.length);
+    ok('⚠️ LOAD, session unreadable: the answer merges into the SAVED row — the same 11 chips, same order, Airbus Cyber still selected',
+      Array.isArray(unread.row) && same(unread.row, eleven.keys) && unread.plan.merged.roster.selected === K(J.cyber), unread.row);
+    ok('…and nothing is saved (load() saves only under the account it READ)', unread.acct === null && unread.saves === false);
+    RO.forgetRosterCopy();
+    storeThrows = true;
+    const blind = await stepLoad('u:1', 'u:1', eleven.keys.length);
+    storeThrows = false;
+    ok('⚠️ LOAD, storage unreadable (AsyncStorage.getItem throws): the row on screen STAYS, and nothing is saved over the stored one',
+      blind.stored === undefined && blind.row === 'kept' && blind.saves === false && same(JSON.parse(store.get('home_roster_v1:u:1')).keys, eleven.keys));
+    const noAccount = await stepLoad(null, null, eleven.keys.length);
+    ok('LOAD, no account could ever be read, with a row on screen: it stays', noAccount.row === 'kept' && !noAccount.saves);
+    ok('…a cold start with nothing on screen shows the answer (there is nothing else), unsaved',
+      !RO.planRow(undefined, aLoad, { shown: 0 }).keep && !RO.planRow(undefined, aLoad, { shown: 0 }).save);
+    ok('an answer with nothing in it (both stores failed) and no saved row keeps the row on screen too',
+      RO.planRow(null, { ...aLoad, dashOk: false, savedOk: false }, { shown: 5 }).keep && !RO.planRow(null, { ...aLoad, dashOk: false, savedOk: false }, { shown: 5 }).save);
+    ok('the first complete load with no saved row yet (null) seeds and saves it',
+      (() => { const p = RO.planRow(null, aLoad, { shown: 3 }); return !p.keep && p.save && p.merged.persist; })());
+    ok('a refused session neither keeps the row nor saves', (() => { const p = RO.planRow(eleven, aLoad, { shown: 11, refused: true }); return !p.keep && !p.save; })());
+    store.clear(); RO.forgetRosterCopy();
+
+    // The device's own hides reach the merge (localHide), and outrank the server's list.
+    await ehs.unhideTarget(K(J.amazon));
+    const aLocal = await ask();
+    ok('an un-hide this device just made is reported to the merge (localHidden) until its grace ends', aLocal.localHidden[K(J.amazon)] === false);
+
+    // ── storage: per account, per device, never under nobody ──
+    store.clear(); storeReads = 0;
+    RO.forgetRosterCopy();
+    ok('no account: nothing is read, nothing is written', (await RO.readRoster(null)) === undefined && storeReads === 0
+      && (RO.keepRoster(null, base), await RO.rosterWrites(), store.size === 0) && RO.rosterCopy(null) === null);
+    RO.keepRoster('u:1', base);
+    await RO.rosterWrites();
+    const other = RO.mergeRoster(null, aNow).roster;
+    RO.keepRoster('u:616', other);
+    await RO.rosterWrites();
+    ok('each account has its own saved row (u:1 and the test account u:616 never share one)',
+      store.has('home_roster_v1:u:1') && store.has('home_roster_v1:u:616') && JSON.parse(store.get('home_roster_v1:u:1')).selected === K(J.cyber)
+      && RO.rosterCopy('u:1') === null && RO.rosterCopy('u:616') === other);
+    RO.forgetRosterCopy();
+    const back = await RO.readRoster('u:1');
+    const backRow = RO.rosterRow(back);
+    ok('⚠️ RELAUNCH / REMOUNT: the saved row reads back as it was — same chips, same order, Airbus Cyber selected at index 4',
+      same(keysOf(backRow), base.keys) && back.selected === K(J.cyber) && keysOf(backRow).indexOf(back.selected) === 4
+      && identity(back.snap[K(J.cyber)]) === identity(cyberBefore) && RO.rosterCopy('u:1') === back);
+    await RO.editRoster('u:1', (x) => RO.rosterSelect(x, K(J.risk)));
+    await RO.rosterWrites();
+    ok('a pick is written straight through (editRoster)', JSON.parse(store.get('home_roster_v1:u:1')).selected === K(J.risk));
+    await RO.editRoster('u:1', (x) => RO.rosterSelect(x, 'emp_pending_nobody'));
+    ok('…a key the row does not keep leaves the saved selection alone', RO.rosterCopy('u:1').selected === K(J.risk));
+    RO.forgetRosterCopy();
+    store.set('home_roster_v1:u:1', '{not json');
+    ok('bad JSON is "no saved row" — never a throw', (await RO.readRoster('u:1')) === null);
+    RO.forgetRosterCopy();
+    store.set('home_roster_v1:u:1', JSON.stringify({ v: 1, keys: ['emp_x', 'emp_y'], snap: { emp_x: { key: 'emp_x', company: 'X' }, emp_y: { key: 'nope' } }, selected: 'emp_y' }));
+    const patched = await RO.readRoster('u:1');
+    ok('a stored row is checked chip by chip: a bad chip is dropped, a thin one gets its colours / initial back',
+      same(patched.keys, ['emp_x']) && patched.selected === 'emp_x' && Array.isArray(patched.snap.emp_x.colors) && patched.snap.emp_x.initial === 'X');
+    RO.forgetRosterCopy();
+    storeThrows = true;
+    ok('⚠️ storage that will not read is `undefined` — the screen must not seed over it', (await RO.readRoster('u:1')) === undefined);
+    storeThrows = false;
+
+    // ════════════════════════════════════════════════════════════════════════════════════════════════════
+    // ⚠️ THE ROW IS THE ACCOUNT'S ON EVERY PHONE (2026-09-20). Production app_events: user 1 on install a_kz5txdx3…
+    // (4.6 b203) until 16:29:52 UTC on 2026-09-19, then on a_ehuc9bgx… (b209, where test account 616 had been signed
+    // in) from 16:32:53 — two phones, minutes apart. A row kept only in one phone's AsyncStorage made the other phone
+    // seed its own from the ranking: another row, another chip selected. These run REAL homeRoster instances — one
+    // per phone, each with its own storage and memory — against the REAL server handlers (server/services/homeRoster.js).
+    // ════════════════════════════════════════════════════════════════════════════════════════════════════
+    console.log('── ⚠️ THE ROW IS THE ACCOUNT\'S ON EVERY PHONE: kept on the server, compare-and-set (2026-09-20) ──');
+    await RO.rosterSync(); RO.forgetRosterCopy(); store.clear(); rosterRows.clear();
+    srv.rosterReqs = []; srv.roster = 'ok'; sessionUser = 1;
+    // (Amazon's un-hide above is in its 30 s grace on this "device"; keep it visible either way so no load flips it.)
+    srv.hidden = srv.hidden.filter((k) => k !== K(J.amazon));
+    const phone = () => {
+      const st = new Map();
+      const as = { __esModule: true, default: {
+        getItem: async (k) => (st.has(k) ? st.get(k) : null),
+        setItem: async (k, v) => { st.set(k, v); },
+        removeItem: async (k) => { st.delete(k); },
+        multiRemove: async (ks) => { for (const k of ks) st.delete(k); },
+      } };
+      const P = loadR(rosterSrc, (id) => (/employerHomeService/.test(id) ? ehs : /async-storage/.test(id) ? as
+        : /secure-store/.test(id) ? secure : /config/.test(id) ? { API_BASE: 'https://api.test' } : {}));
+      return { P, store: st };
+    };
+    const PA = RO;            // phone A: the harness's own instance and storage
+    const PB = phone().P;     // phone B: a second phone, nothing saved on it
+    // load()'s own steps, in its order: the answer and the server copy together → rowAccounts → readRoster →
+    // savedRowOf → planRow → keepRoster (then the debounced write, flushed here).
+    const loadOn = async (P, shown = 0) => {
+      const [a, remote] = await Promise.all([ask(), P.fetchRemoteRoster('u:1')]);
+      const { acct, owner } = P.rowAccounts('u:1', 'u:1');
+      const stored = await P.readRoster(owner);
+      const picked = P.savedRowOf(owner, P.rosterCopy(owner) || stored, acct ? remote : undefined);
+      const plan = P.planRow(picked.row, a, { shown });
+      if (plan.save) P.keepRoster(acct, plan.merged.roster);
+      await P.rosterSync();
+      await P.rosterWrites();
+      return { remote, picked, plan, keys: plan.merged.roster.keys, sel: plan.merged.roster.selected };
+    };
+    const serverRow = () => { const r = rosterRows.get(1); return r ? { rev: r.rev, ...JSON.parse(r.text) } : null; };
+    const puts = () => srv.rosterReqs.filter((x) => x.method === 'PUT').length;
+    const NOW = Date.now();
+
+    const pa1 = await loadOn(PA);
+    ok('phone A, first launch: the server has no row (rev 0) — it seeds from the ranking as before, and WRITES that row (rev 1)',
+      !!pa1.remote && pa1.remote.rev === 0 && pa1.remote.roster === null && !pa1.picked.adopted && pa1.plan.save
+      && !!serverRow() && serverRow().rev === 1 && same(serverRow().keys, pa1.keys) && PA.rosterCopy('u:1').rev === 1 && pa1.keys.length >= 8,
+      { server: serverRow() && serverRow().keys, a: pa1.keys });
+    ok('…the stored body carries no `rev` (the column is the revision)', !('rev' in JSON.parse(rosterRows.get(1).text)));
+    const A0 = PA.rosterCopy('u:1');
+    const [gone1, gone2, pickA] = [A0.keys[0], A0.keys[1], A0.keys[5]];
+    await PA.editRoster('u:1', (r) => PA.rosterRemove(r, gone1));
+    await PA.editRoster('u:1', (r) => PA.rosterRemove(r, gone2));
+    await PA.editRoster('u:1', (r) => PA.rosterSelect(r, pickA, NOW + 1000));
+    const putsA = puts();
+    await PA.rosterSync();
+    ok('phone A: two X\'s and a pick reach the server as ONE write, compare-and-set on rev 1 → rev 2',
+      puts() === putsA + 1 && serverRow().rev === 2 && !serverRow().keys.includes(gone1) && !serverRow().keys.includes(gone2)
+      && serverRow().selected === pickA && PA.rosterCopy('u:1').rev === 2, serverRow());
+
+    const putsB = puts();
+    const b1 = await loadOn(PB);
+    ok('⚠️ phone B, FIRST launch (nothing saved on it): it takes the SERVER\'s row — the same chips, in the same order, the same chip selected as on phone A',
+      b1.picked.adopted && same(b1.keys, PA.rosterCopy('u:1').keys) && b1.sel === pickA && PB.rosterCopy('u:1').rev === 2,
+      { b: b1.keys, a: PA.rosterCopy('u:1').keys, sel: b1.sel });
+    ok('…not a seed of its own: the two chips removed on phone A stay removed although the ranking still offers them',
+      !b1.keys.includes(gone1) && !b1.keys.includes(gone2) && PB.mergeRoster(null, await ask()).roster.keys.includes(gone1));
+    ok('…and it writes nothing back: the row it took IS the server\'s (jsonb re-ordered every key — that is no change)',
+      puts() === putsB, srv.rosterReqs.slice(putsB));
+
+    const [pickB, gone3] = [b1.keys[2], b1.keys[3]];
+    await PB.editRoster('u:1', (r) => PB.rosterRemove(r, gone3));
+    await PB.editRoster('u:1', (r) => PB.rosterSelect(r, pickB, NOW + 2000));
+    await PB.rosterSync();
+    ok('phone B: its X and its pick are written on rev 2 → rev 3', serverRow().rev === 3 && !serverRow().keys.includes(gone3) && serverRow().selected === pickB);
+    const pa2 = await loadOn(PA, PA.rosterCopy('u:1').keys.length);
+    ok('⚠️ phone A (its own row still rev 2) takes rev 3 at its next load: phone B\'s X is gone here too, and phone B\'s LATER pick is selected',
+      pa2.picked.adopted && same(pa2.keys, serverRow().keys) && pa2.sel === pickB && PA.rosterCopy('u:1').rev === 3, { a: pa2.keys, sel: pa2.sel });
+
+    // Both at rev 3. Phone A removes a chip while phone B picks another — and phone B's write lands first.
+    const s3 = serverRow();
+    const [gone4, pickB2] = [s3.keys[4], s3.keys[0]];
+    await PA.editRoster('u:1', (r) => PA.rosterRemove(r, gone4));
+    await PB.editRoster('u:1', (r) => PB.rosterSelect(r, pickB2, NOW + 3000));
+    await PB.rosterSync();
+    const putsC = puts();
+    await PA.rosterSync();
+    const s5 = serverRow();
+    ok('⚠️ CONFLICT: phone A\'s write made from rev 3 is REFUSED (409) — never stored over phone B\'s rev 4 — then phone A lays its X over rev 4 and writes that (rev 5): both edits survive',
+      puts() === putsC + 2 && srv.rosterReqs.slice(-2).map((x) => x.status).join() === '409,200'
+      && s5.rev === 5 && !s5.keys.includes(gone4) && s5.selected === pickB2 && PA.rosterCopy('u:1').rev === 5 && same(PA.rosterCopy('u:1').keys, s5.keys),
+      { reqs: srv.rosterReqs.slice(-2).map((x) => x.status), s5 });
+    const b2 = await loadOn(PB, PB.rosterCopy('u:1').keys.length);
+    ok('…and phone B takes rev 5 at its next load: one row, both phones', b2.picked.adopted && same(b2.keys, s5.keys) && b2.sel === pickB2);
+
+    // A phone that was away: its own row is the old rev-1 seed, and its load cannot read the server.
+    store.set('home_roster_v1:u:1', JSON.stringify({ ...pa1.plan.merged.roster, rev: 1 }));
+    PA.forgetRosterCopy();
+    srv.roster = 'fail';
+    const c1 = await loadOn(PA, pa1.keys.length);
+    srv.roster = 'ok';
+    ok('(a phone that was away, whose server read fails: it merges into its OWN old row — it has one)',
+      !!c1.picked.row && c1.picked.row.rev === 1 && !c1.picked.adopted && c1.keys.includes(gone1));
+    await PA.editRoster('u:1', (r) => PA.rosterSelect(r, gone2, NOW - DAY));
+    await PA.rosterSync();
+    ok('⚠️ …and its next write — made from rev 1 — is REFUSED, not stored over rev 5: the server keeps phone B\'s chips and pick, and that phone now holds them too',
+      same(serverRow().keys, s5.keys) && serverRow().selected === pickB2 && serverRow().rev === 5
+      && same(PA.rosterCopy('u:1').keys, s5.keys) && PA.rosterCopy('u:1').selected === pickB2 && PA.rosterCopy('u:1').rev === 5,
+      { server: serverRow(), a: PA.rosterCopy('u:1') && PA.rosterCopy('u:1').keys });
+
+    // A NEW phone whose server read fails: nothing seeded, nothing written.
+    const PC = phone();
+    srv.roster = 'fail';
+    const putsF = puts();
+    const f1 = await loadOn(PC.P, 0);
+    ok('⚠️ a NEW phone whose server read FAILS keeps nothing: the ranking is shown for this one load, unsaved, and nothing is written',
+      f1.remote === undefined && f1.picked.row === undefined && !f1.plan.save && PC.P.rosterCopy('u:1') === null && PC.store.size === 0
+      && puts() === putsF && serverRow().rev === 5);
+    ok('…a second failed read, with that row on screen: planRow KEEPS the screen as it is', (await loadOn(PC.P, 12)).plan.keep);
+    srv.roster = 'ok';
+    const f3 = await loadOn(PC.P, 12);
+    ok('…and the first read that answers brings the account\'s row', f3.picked.adopted && same(f3.keys, s5.keys) && f3.sel === pickB2);
+
+    // An OLDER server (no route) — the row simply stays per phone, as before this change.
+    const PD = phone();
+    srv.roster = 'gone';
+    const g1 = await loadOn(PD.P, 0);
+    srv.roster = 'ok';
+    ok('an OLDER server (404, no route) is "no server copy": the phone seeds and keeps its own row, exactly as before',
+      g1.remote === null && g1.plan.save && !!PD.P.rosterCopy('u:1') && PD.store.has('home_roster_v1:u:1'));
+
+    // ⚠️ The account: a write queued for user 1 never goes out under another account's token, and the server checks too.
+    sessionUser = 616;
+    const reqsH = srv.rosterReqs.length;
+    const fetchedAs616 = await PA.fetchRemoteRoster('u:1');
+    PA.keepRoster('u:1', PA.rosterSelect(PA.rosterCopy('u:1'), s5.keys[1], NOW + 9000));
+    await PA.rosterSync();
+    sessionUser = 1;
+    ok('⚠️ the session now names ANOTHER account (616): u:1\'s server row is neither read nor written from this phone',
+      fetchedAs616 === undefined && srv.rosterReqs.length === reqsH && serverRow().rev === 5);
+    const resAcct = mkRes();
+    await HR.putHomeRoster({ user: { id: 616 }, body: { account: 'u:1', base: 0, roster: s5 } }, resAcct);
+    ok('…and the server refuses a body that names another account (409 account), storing nothing', resAcct.statusCode === 409 && resAcct.body.reason === 'account' && !rosterRows.has(616));
+    PA.forgetRosterCopy();
+
+    // ════════════════════════════════════════════════════════════════════════════════════════════════════
+    // ⚠️ REVIEW 2026-09-20 (round 2): THE SCREEN FOLLOWS THE ROW IT WAS HANDED, AND A LOAD NEVER PICKS.
+    // The owner's two-phone pattern — glance at one, pick on the other, come back. A 409 handed this phone the other
+    // phone's row while its SCREEN stayed on the chip it was showing; the next load then saved that chip as a brand-new
+    // pick, stamped "now", which beat the pick the user had really made on the other phone — and that phone jumped to a
+    // chip nobody had picked. This runs load()'s own steps WITH the screen it draws.
+    // ════════════════════════════════════════════════════════════════════════════════════════════════════
+    await PA.rosterSync(); PA.forgetRosterCopy(); PB.forgetRosterCopy();
+    store.clear(); rosterRows.clear(); srv.rosterReqs = []; sessionUser = 1;
+    const ph1 = phone(), ph2 = phone();
+    const P1 = ph1.P, P2 = ph2.P;
+    const sc1 = { row: [], idx: 0, picked: null }, sc2 = { row: [], idx: 0, picked: null };
+    const short = (k) => String(k || '').split('/').slice(-1)[0].slice(0, 24);
+    /** load(), including what it puts on screen. `hands` = the user touched Home while it ran (acts / a build / an add). */
+    const screenLoad = async (P, sc, opts = {}) => {
+      const [a, remote] = await Promise.all([ask(), P.fetchRemoteRoster('u:1')]);
+      const { acct, owner } = P.rowAccounts('u:1', 'u:1');
+      const stored = await P.readRoster(owner);
+      const picked = P.savedRowOf(owner, P.rosterCopy(owner) || stored, acct ? remote : undefined);
+      const before = sc.row;
+      const plan = P.planRow(picked.row, a, { shown: before.length });
+      const m = plan.merged;
+      if ((picked.adopted || picked.replaced) && !opts.hands && m.roster.selected
+        && m.row.some((x) => x.key === m.roster.selected)) sc.picked = m.roster.selected;
+      if (!sc.picked) sc.picked = (before[sc.idx] || {}).key || m.roster.selected || null;
+      const oldAt = sc.picked ? before.findIndex((x) => x.key === sc.picked) : -1;
+      const t = plan.keep ? before : m.row;
+      let j = sc.picked ? t.findIndex((x) => x.key === sc.picked) : -1;
+      if (j < 0) {
+        const sel = m.roster.selected ? t.findIndex((x) => x.key === m.roster.selected) : -1;
+        j = oldAt >= 0 ? Math.min(oldAt, t.length - 1) : sel;
+        if (j < 0) j = 0;
+      }
+      const was = sc.picked;
+      sc.picked = t[j] ? t[j].key : null;
+      const kept = P.rosterSelect(m.roster, sc.picked, m.roster.selectedAt);
+      if (plan.save) P.keepRoster(acct, kept);
+      sc.row = t; sc.idx = j;
+      // The selKey effect: only a CHANGE of the chip on screen is a pick, and only a pick is stamped.
+      if (sc.picked && sc.picked !== was) await P.editRoster('u:1', (r) => P.rosterSelect(r, sc.picked));
+      await P.rosterSync();
+      await P.rosterWrites();
+      return { picked, plan, sel: m.roster.selected };
+    };
+    await screenLoad(P1, sc1);
+    await screenLoad(P2, sc2);
+    const row0 = P1.rosterCopy('u:1');
+    const [pickOnA, laterOnA, otherChip] = [row0.keys[3], row0.keys[1], row0.keys[5]];
+    ok('(both phones open on the same row and the same chip)',
+      same(P1.rosterCopy('u:1').keys, P2.rosterCopy('u:1').keys) && sc1.picked === sc2.picked && !!sc1.picked);
+    // Phone A: the user picks another chip. Phone B's screen has not seen it (its load is throttled), and the user
+    // removes a DIFFERENT chip there — a write made from the older revision.
+    await P1.editRoster('u:1', (r) => P1.rosterSelect(r, pickOnA, NOW + 100000));
+    sc1.picked = pickOnA; sc1.idx = sc1.row.findIndex((x) => x.key === pickOnA);
+    await P1.rosterSync();
+    await P2.editRoster('u:1', (r) => P2.rosterRemove(r, otherChip));
+    await P2.rosterSync();
+    ok('⚠️ a 409 hands this phone the other phone\'s row, its pick and all — while its screen still shows the old chip',
+      P2.rosterCopy('u:1').selected === pickOnA && sc2.picked !== pickOnA && serverRow().selected === pickOnA
+      && !serverRow().keys.includes(otherChip),
+      { memory: short(P2.rosterCopy('u:1').selected), screen: short(sc2.picked) });
+    const bFollow = await screenLoad(P2, sc2);
+    ok('⚠️ …so its next load GOES to that chip (replaced) instead of saving the stale one over it',
+      bFollow.picked.replaced && sc2.picked === pickOnA && serverRow().selected === pickOnA,
+      { screen: short(sc2.picked), server: short(serverRow().selected) });
+    await screenLoad(P1, sc1);
+    ok('⚠️ …and phone A stays on the chip ITS user picked — it used to jump to phone B\'s stale chip, which nobody picked',
+      sc1.picked === pickOnA && serverRow().selected === pickOnA, { a: short(sc1.picked), server: short(serverRow().selected) });
+    // The user's hands on this screen: a load may not move the chip under them, and it stamps no pick of its own.
+    await P1.editRoster('u:1', (r) => P1.rosterSelect(r, laterOnA, NOW + 200000));
+    sc1.picked = laterOnA; sc1.idx = sc1.row.findIndex((x) => x.key === laterOnA);
+    await P1.rosterSync();
+    const busy = await screenLoad(P2, sc2, { hands: true });
+    ok('⚠️ hands on the screen: the chip stays, and the row records it under the row\'s OWN pick time — never a fresh stamp',
+      busy.picked.adopted && sc2.picked === pickOnA && P2.rosterCopy('u:1').selectedAt === NOW + 200000,
+      { screen: short(sc2.picked), at: P2.rosterCopy('u:1').selectedAt - NOW });
+    await screenLoad(P1, sc1);
+    ok('…and with the same pick time on both, each phone keeps the chip it shows (nobody chose between them)',
+      sc1.picked === laterOnA && sc2.picked === pickOnA, { a: short(sc1.picked), b: short(sc2.picked) });
+
+    // ⚠️ A ROW THE SERVER REFUSES (400) IS NOT SENT AGAIN UNTIL IT CHANGES — it used to go out whole on every save.
+    const putsRef = puts();
+    const over = (() => {
+      const r = P1.rosterCopy('u:1');
+      const keys = [...r.keys]; const snap = { ...r.snap };
+      for (let i = 0; i <= HR.ROSTER_MAX_KEYS; i++) { const k = 'emp_over-' + i; keys.push(k); snap[k] = { key: k, company: 'Over ' + i, colors: ['#000', '#111'], initial: 'O' }; }
+      return { ...r, keys, snap };
+    })();
+    P1.keepRoster('u:1', over);
+    await P1.rosterSync();
+    const refusedAt = puts();
+    P1.keepRoster('u:1', { ...over });
+    await P1.rosterSync();
+    const putReqs = () => srv.rosterReqs.filter((x) => x.method === 'PUT');
+    ok('⚠️ a row the server refuses is sent ONCE (400), then not again until it changes — and a changed row still lands',
+      refusedAt === putsRef + 1 && putReqs()[refusedAt - 1].status === 400 && puts() === refusedAt
+      && await (async () => {
+        P1.keepRoster('u:1', { ...over, keys: over.keys.slice(0, 20), snap: over.snap });
+        await P1.rosterSync();
+        return puts() === refusedAt + 1 && putReqs()[refusedAt].status === 200;
+      })(), putReqs().slice(putsRef).map((x) => x.method + ' ' + x.status));
+
+    // ⚠️ THE ACCOUNT WAS DELETED (server.js clears user_home_roster): a phone still holding a copy must not bring it back.
+    rosterRows.delete(1);
+    srv.rosterReqs = [];
+    await P2.editRoster('u:1', (r) => P2.rosterRemove(r, r.keys[2]));
+    await P2.rosterSync();
+    await P2.rosterWrites();
+    ok('⚠️ a write made from a revision the server has NO row for answers 409 { rev 0 }: the copy goes, nothing is uploaded',
+      srv.rosterReqs.length === 1 && srv.rosterReqs[0].status === 409 && !rosterRows.has(1)
+      && P2.rosterCopy('u:1') === null && !ph2.store.has('home_roster_v1:u:1'),
+      srv.rosterReqs.map((x) => x.method + ' ' + x.status));
+    const reseed = await screenLoad(P2, sc2);
+    ok('…and the next complete load seeds afresh (rev 1), instead of putting the deleted account\'s row back',
+      reseed.plan.save && !!rosterRows.get(1) && rosterRows.get(1).rev === 1 && P2.rosterCopy('u:1').rev === 1);
+    store.clear(); rosterRows.clear(); srv.rosterReqs = [];
+    P1.forgetRosterCopy(); P2.forgetRosterCopy();
+
+    // The pure rule, on its own.
+    const L = { ...s5, rev: 5, selected: s5.keys[2], selectedAt: NOW + 5000 };
+    const older = { ...s5, rev: 6, selectedAt: NOW + 4000 };
+    ok('pickSaved: the server unreadable → this phone\'s row; none of its own → undefined, never null (planRow then seeds nothing)',
+      PA.pickSaved(L, undefined).row === L && PA.pickSaved(null, undefined).row === undefined && PA.pickSaved(undefined, undefined).row === undefined);
+    ok('pickSaved: no server copy (an older server, or no row yet) → this phone\'s — a null stays null, so the first load seeds',
+      PA.pickSaved(L, null).row === L && PA.pickSaved(null, { roster: null, rev: 0 }).row === null);
+    ok('⚠️ pickSaved: the server has NO row although this phone\'s came FROM one (the account was deleted) → seed afresh, never upload it again',
+      PA.pickSaved(L, { roster: null, rev: 0 }).gone === true && PA.pickSaved(L, { roster: null, rev: 0 }).row === null
+      && PA.pickSaved({ ...L, rev: 0 }, { roster: null, rev: 0 }).row !== null && !PA.pickSaved({ ...L, rev: 0 }, { roster: null, rev: 0 }).gone);
+    ok('pickSaved: the server\'s row only when it is NEWER than this phone\'s', PA.pickSaved(L, { roster: { ...L, keys: [] }, rev: 5 }).row === L
+      && PA.pickSaved(L, { roster: older, rev: 6 }).adopted && same(PA.pickSaved(L, { roster: older, rev: 6 }).row.keys, s5.keys));
+    ok('⚠️ …and the LATER pick wins, by when it was MADE: this phone\'s newer pick survives a newer row; a replayed old pick does not beat the other phone\'s',
+      PA.pickSaved(L, { roster: older, rev: 6 }).row.selected === s5.keys[2]
+      && PA.pickSaved({ ...L, selectedAt: NOW }, { roster: older, rev: 6 }, [(r) => PA.rosterSelect(r, s5.keys[2])]).row.selected === s5.selected
+      && PA.pickSaved(L, { roster: older, rev: 6 }, [(r) => PA.rosterRemove(r, s5.keys[3])]).row.keys.indexOf(s5.keys[3]) === -1);
+
+    // The server's bounds.
+    const putAs = async (uid, body) => { const r = mkRes(); await HR.putHomeRoster({ user: { id: uid }, body }, r); return r; };
+    const good = { v: 1, keys: ['emp_x'], snap: { emp_x: { key: 'emp_x', company: 'X' } }, selected: 'emp_x', rev: 99 };
+    const bad = await Promise.all([
+      putAs(7, { account: 'u:7', base: -1, roster: good }),
+      putAs(7, { account: 'u:7', base: 0, roster: { v: 2, keys: [], snap: {} } }),
+      putAs(7, { account: 'u:7', base: 0, roster: { ...good, keys: Array.from({ length: 65 }, (_, i) => 'emp_' + i) } }),
+      putAs(7, { account: 'u:7', base: 0, roster: { ...good, pad: 'x'.repeat(HR.ROSTER_MAX_BYTES) } }),
+    ]);
+    ok('the server bounds the body: a bad base, not a row, 65 chips, over 512 KB → 400, nothing stored',
+      bad.every((r) => r.statusCode === 400) && !rosterRows.has(7), bad.map((r) => r.statusCode));
+    // ⚠️ REVIEW 2026-09-20: WHAT JSONB REFUSES IS CLEANED, NOT REFUSED. An employer named "🚀 Rocket Lab" takes its chip
+    // letter from name[0] — half of an emoji (a lone surrogate) — and jsonb refuses that as it refuses a NUL, so the
+    // upsert THREW: a 500 on this and every later write for that account, for as long as the chip stayed on the row.
+    const HALF = String.fromCharCode(0xd83d);
+    const emojiRow = { ...good, snap: { emp_x: { key: 'emp_x', company: HALF + ' Rocket Lab', initial: HALF, note: 'A' + String.fromCharCode(0) + 'B' } } };
+    const wEmoji = await putAs(9, { account: 'u:9', base: 0, roster: emojiRow });
+    const g9 = mkRes(); await HR.getHomeRoster({ user: { id: 9 } }, g9);
+    const w9b = await putAs(9, { account: 'u:9', base: 1, roster: { ...emojiRow, selected: null } });
+    ok('⚠️ half an emoji (and a NUL) are CLEANED out of the body: the write lands, and the account is not frozen at 500 for ever',
+      wEmoji.statusCode === 200 && g9.body.roster.snap.emp_x.company === String.fromCharCode(0xfffd) + ' Rocket Lab'
+      && g9.body.roster.snap.emp_x.note === 'AB' && w9b.statusCode === 200 && w9b.body.rev === 2,
+      { put: wEmoji.statusCode, stored: g9.body.roster && g9.body.roster.snap.emp_x, again: w9b.statusCode });
+    ok('⚠️ the server file is TEXT: one raw NUL byte in it made git read the WHOLE file as binary — no diff, no blame, no grep',
+      !fs.readFileSync(path.join(__dirname, '../../server/services/homeRoster.js')).includes(0) && !fs.readFileSync(__filename).includes(0));
+    const w1 = await putAs(7, { account: 'u:7', base: 0, roster: good });
+    const w2 = await putAs(7, { account: 'u:7', base: 0, roster: { ...good, selected: null } });
+    ok('⚠️ a seed (base 0) never overwrites a row that exists: 409 with the stored row; a `rev` in the body is ignored',
+      w1.statusCode === 200 && w1.body.rev === 1 && w2.statusCode === 409 && w2.body.reason === 'conflict' && w2.body.rev === 1
+      && w2.body.roster.selected === 'emp_x' && !('rev' in w2.body.roster), [w1.body, w2.body]);
+    const g7 = mkRes(); await HR.getHomeRoster({ user: { id: 7 } }, g7);
+    const g8 = mkRes(); await HR.getHomeRoster({ user: { id: 8 } }, g8);
+    ok('GET answers the account, the revision and the row — and for a user with none, rev 0 and roster null',
+      g7.body.account === 'u:7' && g7.body.rev === 1 && g7.body.roster.keys[0] === 'emp_x' && g8.body.account === 'u:8' && g8.body.rev === 0 && g8.body.roster === null);
+
+    // The wiring.
+    const hrSrc = R('../../server/services/homeRoster.js');
+    const hubRoutesSrc = R('../../server/routes/aiHub.js');
+    const serverSrc = R('../../server.js');
+    ok('⚠️ load() reads the server copy WITH its answer (the claim\'s session, no extra round trip) and merges into savedRowOf\'s pick',
+      /const \[answer, c, cat, claim, remote\] = await Promise\.all\(\[[\s\S]{0,300}?\n      remoteP,\n    \]\);/.test(loadBody)
+      && /const remoteP: Promise<RemoteRoster \| null \| undefined> = loaders\s*\? Promise\.resolve\(undefined\)\s*: claiming\.then\(\(\{ who \}\) => fetchRemoteRoster\(who\)\)\.catch\(\(\) => undefined\);/.test(loadBody));
+    // ⚠️ REVIEW 2026-09-20 (the server copy): a 409 handed this phone the other phone's row and the SCREEN stayed behind;
+    // the next load then saved the chip it still showed as a brand-new pick, stamped now, and the other phone jumped to it.
+    ok('⚠️ …and when another phone\'s row was taken — adopted here, or put in place by a 409 (replaced) — the screen goes to its pick',
+      /const handsOn = acts\.current !== actsAt \|\| selBuildingRef\.current \|\| String\(pickedKey\.current \|\| ''\)\.startsWith\(PENDING\);\s*if \(picked && \(picked\.adopted \|\| picked\.replaced\) && !handsOn\s*&& m\.roster\.selected && m\.row\.some\(\(x\) => x\.key === m\.roster\.selected\)\) pickedKey\.current = m\.roster\.selected;/.test(loadBody)
+      && loadBody.indexOf('picked.replaced') < loadBody.indexOf('if (!pickedKey.current) pickedKey.current = before['));
+    ok('⚠️ …never under the user\'s hands: a touch on Home during the load, a build for the chip on screen, or a chip being added',
+      /const acts = useRef\(0\);/.test(homeC) && /const noteTouch = useCallback\(\(\) => \{ acts\.current\+\+; \}, \[\]\);/.test(homeC)
+      && /<View style=\{s\.root\}[\s\S]{0,120}?onTouchStart=\{noteTouch\}>/.test(homeC)
+      && /const actsAt = acts\.current;/.test(loadBody)
+      && /const pickEmployer = \(i: number\) => \{\s*acts\.current\+\+;/.test(homeC)
+      && /return \(\) => \{ focused\.current = false; acts\.current\+\+; \};/.test(homeC));
+    ok('⚠️ a load never STAMPS a pick: it records the chip on screen under the row\'s own pick time (only the user\'s tap stamps)',
+      /const kept = rosterSelect\(m\.roster, pickedKey\.current, m\.roster\.selectedAt\);/.test(loadBody)
+      && !/rosterSelect\(m\.roster, pickedKey\.current\)/.test(loadBody));
+    ok('⚠️ the server\'s row comes on screen as soon as it answers, before the dashboard behind it — never over a touched screen',
+      /const other = savedRowOf\(owner, rosterCopy\(owner\) \|\| saved, remote, \{ peek: true \}\);/.test(loadBody)
+      && /const untouched = \(\) => !committed && alive\.current && seq === loadSeq\.current && cacheOwner === owner\s*&& acts\.current === actsAt && !selBuildingRef\.current && !String\(pickedKey\.current \|\| ''\)\.startsWith\(PENDING\);/.test(loadBody)
+      && /keepRoster\(acct, other\.row\);\s*paintSaved\(other\.row, true\);/.test(loadBody)
+      && loadBody.indexOf('const other = savedRowOf(') < loadBody.indexOf('const [answer, c, cat, claim, remote]'));
+    ok('⚠️ a phone picked up again reads the server\'s row on AppState "active" (one row, never the dashboard) and follows it',
+      /const resumeRow = useStableFn\(async \(\) => \{/.test(homeC)
+      && /if \(next === 'active' && was === 'background'\) resumeRow\(\)\.catch\(\(\) => \{\}\);/.test(homeC)
+      && /const other = savedRowOf\(acct, local, remote, \{ peek: true \}\);\s*if \(!other\.adopted \|\| !other\.row \|\| !other\.row\.keys\.length\) return;\s*keepRoster\(acct, other\.row\);\s*paintSaved\(other\.row, true\);/.test(homeC)
+      && /acts\.current !== at \|\| selBuildingRef\.current/.test(fnBodyOf(homeC, 'resumeRow')));
+    ok('every save goes to the server too (keepRoster → schedulePush), and every user edit is kept until it has arrived (editRoster → unsent)',
+      fnBodyOf(rosterC, 'keepRoster').includes('schedulePush(account);') && /unsent\.push\(\{ account, seq: \+\+editSeq, fn \}\);/.test(fnBodyOf(rosterC, 'editRoster'))
+      && /unsent = \[\];/.test(fnBodyOf(rosterC, 'forgetRosterCopy')) && /syncGen\+\+;/.test(fnBodyOf(rosterC, 'forgetRosterCopy')));
+    ok('the server: GET/PUT /home/roster behind auth; Migration 048 creates the table from the ONE definition; account deletion clears it',
+      /router\.get\('\/home\/roster', authenticateToken, homeRoster\.getHomeRoster\);/.test(hubRoutesSrc)
+      && /router\.put\('\/home\/roster', authenticateToken, homeRoster\.putHomeRoster\);/.test(hubRoutesSrc)
+      && /const \{ TABLE_SQL: HOME_ROSTER_SQL \} = require\('\.\/server\/services\/homeRoster'\);\s*await col\(HOME_ROSTER_SQL\);/.test(dbInit)
+      && /await dbConfig\.run\('DELETE FROM user_home_roster WHERE user_id = \?', \[userId\]\);/.test(serverSrc));
+    ok('⚠️ one row per USER — not per store environment (the owner\'s TestFlight and store phones share it) — and no \'?\' in its SQL (dbConfig rewrites it)',
+      /user_id\s+INTEGER PRIMARY KEY REFERENCES users\(id\) ON DELETE CASCADE,/.test(hrSrc) && !/environment/i.test(strip(hrSrc).replace(/'[^'\n]*'/g, ''))
+      && !/\?/.test((strip(hrSrc).match(/`[^`]*`/g) || []).join('')));
+    for (const P of [PA, PB, PC.P, PD.P]) P.forgetRosterCopy();
+  } catch (e) {
+    ok('roster phase ran without throwing', false, String(e && e.stack || e).split('\n').slice(0, 3).join(' | '));
+  } finally {
+    global.fetch = realFetch;
+  }
+}
+
 let deviceDone = false;
 function devicePhaseDone() { deviceDone = true; }
 (async () => {
@@ -2490,6 +3495,7 @@ function devicePhaseDone() { deviceDone = true; }
   await reportPhase();
   await libraryPhase();
   await pageSizePhase();
+  await rosterPhase();
   console.log(`\nemployer home: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

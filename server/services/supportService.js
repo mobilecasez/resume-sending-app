@@ -118,10 +118,9 @@ async function pushAdmins(thread, bodyText) {
   if (now - lastAdminPushAt < ADMIN_PUSH_THROTTLE_SEC * 1000) return { skipped: 'throttled' };
   lastAdminPushAt = now;
   try {
-    const admins = await dbConfig.query(
-      `SELECT id, expo_push_token FROM users
-        WHERE role = 'admin' AND deleted_at IS NULL
-          AND COALESCE(expo_push_token, '') ~ '^(ExpoPushToken|ExponentPushToken)\\['`);
+    // The admins' alert devices — the same list adminNotifier pages (users.admin_alert_token survives the owner's
+    // phone being signed into a test account; expo_push_token alone does not). See expoPushService.adminAlertTargets.
+    const admins = await expoPush.adminAlertTargets(dbConfig);
     let sent = 0;
     for (const a of admins || []) {
       const r = await expoPush.sendPushNotification(

@@ -370,6 +370,7 @@
       var b=pushBlock(); if(!b) return ph.platform?String(ph.platform):'';
       if(b.code==='never_opened_app') return 'app never opened';
       if(b.code==='android_no_fcm') return ('android '+(ph.app_version||'')+' · no FCM').replace('  ',' ');
+      if(b.code==='device_signed_into_other_account') return 'phone on another account';
       return 'notifications off';
     }
 

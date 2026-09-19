@@ -1886,6 +1886,41 @@ function docSamenessText(s) {
 // ROUTE HANDLERS
 // ══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * ⚠️ THE UPLOADED CV IS WAITED FOR, NOT SKIPPED (2026-09-19). The parse runs in the background after the upload
+ * answers, and uploadedResumeContextFor reads only a 'done' row — so the Make Yours wizard's "Build my resume",
+ * tapped seconds after the upload, built from NOTHING: user 616's two builds each logged "includeUploadedResume set
+ * but no parsed resume found", wrote a generic résumé with no roles, and were charged. A build that asked for the
+ * upload now waits (up to CV_WAIT.maxMs) while that parse is genuinely running, with the stage on the bar.
+ * Returns 'done' | 'pending' (still running, or a transient failure the sweeper will retry) | 'error' | 'none'.
+ * ⚠️ BEFORE any gate, cache read or AI call — waiting costs nothing and decides nothing.
+ */
+const CV_WAIT = { maxMs: 75 * 1000, pollMs: 1500 };   // mutable for the suite only
+async function uploadedCvStatus(userId, report) {
+    const until = Date.now() + CV_WAIT.maxMs;
+    for (;;) {
+        let meta = null;
+        try { meta = await dbConfig.get('SELECT parse_status, parse_error FROM resume_metadata WHERE user_id = $1', [userId]); }
+        catch (e) { console.warn('[resumeBuilder] CV status unreadable:', e.message); return 'none'; }
+        const st = meta && meta.parse_status;
+        if (st === 'done') return 'done';
+        if (st === 'error') return 'error';
+        if (st !== 'pending') return 'none';
+        // A 'pending' row carrying an error is a transient failure parked for the sweeper (~10 min): waiting here cannot see it.
+        if (meta.parse_error || Date.now() >= until) return 'pending';
+        await report('reading_cv', 'Reading your CV', 6);
+        await new Promise((r) => setTimeout(r, CV_WAIT.pollMs));
+    }
+}
+
+/**
+ * Does this résumé say anything? At least one experience, education or project entry with some text in it.
+ * ⚠️ THE CHECK THAT WAS MISSING BEFORE THE CHARGE (2026-09-19). The builder lane charged whatever the model returned;
+ * given a placeholder note and no CV the model wrote "Professional — Achieved [X%] improvement" with no roles, and
+ * that was saved, charged, scored 12/100 and then used as the base for every later tailoring.
+ */
+const resumeHasSubstance = (r) => require('../services/onboardingProgress').resumeHasSubstance(r);
+
 // POST /api/resume-builder/generate-ai
 async function generateAI(req, res) {
     // Home's employer documents are their own lane: stored per employer, never in user_resumes — see
@@ -1904,13 +1939,33 @@ async function generateAI(req, res) {
     // 2 credits nobody agreed to. With it, only plan / free / pass / cache may pay, or this is a 402.
     // false is sent only when the user chose to build although the plan could not be read (there is no credit dialog any more).
     const coveredOnly = !!(req.body && req.body.coveredOnly === true);
+    // The Make Yours wizard's build (source 'onboarding'), and whether its résumé is meant to come from the uploaded
+    // CV (fromUpload: the text is only the wizard's placeholder note, so without the CV there is nothing to write from).
+    const wizardBuild = !!(req.body && req.body.source === 'onboarding');
+    const fromUpload = !!(req.body && req.body.fromUpload === true);
+    const onboarding = require('../services/onboardingProgress');
 
     if (!rawText || rawText.trim().length < 20) {
         return res.status(400).json({ error: 'Please provide more detail about your experience.', reason: 'no_resume' });
     }
+    // Recorded the moment the wizard's job starts, so a reopened wizard (any device) rejoins it — see
+    // onboardingProgress.joinRunningWizardBuild, which runs before asJob on this route.
+    if (wizardBuild && req.__jobId) {
+        await onboarding.markBuild(userId, req.__jobId).catch((e) => console.warn('[resumeBuilder] wizard build not recorded:', e.message));
+    }
 
     try {
         const report = makeReporter(req);
+        if (includeUploadedResume) {
+            const cv = await uploadedCvStatus(userId, report);
+            if (fromUpload && cv !== 'done') {
+                // Before any gate or AI call: nothing spent, reserved or generated.
+                console.warn(`[resumeBuilder] generateAI for user ${userId}: built from the upload, but the CV is ${cv} — refused, nothing charged`);
+                return res.status(409).json(cv === 'error'
+                    ? { reason: 'cv_unreadable', error: 'We could not read the CV you uploaded, so there is nothing to build your resume from yet. Nothing was charged. Please upload it again as a PDF or Word file.' }
+                    : { reason: 'cv_not_ready', error: 'We are still reading your CV. Nothing was charged — please try again in a minute.' });
+            }
+        }
         const passEmployer = (job && (job.company || '').trim()) || null;
         const env = downloads.envOf(req);
         const readUploaded = (() => {
@@ -2113,6 +2168,17 @@ async function generateAI(req, res) {
 
         resumeData._buildMethod = 'ai';
 
+        // ⚠️ AN EMPTY RÉSUMÉ IS NOT DELIVERED, SO IT IS NOT CHARGED (2026-09-19) — see resumeHasSubstance. Still before
+        // paymentBegun: every AI call is behind us and nothing has been spent, reserved (the regen lane re-reads under
+        // the lock) or saved, so "nothing was charged" is true. A cached answer never reaches here (it returns above).
+        if (!resumeHasSubstance(resumeData)) {
+            console.warn(`[resumeBuilder] generateAI for user ${userId}: the answer has no experience, education or projects — 422 thin_input, nothing charged, nothing saved`);
+            return res.status(422).json({
+                reason: 'thin_input',
+                error: 'We could not find any work history, education or projects to build your resume from, so we stopped — nothing was charged. Add a few lines about where you have worked or studied (or upload your CV) and try again.',
+            });
+        }
+
         // ── THE CHARGE, THE SAVE, THEN THE CACHE — one request at a time per user (withUsageLock) ─────
         // Deduct only now — the resume was actually generated. Pool + ledger via entitlements.
         // ⚠️ EVERY MONEY DECISION BELOW IS THIS REQUEST'S OWN ANSWER: claimGeneration's `charged`, and
@@ -2311,6 +2377,10 @@ async function generateAI(req, res) {
             }
         }
         if (clientGone) console.warn(`[resumeBuilder] user ${userId}'s client disconnected before delivery — the resume is saved and paid for, and the builder shows it on reopen`);
+        // The wizard's one end that is a build: charged AND saved (both are true on this line). Never a "ready" screen alone.
+        if (wizardBuild && charged && savedRow) {
+            await onboarding.finish(userId).catch((e) => console.error(`[resumeBuilder] ⚠️ user ${userId}'s wizard build is saved and paid for but not marked finished:`, e.message));
+        }
 
         return res.json({ success: true, resumeData, cached: false, tailoredFor: passEmployer });
     } catch (e) {
@@ -4066,16 +4136,8 @@ async function generatePDF(req, res) {
         // (Falls back to the PDFKit layout below if Playwright/chromium is unavailable.)
         try {
             const tplId = TEMPLATE_IDS.includes(template) ? template : TEMPLATE_IDS[0];
-            const needsRect = tplId === 'germany' || tplId === 'europass';
-            const photo = await loadPhotoDataUri(photoPath);
-            const photoRect = needsRect ? await loadPhotoDataUri(photoPath, 'rect') : null;
             // A stored document renders in ITS employer's brand (docBrandOf) — the accent and font its cards were drawn in.
-            const pdfBuffer = await renderPdf(tplId, resume, { photo, photoRect, mode, brand: doc ? docBrandOf(doc) : null });
-            const tSafe = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
-            const tFile = `${tSafe}_Resume_${Date.now()}.pdf`;
-            const tDir  = path.join(__dirname, '../../temp');
-            await fs.mkdir(tDir, { recursive: true });
-            await fs.writeFile(path.join(tDir, tFile), pdfBuffer);
+            const { fileName: tFile } = await renderResumePdfFile(resume, { tplId, mode, brand: doc ? docBrandOf(doc) : null, photoPath });
             // ⚠️ CLAIM HERE TOO. This is the PREFERRED render path, so it is the one almost every
             // real download takes — and it used to return without claiming, while only the PDFKit
             // fallback below charged. A pass therefore stayed UNBOUND after the download it paid
@@ -5194,6 +5256,60 @@ async function prerenderDocPages(userId, docId, payload, design, brand, count, b
 // Reusable: build a REGION-formatted resume PDF from the user's Resume-Builder resume.
 // Returns { filePath, fileName } or null when no builder resume exists (caller then
 // falls back to the uploaded profile resume). Used by the email-send flow (point 4).
+/**
+ * One résumé JSON rendered to a PDF in temp/ → { fileName, filePath }: the design, the photo (and the rectangular crop
+ * the germany / europass designs print), the page mode and the brand. generatePDF's preferred path, moved here
+ * verbatim (2026-09-19) so the letter's Send page attaches the tailored résumé as the SAME file its Download makes
+ * (renderResumeDocPdf below) — one render, not a copy. Renders only: no gate, no claim, no record.
+ */
+async function renderResumePdfFile(resume, { tplId, mode, brand = null, photoPath = null }) {
+    const pi = (resume && resume.personal_info) || {};
+    const strip = (t) => String(t || '').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#39;/gi, "'").replace(/&quot;/gi, '"').replace(/\*\*(.+?)\*\*/g, '$1').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
+    const needsRect = tplId === 'germany' || tplId === 'europass';
+    const photo = await loadPhotoDataUri(photoPath);
+    const photoRect = needsRect ? await loadPhotoDataUri(photoPath, 'rect') : null;
+    const pdfBuffer = await renderPdf(tplId, resume, { photo, photoRect, mode, brand });
+    const tSafe = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
+    const tFile = `${tSafe}_Resume_${Date.now()}.pdf`;
+    const tDir  = path.join(__dirname, '../../temp');
+    await fs.mkdir(tDir, { recursive: true });
+    const filePath = path.join(tDir, tFile);
+    await fs.writeFile(filePath, pdfBuffer);
+    return { fileName: tFile, filePath };
+}
+
+/**
+ * What a stored résumé document downloads in when nobody picked: its design's top-ranked template (the first card
+ * the gallery shows for it — docDesignOf, the same ranking every read of the document uses) and its design's page
+ * mode. { template, templateName, mode }. Never throws; an unrankable document gets the catalogue's first design.
+ */
+function resumeDocDefaultsOf(doc) {
+    let template = TEMPLATE_IDS[0];
+    try {
+        const d = docDesignOf(doc);
+        const top = d && Array.isArray(d.ranked) ? d.ranked.find((r) => r && TEMPLATE_IDS.includes(r.id)) : null;
+        if (top) template = top.id;
+    } catch { /* the catalogue's first design */ }
+    let mode;
+    try { mode = docModeOf(doc); } catch { mode = undefined; }
+    return { template, templateName: templateNameOf(template), mode };
+}
+
+/**
+ * A stored employer résumé (loadResumeDoc's shape: this user's, this environment's, brand laid over) rendered as its
+ * Download renders it: `template` when it is a real design, else the document's top pick; `mode` when given, else the
+ * design's (docModeOf). → { fileName, filePath, template, mode }. Renders only — the caller gates the document's own
+ * employer (billingEmployerOf) first and claims after the file has gone where it was going.
+ */
+async function renderResumeDocPdf(userId, doc, { template, mode } = {}) {
+    const defaults = resumeDocDefaultsOf(doc);
+    const tplId = TEMPLATE_IDS.includes(template) ? template : defaults.template;
+    const useMode = mode === 'a4' || mode === 'onepage' ? mode : defaults.mode;
+    const photoPath = await resolvePhotoPath(userId);
+    const { fileName, filePath } = await renderResumePdfFile(doc.payload, { tplId, mode: useMode, brand: docBrandOf(doc), photoPath });
+    return { fileName, filePath, template: tplId, mode: useMode };
+}
+
 async function buildResumePdfForRegion(userId, region, mode) {
     await ensureResumeTable();
     const row = await dbConfig.get('SELECT resume_data, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
@@ -5240,4 +5356,9 @@ module.exports = {
     // The design every read of a stored employer document shows (/api/employer-docs/current and GET /:id use it too),
     // and the brand it renders in (employerDocsRoutes attaches it on the paths that do not re-rank).
     rerankStoredDesign, rerankStoredResumeDesign, docBrandOf, withSharedBrand, brandKeyOf,
+    // The letter's Send page (letterSendController) attaches the employer's tailored résumé: loaded with the same
+    // owner/environment/kind scoping, and rendered by the same function the Download uses (see renderResumePdfFile).
+    loadResumeDoc, renderResumeDocPdf, resumeDocDefaultsOf,
 };
+// The builder lane's wait for an uploaded CV that is still being read — exported so a suite can shorten it.
+module.exports._cvWait = CV_WAIT;

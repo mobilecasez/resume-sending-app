@@ -96,6 +96,7 @@ export const EXACT_KEYS_TO_CLEAR: string[] = [
   'push_last_handled_response',
   'fb_activated_v1',
   'userToken',                     // a third, currently-dead token namespace (app/screens/*)
+  'letterSendClassic:v1',          // the classic letter preview → Send page hand-off (services/letterSend)
 ];
 
 export const PREFIXES_TO_CLEAR: string[] = [
@@ -106,6 +107,9 @@ export const PREFIXES_TO_CLEAR: string[] = [
   'recipients_',
   'onboarding_dismissed_',     // gates a checklist derived from ${API_BASE}/users/profile
   'explainer_seen_v1_',
+  'home_roster_v1:',           // Home's saved "Designing for" row, per account — employer UUIDs + posting URLs of ONE backend
+  'letterSendPending:v1:',     // a Send whose outcome is unknown: that backend's letter id + its async job id — polled on reopen
+  'letterSendDraft:v1:',       // the Send page's kept draft, per letter id of ONE backend
 ];
 
 // ─── helpers ───

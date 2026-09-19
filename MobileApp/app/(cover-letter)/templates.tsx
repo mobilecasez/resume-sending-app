@@ -15,6 +15,14 @@
 // only where it sits. The doc-mode "Ranked for …" row folded into the lead line, as the resume's did.
 // ⚠️ ONE MODAL AT A TIME (see pickFormat): a format tap closes the sheet FIRST and only then downloads or
 // opens the paywall sheet, because iOS cannot present a modal while another is still sliding away.
+// ⚠️ SEND, TOP RIGHT (2026-09-19). Doc mode puts a Send pill where the top bar had an empty spacer: it opens
+// /(cover-letter)/send for THIS letter, the design on screen and the page layout chosen here. It only navigates —
+// the Send page's own send is gated and charged exactly like this page's Download.
+// ⚠️ …AND IN THE CLASSIC PICKER TOO (2026-09-20). The Job Hub's, the Review screen's and the old Home's letters open this
+// same page with the same Download, and the owner asked for Send "where the download button is". A classic letter has no
+// id, so the pill leaves the letter this page would download (the same text, company lines and employer the Download
+// sends) under letterSend's CLASSIC_SEND_KEY and opens the Send page with classic=1 — which sends it through the classic
+// lane (gated and charged exactly like this page's classic Download). Still navigation only: nothing is sent or charged here.
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
@@ -61,6 +69,12 @@ type Ctx = {
   format?: 'pdf' | 'docx';
   /** Set by Home for a saved employer letter → doc mode (see the header). */
   docId?: number | string;
+  /**
+   * The posting a classic letter was written for, when its opener knows it (the Job Hub). Only the Send page reads them:
+   * the posting's known contact is prefilled and the job is marked Applied once the message went. Optional.
+   */
+  jobUrl?: string;
+  position?: string;
 };
 
 // ── Doc mode ────────────────────────────────────────────────────────────────────────────────────
@@ -491,6 +505,36 @@ export default function CoverLetterTemplates() {
     settleTmr.current = setTimeout(runAfterSheet, SHEET_SETTLE_MS);
   }
 
+  // ── Send (see the header): doc mode names its saved letter; the classic picker hands over the letter itself ──
+  const sendingOpen = useRef(false);
+  async function openSend() {
+    if (sendingOpen.current) return;
+    if (docId) {
+      const slot = docSlots[active];
+      if (!slot) return;
+      router.push({ pathname: '/(cover-letter)/send', params: { docId: String(docId), template: slot.id, mode } } as never);
+      return;
+    }
+    const sel = previews[active];
+    if (!sel || !ctx) return;
+    sendingOpen.current = true;
+    try {
+      // Lazy, like subscriptionService above: the picker's other paths never load the Send page's service.
+      const { CLASSIC_SEND_KEY } = require('../../services/letterSend');
+      // EXACTLY the letter this page's Download sends (downloadHtml is the text on screen) and the employer it bills.
+      await AsyncStorage.setItem(CLASSIC_SEND_KEY, JSON.stringify({
+        coverLetterHtml: downloadHtml || ctx.coverLetterHtml,
+        companyName: ctx.companyName, companyAddress: ctx.companyAddress,
+        employer: passEmployer, jobUrl: ctx.jobUrl, position: ctx.position, designName: sel.name,
+      }));
+      router.push({ pathname: '/(cover-letter)/send', params: { classic: '1', template: sel.id, mode } } as never);
+    } catch {
+      Alert.alert('Could not open Send', 'Please try again.');
+    } finally {
+      sendingOpen.current = false;
+    }
+  }
+
   const selected = previews[active];
   const selectedDoc = docId ? docSlots[active] : undefined;
   const fitStyleOf = (n: number) => (n >= 85 ? s.fitHi : n >= 70 ? s.fitMid : s.fitLo);
@@ -510,7 +554,22 @@ export default function CoverLetterTemplates() {
           <Text style={s.backPillText}>Back</Text>
         </TouchableOpacity>
         <Text style={s.topTitle}>Cover Letter</Text>
-        <View style={{ width: 64 }} />
+        {/* ⚠️ SEND, TOP RIGHT (2026-09-19 — the owner: "there is space on the top right corner … show a button Send").
+            The Send page emails THIS letter — a saved one by its docId, a classic one handed over whole (2026-09-20) —
+            in the design on screen and the page layout picked in the download sheet. Tapping it only opens that page:
+            nothing is generated, sent or charged here; the page's own Send is gated and charged exactly like the
+            Download below. */}
+        {!loading && !error && !docGone && (docId ? !!docSlots[active] : !!(previews[active] && ctx)) ? (
+          <TouchableOpacity
+            onPress={openSend}
+            style={s.sendPill}
+            activeOpacity={0.85}
+            accessibilityLabel="Send this cover letter by email"
+          >
+            <Ionicons name="send" size={12} color="#fff" />
+            <Text style={s.sendPillText}>Send</Text>
+          </TouchableOpacity>
+        ) : <View style={{ width: 64 }} />}
       </View>
 
       {/* Region chips — the classic picker only, exactly where the resume gallery keeps its own. Doc mode
@@ -824,6 +883,8 @@ const s = StyleSheet.create({
   backPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
   topTitle:     { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  sendPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.navy, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 13, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 3 },
+  sendPillText: { fontSize: 13, fontWeight: '700', color: '#fff' },
   // paddingTop 2: the resume gallery's chip row, now that the caption row above it is gone.
   regionRow:    { paddingHorizontal: 12, gap: 8, paddingBottom: 4, paddingTop: 2 },
   regionChip:   { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 13, borderWidth: 1, borderColor: T.border },

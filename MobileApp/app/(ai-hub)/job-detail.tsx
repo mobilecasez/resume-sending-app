@@ -5519,6 +5519,10 @@ export default function JobDetailScreen() {
         // value). companyName above is the AI's reading and can differ, or be a bare URL — and a
         // download pass is bought PER EMPLOYER, so a second spelling means a second payment.
         employer: (employer as any)?.name || companyNameCL || null,
+        // The posting, for the preview's Send page only (2026-09-20): its known contact is prefilled and the job is
+        // marked Applied once the message went. The IDENTITY url — the spelling the saved job is keyed by.
+        jobUrl: identityUrlRef.current || undefined,
+        position: job.title || undefined,
       }));
       updateJobCLStatus(jid, 'downloaded');
       router.push('/(cover-letter)/templates');

@@ -59,7 +59,7 @@ import { API_BASE } from '../../config';
 import { fetchDoc, saveDocPayload } from '../../services/employerDocs';
 import { T, RichTextModal, ContentText, ProfileHero, Section, sec, type RichFormat } from '../../components/rich-text/RichText';
 import {
-  splitLetterParagraphs, joinLetterParagraphs, quillToBlocks, editorHtmlOf, hasText, oneLine,
+  splitLetterParagraphs, splitLetterCards, joinLetterParagraphs, quillToBlocks, editorHtmlOf, hasText, oneLine,
   letterFieldsOf, withLetterFields, fieldsDiffer, effectiveSender,
   LINE_MAX, SUBJECT_MAX, ADDRESS_MAX,
   type LetterBlock, type LetterFields, type LetterSender, type SenderKey,
@@ -169,6 +169,8 @@ export default function CoverLetterEdit() {
   // Paragraph changes the server has NOT confirmed (a failed save) — shown, guarded, retried. null = none.
   const [bodyDraft, setBodyDraft] = useState<string | null>(null);
   const [bodyError, setBodyError] = useState<string | null>(null);
+  // The letter HTML exactly as GET /employer-docs/:id served it (the only HTML the junk backstop reads).
+  const [servedHtml, setServedHtml] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedOnce, setSavedOnce] = useState(false);
   const [rich, setRich] = useState<RichTarget | null>(null);
@@ -182,7 +184,9 @@ export default function CoverLetterEdit() {
 
   const storedHtml = doc && typeof doc.payload.coverLetterHtml === 'string' ? doc.payload.coverLetterHtml : '';
   const bodyHtml = bodyDraft ?? storedHtml;
-  const blocks = useMemo(() => splitLetterParagraphs(bodyHtml), [bodyHtml]);
+  // ⚠️ The model-junk backstop reads the letter AS THE SERVER SERVED IT, never what the user made here (review,
+  // 2026-09-19): once a paragraph is edited, the page's own HTML is split raw — a typed paragraph is always a card.
+  const blocks = useMemo(() => (bodyHtml === servedHtml ? splitLetterParagraphs(bodyHtml) : splitLetterCards(bodyHtml)), [bodyHtml, servedHtml]);
   const fields = useMemo(() => (doc ? letterFieldsOf(doc.payload, doc.employer, profileSender) : null), [doc, profileSender]);
   const fieldDirty = !!editing && fieldsDiffer(opened, draft);
   // Armed while a field card holds an unsaved change, a paragraph change is not on the server, or a save is in flight.
@@ -207,6 +211,7 @@ export default function CoverLetterEdit() {
       // A résumé doc id here would be edited as a letter and saved back as one — refuse to open it.
       if (d.kind !== 'cover_letter') { setLoadFailed('This document is not a cover letter.'); setLoading(false); return; }
       const p = d.payload && typeof d.payload === 'object' ? d.payload : {};
+      setServedHtml(typeof p.coverLetterHtml === 'string' ? p.coverLetterHtml : '');
       setDoc({ employer: d.employer || '', payload: p });
       setBodyDraft(null);
       setBodyError(null);
@@ -309,7 +314,7 @@ export default function CoverLetterEdit() {
     if (!leavingRef.current) setBodyError('Your last paragraph change is not saved yet.');
     return false;
   };
-  const retryBody = (opts: { quiet?: boolean } = {}) => (bodyDraft === null ? Promise.resolve(true) : commitBlocks(splitLetterParagraphs(bodyDraft), opts));
+  const retryBody = (opts: { quiet?: boolean } = {}) => (bodyDraft === null ? Promise.resolve(true) : commitBlocks(splitLetterCards(bodyDraft), opts));
 
   const openParagraph = (index: number | null) => {
     if (editing || saving) return;

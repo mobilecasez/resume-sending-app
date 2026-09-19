@@ -33,6 +33,24 @@
 // ⚠️ IT RESUMES. Someone who quits at the signature comes back to the signature, because `setup`
 // already reports each piece separately. Restarting them at their own name would be a small insult.
 //
+// ⚠️ …AND IT RESUMES FROM THE SERVER, NOT FROM THIS SCREEN (2026-09-19). The owner's fresh account drew a
+// signature, uploaded a photo and a CV, tapped Build — and was sent back to the signature, asked for the CV
+// again, charged twice for two EMPTY résumés, and after a restart had no "Pick up where you left off" at all.
+// Every piece of that lived here: a drawn-but-unconfirmed signature died with "Next", and the chosen lane, the
+// typed notes and the uploaded CV were screen state. (The second charge was NOT a running build forgotten on
+// reopen — production shows build #1 had already completed, empty, in 1.6 s; the reopened wizard simply offered
+// Build again. See onboardingProgress.joinRunningWizardBuild.) Now `setup.wizard` (server/services/
+// onboardingProgress.js) opens the wizard on the FIRST unfinished step with everything saved shown as done:
+// every way off the signature step but Skip commits a pending signature and waits for it (Next, the back arrow,
+// the dots, and — through usePreventRemove — the close button, the iOS swipe and the Android back button); only
+// Next counts the untapped hand the gallery shows ticked, and only while no signature is saved, and "Skip for now"
+// uploads NOTHING (2026-09-20); a skip is stored (and sent again until the server has it); leaving the step goes on to
+// where the server's wizard now is (finished, with a résumé with content already on file); valid details are saved on
+// the way out; the CV is shown with whether the server has READ it (Next
+// waits for that — a build from an unread CV is a build from nothing); notes are saved as they are typed; and a
+// build still running is rejoined, never started again. Only a build that was charged and saved (or a résumé
+// with content that already exists) finishes the wizard.
+//
 // ⚠️ ONE ANIMATED DRIVER, NATIVE, IN THE WHOLE TREE (the b126-128 fatal crash). The step slide is
 // transform + opacity. The progress bar is therefore scaleX with a translateX compensation rather
 // than an animated `width` — animating width forces the JS driver, and a JS-driven value in the
@@ -50,7 +68,9 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+// usePreventRemove is the one guard that also reaches the NATIVE dismiss — the precedent is app/(cover-letter)/edit.tsx.
+import { usePreventRemove, type NavigationAction } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
@@ -61,12 +81,14 @@ import { E, SERIF, sweepWords } from '../../components/employer-home/theme';
 const MINT: [string, string, string] = ['#8FF7E4', '#2DE0C0', '#12BFA6'];
 const MINT_INK = '#04211C';
 import MeshStage from '../../components/employer-home/MeshStage';
-import SignatureStudio from '../../components/onboarding/SignatureStudio';
+import SignatureStudio, { SignatureStudioHandle, SigCommit } from '../../components/onboarding/SignatureStudio';
 import CountrySheet from '../../components/onboarding/CountrySheet';
 import { COUNTRIES, Country, countryByName } from '../../constants/countries';
 import {
   fetchProfileSnapshot, saveDetails, uploadPhoto, uploadSignature, uploadResumeFile,
-  generateResume, GenStage, ProfileSnapshot,
+  generateResume, joinBuild, buildOnServer, newWizardBuildId, saveOnboarding, waitForResumeParse, markProfileChanged,
+  wizardBuildText, RESUME_PICKER_TYPES, RESUME_FORMATS_LINE,
+  BuildOutcome, GenStage, ProfileSnapshot, WizardCv,
 } from '../../services/profileSetupService';
 import { track } from '../../services/analytics';
 
@@ -119,6 +141,31 @@ const pretty = (s: string) => {
   const [y, m, d] = s.split('-').map(Number);
   return `${d} ${MONTHS[m - 1]} ${y}`;
 };
+/** " · 19 Sep" for when the CV on file was uploaded, or '' when the server did not say. */
+const cvDate = (at: string | null) => {
+  if (!at) return '';
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? '' : ` · ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+};
+
+/**
+ * What leaving the photo & signature step stores as SKIPPED: whatever it still lacks — "Both optional" is what the step
+ * promises, and a skip the server does not know about is a step that reopens on every launch. `have`: what is saved
+ * (this session's uploads or the server's); `signedNow`: a signature was committed on the way out (its image is not in
+ * state yet). null: nothing to store. Pure, so the suite runs it.
+ */
+type SignStepHas = { photo: boolean; signature: boolean };
+function skipsOnLeave(have: SignStepHas, signedNow: boolean): Partial<SignStepHas> | null {
+  const photo = !have.photo;
+  const signature = !have.signature && !signedNow;
+  if (!photo && !signature) return null;
+  return { ...(photo ? { photo: true } : {}), ...(signature ? { signature: true } : {}) };
+}
+
+/** A progress write, as saveOnboarding takes it. */
+type ProgressPatch = Parameters<typeof saveOnboarding>[0];
+/** How long a skip the server has not confirmed waits before it is sent again (then it rides on the next write). */
+const SKIP_RETRY_MS = [2000, 6000, 15000];
 
 export default function MakeYours() {
   const router = useRouter();
@@ -153,16 +200,52 @@ export default function MakeYours() {
   // step 2 — photo + signature
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [signUri, setSignUri] = useState<string | null>(null);
+  // What was skipped — stored on the server, so "Skip for now" is still skipped after a restart.
+  const [skipped, setSkipped] = useState({ photo: false, signature: false });
+  // A saved signature is SHOWN (the image), and the studio opens only to replace it.
+  const [redoSign, setRedoSign] = useState(false);
+  const studio = useRef<SignatureStudioHandle>(null);
+  // The pad holds ink nobody saved (SignatureStudio's onDirty) — what the leave guard commits before the screen goes.
+  const [sigDirty, setSigDirty] = useState(false);
+  // The leave guard shows its own "Leave without it?" when its commit fails, so saveSignature stays quiet then.
+  const quietSignAlert = useRef(false);
+  // Next / the back arrow / a dot is committing the pad (commitSign): one at a time, and the footer shows it is working.
+  const [sigBusy, setSigBusy] = useState(false);
+  const committing = useRef(false);
+  // A skip the server has not confirmed yet (flushSkips): sent again until one write carrying it lands.
+  const pendingSkips = useRef<Partial<SignStepHas> | null>(null);
+  const flushingSkips = useRef(false);
 
   // step 3 — experience
   const [lane, setLane] = useState<'write' | 'upload'>('write');
   const [rawText, setRawText] = useState('');
   const [file, setFile] = useState<{ uri: string; name: string; mime: string } | null>(null);
+  // The CV the SERVER holds and whether it has been read — what Next on this step waits for.
+  const [cv, setCv] = useState<WizardCv | null>(null);
+  const cvSeq = useRef(0);
+  // ⚠️ AN OLDER SERVER (review, 2026-09-19): one that answers the profile WITHOUT setup.wizard — before Migration 047,
+  // a rollback, another environment in the switcher — never says whether a CV was read, so "wait until it is read"
+  // would be a dead end (Next disabled forever, even with a CV already on file). There the old rule stands: a CV
+  // uploaded now, or one already on file, is enough to go on.
+  const legacy = !!snap && !snap.setup.wizard;
 
   // step 4 — the build
   const [stage, setStage] = useState<GenStage | null>(null);
   const [genErr, setGenErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  // How the last build ended when it did not end well — it decides the step's buttons (Try again / Keep waiting / Plans).
+  const [outcome, setOutcome] = useState<BuildOutcome | null>(null);
+  // A wizard build the server says is still running: rejoined on the build step, never started again.
+  const [joinJob, setJoinJob] = useState<string | null>(null);
+  // A résumé with content already exists: building again spends a generation, so it is asked first.
+  const [builtResume, setBuiltResume] = useState(false);
+  // One clientBuildId per tap on Build; `reuse` only after a POST that got no answer (see generateResume).
+  const buildId = useRef<{ id: string; reuse: boolean } | null>(null);
+  // The furthest step the dots may jump to: everything up to the first unfinished one is done and can be revisited.
+  const [reach, setReach] = useState(0);
+  // The screen is gone: polls stop (the server keeps building; reopening rejoins).
+  const gone = useRef(false);
+  useEffect(() => () => { gone.current = true; }, []);
 
   const slide = useRef(new Animated.Value(0)).current;   // 0 → settled; 1 → arriving
   const [barW, setBarW] = useState(0);
@@ -190,13 +273,42 @@ export default function MakeYours() {
           setDobDraft(new Date(y, m - 1, d));
         }
         setGender(GENDERS.includes(s.gender) ? s.gender : '');
-        const first = !s.setup.profile ? 0 : (!s.setup.photo || !s.setup.signature) ? 1 : !s.setup.resume ? 2 : 2;
+        const w = s.setup.wizard || null;
+        let first: number;
+        if (w) {
+          // ⚠️ THE SERVER SAYS WHERE TO OPEN, and everything it already holds is filled in: the skips, the notes, the
+          // lane, the CV and whether it has been read. A build still running is rejoined on the build step.
+          setSkipped(w.skipped);
+          setRawText(w.notes || '');
+          setCv(w.cv);
+          // The lane they chose — unless it is "type it out" with too little typed while a CV is on file: the CV is
+          // what makes that step done, so that is the lane to open on (and to build from).
+          const thinNotes = (w.notes || '').trim().length < 40;
+          setLane(w.lane === 'write' && thinNotes && w.cv ? 'upload' : (w.lane || (w.cv ? 'upload' : 'write')));
+          setBuiltResume(!!w.builtResume);
+          const running = w.build && w.build.status === 'running' ? w.build.jobId : null;
+          if (running) setJoinJob(running);
+          // Finished, or nothing left by the wizard's own rules (a résumé with content already exists and the rest is
+          // there — no progress row yet): "Your resume is ready", never a Build button that would spend a generation.
+          const ready = w.state === 'finished' || (Array.isArray(w.left) && !w.left.length);
+          if (ready) setDone(true);
+          first = running || ready ? LAST : w.step;
+        } else {
+          // An older server (no `wizard`): its four booleans, and never past a missing piece.
+          if (s.resume) setLane('upload');
+          first = !s.setup.profile ? 0 : (!s.setup.photo || !s.setup.signature) ? 1 : 2;
+        }
+        setReach(first);
         setStep(devStep ?? first);
       } else if (devStep != null) {
         setStep(devStep);
       }
       setBooting(false);
-      track('onboarding_open', { resumedAt: s ? String(s.setup.complete) : 'unknown' });
+      track('onboarding_open', {
+        resumedAt: s ? String(s.setup.complete) : 'unknown',
+        wizard: (s && s.setup.wizard && s.setup.wizard.state) || 'none',
+        step: s && s.setup.wizard ? s.setup.wizard.stepKey : 'legacy',
+      });
     })();
     return () => { alive = false; };
   }, [devStep]);
@@ -211,6 +323,7 @@ export default function MakeYours() {
       toValue: forward ? -1 : 1, duration: 150, easing: Easing.in(Easing.quad), useNativeDriver: true,
     }).start(() => {
       setStep(next);
+      setReach((r) => Math.max(r, next));
       slide.setValue(forward ? 1 : -1);
       Animated.timing(slide, {
         toValue: 0, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true,
@@ -233,20 +346,28 @@ export default function MakeYours() {
     [city, country],
   );
 
-  const saveYou = useCallback(async () => {
+  const youFields = useMemo(() => ({
+    fullName,
+    // One column, one string — the code is part of the number a resume prints.
+    phone: [dial, phone.trim()].filter(Boolean).join(' '),
+    address,
+    dateOfBirth: dob,
+    gender,
+  }), [fullName, dial, phone, address, dob, gender]);
+  const youKey = JSON.stringify(youFields);
+  // The details as last saved — or as the server gave them on open. The leave guard saves valid ones that differ.
+  const [savedYou, setSavedYou] = useState<string | null>(null);
+  useEffect(() => { if (!booting && savedYou === null) setSavedYou(youKey); }, [booting, savedYou, youKey]);
+
+  /** `quiet`: the leave guard's save — leaving is their choice, and a failed save must not trap them on the screen. */
+  const saveYou = useCallback(async (quiet = false) => {
     setSaving(true);
-    const r = await saveDetails({
-      fullName,
-      // One column, one string — the code is part of the number a resume prints.
-      phone: [dial, phone.trim()].filter(Boolean).join(' '),
-      address,
-      dateOfBirth: dob,
-      gender,
-    });
+    const r = await saveDetails(youFields);
     setSaving(false);
-    if (!r.ok) { Alert.alert('Could not save', r.message || 'Please try again.'); return false; }
+    if (!r.ok) { if (!quiet) Alert.alert('Could not save', r.message || 'Please try again.'); return false; }
+    setSavedYou(JSON.stringify(youFields));
     return true;
-  }, [fullName, dial, phone, address, dob, gender]);
+  }, [youFields]);
 
   const pickPhoto = useCallback(async () => {
     try {
@@ -271,86 +392,404 @@ export default function MakeYours() {
 
   // ⚠️ NO AUTO-ADVANCE. Photo and signature share this step, so jumping to the next one the moment
   // the signature uploads would walk away from a photo they had not chosen yet.
-  const saveSignature = useCallback(async (uri: string) => {
-    setSignUri(uri);
+  // Resolves false when the upload failed — SignatureStudio then keeps the ink as UNSAVED, and Next stays put.
+  // ⚠️ signUri is set only AFTER the upload landed (review, 2026-09-19). Set before it, a FIRST signature made hasSign
+  // true mid-upload, the render swapped the studio for the saved image, and a failed upload then mounted a fresh,
+  // blank pad — the ink this comment promises to keep was gone.
+  const saveSignature = useCallback(async (uri: string): Promise<boolean> => {
     setSaving(true);
     const up = await uploadSignature(uri);
     setSaving(false);
-    if (!up.ok) { setSignUri(null); Alert.alert('Could not upload', up.message || 'Please try again.'); return; }
+    if (!up.ok) { if (!quietSignAlert.current) Alert.alert('Could not upload', up.message || 'Please try again.'); return false; }
+    setSignUri(uri);
+    setRedoSign(false);
     try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
+    return true;
   }, []);
 
-  const pickFile = useCallback(async () => {
+  /**
+   * ⚠️ A SKIP IS STORED UNTIL THE SERVER HAS IT (review, 2026-09-20). It used to be one fire-and-forget POST: offline or
+   * on a 5xx the skip was lost (no later write carried it), and the next launch reopened the very step they had skipped,
+   * with Home saying "Pick up where you left off · a photo, your signature". Now it waits in `pendingSkips`, is sent
+   * again with backoff while the screen is open, and rides on every other progress write (saveProgress) until one lands.
+   * ⚠️ Never after the screen is gone: the token is whoever is signed in THEN, and a retry must not write one account's
+   * skip onto the next account to sign in.
+   */
+  const flushSkips = useCallback(async () => {
+    if (flushingSkips.current) return;
+    flushingSkips.current = true;
     try {
-      // ⚠️ PDF ONLY, on purpose. The server accepts anything, but the parser's vision fallback
-      // handles pdf/png/jpg/webp/heic — a .docx uploads happily and then fails with no signal.
-      const r = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: true });
-      if (r.canceled || !r.assets?.length) return;
-      const a = r.assets[0];
-      setFile({ uri: a.uri, name: a.name || 'resume.pdf', mime: a.mimeType || 'application/pdf' });
-      setSaving(true);
-      const up = await uploadResumeFile(a.uri, a.name || 'resume.pdf', a.mimeType || 'application/pdf');
-      setSaving(false);
-      if (!up.ok) { setFile(null); Alert.alert('Could not upload', up.message || 'Please try again.'); }
-    } catch (e: any) {
-      setSaving(false);
-      Alert.alert('Could not open that file', e?.message || 'Please try again.');
+      for (let tries = 0; pendingSkips.current && !gone.current; tries++) {
+        const sk = pendingSkips.current;
+        const r = await saveOnboarding({ skipped: sk });
+        if (r.ok) { if (pendingSkips.current === sk) pendingSkips.current = null; continue; }
+        if (tries >= SKIP_RETRY_MS.length || gone.current) return;
+        await new Promise((res) => setTimeout(res, SKIP_RETRY_MS[tries]));
+      }
+    } finally {
+      flushingSkips.current = false;
+    }
+  }, []);
+  /** Every other progress write (notes, lane) — carrying a skip the server has not confirmed yet, if there is one. */
+  const saveProgress = useCallback((patch: ProgressPatch) => {
+    const sk = pendingSkips.current;
+    const sent = saveOnboarding(sk ? { ...patch, skipped: { ...sk, ...(patch.skipped || {}) } } : patch);
+    if (sk) sent.then((r) => { if (r.ok && pendingSkips.current === sk) pendingSkips.current = null; });
+    return sent;
+  }, []);
+
+  /** Whatever the photo & signature step still lacks is stored as SKIPPED (skipsOnLeave). `signedNow`: see there. */
+  const noteSkips = useCallback((signedNow: boolean) => {
+    const sk = skipsOnLeave({ photo: !!(photoUri || snap?.profileImage), signature: !!(signUri || snap?.signature) }, signedNow);
+    if (!sk) return;
+    setSkipped((cur) => ({ photo: cur.photo || !!sk.photo, signature: cur.signature || !!sk.signature }));
+    pendingSkips.current = { ...(pendingSkips.current || {}), ...sk };
+    flushSkips();
+  }, [photoUri, signUri, snap, flushSkips]);
+
+  /**
+   * On from the photo & signature step (Next or Skip) — to where the SERVER's wizard now is (review, 2026-09-20).
+   * Leaving it makes the step done there (what it lacks is stored as skipped), and with a résumé with content already on
+   * file the server counts the experience AND the build as done (onboardingProgress.wizardStateOf, builtResume) — so the
+   * wizard is FINISHED. Walking on to "Your experience" asked for notes or a CV again and then offered "Rebuild — uses
+   * 1 resume" on a wizard the server (and Home) already called done: it is "Your resume is ready" instead, exactly as
+   * a reopen would show. Otherwise the experience step, as before.
+   */
+  const onFromSign = useCallback(() => {
+    if (builtResume) { setDone(true); goTo(LAST); return; }
+    goTo(2);
+  }, [builtResume, goTo]);
+
+  /**
+   * Commit the pad for Next / the back arrow / a dot: one at a time (null: one is already going), with the footer busy
+   * meanwhile — the export and the upload can take seconds, and Next used to look dead through them.
+   */
+  const commitSign = useCallback(async (handOnScreen: boolean): Promise<SigCommit | null> => {
+    if (!studio.current) return 'clean';
+    if (committing.current) return null;
+    committing.current = true;
+    setSigBusy(true);
+    try {
+      return await studio.current.commit({ handOnScreen });
+    } finally {
+      committing.current = false;
+      setSigBusy(false);
     }
   }, []);
 
   /**
-   * ⚠️ THE ONE PLACE THAT SPENDS A GENERATION. Explicit tap only.
-   * The uploaded file lane sends a short note plus `includeUploadedResume`, because the server
-   * needs at least twenty characters of text and the parsed CV arrives separately — the parse is
-   * fire-and-forget, so it may still be running, and folding it in is best-effort by design.
+   * The pad could not hand the signature over ('stuck': it stopped answering, its page died, the image could not be
+   * written). ⚠️ NOTHING ELSE SAYS SO (review, 2026-09-20) — saveSignature's alert is for a failed UPLOAD, and none was
+   * tried — so Next and the back arrow used to simply stop, silently, on a pad that now looked blank. The studio has
+   * already reloaded a dead page; they try again, or go on without it.
    */
-  const build = useCallback(async () => {
-    if (stage) return;
-    setGenErr(null);
-    setStage({ stage: 'start', label: 'Getting started', pct: 3 });
-    track('onboarding_build', { lane });
-    const text = lane === 'upload'
-      ? (rawText.trim() || `Please build my resume from the CV I uploaded${fullName ? ` for ${fullName}` : ''}.`)
-      : rawText.trim();
-    const r = await generateResume(
-      {
-        name: fullName, email: snap?.email || '', phone: [dial, phone.trim()].filter(Boolean).join(' '),
-        location: address, rawText: text, includeUploadedResume: true,
-      },
-      (st) => setStage(st),
+  const padStuck = useCallback((goOn: () => void) => {
+    Alert.alert(
+      'Your signature is not saved',
+      'The signature pad stopped working, so it was not saved. Try again, or go on without it — you can add it later.',
+      [{ text: 'Try again', style: 'cancel' }, { text: 'Continue without it', onPress: goOn }],
     );
-    if (r.ok) {
+  }, []);
+
+  /**
+   * "Skip for now". ⚠️ A SKIP IS A SKIP (review round 4, 2026-09-20): it used to BE leaveSign, whose commit uploaded the
+   * hand the gallery opens with ticked — so Skip saved a cursive signature the user had just turned down (skipped stayed
+   * false, and every letter and letterhead was signed with it); and offline that upload failed, leaveSign returned early,
+   * and Skip did nothing at all. It commits NOTHING — no upload, so nothing can fail: what is missing is stored as
+   * skipped (flushSkips keeps it until the server has it) and the step is left, always. A signature already saved is
+   * never touched by it.
+   */
+  const skipSign = useCallback(() => {
+    noteSkips(false);
+    onFromSign();
+  }, [noteSkips, onFromSign]);
+
+  /**
+   * Leave the photo & signature step by Next:
+   * ⚠️ 1. A SIGNATURE ON THE PAD THAT NOBODY SAVED IS SAVED FIRST, and the step waits for the upload (the owner's
+   *    signature died exactly here, 2026-09-19). A failed upload keeps them on the step; a stuck pad says so.
+   * ⚠️ 2. Next also saves the untapped hand the gallery shows ticked (handOnScreen) — "Next" on it is choosing it — but
+   *    ONLY WHEN NO SIGNATURE IS SAVED (review, 2026-09-20). That rule exists because without it the wizard stored a
+   *    skip and letters went out unsigned; with a signature on file nothing is skipped, and counting the hand made
+   *    "Sign again" → a look at "Pick a hand" → Next upload hand #1 over their own drawn signature. There, only what
+   *    they drew or tapped replaces it.
+   * 3. Whatever is still missing is stored as SKIPPED (noteSkips), and the wizard goes on to the server's next step.
+   */
+  const leaveSign = useCallback(async () => {
+    const c = await commitSign(!(signUri || snap?.signature));
+    if (c === null || c === 'failed') return;
+    if (c === 'stuck') { padStuck(skipSign); return; }
+    noteSkips(c === 'saved');
+    onFromSign();
+  }, [commitSign, signUri, snap, padStuck, skipSign, noteSkips, onFromSign]);
+
+  /**
+   * Follow the CV the server holds until it has been READ. Every upload (and a reopen that finds one still being
+   * read) starts a new follow; an older one stops as soon as it is superseded or the screen is gone.
+   */
+  const followCv = useCallback(async () => {
+    const seq = ++cvSeq.current;
+    const stale = () => gone.current || seq !== cvSeq.current;
+    const last = await waitForResumeParse((c) => { if (!stale()) setCv(c); }, stale);
+    if (!stale() && last && last.status === 'done') {
+      try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
+    }
+  }, []);
+  // Reopened with a CV still being read, or one never read at all (an old upload): follow it — asking the server to
+  // read the unread one first. A read is free; nothing here spends a generation.
+  const cvBoot = useRef(false);
+  useEffect(() => {
+    if (booting || cvBoot.current) return;
+    cvBoot.current = true;          // the CV the server gave us on open, once — an upload starts its own follow
+    if (!cv) return;
+    if (cv.status === 'unread') { saveOnboarding({ readCv: true }).then(() => followCv()); return; }
+    if (cv.status === 'pending' || cv.status === 'slow') followCv();
+  }, [booting, cv, followCv]);
+
+  const pickFile = useCallback(async () => {
+    try {
+      // ⚠️ EVERY FORMAT THE SERVER CAN READ, AND NOT ONE MORE (2026-09-19). "PDF only" was the owner's complaint;
+      // the server now reads Word, OpenDocument, RTF and plain text too (services/resumeText.js) and refuses the rest
+      // with a sentence saying which formats work — so a refusal is shown, and the CV already on file stays.
+      const r = await DocumentPicker.getDocumentAsync({ type: RESUME_PICKER_TYPES, copyToCacheDirectory: true });
+      if (r.canceled || !r.assets?.length) return;
+      const a = r.assets[0];
+      const name = a.name || 'resume.pdf';
+      setSaving(true);
+      const up = await uploadResumeFile(a.uri, name, a.mimeType || '');
+      setSaving(false);
+      if (!up.ok) { Alert.alert('We could not use that file', up.message || 'Please try again.'); return; }
+      setFile({ uri: a.uri, name, mime: a.mimeType || '' });
+      setLane('upload');
+      saveProgress({ lane: 'upload' });
+      // An older server cannot say whether a CV was read (see `legacy`): the upload itself is what Next waits for there.
+      if (legacy) return;
+      // The server marked it 'pending' before it answered: show that, then follow the read.
+      setCv({ ext: up.format || (name.split('.').pop() || '').toUpperCase() || null, uploadedAt: new Date().toISOString(), status: 'pending', error: null });
+      followCv();
+    } catch (e: any) {
+      setSaving(false);
+      Alert.alert('Could not open that file', e?.message || 'Please try again.');
+    }
+  }, [followCv, legacy, saveProgress]);
+
+  // ⚠️ TYPED NOTES ARE SAVED AS THEY ARE TYPED (debounced). They used to exist only in this screen and in the one
+  // generate-ai request, so leaving before Build lost them. (saveProgress: a skip not yet confirmed rides along.)
+  const notesBoot = useRef(true);
+  useEffect(() => {
+    if (booting) return;
+    if (notesBoot.current) { notesBoot.current = false; return; }    // the value the server just gave us
+    const t = setTimeout(() => { saveProgress({ notes: rawText, lane }); }, 900);
+    return () => clearTimeout(t);
+  }, [rawText, lane, booting, saveProgress]);
+
+  /** The build step's end states, one place: the done screen, or the outcome's own buttons. */
+  const settle = useCallback((r: BuildOutcome) => {
+    if (gone.current) return;
+    if (r.kind === 'done') {
+      buildId.current = null;
+      setJoinJob(null);
+      setOutcome(null);
       setStage({ stage: 'done', label: 'Ready', pct: 100 });
       setDone(true);
+      // Home re-reads setup on focus anyway; this also makes it reload the pages — they are of this résumé now.
+      markProfileChanged();
       try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
       return;
     }
     setStage(null);
+    setOutcome(r);
+    if (r.kind === 'late') { setJoinJob(r.jobId); setGenErr('Still building — this one is taking longer than usual. Nothing will be charged twice.'); return; }
+    // ⚠️ A BUILD THAT ENDED IS NEVER FOLLOWED AGAIN (review, 2026-09-19). Kept, the rejoin effect re-followed the OLD
+    // job the moment they came back to this step from "Add more about your experience" — and showed its refusal again
+    // over the notes they had just added. Only "late" (still running: Keep waiting) keeps a job to follow.
+    setJoinJob(null);
+    // A POST that got no answer may still be running: Try again repeats THIS build. Anything else is a new tap.
+    buildId.current = r.kind === 'failed' && r.retrySame && buildId.current ? { id: buildId.current.id, reuse: true } : null;
+    if (r.kind === 'refused' && r.reason === 'cv_unreadable') {
+      // Nothing to build from: back to the upload, with the server's sentence where the CV is shown.
+      setCv((c) => (c ? { ...c, status: 'error', error: r.message } : c));
+      setGenErr(null);
+      goTo(2);
+      return;
+    }
     setGenErr(r.message);
-  }, [stage, lane, rawText, fullName, dial, phone, address, snap]);
+  }, [goTo]);
+
+  /** Follow a build the server already has (reopened wizard, Keep waiting). Polling costs nothing. */
+  const follow = useCallback(async (jobId: string) => {
+    setGenErr(null);
+    setOutcome(null);
+    setStage({ stage: 'start', label: 'Picking up your build', pct: 5 });
+    settle(await joinBuild(jobId, (st) => { if (!gone.current) setStage(st); }, () => gone.current));
+  }, [settle]);
+  // Reopened while the wizard's build runs: follow THAT job — this never starts (or charges for) a build.
+  useEffect(() => {
+    if (step === LAST && joinJob && !stage && !done && !outcome) follow(joinJob);
+  }, [step, joinJob, stage, done, outcome, follow]);
+
+  /**
+   * ⚠️ THE ONE PLACE THAT SPENDS A GENERATION. Explicit tap only.
+   * The uploaded file lane sends a short note plus `includeUploadedResume` and `fromUpload`: the server needs at
+   * least twenty characters of text, and it WAITS for a CV still being read — and refuses, before any charge, to
+   * build "from the upload" when there is no read CV (cv_not_ready / cv_unreadable). It also refuses an empty
+   * résumé before the charge (thin_input). One clientBuildId per tap; see settle for when it is reused.
+   */
+  const build = useCallback(async () => {
+    if (stage) return;
+    setGenErr(null);
+    setOutcome(null);
+    setStage({ stage: 'start', label: 'Getting started', pct: 3 });
+    const retry = !!(buildId.current && buildId.current.reuse);
+    if (retry) {
+      // The last POST got no answer: before sending the same id again, ask whether it already landed or is running.
+      const there = await buildOnServer();
+      if (there && 'done' in there) { settle({ kind: 'done' }); return; }
+      if (there && 'jobId' in there) { setJoinJob(there.jobId); follow(there.jobId); return; }
+    }
+    if (!retry) buildId.current = { id: newWizardBuildId(), reuse: false };
+    const id = buildId.current ? buildId.current.id : newWizardBuildId();
+    // Typed notes too short to write from, but a READ CV on file: the CV is the content (the server agrees — that is
+    // how its experience step came out done).
+    const fromCv = lane === 'upload' || (rawText.trim().length < 40 && !!cv && cv.status === 'done');
+    track('onboarding_build', { lane: fromCv ? 'upload' : 'write', retry: retry ? 'same' : 'new' });
+    // From the CV, the "build it from my CV" sentence always goes — an optional short note alone was refused (see it).
+    const text = wizardBuildText(rawText, fromCv, fullName);
+    const r = await generateResume(
+      {
+        name: fullName, email: snap?.email || '', phone: [dial, phone.trim()].filter(Boolean).join(' '),
+        location: address, rawText: text, includeUploadedResume: true, fromUpload: fromCv,
+      },
+      id,
+      (st) => { if (!gone.current) setStage(st); },
+      () => gone.current,
+    );
+    settle(r);
+  }, [stage, lane, rawText, cv, fullName, dial, phone, address, snap, settle, follow]);
+
+  /** The Build button. ⚠️ A second résumé is a second generation: asked, never assumed. */
+  const start = useCallback(() => {
+    if (stage) return;
+    if (outcome && outcome.kind === 'late') { follow(outcome.jobId); return; }   // Keep waiting: the SAME job
+    if (builtResume && !done && !(buildId.current && buildId.current.reuse)) {
+      Alert.alert(
+        'Build a new resume?',
+        'You already have a resume. Building a new one uses 1 resume from your plan.',
+        [{ text: 'Cancel', style: 'cancel' }, { text: 'Rebuild — uses 1 resume', onPress: () => { build(); } }],
+      );
+      return;
+    }
+    build();
+  }, [stage, outcome, builtResume, done, build, follow]);
 
   /* ── gating ──────────────────────────────────────────────────────────────────────────────── */
+  const cvRead = !!cv && cv.status === 'done';
+  // Only against an older server (see `legacy`): a CV uploaded in this session or one already on file.
+  const legacyCv = legacy && (!!file || !!snap?.resume);
   const canAdvance = (() => {
     if (step === 0) {
       return fullName.trim().length > 1 && phone.replace(/\D/g, '').length >= 5
         && city.trim().length >= 2 && !!country;
     }
-    if (step === 2) return lane === 'write' ? rawText.trim().length >= 40 : !!file;
+    // ⚠️ THE UPLOAD LANE WAITS FOR THE CV TO BE READ — not merely for a file to exist. A build from a CV that is
+    // still being read was a build from nothing, and it was charged (user 616, twice).
+    if (step === 2) return lane === 'write' ? rawText.trim().length >= 40 : legacy ? legacyCv : cvRead;
     return true;
   })();
 
+  /**
+   * Leave the step on screen for another by the header's back arrow or a step dot.
+   * ⚠️ NOT A SIDE DOOR PAST THE SAVE: a drawn signature is committed on the way out of step 1 (the dots made the owner's
+   * lost signature reachable again), and valid details are saved on the way out of step 0.
+   * ⚠️ …BUT NOT AS NEXT DOES (2026-09-20): only what they DREW or TAPPED is saved here — commit() without handOnScreen.
+   * Going back to fix a name is not choosing the pre-ticked hand #1; with it, the arrow uploaded a signature unasked.
+   */
+  const leaveTo = useCallback(async (i: number) => {
+    if (step === 1) {
+      const c = await commitSign(false);
+      if (c === null || c === 'failed') return;
+      // A stuck pad says so (padStuck); going on without it goes where they asked, nothing invented on the way.
+      if (c === 'stuck') { padStuck(() => goTo(i)); return; }
+    }
+    if (step === 0 && i > 0 && canAdvance && !(await saveYou())) return;
+    goTo(i);
+  }, [step, commitSign, padStuck, canAdvance, saveYou, goTo]);
+
   const next = useCallback(async () => {
     if (step === 0 && !(await saveYou())) return;
+    if (step === 1) { await leaveSign(); return; }
+    if (step === 2) saveProgress({ notes: rawText, lane });
     if (step < LAST) goTo(step + 1);
-  }, [step, saveYou, goTo]);
+  }, [step, saveYou, leaveSign, saveProgress, rawText, lane, goTo]);
 
   const leave = useCallback(() => {
     // ⚠️ THE EXIT MATTERS. App.js owns profileData and refetches it only when its own `screen`
     // flips; a route pushed on top of it does not do that. So the app's older cover-letter gate can
     // still believe the profile is incomplete until Account Settings is next opened. Home itself
-    // re-reads `setup` on focus, which is what the CTA and the library depend on.
+    // re-reads `setup` on EVERY focus (and reloads its pages after a build — markProfileChanged).
+    if (done) markProfileChanged();
     router.back();
-  }, [router]);
+  }, [router, done]);
+
+  /**
+   * ⚠️ EVERY WAY OFF THE SCREEN SAVES FIRST (review, 2026-09-19) — the close button, the iOS swipe and the Android back
+   * button, which the Next / Skip / back-arrow / dot saves above never saw. The owner's complaint was a drawn signature
+   * that was lost, and "left intentionally in between" must find the details they typed still there:
+   *   step 1 — a signature on the pad that nobody saved is committed, and the screen waits for the upload; if it fails
+   *            they choose: stay and try again, or leave without it. Only what they DREW or TAPPED (commit() without
+   *            handOnScreen, and sigDirty means the same): closing on the pre-ticked hand #1 is not choosing it;
+   *   step 0 — valid details that differ from what the server holds are saved (quietly: leaving is their choice). That
+   *            wizard write is also what creates the progress row, so Home says "Pick up where you left off".
+   * ⚠️ usePreventRemove, NOT a raw beforeRemove listener: Home pushes /(onboarding), so the screen swiped away on the
+   * ROOT stack is the group; only usePreventRemove reports up so the root native stack refuses the swipe natively and
+   * hands it here as a pop (the same reason as app/(cover-letter)/edit.tsx). The action waits in `exit` until a render
+   * with the guard down, then goes (the hook reads its condition from the last render).
+   */
+  const navigation = useNavigation();
+  const [exit, setExit] = useState<{ action: NavigationAction } | null>(null);
+  const guarding = useRef(false);
+  // A pad left dirty on a step that is no longer on screen is not the next visit's ink — and "Sign again" is not the next
+  // visit's state either: coming back shows the saved signature again, never an open studio whose Next could replace it.
+  useEffect(() => { if (step !== 1) { setSigDirty(false); setRedoSign(false); } }, [step]);
+  const unsavedYou = step === 0 && canAdvance && savedYou !== null && youKey !== savedYou;
+  const unsavedSign = step === 1 && sigDirty;
+  usePreventRemove(!booting && !done && !exit && (unsavedYou || unsavedSign), ({ data }) => {
+    if (guarding.current) return;          // a second swipe while the first is still saving
+    guarding.current = true;
+    (async () => {
+      try {
+        if (unsavedSign && studio.current) {
+          quietSignAlert.current = true;
+          const c = await studio.current.commit();
+          quietSignAlert.current = false;
+          // 'stuck' too: the pad could not hand it over, and nothing else has said so (see padStuck).
+          if (c === 'failed' || c === 'stuck') {
+            Alert.alert(
+              'Your signature is not saved',
+              c === 'stuck'
+                ? 'The signature pad stopped working, so it was not saved. Stay and try again, or leave without it — you can add it later.'
+                : 'It could not be uploaded. Stay and try again, or leave without it — you can add it later.',
+              [
+                { text: 'Stay', style: 'cancel' },
+                { text: 'Leave without it', style: 'destructive', onPress: () => setExit({ action: data.action }) },
+              ],
+            );
+            return;
+          }
+        }
+        if (unsavedYou) await saveYou(true);
+        setExit({ action: data.action });
+      } finally {
+        quietSignAlert.current = false;
+        guarding.current = false;
+      }
+    })();
+  });
+  useEffect(() => {
+    if (exit) navigation.dispatch(exit.action);
+    // navigation is stable for this screen; exit is set once (leaving is one-way).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exit]);
 
   const chooseCountry = useCallback((c: Country) => {
     setCountry(c);
@@ -376,7 +815,7 @@ export default function MakeYours() {
           exactly one line and the crossfade between them does not jump. */}
       <View style={[s.head, { height: insets.top + 52, paddingTop: insets.top }]}>
         {done ? <View style={s.iconSpacer} /> : (
-          <TouchableOpacity onPress={step > 0 ? () => goTo(step - 1) : leave} style={s.icon} activeOpacity={0.8}>
+          <TouchableOpacity onPress={step > 0 ? () => { if (!saving && !sigBusy) leaveTo(step - 1); } : leave} style={s.icon} activeOpacity={0.8}>
             <Ionicons name={step > 0 ? 'chevron-back' : 'close'} size={19} color="#fff" />
           </TouchableOpacity>
         )}
@@ -385,11 +824,12 @@ export default function MakeYours() {
             <TouchableOpacity
               key={st.key}
               activeOpacity={0.8}
-              // Backwards only — skipping ahead would submit a step that was never filled in.
-              onPress={() => { if (i < step && !done) goTo(i); }}
+              // Any step up to the first UNFINISHED one (`reach`, from the server on open): everything before it is
+              // done and can be revisited; skipping past it would submit a step that was never filled in.
+              onPress={() => { if (i !== step && i <= reach && !done && !stage && !saving && !sigBusy) leaveTo(i); }}
               style={s.stepDotWrap}
             >
-              <View style={[s.stepDot, i <= step && s.stepDotOn]} />
+              <View style={[s.stepDot, i <= step && s.stepDotOn, i > step && i <= reach && s.stepDotDone]} />
             </TouchableOpacity>
           ))}
         </View>
@@ -593,13 +1033,46 @@ export default function MakeYours() {
                         <Text style={s.savedTx}>SAVED</Text>
                       </View>
                     )}
+                    {/* ⚠️ "SIGN AGAIN" CAN BE TAKEN BACK (review, 2026-09-20). It had no way back but "Skip for now", which
+                        does not say it keeps anything — so a look at the studio ended in Next, and Next replaced the
+                        saved signature. In the header row, so the step still fits on one screen. */}
+                    {hasSign && redoSign && (
+                      <TouchableOpacity
+                        style={s.keepSign}
+                        activeOpacity={0.8}
+                        disabled={saving || sigBusy}
+                        onPress={() => { setRedoSign(false); setSigDirty(false); }}
+                      >
+                        <Ionicons name="arrow-undo-outline" size={13} color="rgba(255,255,255,0.72)" />
+                        <Text style={s.keepSignTx} numberOfLines={1}>Keep my saved one</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
-                  <SignatureStudio
-                    name={fullName}
-                    existing={signUri || snap?.signature}
-                    onCaptured={saveSignature}
-                    onEmpty={() => Alert.alert('Nothing to save', 'Draw your signature, or pick a hand.')}
-                  />
+                  {/* ⚠️ A SAVED SIGNATURE IS SHOWN, NOT A BLANK PAD WITH A LINE OF TEXT UNDER IT. The blank pad is
+                      what made a saved signature look lost; the studio opens only to replace it. */}
+                  {hasSign && !redoSign ? (
+                    <View style={s.sigSaved}>
+                      <View style={s.sigPaper}>
+                        <Image source={{ uri: signUri || snap?.signature || '' }} style={s.sigImg} resizeMode="contain" />
+                      </View>
+                      <TouchableOpacity style={s.sigRedo} activeOpacity={0.85} onPress={() => setRedoSign(true)}>
+                        <Ionicons name="brush-outline" size={14} color="rgba(255,255,255,0.72)" />
+                        <Text style={s.sigRedoTx}>Sign again</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <SignatureStudio
+                      ref={studio}
+                      name={fullName}
+                      existing={signUri || snap?.signature}
+                      onCaptured={saveSignature}
+                      onDirty={setSigDirty}
+                      onEmpty={() => Alert.alert('Nothing to save', 'Draw your signature, or pick a hand.')}
+                    />
+                  )}
+                  {skipped.signature && !hasSign && (
+                    <Text style={s.skipNote}>You skipped this last time — it is still optional.</Text>
+                  )}
                 </>
               )}
 
@@ -643,12 +1116,32 @@ export default function MakeYours() {
                     </>
                   ) : (
                     <>
-                      <TouchableOpacity style={s.drop} activeOpacity={0.9} onPress={pickFile}>
-                        <Ionicons name={file ? 'document-text' : 'cloud-upload-outline'} size={26} color={file ? E.mint : 'rgba(255,255,255,0.6)'} />
-                        <Text style={s.dropTx} numberOfLines={1}>{file ? file.name : 'Choose a PDF'}</Text>
-                        <Text style={s.dropSub} numberOfLines={2}>
-                          {file ? 'Tap to pick a different file' : 'We read it and pull out your experience'}
+                      {/* ⚠️ THE CV THE SERVER HOLDS IS SHOWN, WITH WHETHER IT HAS BEEN READ. Asking for it again is
+                          what sent the owner back to square one (2026-09-19). */}
+                      <TouchableOpacity style={[s.drop, (!!cv || legacyCv) && s.dropHave]} activeOpacity={0.9} onPress={pickFile}>
+                        <Ionicons
+                          name={cv ? (cv.status === 'error' ? 'alert-circle-outline' : 'document-text') : legacyCv ? 'document-text' : 'cloud-upload-outline'}
+                          size={26}
+                          color={cv ? (cv.status === 'error' ? '#FCA5A5' : E.mint) : legacyCv ? E.mint : 'rgba(255,255,255,0.6)'}
+                        />
+                        <Text style={s.dropTx} numberOfLines={1}>
+                          {cv ? (file ? file.name : `Your CV${cv.ext ? ` · ${cv.ext}` : ''}${cvDate(cv.uploadedAt)}`)
+                            : legacyCv ? (file ? file.name : 'Your CV is on file') : 'Choose your CV'}
                         </Text>
+                        {cv ? (
+                          <View style={s.cvState}>
+                            {(cv.status === 'pending' || cv.status === 'unread') && <ActivityIndicator size="small" color={E.mint} />}
+                            {cv.status === 'done' && <Ionicons name="checkmark-circle" size={14} color={E.mint} />}
+                            <Text style={[s.cvStateTx, cv.status === 'error' && s.cvStateErr]} numberOfLines={3}>
+                              {cv.status === 'done' ? 'Read ✓ — tap to replace'
+                                : cv.status === 'error' ? `${cv.error || 'We could not read this CV.'} Tap to choose another file.`
+                                : cv.status === 'slow' ? 'Still reading — this one is taking longer than usual. You can also type it out instead.'
+                                : 'Reading your CV…'}
+                            </Text>
+                          </View>
+                        ) : (
+                          <Text style={s.dropSub} numberOfLines={2}>{legacyCv ? `Tap to replace · ${RESUME_FORMATS_LINE}` : RESUME_FORMATS_LINE}</Text>
+                        )}
                       </TouchableOpacity>
                       <TextInput
                         style={[s.area, s.areaShort]}
@@ -668,9 +1161,12 @@ export default function MakeYours() {
                 <BuildStep
                   stage={stage}
                   error={genErr}
+                  outcome={outcome}
                   done={done}
-                  onStart={build}
+                  onStart={start}
                   onFinish={leave}
+                  onFix={() => { setGenErr(null); setOutcome(null); goTo(2); }}
+                  onPlans={() => router.push('/(subscription)/plans' as any)}
                 />
               )}
             </ScrollView>
@@ -682,18 +1178,18 @@ export default function MakeYours() {
       {!booting && step < LAST && (
         <View style={[s.footer, { paddingBottom: insets.bottom + 12 }]}>
           {step === 1 && (
-            <TouchableOpacity style={s.skip} activeOpacity={0.8} onPress={() => goTo(step + 1)}>
+            <TouchableOpacity style={s.skip} activeOpacity={0.8} disabled={saving || sigBusy} onPress={skipSign}>
               <Text style={s.skipTx}>Skip for now</Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity
-            style={[s.nextWrap, (!canAdvance || saving) && s.nextOff]}
+            style={[s.nextWrap, (!canAdvance || saving || sigBusy) && s.nextOff]}
             activeOpacity={0.9}
-            disabled={!canAdvance || saving}
+            disabled={!canAdvance || saving || sigBusy}
             onPress={next}
           >
             <LinearGradient colors={MINT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.nextBtn}>
-              {saving
+              {saving || sigBusy
                 ? <ActivityIndicator size="small" color={MINT_INK} />
                 : (
                   <>
@@ -775,10 +1271,10 @@ export default function MakeYours() {
  * and stops — it always moves, and it never claims a stage that has not started.
  */
 function BuildStep({
-  stage, error, done, onStart, onFinish,
+  stage, error, outcome, done, onStart, onFinish, onFix, onPlans,
 }: {
-  stage: GenStage | null; error: string | null; done: boolean;
-  onStart: () => void; onFinish: () => void;
+  stage: GenStage | null; error: string | null; outcome: BuildOutcome | null; done: boolean;
+  onStart: () => void; onFinish: () => void; onFix: () => void; onPlans: () => void;
 }) {
   const [shown, setShown] = useState(0);
   const target = stage ? stage.pct : 0;
@@ -816,11 +1312,20 @@ function BuildStep({
   }
 
   if (!stage) {
+    // ⚠️ EVERY END THAT IS NOT "READY" KEEPS THEM HERE, with the server's own sentence and the one action that
+    // fits it — never a silent return to Home. The refusals were all decided before the charge.
+    const reason = outcome && outcome.kind === 'refused' ? outcome.reason : null;
+    const late = !!outcome && outcome.kind === 'late';
+    const plans = reason === 'quota_exhausted' || reason === 'regen_limit';
+    const fix = reason === 'thin_input' || reason === 'no_resume';
+    const label = late ? 'Keep waiting' : plans ? 'See plans' : error ? 'Try again' : 'Build my resume';
     return (
       <View style={b.wrap}>
-        <Text style={b.h}>Ready when you are</Text>
+        <Text style={b.h}>{late ? 'Still building' : 'Ready when you are'}</Text>
         <Text style={b.p}>
-          This takes about a minute. You can put your phone down — it carries on in the background.
+          {late
+            ? 'Your resume is still being written. Keep waiting follows the same build — you will not be charged twice.'
+            : 'This takes about a minute. You can put your phone down — it carries on in the background.'}
         </Text>
         {!!error && (
           <View style={b.err}>
@@ -828,12 +1333,18 @@ function BuildStep({
             <Text style={b.errTx}>{error}</Text>
           </View>
         )}
-        <TouchableOpacity style={b.cta} activeOpacity={0.9} onPress={onStart}>
+        <TouchableOpacity style={b.cta} activeOpacity={0.9} onPress={plans ? onPlans : onStart}>
           <LinearGradient colors={MINT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={b.ctaBtn}>
-            <Ionicons name="sparkles" size={16} color={MINT_INK} />
-            <Text style={b.ctaTxt} numberOfLines={1}>{error ? 'Try again' : 'Build my resume'}</Text>
+            <Ionicons name={late ? 'hourglass-outline' : plans ? 'card-outline' : 'sparkles'} size={16} color={MINT_INK} />
+            <Text style={b.ctaTxt} numberOfLines={1}>{label}</Text>
           </LinearGradient>
         </TouchableOpacity>
+        {fix && (
+          <TouchableOpacity style={b.ghost} activeOpacity={0.85} onPress={onFix}>
+            <Ionicons name="create-outline" size={15} color="rgba(255,255,255,0.75)" />
+            <Text style={b.ghostTx} numberOfLines={1}>Add more about your experience</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -889,6 +1400,8 @@ const s = StyleSheet.create({
   stepDotWrap: { paddingVertical: 8 },
   stepDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.22)' },
   stepDotOn: { width: 20, backgroundColor: E.blue },
+  // A step ahead that is already done (the server said so on open) — reachable, so it reads as lit, not as blank.
+  stepDotDone: { backgroundColor: 'rgba(94,234,212,0.55)' },
 
   track: { height: 3, marginHorizontal: 14, borderRadius: 3, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.1)' },
   fillWrap: { ...StyleSheet.absoluteFillObject },
@@ -982,6 +1495,22 @@ const s = StyleSheet.create({
   },
   savedTx: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.7, color: E.mint },
 
+  // The saved signature, shown on the same white paper the studio draws on — so it reads as THE signature.
+  sigSaved: { gap: 10 },
+  sigPaper: {
+    height: 130, borderRadius: 18, overflow: 'hidden', padding: 14,
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: 'rgba(11,15,34,0.08)',
+  },
+  sigImg: { flex: 1, width: '100%' },
+  sigRedo: {
+    alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, height: 40, paddingHorizontal: 14,
+    borderRadius: 13, backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  sigRedoTx: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.72)', flexShrink: 1 },
+  keepSign: { marginLeft: 'auto', flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 4, paddingLeft: 8 },
+  keepSignTx: { fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.72)', flexShrink: 1 },
+  skipNote: { marginTop: 10, fontSize: 11.5, fontWeight: '600', color: 'rgba(255,255,255,0.45)', textAlign: 'center', flexShrink: 1 },
+
   /* experience */
   laneRow: { flexDirection: 'row', gap: 10, marginTop: 18 },
   lane: {
@@ -1012,6 +1541,11 @@ const s = StyleSheet.create({
   },
   dropTx: { fontSize: 15, fontWeight: '800', color: '#fff', flexShrink: 1 },
   dropSub: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.45)', textAlign: 'center', flexShrink: 1 },
+  // A CV on file: a solid rim instead of the dashed "drop here" one.
+  dropHave: { borderStyle: 'solid', borderColor: 'rgba(94,234,212,0.32)', backgroundColor: 'rgba(6,11,30,0.42)' },
+  cvState: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 4 },
+  cvStateTx: { fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.62)', textAlign: 'center', flexShrink: 1 },
+  cvStateErr: { color: '#FCA5A5' },
 
   // ⚠️ NO BAR BEHIND IT. This used to be a near-opaque panel with a hairline on top, which drew a
   // second background across the foot of a screen that is one continuous gradient — the same
@@ -1062,4 +1596,10 @@ const b = StyleSheet.create({
   },
   ctaBtn: { height: 54, borderRadius: 16, overflow: 'hidden', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   ctaTxt: { fontSize: 15.5, fontWeight: '800', color: MINT_INK, flexShrink: 1 },
+
+  ghost: {
+    marginTop: 12, alignSelf: 'stretch', height: 46, borderRadius: 14, flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', gap: 7, backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  ghostTx: { fontSize: 13.5, fontWeight: '700', color: 'rgba(255,255,255,0.75)', flexShrink: 1 },
 });

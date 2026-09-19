@@ -4,12 +4,15 @@ const router     = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const { asJob } = require('../middleware/asyncJob');   // opt-in minimize-resilient job wrapper
 const { generateAI, generationGate, saveResume, getResume, generatePDF, generateDocx, previewTemplates, listTemplates, homeThumb, homeCards } = require('../controllers/resumeBuilderController');
+// ⚠️ BEFORE asJob: a Make Yours build while the wizard's own build is still running JOINS it (202, same job id)
+// rather than starting — and charging — a second one. See onboardingProgress.joinRunningWizardBuild.
+const { joinRunningWizardBuild } = require('../services/onboardingProgress');
 
 router.get ('/',                  authenticateToken, getResume);
 router.get ('/templates',         authenticateToken, listTemplates);
 router.get ('/home-thumb',        authenticateToken, homeThumb);
 router.get ('/home-cards',        authenticateToken, homeCards);
-router.post('/generate-ai',       authenticateToken, asJob('resume_generate_ai')(generateAI));
+router.post('/generate-ai',       authenticateToken, joinRunningWizardBuild, asJob('resume_generate_ai')(generateAI));
 // A dry run of generate-ai's money decision — consumes, reserves and binds nothing (see generationGate).
 // POST, not GET: it takes the job fields the cache fingerprint is computed over.
 router.post('/generation-gate',   authenticateToken, generationGate);

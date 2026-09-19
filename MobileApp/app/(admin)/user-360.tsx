@@ -1811,6 +1811,7 @@ export default function User360Screen() {
                     sub={block
                       ? (block.code === 'never_opened_app' ? 'app never opened'
                         : block.code === 'android_no_fcm' ? `android ${ov.push?.app_version || ''} · no FCM`.trim()
+                        : block.code === 'device_signed_into_other_account' ? 'phone on another account'
                         : 'notifications off')
                       : (ov.push?.platform ? String(ov.push.platform) : '')}
                     tone={ov.push?.has_token ? C.emerald : C.rose}

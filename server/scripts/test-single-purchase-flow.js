@@ -32,7 +32,7 @@ process.env.USE_ASYNC_JOBS = 'false';               // drive the synchronous lan
 // What the AI was asked to do. Every counter here must stay flat across downloads.
 // `holds` (T17+): a letter whose subject contains `match` waits inside the model call until released — the moment a
 // user taps Cancel, or a second copy of the request arrives. `researchHang`: the researcher never answers (T19).
-const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null, models: [], configs: [], failModel: null, holds: [], researchHang: false };
+const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null, models: [], configs: [], failModel: null, holds: [], researchHang: false, prompts: [], resumeBody: null };
 const holdLetter = (match) => { const h = { match, entered: false }; h.promise = new Promise((r) => { h.release = r; }); ai.holds.push(h); return h; };
 // T17: the worker paused AFTER the charge (inside the notification that follows it), for user `u`.
 const notifyHolds = [];
@@ -195,7 +195,19 @@ async function dbGet(sql, params = []) {
 
   // ── everything else the handlers read ─────────────────────────────────────────────────────────
   if (/FROM user_resumes/.test(q)) return db.resumeRow;
+  // T24: db.metaFor(userId, sql) scripts the uploaded CV's parse per read (undefined = the old always-'done' row).
+  // ⚠️ uploadedResumeContextFor asks `AND parse_status = ?` with 'done' — a scripted row that is not done is no row.
+  if (/FROM resume_metadata/.test(q) && db.metaFor) {
+    const m = db.metaFor(params[0], q);
+    if (m !== undefined) return (m && /parse_status = \?/.test(q) && m.parse_status !== params[1]) ? null : m;
+  }
   if (/FROM resume_metadata/.test(q)) return { id: 1, user_id: params[0], parse_status: 'done', full_name: 'Test User', skills: '["node"]' };
+  // T24: the Make Yours wizard's progress row, and the age check it asks async_jobs for (onboardingProgress.jobOf).
+  if (/FROM user_onboarding WHERE user_id = \$1/.test(q)) return (db.onboarding && db.onboarding[params[0]]) || null;
+  if (/^SELECT id, status, \(created_at > NOW\(\) - INTERVAL '15 minutes'\) AS fresh FROM async_jobs WHERE id = \$1 AND user_id = \$2$/.test(q)) {
+    const j = db.wizardJobs && db.wizardJobs[params[0]];
+    return j && j.user_id === params[1] ? { id: params[0], status: j.status, fresh: j.fresh !== false } : null;
+  }
   if (/FROM user_credits/.test(q)) {
     if (db.creditsThrow) throw new Error('Connection terminated unexpectedly');
     return { credits_remaining: 0, expiry_date: null };
@@ -264,8 +276,9 @@ const genaiPath = require.resolve('@google/generative-ai');
 require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, exports: {
   GoogleGenerativeAI: class {
     getGenerativeModel(params) {
-      return { generateContent: async () => {
+      return { generateContent: async (arg) => {
         ai.resumeCalls++;
+        ai.prompts.push(typeof arg === 'string' ? arg : JSON.stringify(arg));   // T24: what the build was asked
         // T16b: which model was asked, with which generationConfig (index-aligned with ai.models), and a scripted
         // failure for it (a 503 storm, a depleted key).
         ai.models.push(params && params.model);
@@ -273,7 +286,13 @@ require.cache[genaiPath] = { id: genaiPath, filename: genaiPath, loaded: true, e
         const scripted = ai.failModel ? ai.failModel(params && params.model) : null;
         if (scripted) throw scripted;
         if (ai.onModelCall) ai.onModelCall();   // T12: the phone gives up while the model is still writing
-        const text = JSON.stringify({ personal_info: { full_name: '', email: '', phone: '', location: '' }, summary: 'x', experience: [], education: [], skills: [], projects: [], certifications: [], languages: [], achievements: [] });
+        // ⚠️ ONE REAL ROLE (2026-09-19). This canned answer used to have no experience, education or projects — the
+        // exact empty résumé user 616 was charged for twice. The builder lane now refuses that before the charge
+        // (422 thin_input, T24), so the ordinary answer says something; T24 sets ai.resumeBody to the empty one.
+        const body = ai.resumeBody || { personal_info: { full_name: '', email: '', phone: '', location: '' }, summary: 'x',
+          experience: [{ company: 'Northwind Traders', role: 'Backend Engineer', start_date: '2019', end_date: 'Present', highlights: ['Built the payments service'] }],
+          education: [], skills: [], projects: [], certifications: [], languages: [], achievements: [] };
+        const text = JSON.stringify(body);
         return { response: { text: () => text, candidates: [{ finishReason: 'STOP' }] } };
       } };
     }
@@ -1472,6 +1491,123 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
     // (f) a real failure is a NEW build: fresh id, no track (a fresh snapshot is read).
     const [id6, tr6] = RB.rerunOf({ kind: 'failed', message: 'x', retrySame: false }, 'rb-dead-6');
     ok('a real failure → Try again is a NEW build: a fresh id and no carried track', id6 !== 'rb-dead-6' && /^rb-/.test(id6) && tr6 === undefined, { id6, tr6 });
+  }
+
+  // ── T24 ──────────────────────────────────────────────────────────────────────────────────────
+  // 2026-09-19, user 616 (the owner's fresh account): two wizard builds 34 s apart, each from a CV that was still being
+  // read, each an EMPTY résumé ("Professional", no roles), each charged. These drive the REAL generateAI, asJob and
+  // onboardingProgress middleware: the empty answer is refused before the charge, the CV is waited for, and one
+  // wizard is one build however many times Build is tapped.
+  console.log('\n── T24 · ⚠️ the Make Yours wizard: an empty résumé is never charged, the CV is waited for, one wizard = one build ──');
+  {
+    const OB = require(path.join(ROOT, 'server', 'services', 'onboardingProgress.js'));
+    const { asJob } = require(path.join(ROOT, 'server', 'middleware', 'asyncJob.js'));
+    RB._cvWait.pollMs = 5; RB._cvWait.maxMs = 200;
+    ent.sub = null; ent.gate = { allowed: true, remaining: 5 }; ent.consumeFor = null;
+    // Exactly what the wizard's upload lane sent in both of 616's builds (async_jobs 868edb78 / f2e23546).
+    const WIZ = { name: 'Rishi Samadhiya', email: 'r@e.st', phone: '+91 98765 43210', location: 'Pune, India',
+      rawText: 'Please build my resume from the CV I uploaded for Rishi Samadhiya.', includeUploadedResume: true };
+    const resumeConsumed = () => ent.consumed.filter((c) => c.kind === 'resume').length;
+    const finishedSince = (mark) => runsSince(mark).filter((r) => /^INSERT INTO user_onboarding/.test(r.sql) && /finished_at/.test(r.sql)).length;
+
+    // (a) the model answers with the empty résumé 616 was charged for
+    ai.resumeBody = { personal_info: { full_name: '', email: '', phone: '', location: '', title: 'Professional' }, summary: 'Professional',
+      experience: [], education: [], skills: { technical: [], soft: [] }, projects: [], certifications: [], languages: [], achievements: ['Achieved [X%] improvement'] };
+    let runMark = db.runs.length, att0 = ent.attempts.length, c0 = resumeConsumed();
+    const thin = await call(RB.generateAI, 616, { ...WIZ, source: 'onboarding' });
+    ok('⚠️ an EMPTY résumé → 422 thin_input, and the sentence says nothing was charged',
+      thin.statusCode === 422 && thin.body.reason === 'thin_input' && /nothing was charged/i.test(thin.body.error), thin.body);
+    ok('⚠️ …consumeOnSuccess was never asked, nothing was consumed, nothing saved to user_resumes',
+      ent.attempts.length === att0 && resumeConsumed() === c0 && !savedResumeSince(runMark), { attempts: ent.attempts.length - att0 });
+    ok('…and the wizard is NOT finished by it', finishedSince(runMark) === 0);
+    ai.resumeBody = { ...ai.resumeBody, experience: [{ company: ' ', role: '', highlights: [''] }] };
+    const blank = await call(RB.generateAI, 616, { ...WIZ });
+    ok('…a role whose fields are all blank is empty too — on ANY builder-lane build, not only the wizard\'s',
+      blank.statusCode === 422 && blank.body.reason === 'thin_input', blank.body);
+    ai.resumeBody = null;
+
+    // (b) Build tapped while the CV is still being read: the build waits for it, and the prompt carries it.
+    let reads = 0;
+    const CV_ROW = { id: 9, user_id: 616, parse_status: 'done', raw_text: 'CV-MARKER Project Manager at Tata Consultancy Services 2010-2024', job_titles: ['Project Manager'] };
+    db.metaFor = (u, q) => {
+      if (u !== 616) return undefined;
+      if (/^SELECT parse_status, parse_error FROM resume_metadata/.test(q)) {
+        return ++reads < 3 ? { parse_status: 'pending', parse_error: null } : { parse_status: 'done', parse_error: null };
+      }
+      return reads >= 3 ? CV_ROW : { ...CV_ROW, parse_status: 'pending' };
+    };
+    ai.prompts.length = 0; runMark = db.runs.length; c0 = resumeConsumed();
+    const waited = await call(RB.generateAI, 616, { ...WIZ, source: 'onboarding', fromUpload: true });
+    ok('⚠️ a CV still being read is WAITED FOR (asked until it read "done"), then built',
+      waited.statusCode === 200 && reads >= 3, { status: waited.statusCode, reads, body: waited.body && waited.body.error });
+    ok('⚠️ …and the prompt the model got CONTAINS that CV', ai.prompts.some((p) => p.includes('CV-MARKER')), ai.prompts.map((p) => p.slice(0, 80)));
+    ok('…exactly one résumé charged, and saved', resumeConsumed() === c0 + 1 && savedResumeSince(runMark));
+    ok('⚠️ …and THAT is what finishes the wizard (charged and saved)', finishedSince(runMark) === 1, runsSince(runMark).map((r) => r.sql.slice(0, 50)));
+
+    // (c) fromUpload, and the CV is never read (stuck 'pending') — or its read failed.
+    db.metaFor = (u, q) => (u !== 616 ? undefined
+      : /^SELECT parse_status, parse_error/.test(q) ? { parse_status: 'pending', parse_error: null } : { ...CV_ROW, parse_status: 'pending' });
+    const aiB = ai.resumeCalls; att0 = ent.attempts.length; runMark = db.runs.length;
+    const notReady = await call(RB.generateAI, 616, { ...WIZ, source: 'onboarding', fromUpload: true });
+    ok('⚠️ fromUpload with the CV never read → 409 cv_not_ready, "Nothing was charged"',
+      notReady.statusCode === 409 && notReady.body.reason === 'cv_not_ready' && /Nothing was charged/.test(notReady.body.error), notReady.body);
+    ok('⚠️ …NO AI call, no charge attempted, nothing saved, not finished',
+      ai.resumeCalls === aiB && ent.attempts.length === att0 && !savedResumeSince(runMark) && finishedSince(runMark) === 0);
+    db.metaFor = (u, q) => (u !== 616 ? undefined
+      : /^SELECT parse_status, parse_error/.test(q) ? { parse_status: 'error', parse_error: 'unsupported document: x' } : null);
+    const unreadable = await call(RB.generateAI, 616, { ...WIZ, source: 'onboarding', fromUpload: true });
+    ok('a CV whose read FAILED → 409 cv_unreadable (the wizard sends them back to the upload), no AI call',
+      unreadable.statusCode === 409 && unreadable.body.reason === 'cv_unreadable' && ai.resumeCalls === aiB, unreadable.body);
+    db.metaFor = (u, q) => (u !== 616 ? undefined
+      : /^SELECT parse_status, parse_error/.test(q) ? { parse_status: 'pending', parse_error: null } : { ...CV_ROW, parse_status: 'pending' });
+    const typed = await call(RB.generateAI, 616, { ...WIZ, rawText: RESUME_BODY.rawText, source: 'onboarding' });
+    ok('…while a build from typed notes (no fromUpload) goes ahead without the unread CV — the notes are the content',
+      typed.statusCode === 200, typed.body && typed.body.error);
+    db.metaFor = null;
+
+    // (d) ONE TAP, ONE JOB: the same wizard clientBuildId twice (a lost 202 and its retry) → the same job, one charge.
+    const route = asJob('resume_generate_ai')(RB.generateAI);
+    const asyncCall = async (u, body) => { const res = mkRes(); await route(mkReq(u, body), res, () => {}); return res; };
+    c0 = resumeConsumed(); runMark = db.runs.length;
+    const first = await asyncCall(617, { ...RESUME_BODY, __async: true, clientBuildId: 'wiz-tap-1', source: 'onboarding' });
+    const again = await asyncCall(617, { ...RESUME_BODY, __async: true, clientBuildId: 'wiz-tap-1', source: 'onboarding' });
+    const jid = first.body && first.body.jobId;
+    await waitFor(() => jobs.completed.some((j) => j.id === jid) || jobs.failed.some((j) => j.id === jid));
+    ok('⚠️ the same wizard clientBuildId twice → ONE job (the repeat is handed the first one)',
+      first.statusCode === 202 && again.statusCode === 202 && !!jid && again.body.jobId === jid && again.body.deduped === true, { first: first.body, again: again.body });
+    ok('⚠️ …and ONE charge', resumeConsumed() === c0 + 1, resumeConsumed() - c0);
+    ok('the wizard\'s job is recorded on its progress row as it starts (markBuild), so a reopened wizard can rejoin it',
+      runsSince(runMark).some((r) => /^INSERT INTO user_onboarding/.test(r.sql) && /build_job_id/.test(r.sql) && r.params && r.params[1] === jid));
+
+    // (e) the wizard REOPENED while its build runs (a second tap, another device): joined, never a second job.
+    db.onboarding = { 618: { user_id: 618, build_job_id: 'wiz-job-running', skipped: {} } };
+    db.wizardJobs = { 'wiz-job-running': { user_id: 618, status: 'processing' } };
+    let nexted = 0;
+    const jRes = mkRes();
+    await OB.joinRunningWizardBuild(mkReq(618, { ...RESUME_BODY, __async: true, clientBuildId: 'wiz-tap-2', source: 'onboarding' }), jRes, () => { nexted++; });
+    ok('⚠️ a wizard build while its last one is still RUNNING → 202 with THAT job, and nothing new starts',
+      jRes.statusCode === 202 && jRes.body && jRes.body.jobId === 'wiz-job-running' && jRes.body.joined === true && nexted === 0, jRes.body);
+    db.wizardJobs['wiz-job-running'].status = 'completed';
+    const jRes2 = mkRes();
+    await OB.joinRunningWizardBuild(mkReq(618, { ...RESUME_BODY, __async: true, source: 'onboarding' }), jRes2, () => { nexted++; });
+    db.wizardJobs['wiz-job-running'] = { user_id: 618, status: 'processing', fresh: false };
+    await OB.joinRunningWizardBuild(mkReq(618, { ...RESUME_BODY, __async: true, source: 'onboarding' }), mkRes(), () => { nexted++; });
+    db.wizardJobs['wiz-job-running'] = { user_id: 618, status: 'processing' };
+    await OB.joinRunningWizardBuild(mkReq(618, { ...RESUME_BODY, __async: true }), mkRes(), () => { nexted++; });
+    ok('…a FINISHED job, one past the 15-minute window, and a build that is not the wizard\'s all pass straight through',
+      nexted === 3 && !jRes2.sent, { nexted });
+    db.onboarding = null; db.wizardJobs = null;
+
+    // (f) a refusal never finishes the wizard, and neither does a build that is not the wizard's.
+    runMark = db.runs.length;
+    ent.consumeFor = () => 'none';
+    const refusedWiz = await call(RB.generateAI, 616, { ...RESUME_BODY, source: 'onboarding' });
+    ent.consumeFor = null;
+    const plain = await call(RB.generateAI, 616, { ...RESUME_BODY });
+    ok('finish() runs ONLY for a wizard build that was charged and saved: not after a 402, not for a Builder build',
+      refusedWiz.statusCode === 402 && plain.statusCode === 200 && finishedSince(runMark) === 0,
+      { refused: refusedWiz.statusCode, plain: plain.statusCode, finished: finishedSince(runMark) });
+    RB._cvWait.pollMs = 1500; RB._cvWait.maxMs = 75000;
   }
 
   // ── tidy: the handlers are real, so they wrote real files. Remove everything THIS RUN created

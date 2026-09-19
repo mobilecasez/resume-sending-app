@@ -123,7 +123,12 @@ export default function JobSearchLauncher({
 
   useEffect(() => { onExpandChange?.(open); }, [open, onExpandChange]);
 
-  const watchTutorial = useCallback(() => { try { router.push(TUTORIAL_ROUTE); } catch {} }, [router]);
+  // ⚠️ 2026-09-19: this row promises "search · save a job · write the cover letter · apply" and used
+  // to open clip 01 "Set up your profile". It now opens 03 "Save a job" and plays on through 04 and
+  // 05 — exactly the run its caption lists (26 + 28 + 40 s, the "90 seconds").
+  const watchTutorial = useCallback(() => {
+    try { router.push({ pathname: TUTORIAL_ROUTE, params: { film: 'save_job', until: 'apply' } } as never); } catch {}
+  }, [router]);
 
   // ── Remember the last search, across restarts ────────────────────────────────────────────────
   // Retyping the same role and city every time the app is reopened is the kind of small friction

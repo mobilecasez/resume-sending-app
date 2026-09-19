@@ -1627,6 +1627,29 @@
             }
         }
 
+        /**
+         * Undo what choosing a file drew on the page — the résumé card, the photo and the signature previews, the
+         * avatar and the three file inputs. loadUserProfile() only ever SETS a preview (it has nothing to set when
+         * there is no stored file), so a failed save has to clear them first or the page keeps showing files the
+         * server threw away.
+         */
+        function clearUploadPreviews() {
+            document.getElementById('resumeFile').value = '';
+            document.getElementById('photoFile').value = '';
+            document.getElementById('signatureFile').value = '';
+            document.getElementById('resumeInfo').classList.remove('active');
+            document.getElementById('resumeUpload').classList.remove('has-file', 'show-icon');
+            document.getElementById('resumeUploadContent').classList.remove('hidden');
+            document.getElementById('resumeIconDisplay').classList.add('hidden');
+            for (const which of ['photo', 'signature']) {
+                document.getElementById(`${which}Preview`).classList.remove('active');
+                document.getElementById(`${which}UploadContent`).classList.remove('hidden');
+                document.getElementById(`${which}PreviewImg`).src = '';
+            }
+            const avatar = document.getElementById('profileAvatar');
+            if (avatar) avatar.innerHTML = '';
+        }
+
         async function saveProfile() {
             const formData = new FormData();
             
@@ -1664,6 +1687,15 @@
                     
                     await loadUserProfile();
                 } else {
+                    // ⚠️ NOTHING IN THIS REQUEST WAS SAVED (2026-09-20). The server refuses the whole upload when the
+                    // CV cannot be read, and deletes the photo and signature that came with it — but this page kept
+                    // showing the previews it had drawn from the chosen files, so the user believed those two had
+                    // landed. Put the page back to what is really on file before showing the reason.
+                    resumeFile = null;
+                    photoFile = null;
+                    signatureFile = null;
+                    clearUploadPreviews();
+                    await loadUserProfile();
                     showToast(result.error || 'Failed to upload files', 'error');
                 }
             } catch (error) {

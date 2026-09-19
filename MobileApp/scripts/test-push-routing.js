@@ -85,16 +85,103 @@ eq("'guide' is the same thing as 'help'",
 // The wire value was kept BECAUSE of that history — a build shipped before this screen exists
 // resolves 'tutorial' to the guide rather than to nothing, so the how_it_works push is safe to
 // send while some of the fleet is still on an older build.
+// `reuse: true` = navigate, not push: a tutorial push tapped while the tutorial is open retargets it.
 eq("'tutorial' opens the explainer video",
   resolveRoute({ route: 'tutorial' }),
-  { kind: 'navigate', pathname: '/(tutorial)', params: {} });
+  { kind: 'navigate', pathname: '/(tutorial)', params: {}, reuse: true });
 
 eq("'video' is an accepted alias for it",
   resolveRoute({ route: 'video' }),
-  { kind: 'navigate', pathname: '/(tutorial)', params: {} });
+  { kind: 'navigate', pathname: '/(tutorial)', params: {}, reuse: true });
 
 ok("'tutorial' never lands on nothing (the how_it_works push depends on it)",
   resolveRoute({ route: 'tutorial' }).kind !== 'none');
+
+// ── The tutorial opens ON the clip the push is about ──────────────────────────────────────────
+// ⚠️ 2026-09-19: this case used to return params {} whatever the payload said, so the screen fell
+// back to clip 01 "Set up your profile" — the owner tapped "Watch the app fill a job form for you"
+// and had to hunt through the chapter strip for the form-filling part.
+console.log('\ntutorial clip');
+const NID = '3f2b9c1e-8a4d-4f6b-9c2e-1a2b3c4d5e6f';
+const tut = (params) => ({ kind: 'navigate', pathname: '/(tutorial)', params, reuse: true });
+
+eq('film + until pass through',
+  resolveRoute({ route: 'tutorial', params: { film: 'cover_letter', until: 'apply' } }),
+  tut({ film: 'cover_letter', until: 'apply' }));
+eq('a film alone opens that clip',
+  resolveRoute({ route: 'tutorial', params: { film: 'apply' } }), tut({ film: 'apply' }));
+eq("a clip's on-screen number works ('5' → apply)",
+  resolveRoute({ route: 'tutorial', params: { film: '5' } }), tut({ film: 'apply' }));
+eq("…zero-padded too ('04' → cover_letter)",
+  resolveRoute({ route: 'tutorial', params: { film: '04' } }), tut({ film: 'cover_letter' }));
+eq('…and as a number (4 → cover_letter)',
+  resolveRoute({ route: 'tutorial', params: { film: 4 } }), tut({ film: 'cover_letter' }));
+eq('key case is forgiven',
+  resolveRoute({ route: 'tutorial', params: { film: 'Cover_Letter' } }), tut({ film: 'cover_letter' }));
+eq('an unknown film is dropped (opens 01, as before — never a guessed clip)',
+  resolveRoute({ route: 'tutorial', params: { film: 'autofill' } }), tut({}));
+eq('a hostile film is dropped',
+  resolveRoute({ route: 'tutorial', params: { film: '../../(admin)/users' } }), tut({}));
+eq('an out-of-range number is dropped (6)',
+  resolveRoute({ route: 'tutorial', params: { film: '6' } }), tut({}));
+eq('…and 0',
+  resolveRoute({ route: 'tutorial', params: { film: '0' } }), tut({}));
+eq('a non-scalar film is dropped',
+  resolveRoute({ route: 'tutorial', params: { film: { key: 'apply' } } }), tut({}));
+eq('an until BEFORE the film is dropped (it would chain nothing)',
+  resolveRoute({ route: 'tutorial', params: { film: 'apply', until: 'profile' } }), tut({ film: 'apply' }));
+eq('an until EQUAL to the film is dropped',
+  resolveRoute({ route: 'tutorial', params: { film: 'apply', until: 'apply' } }), tut({ film: 'apply' }));
+eq('an until with no film is dropped',
+  resolveRoute({ route: 'tutorial', params: { until: 'apply' } }), tut({}));
+eq('an unknown until is dropped, the film kept',
+  resolveRoute({ route: 'tutorial', params: { film: 'resume', until: 'forever' } }), tut({ film: 'resume' }));
+eq('params as a JSON string still carry the film',
+  resolveRoute({ route: 'tutorial', params: '{"film":"cover_letter","until":"apply"}' }),
+  tut({ film: 'cover_letter', until: 'apply' }));
+eq("the 'video' alias carries the film too",
+  resolveRoute({ route: 'video', params: { film: 'save_job' } }), tut({ film: 'save_job' }));
+eq('extra params are not forwarded',
+  resolveRoute({ route: 'tutorial', params: { film: 'apply', redirect: 'https://evil.example' } }), tut({ film: 'apply' }));
+// The push's own id (top level of `data`, stamped by the server on every push) now reaches the
+// screen, so a watch is credited to the campaign — 0 of the tutorial events in production had one.
+eq('the push nid rides along to the screen',
+  resolveRoute({ route: 'tutorial', params: { film: 'apply' }, nid: NID }), tut({ film: 'apply', nid: NID }));
+eq('a junk nid is dropped',
+  resolveRoute({ route: 'tutorial', params: { film: 'apply' }, nid: "x'; DROP TABLE push_sends" }), tut({ film: 'apply' }));
+eq('a nid with no film still attributes (and opens 01)',
+  resolveRoute({ route: 'tutorial', nid: NID }), tut({ nid: NID }));
+ok('only the tutorial asks to reuse its screen — every other route still pushes',
+  ['/(discover)', '/(ai-hub)', 'support', 'usage', 'plans', 'rewards', 'admin-support'].every((r) => resolveRoute({ route: r }).reuse === undefined));
+
+// Lockstep: the router's clip list IS the screen's FILMS table, in order. A clip renamed on one side
+// only would silently open 01 again — the very bug this fixes.
+{
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', '(tutorial)', 'index.tsx'), 'utf8');
+  const block = src.match(/const FILMS = \[([\s\S]*?)\] as const;/);
+  const keys = block ? [...block[1].matchAll(/key:\s*'([a-z_]+)'/g)].map((m) => m[1]) : [];
+  eq("TUTORIAL_FILMS is the tutorial screen's FILMS keys, in order", M.TUTORIAL_FILMS, keys);
+}
+
+// End to end across the wire: render the REAL server template and feed what it sends into the REAL
+// resolver. Pins the template → clip mapping, not just each half of it.
+{
+  const T = require(path.join(__dirname, '..', '..', 'server', 'services', 'notifyTemplates'));
+  const tutorialTpls = T.TEMPLATES.filter((t) => t.route === 'tutorial');
+  ok('the server has at least one tutorial template', tutorialTpls.length > 0);
+  for (const tpl of tutorialTpls) {
+    const r = T.render(tpl, { state: {} });
+    const a = resolveRoute({ route: r.route, params: r.params, nid: NID });
+    ok(`${tpl.key}: the app opens the clip the server named (never 01 by default)`,
+      a.kind === 'navigate' && !!a.params.film && a.params.film === r.params.film
+        && (r.params.until === undefined || a.params.until === r.params.until), { sent: r.params, opened: a.params });
+  }
+  const how = T.get('how_it_works');
+  const r = T.render(how, { state: {} });
+  eq("how_it_works ('Watch the app fill a job form') → clip 04, playing on into 05",
+    resolveRoute({ route: r.route, params: r.params, nid: NID }).params,
+    { film: 'cover_letter', until: 'apply', nid: NID });
+}
 
 // ── Lifecycle-nudge destinations (build 143) ──────────────────────────────────────────────────
 // These exist because the automated nudges point at them. A nudge whose route the app silently
@@ -251,6 +338,36 @@ console.log('\nhandleNotificationRoute');
   try { await handleNotificationRoute({ route: 'profile' }, null); } catch (_) { threw = true; }
   ok('a null router is survivable', threw === false);
 
+  // The tutorial goes through router.navigate: in expo-router 6 a NAVIGATE to the screen already on
+  // top REPLACES its params (same key), where PUSH stacked a second player over a first one that
+  // kept talking. From anywhere else navigate appends, exactly like push.
+  const mkNavRouter = () => {
+    const calls = [];
+    return {
+      calls,
+      push: (href) => calls.push(['push', href]),
+      navigate: (href) => calls.push(['navigate', href]),
+      canDismiss: () => true,
+      dismissAll: () => calls.push(['dismissAll']),
+    };
+  };
+  r = mkNavRouter();
+  await handleNotificationRoute({ route: 'tutorial', params: { film: 'cover_letter', until: 'apply' }, nid: NID }, r);
+  eq('tutorial → router.navigate with film + until + nid', r.calls,
+    [['navigate', { pathname: '/(tutorial)', params: { film: 'cover_letter', until: 'apply', nid: NID } }]]);
+  r = mkRouter();
+  await handleNotificationRoute({ route: 'tutorial', params: { film: 'apply' } }, r);
+  eq('…falling back to push on a router without navigate', r.calls,
+    [['push', { pathname: '/(tutorial)', params: { film: 'apply' } }]]);
+  r = mkNavRouter();
+  await handleNotificationRoute({ route: '/(discover)', params: { jobId: 'gj_abc' } }, r);
+  eq('every other route still pushes, even when navigate exists', r.calls,
+    [['push', { pathname: '/(discover)', params: { jobId: 'gj_abc' } }]]);
+  const boomNav = { navigate: () => { throw new Error('navigate exploded'); }, push: () => {} };
+  threw = false;
+  try { await handleNotificationRoute({ route: 'tutorial', params: { film: 'apply' } }, boomNav); } catch (_) { threw = true; }
+  ok('a throwing navigate is swallowed', threw === false);
+
   // ── 4. The hand-off must actually COMPLETE ──────────────────────────────────────────────────
   // Writing the focus key is only half a profile deep link; App.js never reads it unless something
   // puts the app on the profile screen. takePendingNav is the request HomeScreen picks up, and it
@@ -335,6 +452,43 @@ console.log('\nhandleNotificationRoute');
   r2 = mkRouter();
   await handleNotificationResponse(lastResponse, r2);
   eq('the warm listener does not re-handle the cold-start tap', r2.calls, []);
+
+  // ── 6. The tutorial push, through BOTH tap paths, lands on its clip ─────────────────────────
+  // The owner's tap was a COLD start (push_opens cold_start=true, build 209) and landed on 01.
+  console.log('\ntutorial push → its clip (warm + cold)');
+  const tutData = (nid) => ({ type: 'reminder', route: 'tutorial', params: { film: 'cover_letter', until: 'apply' }, templateKey: 'how_it_works', nid });
+  const NID2 = '9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a';
+
+  store = mkStore(); __setStorageForTests(store); __resetHandledForTests();
+  r2 = mkNavRouter();
+  await handleNotificationResponse(mkResponse('warm-tut-1', tutData(NID)), r2);
+  eq('WARM tap opens clip 04 and plays on to 05', r2.calls,
+    [['navigate', { pathname: '/(tutorial)', params: { film: 'cover_letter', until: 'apply', nid: NID } }]]);
+  // A second push of the same kind, tapped while the first is still on screen: a new nid, so the
+  // screen sees a new request (and navigate retargets it instead of stacking a second player).
+  await handleNotificationResponse(mkResponse('warm-tut-2', tutData(NID2)), r2);
+  eq('a second tutorial tap is a new request (new nid), again via navigate', r2.calls[1],
+    ['navigate', { pathname: '/(tutorial)', params: { film: 'cover_letter', until: 'apply', nid: NID2 } }]);
+
+  store = mkStore(); __setStorageForTests(store); __resetHandledForTests();
+  let clearedTut = 0;
+  __setNotificationsForTests({
+    getLastNotificationResponseAsync: async () => mkResponse('cold-tut-1', tutData(NID)),
+    clearLastNotificationResponseAsync: async () => { clearedTut++; },
+  });
+  r2 = mkNavRouter();
+  await handleColdStartNotification(r2);
+  eq('COLD START opens clip 04 and plays on to 05', r2.calls,
+    [['navigate', { pathname: '/(tutorial)', params: { film: 'cover_letter', until: 'apply', nid: NID } }]]);
+  ok('…and the launch response is cleared so it cannot replay', clearedTut === 1, clearedTut);
+
+  // Older payload (no film — what every tutorial push sent before 2026-09-19): still opens the
+  // tutorial, at 01, exactly as before. Nothing about an old push got worse.
+  store = mkStore(); __setStorageForTests(store); __resetHandledForTests();
+  r2 = mkNavRouter();
+  await handleNotificationResponse(mkResponse('old-tut', { route: 'tutorial', params: {} }), r2);
+  eq('an old film-less tutorial push still opens the tutorial at 01', r2.calls,
+    [['navigate', { pathname: '/(tutorial)', params: {} }]]);
 
   __setStorageForTests(null);
   __setNotificationsForTests(null);

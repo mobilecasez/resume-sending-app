@@ -1197,6 +1197,39 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   ok('GET /:id → DocMeta + payload, stale false, a computed rule-only design, never the research',
     r.statusCode === 200 && r.body.doc.docId === 9 && r.body.doc.stale === false && r.body.doc.summary.title === 'Engineer'
     && r.body.doc.design && r.body.doc.design.ranked.length === RIDS.length && !('research' in r.body.doc) && r.body.doc.payload.personal_info, r.body);
+  // ⚠️ A LETTER STORED WITH THE MODEL'S JSON IN IT IS SERVED REPAIRED (2026-09-19: the Airbus letter's Customize page showed
+  // "Here is the JSON output:" and a ```json block as its paragraphs 5 and 6). fixtures/letter-doc15-stored.html is what
+  // production stored (user_employer_documents 15). The route never writes: the editor sends back what it was served.
+  {
+    const LT = require(path.join(ROOT, 'server/utils/letterText.js'));
+    const DOC15 = fs.readFileSync(path.join(ROOT, 'server/scripts/fixtures/letter-doc15-stored.html'), 'utf8');
+    const letterRow = (html) => ({ id: 15, kind: 'cover_letter', employer_name: 'Airbus', employer_id: null, job_url: '', job_title: 'Cyber Security Manager', created_at: new Date(), updated_at: new Date(), edited_at: new Date(), input_fingerprint: 'x', payload: { coverLetterHtml: html, subject: 'Application for Cyber Security Manager — Rishi Samadhiya', companyName: 'Airbus', hiringManager: 'Head of Cybersecurity' }, research: null, design: null });
+    const row15 = letterRow(DOC15);
+    docs.getById = async () => row15;
+    r = await callRoute('get', '/:id', { params: { id: '15' } });
+    const served = (r.body && r.body.doc && r.body.doc.payload) || {};
+    ok('⚠️ GET /:id of the stored Airbus letter serves FOUR paragraphs — no fence, no JSON key, no "Here is the JSON output:", nothing twice',
+      r.statusCode === 200 && (served.coverLetterHtml.match(/<\/p>/g) || []).length === 4 && !/```|"cover_letter"|Here is the JSON|I have completed|<br>\}/.test(served.coverLetterHtml)
+        && !LT.looksContaminatedHtml(served.coverLetterHtml), served.coverLetterHtml && served.coverLetterHtml.slice(-200));
+    ok('…the first three paragraphs byte for byte as stored, the fourth without the JSON\'s closing quote and brace',
+      served.coverLetterHtml && served.coverLetterHtml.startsWith(DOC15.split('</p>').slice(0, 3).map((p) => p + '</p>').join(''))
+        && /Thank you for your consideration\.<\/p>$/.test(served.coverLetterHtml));
+    ok('…every other payload line exactly as stored, and the stored row untouched (a read never writes)',
+      served.subject === row15.payload.subject && served.companyName === 'Airbus' && served.hiringManager === 'Head of Cybersecurity' && row15.payload.coverLetterHtml === DOC15);
+    const CLEAN = '<p style="margin-bottom: 15px; line-height: 1.6;">I am applying for the role, a "quoted" word, and XML/JSON APIs.</p><p>Thank you.</p>';
+    docs.getById = async () => letterRow(CLEAN);
+    r = await callRoute('get', '/:id', { params: { id: '15' } });
+    ok('a clean letter is served exactly as stored (byte for byte)', r.statusCode === 200 && r.body.doc.payload.coverLetterHtml === CLEAN, r.body.doc && r.body.doc.payload);
+    // …and the editor's next save of what it was served heals the row.
+    docs.slimById = async () => ({ id: 15, kind: 'cover_letter' });
+    let healed = null;
+    docs.getById = async () => row15;
+    docs.updatePayload = async (uid, id, payload) => { healed = payload; return { ok: true, updatedAt: 'now' }; };
+    r = await callRoute('put', '/:id', { params: { id: '15' }, body: { payload: served } });
+    ok('…and the Customize page\'s next save of the served letter stores the four clean paragraphs (the row heals)',
+      r.statusCode === 200 && healed && (healed.coverLetterHtml.match(/<\/p>/g) || []).length === 4 && !LT.looksContaminatedHtml(healed.coverLetterHtml), healed && healed.coverLetterHtml.slice(-120));
+    docs.getById = realDocs.getById; docs.slimById = realDocs.slimById; docs.updatePayload = realDocs.updatePayload;
+  }
   docs.slimById = async () => ({ id: 9, kind: 'resume' });
   let updated = 0;
   docs.updatePayload = async () => { updated++; return { ok: true, updatedAt: 'now' }; };
@@ -1722,7 +1755,9 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   ok('DELETE un-hides exactly that key for that user', res.body.success === true && /^DELETE FROM user_home_hidden_targets WHERE user_id = \$1 AND target_key = \$2/.test(db.log[0].sql) && db.log[0].params[1] === 'job_https://x.test/1');
   const hubRoutes = require(path.join(ROOT, 'server/routes/aiHub.js'));
   const hubLayers = hubRoutes.stack.filter((l) => l.route).map((l) => ({ m: Object.keys(l.route.methods)[0], p: l.route.path, auth: l.route.stack[0].handle === auth.authenticateToken }));
-  for (const [m, p] of [['post', '/employers/:employerId/untrack'], ['get', '/home/hidden-targets'], ['post', '/home/hidden-targets'], ['delete', '/home/hidden-targets']]) {
+  // (+ the saved "Designing for" row shared by the user's phones, 2026-09-20 — server/services/homeRoster.js)
+  for (const [m, p] of [['post', '/employers/:employerId/untrack'], ['get', '/home/hidden-targets'], ['post', '/home/hidden-targets'], ['delete', '/home/hidden-targets'],
+    ['get', '/home/roster'], ['put', '/home/roster']]) {
     ok(`router: ${m.toUpperCase()} ${p} behind auth`, hubLayers.some((l) => l.m === m && l.p === p && l.auth));
   }
   const hubC = strip(R('server/controllers/aiHubController.js'));
@@ -1788,7 +1823,16 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
     const E503 = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.'), { status: 503, statusText: 'Service Unavailable' });
     const E503_TEXT_ONLY = () => new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [503 Service Unavailable] This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.');
     const E429 = () => Object.assign(new Error('[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [429 Too Many Requests] Your prepayment credits are depleted. RESOURCE_EXHAUSTED'), { status: 429, statusText: 'Too Many Requests' });
-    const LETTER = (who) => JSON.stringify({ to: 'Hiring Manager', employer_name: 'Acme Legacy GmbH', position: 'Backend Engineer', addresses: ['Hauptstraße 12, 45128 Essen, Germany'], subject: 'Application for Backend Engineer — Ada', cover_letter: `With **8 Years** in payments, this letter was written by ${who}.\n\nParagraph two about **Node.js**.\n\nParagraph three about **PostgreSQL**.\n\nParagraph four, thank you.` });
+    // A letter as long as a real one: the writer refuses fewer than letterText.MIN_WORDS words (2026-09-19) and asks again.
+    // ⚠️ A DIFFERENT fill per paragraph (review round 3, 2026-09-20): one shared fill made the four paragraphs near-copies of
+    // each other, which the writer's near-copy rule (letterText.isNearDuplicate) now rightly refuses as one paragraph four times.
+    const FILL = [
+      ' I rebuilt the settlement pipeline for card and bank payouts, cut reconciliation from two days to four hours, and wrote the runbooks the finance team still follows at every month-end close.',
+      ' Product lookup moved from nightly batch jobs to streaming indexes, so merchants saw their price changes within seconds and a whole class of stale-catalogue support tickets simply disappeared.',
+      ' An audit of storage tiers, connection pooling and query plans trimmed the monthly database bill by thirty percent, while the busiest customer dashboards actually got faster that quarter.',
+      ' I would welcome a conversation about how this experience could help your platform team, and I am happy to relocate to Essen for the role whenever it suits your hiring plans.',
+    ];
+    const LETTER = (who) => JSON.stringify({ to: 'Hiring Manager', employer_name: 'Acme Legacy GmbH', position: 'Backend Engineer', addresses: ['Hauptstraße 12, 45128 Essen, Germany'], subject: 'Application for Backend Engineer — Ada', cover_letter: `With **8 Years** in payments, this letter was written by ${who}.${FILL[0]}\n\nParagraph two about **Node.js**.${FILL[1]}\n\nParagraph three about **PostgreSQL**.${FILL[2]}\n\nParagraph four, thank you.${FILL[3]}` });
     const fake = { calls: [], plan: {}, busy: new Set(), answer: (model) => LETTER(model) };
     class FakeGenAI {
       constructor(key) { this.key = key; }

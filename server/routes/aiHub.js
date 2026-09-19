@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const { asJob } = require('../middleware/asyncJob');   // opt-in minimize-resilient job wrapper
+const homeRoster = require('../services/homeRoster');
 const {
     analyzeWishlist,
     getJobMatches,
@@ -77,6 +78,9 @@ router.post('/employers/:employerId/untrack', authenticateToken, untrackEmployer
 router.get('/home/hidden-targets', authenticateToken, getHiddenTargets);
 router.post('/home/hidden-targets', authenticateToken, hideHomeTarget);
 router.delete('/home/hidden-targets', authenticateToken, unhideHomeTarget);
+// Home's saved "Designing for" row, shared by the user's phones (compare-and-set; server/services/homeRoster.js).
+router.get('/home/roster', authenticateToken, homeRoster.getHomeRoster);
+router.put('/home/roster', authenticateToken, homeRoster.putHomeRoster);
 router.get('/employers/:employerId/recruiters', authenticateToken, getRecruiters);
 router.post('/employers/:employerId/find-recruiters', authenticateToken, asJob('find_recruiters')(findRecruiters));
 router.post('/employers/:employerId/find-emails', authenticateToken, asJob('find_emails')(findRecruiterEmails));

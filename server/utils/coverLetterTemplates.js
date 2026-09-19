@@ -19,6 +19,7 @@
  */
 
 const { brandThemeOf, recolorHexes, brandFontHtml, normHex, shiftHex } = require('./resumeTemplates');
+const { repairLetterHtml } = require('./letterText');
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -37,8 +38,11 @@ function sanitizeBody(html) {
   return h;
 }
 // Body may arrive as HTML (our formatter) or plain text — normalise to <p> paragraphs.
+// ⚠️ REPAIRED FIRST (2026-09-19, the Airbus letter): a letter stored with the model's JSON, its chatter or a paragraph written
+// twice prints as the letter — in every design, every PDF, every preview, and a history re-download of a frozen copy.
+// letterText.repairLetterHtml acts only on a strong signal; a clean letter is handed back as the very same string.
 function bodyToHtml(input) {
-  const s = String(input || '');
+  const s = repairLetterHtml(String(input || '')).html;
   if (/<(p|br|div|strong|em|ul|li)\b/i.test(s)) return sanitizeBody(s);
   return s.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)
     .map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');

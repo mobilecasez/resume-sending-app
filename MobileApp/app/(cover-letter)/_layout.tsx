@@ -11,6 +11,8 @@ export default function CoverLetterLayout() {
         <Stack.Screen name="templates" />
         {/* The employer letter editor (Home → a letter page → Customize). */}
         <Stack.Screen name="edit" />
+        {/* Email the letter from the user's own Gmail / Outlook (the preview's Send pill, doc mode). */}
+        <Stack.Screen name="send" />
       </Stack>
       {/* The guide follows the user through the app. */}
       <HelpAssistant context="cover" />

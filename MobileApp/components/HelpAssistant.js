@@ -63,9 +63,12 @@ const SHOT = {
 
 // Ordered the way a new user actually goes: set up -> resume -> find a job -> letter -> apply.
 // `video` = index of this topic's slide in the tutorial carousel (WelcomeExplainer.TUTORIAL_SLIDES).
+// `film`  = this topic's clip in the NARRATED tutorial (app/(tutorial) FILMS keys = the server's
+//           journey step keys). ⚠️ 2026-09-19: "Watch the full video with sound" under "Apply with
+//           Auto Fill" used to open clip 01 "Set up your profile" — the film now opens on the topic.
 const KB = [
   {
-    id: 'profile', label: 'Set up my profile', icon: 'person-circle-outline', video: 0,
+    id: 'profile', label: 'Set up my profile', icon: 'person-circle-outline', video: 0, film: 'profile',
     match: /\bprofile|account|signature|detail|set ?up|start\b/i,
     title: 'Set up your profile first',
     intro: 'Everything else reuses this — your details, résumé and signature go onto every form and letter.',
@@ -78,7 +81,7 @@ const KB = [
     ],
   },
   {
-    id: 'resume', label: 'Build or upload a résumé', icon: 'document-text-outline', video: 1,
+    id: 'resume', label: 'Build or upload a résumé', icon: 'document-text-outline', video: 1, film: 'resume',
     match: /\bresume|résumé|\bcv\b|upload|builder\b/i,
     title: 'Get a résumé the AI writes for you',
     intro: 'Already uploaded one to your profile? The builder can merge it with your story instead of starting over.',
@@ -91,7 +94,7 @@ const KB = [
     ],
   },
   {
-    id: 'find', label: 'Find a job', icon: 'search-outline', video: 2,
+    id: 'find', label: 'Find a job', icon: 'search-outline', video: 2, film: 'save_job',
     match: /\bfind|search|discover|explore|look(ing)? for|browse|google\b/i,
     title: 'Find a job on Google, inside the app',
     intro: 'This is the real Google — the same results you would get in your phone’s browser.',
@@ -103,7 +106,7 @@ const KB = [
     ],
   },
   {
-    id: 'cover', label: 'Generate a cover letter', icon: 'mail-outline', video: 2,
+    id: 'cover', label: 'Generate a cover letter', icon: 'mail-outline', video: 2, film: 'cover_letter',
     match: /\bcover ?letter|letter|motivation\b/i,
     title: 'A cover letter written from the real posting',
     steps: [
@@ -114,7 +117,7 @@ const KB = [
     ],
   },
   {
-    id: 'apply', label: 'Apply with Auto Fill', icon: 'flash-outline', video: 3,
+    id: 'apply', label: 'Apply with Auto Fill', icon: 'flash-outline', video: 3, film: 'apply',
     match: /\bapply|application|applying|auto ?fill|form\b/i,
     title: 'Let Auto Fill do the form',
     intro: 'Works on the company’s own application form — Greenhouse, Workday, Personio and the rest.',
@@ -284,6 +287,18 @@ function StepList({ title, intro, steps, onZoom, onWatch }) {
   );
 }
 
+// Which clip the home sheet's "Watch the video tutorial" opens on, by the screen family hosting this
+// instance. Home — and Plans / Support, which pass no context — start at 01: there the button means
+// "show me how the whole thing works". Elsewhere it opens the clip about the screen they are on; on
+// Jobs it plays 03 → 05, the same run as that page's own "Watch how it works" row.
+const CONTEXT_FILM = {
+  jobs: { film: 'save_job', until: 'apply' },
+  resume: { film: 'resume' },
+  cover: { film: 'cover_letter' },
+};
+// No film → the bare route, exactly what these buttons pushed before.
+const tutorialHref = (params) => (params && params.film ? { pathname: '/(tutorial)', params } : '/(tutorial)');
+
 // `attention` — bump it (any changing number) to make the button announce itself. HomeScreen bumps it
 // when the first-run guide is dismissed, right after the guide has visibly flown into this button.
 // `context` — which screen family hosts this instance ('home' | 'jobs' | 'resume' | 'cover'); it
@@ -292,7 +307,7 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [view, setView] = useState('home');   // home | answer | tutorial
-  const [answer, setAnswer] = useState(null);  // {title, intro, steps, video}
+  const [answer, setAnswer] = useState(null);  // {title, intro, steps, video, film}
   const [tutorialAt, setTutorialAt] = useState(0);   // which slide the tutorial opens on
   const [input, setInput] = useState('');
   const [notFound, setNotFound] = useState(false);
@@ -471,7 +486,7 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
     shared.coachShown[coach.key] = true;
     setCoach(null);
     if (topic) {
-      setAnswer({ title: topic.title, intro: topic.intro, steps: topic.steps, video: topic.video });
+      setAnswer({ title: topic.title, intro: topic.intro, steps: topic.steps, video: topic.video, film: topic.film });
       setView('answer');
       setOpen(true);
     }
@@ -482,7 +497,7 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
   const closeSheet = () => { setZoom(null); setOpen(false); };
   const goHome = () => { setView('home'); setAnswer(null); setNotFound(false); setInput(''); setZoom(null); };
   const showTopic = (t) => {
-    setAnswer({ title: t.title, intro: t.intro, steps: t.steps, video: t.video }); setView('answer'); setNotFound(false);
+    setAnswer({ title: t.title, intro: t.intro, steps: t.steps, video: t.video, film: t.film }); setView('answer'); setNotFound(false);
   };
   const ask = (text) => {
     const q = (text != null ? text : input).trim();
@@ -626,7 +641,7 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
                       topic's "Watch video tutorial" link, where jumping to one step is the faster
                       answer — but "View tutorial" from the home sheet means "show me how this
                       works", and for that the film with the voice-over is the real answer. */}
-                  <TouchableOpacity style={s.tutorialBtn} activeOpacity={0.9} onPress={() => { closeSheet(); setTimeout(() => router.push('/(tutorial)'), 220); }}>
+                  <TouchableOpacity style={s.tutorialBtn} activeOpacity={0.9} onPress={() => { closeSheet(); setTimeout(() => router.push(tutorialHref(CONTEXT_FILM[context])), 220); }}>
                     <Ionicons name="play-circle-outline" size={18} color="#3B82F6" />
                     <Text style={s.tutorialText}>Watch the video tutorial</Text>
                   </TouchableOpacity>
@@ -654,7 +669,7 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
                   <TouchableOpacity
                     style={s.filmBtn}
                     activeOpacity={0.9}
-                    onPress={() => { closeSheet(); setTimeout(() => router.push('/(tutorial)'), 220); }}
+                    onPress={() => { closeSheet(); setTimeout(() => router.push(tutorialHref(answer && answer.film ? { film: answer.film } : null)), 220); }}
                   >
                     <Ionicons name="play-circle" size={18} color="#fff" />
                     <Text style={s.filmText}>Watch the full video with sound</Text>
