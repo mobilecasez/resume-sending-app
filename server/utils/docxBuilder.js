@@ -157,8 +157,22 @@ async function buildResumeDocx(resumeData = {}, opts = {}) {
   return withBrandFont(buf, brand);
 }
 
+// A saved letter's own greeting / closing (data.salutation / data.closing — its customization page): each layout prints
+// it over its own constant. Made one printed line here, once, for all seven; an empty one is dropped so the layout's
+// line prints. A letter without them passes through as the very same object.
+const letterLine = (v) => (typeof v === 'string' ? v.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200).trim() : '');
+function withLetterLines(d) {
+  if (!('salutation' in d) && !('closing' in d)) return d;
+  const out = { ...d };
+  for (const k of ['salutation', 'closing']) {
+    const v = letterLine(d[k]);
+    if (v) out[k] = v; else delete out[k];
+  }
+  return out;
+}
+
 async function buildCoverLetterDocx(data = {}, opts = {}) {
-  const dd = data || {};
+  const dd = withLetterLines(data || {});
   const tplId = CL_LAYOUTS[opts.template] ? opts.template : 'standard';
   const brand = brandOf(opts);
   // `branded` tells the ATS / German layouts to paint their ink-coloured rule in the accent too — which

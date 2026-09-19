@@ -1071,6 +1071,9 @@ export default function EmployerHome({
   docDeckRef.current = docDeck;
   const selPhase = useBuildPhase(kind, selRk);
   const selBuilding = selPhase === 'checking' || selPhase === 'queued' || selPhase === 'building';
+  // The letter doors (sayNoLetterYet) run from the zoom 200ms after it starts closing: read the build NOW.
+  const selBuildingRef = useRef(selBuilding);
+  selBuildingRef.current = selBuilding;
 
   // A different document is a different deck, and it opens on its best design — reset in the SAME
   // render (not an effect), so the new deck is never drawn for a frame at the old deck's position.
@@ -1307,6 +1310,16 @@ export default function EmployerHome({
   const sayLoadingDoc = () => { showNotice('Loading your saved version…', undefined, 2500, 1500); };
   /** A saved document is on its way for the chip on screen, so the pages drawn in its place are not its pages. */
   const docOnItsWay = () => !docRef.current && docPendingRef.current;
+  /**
+   * A letter door (Customize, View PDF, a letter page) tapped with no saved letter in hand and none on its way.
+   * ⚠️ NEVER A SILENT NO-OP: a letter still being written said nothing at all — the pages on screen are the
+   * letter formats drawn blank, and Customize under them did nothing. Being written → says so; otherwise there
+   * is simply no letter yet, and the letter panel's Write is the door. Nothing here writes or charges anything.
+   */
+  const sayNoLetterYet = () => {
+    if (selBuildingRef.current) showNotice('Your letter is still being written…', undefined, 2500, 1500);
+    else showNotice('There is no saved letter here yet — write it first.', undefined, 3500);
+  };
   // Which chip plays the entrance: keyed by render key AND a counter, so only the newly added chip
   // animates, and adding the same employer twice replays it.
   const [enter, setEnter] = useState<{ key: string; n: number } | null>(null);
@@ -1494,6 +1507,10 @@ export default function EmployerHome({
     // resume's editor and gallery under the employer's name, and a letter's Download had nothing to take.
     // The document is seconds away: say so instead of acting on the stand-in.
     if (docOnItsWay()) { sayLoadingDoc(); return; }
+    // ⚠️ A LETTER PAGE WITHOUT ITS LETTER IS A DRAWING. With no saved letter the deck is LETTER_SLOTS (a letter
+    // being written, or one that just landed), and a zoom on it offered a Customize and a View PDF with nothing
+    // behind them. Say what is happening instead of opening it.
+    if (k === 'cover_letter' && !docRef.current) { sayNoLetterYet(); return; }
     setCardIdx(i);
     zoomSeq.current++;
     libOpen.current = 0;
@@ -1968,8 +1985,10 @@ export default function EmployerHome({
     const d: ZoomDoc | null = forDoc !== undefined ? forDoc : docRef.current;
     if (!d || d.kind !== 'cover_letter') {
       // ⚠️ NEVER A SILENT NO-OP. While the saved letter was still being fetched this returned without a
-      // word — a button that does nothing reads as a broken button, not as "not yet".
+      // word — a button that does nothing reads as a broken button, not as "not yet". Nor while it is still
+      // being written, or not written at all: sayNoLetterYet.
       if (docOnItsWay()) sayLoadingDoc();
+      else sayNoLetterYet();
       return;
     }
     track('home_letter_download', { id: templateId, from: forDoc !== undefined ? 'library' : 'hero' });
@@ -2016,6 +2035,7 @@ export default function EmployerHome({
     const d: ZoomDoc | null = forDoc !== undefined ? forDoc : docRef.current;
     if (!d || d.kind !== 'cover_letter') {
       if (docOnItsWay()) sayLoadingDoc();
+      else sayNoLetterYet();
       return;
     }
     track('home_letter_customize', { from: forDoc !== undefined ? 'library' : 'hero' });
@@ -2029,19 +2049,21 @@ export default function EmployerHome({
    * page it is — the chip on screen, or the library row's employer; `sample` = the pages are a stand-in.
    * ⚠️ Straight to the section editor. Writing 'resume_builder_entry' with autoBuild, or
    * 'resumeBuilderAction', would arm a PAID regeneration — neither is touched.
+   * ⚠️ `from: 'home'` on BOTH shapes: the editor's Back returns here, never to the builder's "Tell us your story"
+   * (preview.tsx leave() — the owner's report, 2026-09-19).
    */
   const customizeResume = (d: ZoomDoc | null, target: BuilderFor | undefined, sample: boolean) => {
     // A saved employer document is edited AS that document: the editor loads it by id and saves
     // back to it, so the base resume — and every other employer's version — is left alone.
     if (d && d.kind === 'resume') {
       rememberBuilderEmployer(d.employer || target?.company)
-        .finally(() => nav()?.push?.({ pathname: '/(resume-builder)/preview', params: { docId: String(d.docId) } }));
+        .finally(() => nav()?.push?.({ pathname: '/(resume-builder)/preview', params: { docId: String(d.docId), from: 'home' } }));
       return;
     }
     if (sample) armBuilderFor(target).finally(() => nav()?.push?.('/(resume-builder)'));
     // Not armBuilderFor: writing 'resume_builder_entry' here would arm a PAID regeneration.
     // Only the employer hint travels, so the editor's download can name the company.
-    else rememberBuilderEmployer(target?.company).finally(() => nav()?.push?.('/(resume-builder)/preview'));
+    else rememberBuilderEmployer(target?.company).finally(() => nav()?.push?.({ pathname: '/(resume-builder)/preview', params: { from: 'home' } }));
   };
 
   /**
@@ -2666,6 +2688,14 @@ export default function EmployerHome({
             // from this button is to change the words, and the editor opens on the employer's OWN
             // version when the chip on screen has one. "Edit details" at the top still reaches the builder.
             const complete = !!setup.complete;
+            // ⚠️ ON THE COVER LETTER TAB A FINISHED PROFILE'S DOOR IS THE LETTER'S EDITOR. This block used to ignore
+            // `mode`: it read "Customize your resume" under a cover letter, and a tap opened the RESUME editor (the
+            // owner's report, 2026-09-19). A letter is customized only when there is one — the saved letter on
+            // screen, or one seconds away (docPending: the tap says "Loading your saved version…") — and never
+            // while one is being written. With neither, the letter panel's Write is the door: nothing here may
+            // start a generation. The unfinished wizard stays the same on both tabs — the profile is one profile.
+            const letterTab = mode === 'letter';
+            if (complete && letterTab && (selBuilding || (!doc && !docPending))) return null;
             const resumeDoc: DocMeta | null = mode === 'resume'
               ? doc
               : (target ? cachedCurrentDoc('resume', docLookupOf(target)) || null : null);
@@ -2677,7 +2707,9 @@ export default function EmployerHome({
             // read from across the room. Weight still varies — the glow, not the colour — so a
             // finished profile gets a quieter version of the same button instead of a hidden one.
             const sub = complete
-              ? (resumeDoc ? `Edit your ${resumeDoc.employer} version — every design above follows.` : 'Edit any section — every design above follows.')
+              ? (letterTab
+                ? (doc ? `Edit your ${doc.employer} letter — its subject, address and every paragraph.` : 'Loading your saved letter…')
+                : resumeDoc ? `Edit your ${resumeDoc.employer} version — every design above follows.` : 'Edit any section — every design above follows.')
               : !started
                 ? 'A few details and we will build your real resume into every design above.'
                 : left.length === 0
@@ -2687,16 +2719,27 @@ export default function EmployerHome({
                     : `${left.length} things left — ${left.slice(0, -1).join(', ')} and ${left[left.length - 1]}.`;
             // "Make your Resume" names the DESTINATION — the wizard that makes one — not a claim
             // that you have not got one. Someone mid-way gets the more useful sentence instead.
-            const label = complete ? 'Customize your resume' : left.length && started ? 'Pick up where you left off' : 'Make your Resume';
+            // "Customize my Cover Letter" is the owner's own wording for the letter's door.
+            const label = complete
+              ? (letterTab ? 'Customize my Cover Letter' : 'Customize your resume')
+              : left.length && started ? 'Pick up where you left off' : 'Make your Resume';
             const go = () => {
               try { Haptics.selectionAsync(); } catch {}
-              track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join(''), complete, doc: !!resumeDoc });
+              track('home_make_yours', { has: [setup.profile && 'p', setup.photo && 'i', setup.signature && 's', setup.resume && 'r'].filter(Boolean).join(''), complete, doc: letterTab ? !!doc : !!resumeDoc, mode });
+              if (complete && letterTab) {
+                // The letter on screen, in ITS editor — the zoom's Customize door, so the two cannot drift apart.
+                // Editing a saved letter never spends a generation; a letter still on its way says so.
+                openLetterEditor();
+                return;
+              }
               if (complete) {
                 // ⚠️ Straight to the section editor — never 'resume_builder_entry' / 'resumeBuilderAction',
-                // which arm a PAID regeneration. The employer rides along for the editor's own download.
-                rememberBuilderEmployer(resumeDoc?.employer || target?.company).finally(() => nav()?.push?.(resumeDoc
-                  ? { pathname: '/(resume-builder)/preview', params: { docId: String(resumeDoc.docId) } }
-                  : '/(resume-builder)/preview'));
+                // which arm a PAID regeneration. The employer rides along for the editor's own download, and
+                // `from: 'home'` brings Back here (customizeResume).
+                rememberBuilderEmployer(resumeDoc?.employer || target?.company).finally(() => nav()?.push?.({
+                  pathname: '/(resume-builder)/preview',
+                  params: resumeDoc ? { docId: String(resumeDoc.docId), from: 'home' } : { from: 'home' },
+                }));
                 return;
               }
               nav()?.push?.('/(onboarding)');
@@ -2909,7 +2952,7 @@ export default function EmployerHome({
           ? (libZoom.employer ? `${libZoom.doc ? 'Designed' : 'Downloaded'} for ${libZoom.employer}` : undefined)
           : target ? `Designed for ${target.company}` : undefined}
         isPaid={isPaid}
-        sample={libZoom ? libZoom.sample : sample && !doc}
+        sample={libZoom ? libZoom.sample : sample && !doc && kind === 'resume'}
         onClose={() => { libOpen.current = 0; setZoom(null); }}
         onCustomize={() => {
           if (libZoom) {

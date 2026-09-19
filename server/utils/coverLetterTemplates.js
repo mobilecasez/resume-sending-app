@@ -7,7 +7,9 @@
  * closing) rendered in 6 visual styles. The wording is tailored to the target
  * country at GENERATION time; these templates are the visual layer.
  *
- * data = { sender:{name,title,email,phone,location}, company:{name,address}, bodyHtml }
+ * data = { sender:{name,title,email,phone,location}, company:{name,address}, bodyHtml, salutation?, closing? }
+ *   salutation / closing: a saved letter's own greeting / sign-off word (its customization page) over the style's;
+ *   absent → byte-identical to the letter without them.
  * opts = { mode:'onepage'|'a4', photo?, brandColor?: '#hex', brandFont?: { family, google } }
  *
  * brandColor / brandFont are the EMPLOYER's brand (a Home employer letter's design.brand — see
@@ -59,6 +61,13 @@ function clPageRule(mode) {
     : '@page{margin:0}\n  .sheet{padding:22mm;min-height:297mm}';
 }
 
+// A letter's own greeting / closing (data.salutation / data.closing — a saved Home letter's, set on its customization
+// page): one line, control characters gone, ≤200 chars. '' = the style's own line, so a letter without them renders
+// byte-identically to before.
+function letterLine(v) {
+  return typeof v === 'string' ? v.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200).trim() : '';
+}
+
 function prep(data) {
   const s = data.sender || {};
   const c = data.company || {};
@@ -67,6 +76,8 @@ function prep(data) {
     date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
     body: bodyToHtml(data.bodyHtml || data.body || data.coverLetterHtml || ''),
     contact: [raw(s.email), raw(s.phone), raw(s.location)].filter(Boolean).map(esc).join('&nbsp;&nbsp;•&nbsp;&nbsp;'),
+    salutation: letterLine(data.salutation),
+    closing: letterLine(data.closing),
   };
 }
 
@@ -77,7 +88,7 @@ function recipientBlock(c) {
 
 // ── Shared letter assembler ───────────────────────────────────────────────────
 function buildLetter(data, opts, style) {
-  const { s, c, date, body, contact } = prep(data);
+  const { s, c, date, body, contact, salutation, closing } = prep(data);
   const baseCss = `
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{background:#fff;color:#1f2937;font-family:'Lato',-apple-system,'Segoe UI',Roboto,Arial,sans-serif}
@@ -101,9 +112,9 @@ ${baseCss}${style.css}
   ${style.header(s, contact)}
   <div class="date">${esc(date)}</div>
   ${recipientBlock(c)}
-  <div class="salutation">${esc(style.salutation || 'Dear Hiring Manager,')}</div>
+  <div class="salutation">${esc(salutation || style.salutation || 'Dear Hiring Manager,')}</div>
   <div class="body">${body}</div>
-  <div class="closing"><div class="cl-word">${esc(style.closing || 'Sincerely,')}</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
+  <div class="closing"><div class="cl-word">${esc(closing || style.closing || 'Sincerely,')}</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
 </div></body></html>`;
   return brandLetterHtml(html, style.id, opts);
 }
@@ -223,7 +234,7 @@ const STYLES = {
 //    The DOWNLOAD for this template is produced by the original PDFKit generator
 //    (generateRichCoverLetterPDF) so it is byte-for-byte the user's previous letter.
 function standardLetter(data, opts = {}) {
-  const { s, c, date, body } = prep(data);
+  const { s, c, date, body, salutation, closing } = prep(data);
   const hex6 = String(opts.brandColor || '').replace('#', '');
   const brand = /^[0-9a-fA-F]{6}$/.test(hex6) ? `#${hex6}` : '#3a6cb5';
   const ini = raw(s.name).split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
@@ -270,9 +281,9 @@ function standardLetter(data, opts = {}) {
   <main class="main">
     <div class="top"><div><div class="nm">${esc(raw(s.name))}</div><div class="applicant">${raw(s.title) ? esc(s.title) : 'Applicant'}</div></div><div class="tr">${topRight}</div></div>
     <div class="ttl">Cover Letter</div>
-    <div class="salutation">Dear Hiring Manager,</div>
+    <div class="salutation">${esc(salutation || 'Dear Hiring Manager,')}</div>
     <div class="body">${body}</div>
-    <div class="closing"><div class="cl-word">Best regards,</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
+    <div class="closing"><div class="cl-word">${esc(closing || 'Best regards,')}</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
   </main>
 </div></body></html>`, opts.brandFont);
 }

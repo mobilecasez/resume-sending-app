@@ -541,12 +541,15 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
       console.warn(`[entitlements] consumeOnSuccess: no allowance left for ${kind} (user ${userId}) — nothing recorded, nothing charged`);
       return { via: 'none', charge, ledgerId: null };
     }
+    // detail.env — the store environment that PAID (the gate's, carried in by the caller). usage_ledger has no
+    // environment column, and without this a TestFlight row and an App Store row were indistinguishable: a user
+    // counting their letters could not see that one was made on the other build (whose Home shows its own letters).
     const rows = await dbConfig.query(
       `INSERT INTO usage_ledger (user_id, kind, source, plan_key, detail, created_at)
        VALUES ($1,$2,$3,$4,$5::jsonb,NOW())
        RETURNING id`,
       [userId, kind, via, sub ? sub.plan_key : null,
-       JSON.stringify({ ...detail, }).slice(0, 4000)]);
+       JSON.stringify({ ...detail, env: requestEnvironment(req || {}) }).slice(0, 4000)]);
     const id = rows && rows[0] ? Number(rows[0].id) : NaN;
     return { via, charge, ledgerId: Number.isFinite(id) && id > 0 ? id : null };
   } catch (e) {
@@ -556,15 +559,42 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
 }
 
 // ── usage screen data ─────────────────────────────────────────────────────────────────────────
-async function getUsage(userId, limit = 100) {
+/**
+ * The pool that is paying NOW, as the ledger spells it → { source, since } | null. The same clauses as
+ * canConsumeMany / usageFor: an environment-scoped plan counts 'plan' rows since period_start; no plan → the Free
+ * allowance, 'trial' rows since freeWindowStart. ⚠️ READ-ONLY: it opens no Free row (ensureTrial is the gate's
+ * business) — with none yet, the window is the cutover, the earliest any account can have.
+ */
+async function payingPoolOf(userId, req) {
+  const sub = await activeSubscription(userId, requestEnvironment(req || {}));
+  if (sub) return { source: 'plan', since: new Date(sub.period_start) };
+  const rows = await dbConfig.query('SELECT started_at FROM user_trials WHERE user_id = $1', [userId]);
+  return { source: 'trial', since: freeWindowStart(rows && rows[0] ? rows[0].started_at : null) };
+}
+
+/**
+ * The ledger for the Usage screen, newest first. Each row says `counted`: whether it is one of the rows the paying
+ * pool counts right now (its source, since its window start) — so "3 used" can be matched against exactly three rows.
+ * ⚠️ THE LIST WAS EVERY ROW EVER WRITTEN, with nothing to tell them apart: pre-cutover history and an earlier plan's
+ * period sat between the rows that count, and a user adding up "which three letters" could not. `counted` is null
+ * when the pool could not be read — the screen then shows the rows as it always did, never a guess.
+ */
+async function getUsage(userId, limit = 100, req = null) {
   const rows = await dbConfig.query(
     `SELECT id, kind, source, plan_key, detail, created_at FROM usage_ledger
      WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
     [userId, Math.min(Math.max(limit, 1), 300)]);
+  let pool = null;
+  try { pool = await payingPoolOf(userId, req); }
+  catch (e) { console.warn('[entitlements] getUsage: the paying pool is unreadable —', e.message); }
+  const sinceMs = pool ? pool.since.getTime() : NaN;
   return (rows || []).map((r) => ({
     id: r.id, kind: r.kind, source: r.source, planKey: r.plan_key,
     detail: typeof r.detail === 'object' ? r.detail : (() => { try { return JSON.parse(r.detail); } catch { return {}; } })(),
     createdAt: r.created_at,
+    counted: pool && Number.isFinite(sinceMs)
+      ? (r.source === pool.source && new Date(r.created_at).getTime() >= sinceMs)
+      : null,
   }));
 }
 

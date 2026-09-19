@@ -89,6 +89,134 @@ async function getAuthHeader(): Promise<Record<string, string>> {
   } catch { return {}; }
 }
 
+// ── THE BUILD RUNS AS A BACKGROUND JOB, WITH ONE clientBuildId PER TAP ─────────────────────────────────────
+// ⚠️ ONE RESUME WAS TWO CHARGES. Both Generate lanes held one socket for up to four and a half minutes of server work
+// against a 120-second client abort, then said "tap Generate again" — while the server finished, saved and charged the
+// first resume. The next tap had nothing to reuse (a build with no employer has no cache) and was charged again: two
+// units, one resume. Now the build is sent with __async:true (the route's asJob lane answers with a job id at once) and
+// polled here for up to 5½ minutes, the way the Make Yours wizard's generateResume does; the alert's Try again /
+// Keep waiting repeat THAT build (same id, same track — below), never a new one. And at the deadline nothing invites
+// a regenerate: the saved resume is read first, and opened when this build has already landed.
+//
+// ⚠️ …AND "KEEP WAITING" WAS A SECOND CHARGE ONCE THE PHONE HAD BEEN PUT DOWN. It re-POSTed the same clientBuildId and
+// trusted asJob to hand back the job it already ran — but asJob dedupes an id for 15 minutes from the FIRST POST (its
+// memory map and its async_jobs lookup alike), not for ever. "Still building…" shows at 5½ minutes; a user who
+// backgrounded the app and tapped Keep waiting ten minutes later was past the window: a brand-new job, a second unit
+// charged for the resume already saved — under "You will not be charged twice". Worse, the rerun re-read `before`,
+// which by then WAS the finished resume, so not even the deadline check could recognise it. So a build carries a
+// BuildTrack through every rerun: the job its POST was answered with — Keep waiting FOLLOWS that job (async_jobs keeps
+// a finished row for 24 hours) and never POSTs again — and the saved resume as it was before the FIRST POST, carried,
+// never re-read. A rerun with no job to follow (the POST got no answer, or the row is gone) looks at the saved resume
+// against that snapshot first and opens what landed; only when nothing did is the same id POSTed again.
+type BuildTrack = {
+  before: string | null | undefined;   // the saved resume before the FIRST POST (savedResumeText's three answers)
+  jobId: string | null;                // the job that POST started, when an answer reached us and the row still exists
+};
+type BuildOutcome =
+  | { kind: 'done'; resumeData: any }
+  | { kind: 'quota'; message: string }
+  | { kind: 'regen_limit'; message: string }
+  | { kind: 'failed'; message: string; retrySame: boolean; track?: BuildTrack }   // retrySame: no answer reached us — the build may be running
+  | { kind: 'late'; track: BuildTrack };                                         // past the deadline, and not saved yet: still building
+
+const newBuildId = () => `rb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const BUILD_POLL_MS = 1500;
+const BUILD_DEADLINE_MS = 5.5 * 60 * 1000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** What the alert's rerun repeats: after a real failure a NEW build (fresh id, fresh snapshot); otherwise THIS one —
+ *  its id and its track, so a late tap follows the job it already has instead of POSTing past asJob's window. */
+function rerunOf(outcome: BuildOutcome, buildId: string): [string, BuildTrack | undefined] {
+  if (outcome.kind === 'failed' && !outcome.retrySame) return [newBuildId(), undefined];
+  return [buildId, outcome.kind === 'late' || outcome.kind === 'failed' ? outcome.track : undefined];
+}
+
+/** The saved resume, as text to compare against: null when there is none, undefined when it could not be read. */
+async function savedResumeText(auth: Record<string, string>): Promise<string | null | undefined> {
+  try {
+    const r = await fetch(`${API_BASE}/resume-builder`, { headers: auth });
+    if (!r.ok) return undefined;
+    const j = await r.json();
+    return j && j.resumeData ? JSON.stringify(j.resumeData) : null;
+  } catch { return undefined; }
+}
+
+/** Start one build — or, given a rerun's `track`, re-join it — and follow it to its end. Never throws. */
+async function runResumeBuild(payload: Record<string, any>, buildId: string, headers: Record<string, string>, isLeft: () => boolean, track?: BuildTrack): Promise<BuildOutcome> {
+  const auth: Record<string, string> = headers.Authorization ? { Authorization: headers.Authorization } : {};
+  // What is saved BEFORE this build — the deadline compares against it, so an older resume is never mistaken for this one.
+  // ⚠️ A rerun CARRIES it from the first run: read now, after the build may have landed, it would BE this build.
+  const before = track ? track.before : await savedResumeText(auth);
+  /** The saved resume once it is no longer the one from before — this build has landed. Only against a "before" that
+   *  was really read: an unreadable one would make the OLD resume look new. */
+  const landed = async (): Promise<any | null> => {
+    const now = before === undefined ? undefined : await savedResumeText(auth);
+    if (typeof now === 'string' && now !== before) {
+      try { return JSON.parse(now); } catch { /* fall through */ }
+    }
+    return null;
+  };
+  let jobId: string | null = track ? track.jobId : null;
+  if (track && !jobId) {
+    // A rerun with no job to follow — the first POST got no answer (it may have run and saved long ago) or its row is
+    // gone. Look before POSTing: past asJob's 15 minutes the same id would be a new job and a second charge.
+    const got = await landed();
+    if (got) return { kind: 'done', resumeData: got };
+  }
+  if (!jobId) {
+    let status = 0;
+    let started: any = null;
+    try {
+      const r = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
+        method: 'POST', headers, body: JSON.stringify({ ...payload, __async: true, clientBuildId: buildId }),
+      });
+      status = r.status;
+      started = await r.json().catch(() => ({}));
+    } catch {
+      return { kind: 'failed', message: 'We could not reach the server. Please check your connection and try again.', retrySame: true, track: { before, jobId: null } };
+    }
+    if (status === 402) return { kind: 'quota', message: started?.error || 'You have used your included resume generations.' };
+    if (status === 403 && started?.reason === 'regen_limit') return { kind: 'regen_limit', message: started?.error || 'Your free plan includes one regeneration.' };
+    // ⚠️ asJob runs the build SYNCHRONOUSLY when it cannot create a job row — then this is the finished resume.
+    if (started && started.resumeData) return { kind: 'done', resumeData: started.resumeData };
+    jobId = (started && started.jobId) || null;
+    if (status >= 400 || !jobId) return { kind: 'failed', message: started?.error || 'We could not start building your resume.', retrySame: false };
+  }
+  // else: Keep waiting on a build whose job we already have — follow THAT job; a second POST is what charged twice.
+  const job: string = jobId;
+
+  const until = Date.now() + BUILD_DEADLINE_MS;
+  let missing = 0;   // consecutive 404s: the job row is gone (cleaned up) — nothing left to wait for
+  while (Date.now() < until) {
+    await sleep(BUILD_POLL_MS);
+    if (isLeft()) return { kind: 'late', track: { before, jobId: job } };
+    let j: any = null;
+    try {
+      const r = await fetch(`${API_BASE}/job-status/${encodeURIComponent(job)}`, { headers: auth });
+      if (r.status === 404) { if (++missing >= 2) break; continue; }
+      missing = 0;
+      j = await r.json().catch(() => null);
+    } catch { /* one dropped poll is not a failure; the next one will answer */ }
+    if (!j) continue;
+    if (j.status === 'completed') {
+      const d = j.data || {};
+      if (d.resumeData) return { kind: 'done', resumeData: d.resumeData };
+      return { kind: 'failed', message: d.error || 'The resume finished but came back empty. Please try again.', retrySame: false };
+    }
+    if (j.status === 'failed') {
+      // asJob keeps a refusal's reason on the job: the allowance is used up → Plans, not a Try again.
+      if (j.reason === 'quota_exhausted') return { kind: 'quota', message: j.error || 'You have used your included resume generations.' };
+      if (j.reason === 'regen_limit') return { kind: 'regen_limit', message: j.error || 'Your free plan includes one regeneration.' };
+      return { kind: 'failed', message: j.error || 'We could not finish building your resume. Please try again.', retrySame: false };
+    }
+  }
+  // Out of time (or lost track): the build may well have landed — look before saying anything.
+  const got = await landed();
+  if (got) return { kind: 'done', resumeData: got };
+  // Still building: Keep waiting follows this job — unless its row is gone, when the rerun looks and only then POSTs.
+  return { kind: 'late', track: { before, jobId: missing >= 2 ? null : job } };
+}
+
 // A ready-to-edit starter resume for the "Build Manually" path — realistic example values the
 // user simply taps and replaces (their real name/email/phone/location get merged in at seed time).
 const SAMPLE_RESUME = {
@@ -407,65 +535,71 @@ export default function ResumeBuilderIndex() {
     return iv;
   }
 
+  // The screen is gone: a build still polling must not push the preview over whatever the user went to (the build
+  // itself carries on server-side, is saved and charged as before, and is here the next time they open the builder).
+  const leftRef = useRef(false);
+  useEffect(() => { leftRef.current = false; return () => { leftRef.current = true; }; }, []);
+
+  /** What a build ended in, told the same way by both lanes. `rerun` repeats it with the SAME build id. */
+  function settleBuild(outcome: BuildOutcome, rerun: () => void, onDone: (resumeData: any) => Promise<void>) {
+    if (leftRef.current) return;
+    if (outcome.kind === 'done') { onDone(outcome.resumeData).catch(() => {}); return; }
+    setMode('ai');
+    if (outcome.kind === 'regen_limit') {
+      Alert.alert('Regeneration used', outcome.message,
+        [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
+      return;
+    }
+    if (outcome.kind === 'quota') {
+      // Quota exhausted (trial or plan) → route to Plans; legacy credit users see the same sheet.
+      Alert.alert('Limit reached', outcome.message,
+        [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
+      return;
+    }
+    if (outcome.kind === 'late') {
+      // ⚠️ NEVER "tap Generate again" here: the build is still running and will be charged once it lands. Keep waiting
+      // follows THAT build's job (rerunOf carries its track) — never a second POST, however late the tap.
+      Alert.alert('Still building…',
+        'Your resume is taking longer than usual. It is still being built — tap Keep waiting to pick it up. You will not be charged twice.',
+        [{ text: 'Not now', style: 'cancel' }, { text: 'Keep waiting', onPress: rerun }]);
+      return;
+    }
+    // failed: Try Again repeats the SAME build when it may already be running (no answer reached us), else a new one.
+    Alert.alert('Generation failed', outcome.message,
+      [{ text: 'Not now', style: 'cancel' }, { text: 'Try Again', onPress: rerun }]);
+  }
+
   // Generation with EXPLICIT values — the auto lanes run before React state has settled, so
   // reading component state here would post stale/empty fields.
-  async function autoGenerate(v: { name: string; email: string; phone: string; location: string; rawText: string; includeUploaded: boolean }) {
+  async function autoGenerate(v: { name: string; email: string; phone: string; location: string; rawText: string; includeUploaded: boolean }, buildId: string = newBuildId(), track?: BuildTrack) {
     setMode('loading');
     const iv = startLoadingAnim();
-    const controller = new AbortController();
-    const clientTimeout = setTimeout(() => controller.abort(), 120_000);
-    try {
-      const authHeader = await getAuthHeader();
-      let devHeaders: Record<string, string> = {};
-      try { devHeaders = await require('../../services/deviceId').deviceHeader(); } catch {}
-      const wasRegen = regenPendingRef.current;
-      const res = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeader, ...devHeaders },
-        body: JSON.stringify({ name: v.name, email: v.email, phone: v.phone, location: v.location,
-          rawText: v.rawText, includeUploadedResume: v.includeUploaded, isRegenerate: wasRegen,
-          job: jobForRequest() }),
-        signal: controller.signal,
-      });
-      clearTimeout(clientTimeout);
-      const data = await res.json();
-      clearInterval(iv);
-      if (res.status === 403 && data.reason === 'regen_limit') {
-        setMode('ai');
-        Alert.alert('Regeneration used', data.error || 'Your free plan includes one regeneration.',
-          [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
-        return;
-      }
-      if (res.status === 402) {
-        setMode('ai');
-        Alert.alert('Limit reached', data.error || 'You have used your included resume generations.',
-          [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
-        return;
-      }
-      if (!res.ok || !data.resumeData) throw new Error(data.error || 'Generation failed');
+    const authHeader = await getAuthHeader();
+    let devHeaders: Record<string, string> = {};
+    try { devHeaders = await require('../../services/deviceId').deviceHeader(); } catch {}
+    const wasRegen = regenPendingRef.current;
+    const outcome = await runResumeBuild(
+      { name: v.name, email: v.email, phone: v.phone, location: v.location,
+        rawText: v.rawText, includeUploadedResume: v.includeUploaded, isRegenerate: wasRegen, job: jobForRequest() },
+      buildId, { 'Content-Type': 'application/json', ...authHeader, ...devHeaders }, () => leftRef.current, track,
+    );
+    clearInterval(iv);
+    settleBuild(outcome, () => autoGenerate(v, ...rerunOf(outcome, buildId)), async (resumeData) => {
       regenPendingRef.current = false;
-      await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(data.resumeData));
+      await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(resumeData));
       await AsyncStorage.setItem('resumeBuilderMethod', 'ai').catch(() => {});
       await AsyncStorage.setItem('resumeBuilderFormData', JSON.stringify({
         name: v.name, email: v.email, phone: stripDial(v.phone), location: v.location, rawText: v.rawText,
       })).catch(() => {});
       setBuildMethod('ai');
       router.push('/(resume-builder)/preview');
-    } catch (e: any) {
-      clearTimeout(clientTimeout);
-      clearInterval(iv);
-      setMode('ai');
-      const isAbort = e?.name === 'AbortError';
-      Alert.alert(
-        isAbort ? 'Taking too long…' : 'Generation failed',
-        isAbort ? 'The AI is taking longer than usual. Please tap "Generate" again — it usually succeeds on the next try.'
-                : (e.message || 'Something went wrong. Please try again.'),
-        [{ text: 'Try Again', style: 'default' }],
-      );
-    }
+    });
   }
 
-  async function handleAIGenerate() {
+  // The Generate button. A TAP is a new build (a fresh id); only the alert's Try Again / Keep waiting repeats one.
+  function handleAIGenerate() { generateFromStory(newBuildId()); }
+
+  async function generateFromStory(buildId: string, track?: BuildTrack) {
     if (!rawText.trim() || rawText.trim().length < 30) {
       Alert.alert('More detail needed', 'Please share more about your experience (at least a few sentences).');
       return;
@@ -478,63 +612,22 @@ export default function ResumeBuilderIndex() {
     setMode('loading');
     const iv = startLoadingAnim();
 
-    // 120-second client-side timeout — AI generation can take up to 90s
-    const controller = new AbortController();
-    const clientTimeout = setTimeout(() => controller.abort(), 120_000);
-
-    try {
-      const authHeader = await getAuthHeader();
-      // device id → per-device trial quota on the server (one 7-day trial per phone)
-      let devHeaders: Record<string, string> = {};
-      try { devHeaders = await require('../../services/deviceId').deviceHeader(); } catch {}
-      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeader, ...devHeaders };
-      const res = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ name, email, phone: fullPhone, location, rawText, includeUploadedResume: hasUploadedResume && includeUploadedResume, isRegenerate: regenPendingRef.current, job: jobForRequest() }),
-        signal: controller.signal,
-      });
-      clearTimeout(clientTimeout);
-      const data = await res.json();
-      clearInterval(iv);
-      if (res.status === 403 && data.reason === 'regen_limit') {
-        setMode('ai');
-        Alert.alert('Regeneration used', data.error || 'Your free plan includes one regeneration.',
-          [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }]);
-        return;
-      }
-      if (res.status === 402) {
-        setMode('ai');
-        // Quota exhausted (trial or plan) → route to Plans; legacy credit users see the same sheet.
-        Alert.alert(
-          'Limit reached',
-          data.error || 'You have used your included resume generations.',
-          [
-            { text: 'Not now', style: 'cancel' },
-            { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) },
-          ]
-        );
-        return;
-      }
-      if (!res.ok || !data.resumeData) throw new Error(data.error || 'Generation failed');
+    const authHeader = await getAuthHeader();
+    // device id → per-device trial quota on the server (one 7-day trial per phone)
+    let devHeaders: Record<string, string> = {};
+    try { devHeaders = await require('../../services/deviceId').deviceHeader(); } catch {}
+    const outcome = await runResumeBuild(
+      { name, email, phone: fullPhone, location, rawText, includeUploadedResume: hasUploadedResume && includeUploadedResume, isRegenerate: regenPendingRef.current, job: jobForRequest() },
+      buildId, { 'Content-Type': 'application/json', ...authHeader, ...devHeaders }, () => leftRef.current, track,
+    );
+    clearInterval(iv);
+    settleBuild(outcome, () => generateFromStory(...rerunOf(outcome, buildId)), async (resumeData) => {
       regenPendingRef.current = false;
-      await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(data.resumeData));
+      await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(resumeData));
       await AsyncStorage.setItem('resumeBuilderMethod', 'ai').catch(() => {});
       setBuildMethod('ai');
       router.push('/(resume-builder)/preview');
-    } catch (e: any) {
-      clearTimeout(clientTimeout);
-      clearInterval(iv);
-      setMode('ai');
-      const isAbort = e?.name === 'AbortError';
-      Alert.alert(
-        isAbort ? 'Taking too long…' : 'Generation failed',
-        isAbort
-          ? 'The AI is taking longer than usual. Please tap "Generate" again — it usually succeeds on the next try.'
-          : (e.message || 'Something went wrong. Please try again.'),
-        [{ text: 'Try Again', style: 'default' }]
-      );
-    }
+    });
   }
 
   // ── SELECT MODE ─────────────────────────────────────────────────────────────

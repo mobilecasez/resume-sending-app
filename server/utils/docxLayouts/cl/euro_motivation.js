@@ -111,11 +111,14 @@ module.exports = function build(data, opts) {
   const bodyHtml = has(data.bodyHtml) ? String(data.bodyHtml) : '';
   const plain = bodyHtml.replace(/<[^>]+>/g, ' ');
   const hasSalutation = /\bdear\b|\bhello\b|\bhi\b|\bto whom\b/i.test(plain);
+  // A saved letter's own greeting (data.salutation, set on its customization page) always prints, as the PDF prints it;
+  // without one, the layout's own line — unless the body already opens with a greeting.
+  const salutation = has(data.salutation) ? String(data.salutation) : '';
 
-  if (!hasSalutation) {
+  if (salutation || !hasSalutation) {
     out.push(new Paragraph({
       spacing: { before: 80, after: 160 },
-      children: [run(SALUTATION, { color: WARM_INK, size: 21 })],
+      children: [run(salutation || SALUTATION, { color: WARM_INK, size: 21 })],
     }));
   }
 
@@ -125,7 +128,7 @@ module.exports = function build(data, opts) {
   }
 
   // Closing + signature — always appended (the AI body never signs off; the PDF does too).
-  out.push(new Paragraph({ spacing: { before: 200, after: 40 }, children: [run(CLOSING, { color: WARM_INK, size: 21 })] }));
+  out.push(new Paragraph({ spacing: { before: 200, after: 40 }, children: [run(has(data.closing) ? String(data.closing) : CLOSING, { color: WARM_INK, size: 21 })] }));
   if (has(s.name)) {
     out.push(new Paragraph({ spacing: { before: 200 }, children: [run(String(s.name), { bold: true, color: BROWN, size: 21 })] }));
   }

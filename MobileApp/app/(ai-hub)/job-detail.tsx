@@ -35,7 +35,7 @@ import { File as FSFile, Paths } from 'expo-file-system';
 import { track } from '../../services/analytics';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, fetchJobFull, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, captureJob, type LinkedInJob, type TranslatedJob, type SmartFillData, type CapturedJob } from '../../services/aiHubService';
+import { startJobCoverLetter, pollJobCoverLetter, newClientBuildId, cancelLetterJob, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, fetchJobFull, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, captureJob, type LinkedInJob, type TranslatedJob, type SmartFillData, type CapturedJob } from '../../services/aiHubService';
 import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { API_BASE } from '../../config';
 import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
@@ -4337,6 +4337,23 @@ export default function JobDetailScreen() {
   const [clProgress, setClProgress] = useState(0);
   const [clLabel,    setClLabel]    = useState('Generating cover letter…');
   const clAnim = useRef(new Animated.Value(0)).current;
+  // ⚠️ ONE TAP, ONE PAID LETTER. The build id is made per tap on Generate and KEPT only for a retry after a timeout or
+  // a dropped connection — the server then answers with the job this tap already started (or finished) instead of
+  // writing and charging the letter again. The job in flight is CANCELLED when the user leaves this screen: a letter
+  // not yet paid for is then never charged (one already paid for is stored on the job by the server, and shows here
+  // the next time the job is opened).
+  const clBuildRef = useRef<{ id: string; reuse: boolean } | null>(null);
+  const clJobRef = useRef<string | null>(null);
+  const clLeftRef = useRef(false);
+  useEffect(() => {
+    clLeftRef.current = false;
+    return () => {
+      clLeftRef.current = true;
+      const inFlight = clJobRef.current;
+      clJobRef.current = null;
+      if (inFlight) cancelLetterJob(inFlight);
+    };
+  }, []);
   const [coverLetterHtml,  setCoverLetterHtml]  = useState<string | null>(null);
   const [companyNameCL,    setCompanyNameCL]    = useState('');
   const [websiteUrlCL,     setWebsiteUrlCL]     = useState('');
@@ -5353,11 +5370,16 @@ export default function JobDetailScreen() {
       setClLabel(stages[stageIdx]);
     }, 8000);
 
+    // This tap's build id — the previous tap's, when that one ended without an answer (see clBuildRef).
+    const buildId = clBuildRef.current?.reuse ? clBuildRef.current.id : newClientBuildId();
+    clBuildRef.current = { id: buildId, reuse: false };
+    let storedAt: string | null = null;   // the job the server stores this letter on
     try {
       // Capture + track the job FIRST: guarantees a real DB UUID (so it appears in My Jobs) and that
       // the letter is written from the ACTUAL posting's responsibilities, not the thin card.
       const captured = await ensureTracked(lastPageTextRef.current || undefined);
       const cjid = captured.id;
+      storedAt = cjid;
       const websiteUrl = websiteUrlCL || employerWebsite;
       const capResp = (captured.job?.responsibilities || capturedJob?.responsibilities || []) as string[];
       const responsibilities = capResp.length > 0 ? capResp : (((display as any).responsibilities as string[] | undefined) || []);
@@ -5371,10 +5393,14 @@ export default function JobDetailScreen() {
         display.location || undefined,
         cjid,   // canonical UUID → server augments from the FULL stored responsibilities
         realCompany || undefined,
+        buildId,
       );
+      clJobRef.current = jobId.startsWith('__sync__') ? null : jobId;
       const result = await pollJobCoverLetter(jobId, () => {
         if (fake < 75) { fake = Math.min(fake + 3, 75); setClProgress(Math.round(fake)); animTo(clAnim, fake / 100); }
-      });
+      }, () => clLeftRef.current);
+      clJobRef.current = null;
+      clBuildRef.current = null;   // delivered: the next tap is a new letter
 
       clearInterval(tick); clearInterval(stageTick);
       setClProgress(100); animTo(clAnim, 1);
@@ -5406,11 +5432,36 @@ export default function JobDetailScreen() {
       saveJobCoverLetter(cjid, { coverLetterHtml: html, companyName: cName, websiteUrl: webUrl, position: job.title, companyAddress: addr, companyLocations: locs });
       return html;   // so callers (e.g. Apply-via-Mail) can proceed once it's ready
     } catch (e: any) {
+      clJobRef.current = null;
       clearInterval(tick); clearInterval(stageTick);
+      // The user left this screen: the job was cancelled on the way out, and there is nobody to tell.
+      if (e?.code === 'ABANDONED' || clLeftRef.current) return null;
       setClState('idle');
+      // Ended WITHOUT an answer (the POST never came back, the wait ran out, the job was lost track of): the next tap
+      // keeps this build id, so it joins the job this tap may have started instead of paying for a second letter.
+      const noAnswer = !e?.response && (e?.code === 'ECONNABORTED' || /network|timeout/i.test(String(e?.message || '')));
+      clBuildRef.current = (noAnswer || e?.code === 'TIMED_OUT' || e?.code === 'LOST') ? { id: buildId, reuse: true } : null;
+      // Timed out on a letter that WAS paid for: the server stores it on the job — show it now if it has landed.
+      if (e?.code === 'TIMED_OUT' && storedAt) {
+        const rec = await loadJobCoverLetter(storedAt).catch(() => null);
+        if (rec && rec.cover_letter_html) {
+          let locs: CLLocation[] = [];
+          try { locs = rec.company_locations ? JSON.parse(rec.company_locations) : []; } catch {}
+          setCoverLetterHtml(rec.cover_letter_html);
+          setCompanyNameCL(rec.company_name || employer.name);
+          setWebsiteUrlCL(rec.website_url || '');
+          setCompanyLocations(Array.isArray(locs) ? locs : []);
+          setCompanyAddressCL(employerAddress({ address: rec.company_address, locations: Array.isArray(locs) ? locs : [] }));
+          setClProgress(100); animTo(clAnim, 1);
+          setTimeout(() => setClState('done'), 300);
+          clBuildRef.current = null;
+          return rec.cover_letter_html;
+        }
+      }
       const msg = e?.response?.data?.message ?? e?.response?.data?.error ?? e?.message ?? 'Failed to generate. Please try again.';
-      // Quota exhausted (trial/plan) → offer the Plans screen instead of a dead-end error.
-      if (e?.response?.status === 402) {
+      // Quota exhausted (trial/plan) → offer the Plans screen instead of a dead-end error — whether the POST said so
+      // (402) or the job did (reason quota_exhausted: the last unit went to another letter while this one was written).
+      if (e?.response?.status === 402 || e?.reason === 'quota_exhausted') {
         Alert.alert('Limit reached', msg, [
           { text: 'Not now', style: 'cancel' },
           { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) },

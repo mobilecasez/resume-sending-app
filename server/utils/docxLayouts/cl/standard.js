@@ -172,8 +172,11 @@ module.exports = function build(data, opts) {
 
   // Salutation (only if the body doesn't already carry one).
   const bodyHtml = has(data.bodyHtml) ? String(data.bodyHtml) : '';
-  if (!hasSalutation(bodyHtml)) {
-    mainChildren.push(new Paragraph({ spacing: { after: 160 }, children: [run(SALUTATION, { color: '2B333B', size: 21 })] }));
+  // A saved letter's own greeting (data.salutation, set on its customization page) always prints, as the PDF prints it;
+  // without one, the layout's own line — unless the body already opens with a greeting.
+  const salutation = has(data.salutation) ? String(data.salutation) : '';
+  if (salutation || !hasSalutation(bodyHtml)) {
+    mainChildren.push(new Paragraph({ spacing: { after: 160 }, children: [run(salutation || SALUTATION, { color: '2B333B', size: 21 })] }));
   }
 
   // Body.
@@ -184,7 +187,7 @@ module.exports = function build(data, opts) {
 
   // Closing + uppercase-name signature — always appended. The AI body never carries
   // a sign-off (the prompt forbids it) and the PDF appends it unconditionally.
-  mainChildren.push(new Paragraph({ spacing: { before: 200, after: has(s.name) ? 220 : 0 }, children: [run(CLOSING, { color: '2B333B', size: 21 })] }));
+  mainChildren.push(new Paragraph({ spacing: { before: 200, after: has(s.name) ? 220 : 0 }, children: [run(has(data.closing) ? String(data.closing) : CLOSING, { color: '2B333B', size: 21 })] }));
   if (has(s.name)) {
     mainChildren.push(new Paragraph({ children: [run(String(s.name), { bold: true, color: INK, size: 21, allCaps: true })] }));
   }

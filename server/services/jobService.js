@@ -109,22 +109,69 @@ async function updateJobProgress(jobId, progress) {
 
 /**
  * Mark job as completed with result data
+ *
+ * ⚠️ A CANCELLED JOB STAYS CANCELLED (see cancelJob). The result is still written — a batch cancelled half-way
+ * holds the letters it had already paid for, and they must not vanish with the status — but the status keeps
+ * saying what the user did, so no poller reads "completed" for a job they walked away from.
  */
 async function completeJob(jobId, result) {
     await dbConfig.run(
-        `UPDATE async_jobs SET status = 'completed', progress = 100, result = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+        `UPDATE async_jobs SET status = CASE WHEN status = 'cancelled' THEN status ELSE 'completed' END, progress = 100, result = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
         [JSON.stringify(result), jobId]
     );
 }
 
 /**
  * Mark job as failed
+ * ⚠️ Never over a cancel: the worker's own "cancelled" refusal ends here, and the cancel's words must survive it.
  */
 async function failJob(jobId, errorMessage) {
     await dbConfig.run(
-        `UPDATE async_jobs SET status = 'failed', error = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+        `UPDATE async_jobs SET status = 'failed', error = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status <> 'cancelled'`,
         [errorMessage, jobId]
     );
+}
+
+// ── CANCELLING A LETTER JOB — the user tapped Cancel, or the app gave up waiting ────────────────────────────
+//
+// ⚠️ A CANCEL THAT ONLY STOPPED THE PHONE WAS A CHARGE WITH NOTHING TO SHOW FOR IT. The Letters page's Cancel
+// aborted its own fetch and stopped polling, and the job carried on: the letter was written, the unit consumed
+// under the usage lock, and the result left in async_jobs.result for cleanupOldJobs to delete a day later. The
+// Job Hub gave up after five minutes the same way. Now the app says so (POST /job-cancel/:jobId), the row is
+// marked 'cancelled', and the letter worker reads that UNDER THE USAGE LOCK, just before it would charge — a
+// cancelled letter is never charged and never delivered.
+// ⚠️ ONLY A CLIENT THAT CALLS IT: the Job Hub does (its deadline, leaving the job). The Letters page's Cancel lives in
+// App.js, which does not call it yet — until it does, that Cancel still stops only the phone.
+//
+// ONLY the job types whose workers honour it. A job type that never reads the flag would be charged anyway and
+// then hide its result behind a status that says it was not — so every other type is refused (409).
+// A job whose charge already landed carries result.stage 'charged' (the letter worker writes it under the same
+// lock, the moment it pays): it is not cancellable any more, because "cancelled — nothing was charged" would
+// then be false. The poller keeps going and receives the letter it paid for.
+const CANCELLABLE_JOB_TYPES = Object.freeze(['generate_cover_letter', 'batch_generate', 'batch_generate-and-send', 'batch_send']);
+
+/**
+ * Mark the caller's own job cancelled, while it is still pending or processing and not yet charged.
+ * Resolves true when THIS call cancelled it (false: someone else's, already finished, already charged, or a
+ * type that cannot be cancelled). `message` is what the job's pollers are shown.
+ */
+async function cancelJob(jobId, userId, message) {
+    const rows = await dbConfig.query(
+        `UPDATE async_jobs SET status = 'cancelled', error = $3, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1 AND user_id = $2 AND status IN ('pending', 'processing')
+            AND type = ANY($4::text[])
+            AND COALESCE(result->>'stage', '') <> 'charged'
+        RETURNING id`,
+        [jobId, userId, message || 'Cancelled.', [...CANCELLABLE_JOB_TYPES]]
+    );
+    return !!(rows && rows.length);
+}
+
+/** Has this job been cancelled? A missing row is not a cancel. Throws on a read failure — the caller decides. */
+async function isCancelled(jobId) {
+    if (!jobId) return false;
+    const row = await dbConfig.get(`SELECT status FROM async_jobs WHERE id = $1`, [jobId]);
+    return !!row && row.status === 'cancelled';
 }
 
 /**
@@ -138,21 +185,21 @@ async function updateJobPartialResult(jobId, partialResult) {
 }
 
 /**
- * Mark job as processing
+ * Mark job as processing (never a job cancelled before its worker got to it)
  */
 async function startJob(jobId) {
     await dbConfig.run(
-        `UPDATE async_jobs SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        `UPDATE async_jobs SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status <> 'cancelled'`,
         [jobId]
     );
 }
 
 /**
- * Clean up old completed/failed jobs (older than 24 hours)
+ * Clean up old completed/failed/cancelled jobs (older than 24 hours)
  */
 async function cleanupOldJobs() {
     await dbConfig.run(
-        `DELETE FROM async_jobs WHERE status IN ('completed', 'failed') AND created_at < NOW() - INTERVAL '24 hours'`
+        `DELETE FROM async_jobs WHERE status IN ('completed', 'failed', 'cancelled') AND created_at < NOW() - INTERVAL '24 hours'`
     );
 }
 
@@ -1104,6 +1151,9 @@ module.exports = {
     completeJob,
     failJob,
     startJob,
+    cancelJob,
+    isCancelled,
+    CANCELLABLE_JOB_TYPES,
     cleanupOldJobs,
     requeueStuckJobs,
     upsertEmployer,

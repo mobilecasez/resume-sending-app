@@ -30,7 +30,13 @@ process.env.USE_ASYNC_JOBS = 'false';               // drive the synchronous lan
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
 // What the AI was asked to do. Every counter here must stay flat across downloads.
-const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null, models: [], configs: [], failModel: null };
+// `holds` (T17+): a letter whose subject contains `match` waits inside the model call until released — the moment a
+// user taps Cancel, or a second copy of the request arrives. `researchHang`: the researcher never answers (T19).
+const ai = { resumeCalls: 0, letterCalls: 0, researchCalls: 0, letterFailOn: null, models: [], configs: [], failModel: null, holds: [], researchHang: false };
+const holdLetter = (match) => { const h = { match, entered: false }; h.promise = new Promise((r) => { h.release = r; }); ai.holds.push(h); return h; };
+// T17: the worker paused AFTER the charge (inside the notification that follows it), for user `u`.
+const notifyHolds = [];
+const holdNotify = (u) => { const h = { u, entered: false }; h.promise = new Promise((r) => { h.release = r; }); notifyHolds.push(h); return h; };
 
 // What was actually rendered — "bytes exist" is asserted with these, not with the HTTP status.
 const rendered = { pdf: 0, docx: 0, clPdf: 0, clDocx: 0 };
@@ -46,12 +52,67 @@ const db = {
   runs: [],              // every run(): { sql, params } — the writes a refusal must not make
   hubJob: null,          // the one jobs row the Job Hub letter lane (T16) reads
   resumeRow: { resume_data: { personal_info: { full_name: 'Test User', email: 't@e.st' }, experience: [], _buildMethod: 'ai' }, regen_count: 0 },
+  asyncJobs: new Map(),  // T17+: async_jobs, as the REAL jobService writes it (see asyncJobsSql)
+  nextAsyncJob: 1,
+  creditsThrow: false,   // T20: the credit balance read fails (a dropped connection) — after the charge
 };
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+
+// ── async_jobs, honouring EXACTLY the clauses it is sent (T17+) ──────────────────────────────────────────
+// The REAL jobService / coverLetterController SQL runs against this. Every guard is honoured only when the statement
+// carries it — so a guard dropped from the code is a guard dropped here too, and the test that relies on it fails.
+// Rows made by the stub createJob ('jobN') are not in here, and every statement on them is a no-op.
+function asyncJobsSql(q, p = []) {
+  if (!/async_jobs/.test(q)) return undefined;
+  const J = db.asyncJobs;
+  const parse = (v) => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return v; } };
+  const guardCancel = / AND status <> 'cancelled'/.test(q);
+  if (/^INSERT INTO async_jobs \(user_id, type, status, progress, input\) VALUES \(\$1, \$2, 'pending', 0, \$3\) RETURNING id$/.test(q)) {
+    const id = 'aj-' + (db.nextAsyncJob++);
+    J.set(id, { id, user_id: p[0], type: p[1], status: 'pending', progress: 0, input: parse(p[2]), result: null, error: null, created_at: new Date() });
+    return [{ id }];
+  }
+  if (/^SELECT id, user_id, type, status, progress, result, error, created_at, updated_at FROM async_jobs WHERE id = \$1 AND user_id = \$2$/.test(q)) {
+    const r = J.get(p[0]); return r && r.user_id === p[1] ? { ...r } : null;
+  }
+  if (/^SELECT status FROM async_jobs WHERE id = \$1$/.test(q)) { const r = J.get(p[0]); return r ? { status: r.status } : null; }
+  if (/^SELECT id FROM async_jobs WHERE user_id = \$1 AND type = 'generate_cover_letter' AND input->>'clientBuildId' = \$2/.test(q)) {
+    const skipDead = /status NOT IN \('failed', 'cancelled'\)/.test(q);
+    const hit = [...J.values()].filter((r) => r.user_id === p[0] && r.type === 'generate_cover_letter' && r.input && r.input.clientBuildId === p[1]
+      && Date.now() - r.created_at.getTime() < 15 * 60 * 1000 && (!skipDead || (r.status !== 'failed' && r.status !== 'cancelled'))).pop();
+    return hit ? { id: hit.id } : null;
+  }
+  const row = (id) => J.get(id);
+  let m;
+  if (/^UPDATE async_jobs SET status = 'processing'/.test(q)) { const r = row(p[0]); if (r && !(guardCancel && r.status === 'cancelled')) r.status = 'processing'; return null; }
+  if (/^UPDATE async_jobs SET progress = \$1/.test(q)) { const r = row(p[1]); if (r) r.progress = p[0]; return null; }
+  if (/^UPDATE async_jobs SET result = \$1, updated_at/.test(q)) { const r = row(p[1]); if (r) r.result = parse(p[0]); return null; }
+  if ((m = /^UPDATE async_jobs SET status = (CASE WHEN status = 'cancelled' THEN status ELSE 'completed' END|'completed'), progress = 100, result = \$1/.exec(q))) {
+    const r = row(p[1]); if (r) { r.status = (m[1].startsWith('CASE') && r.status === 'cancelled') ? 'cancelled' : 'completed'; r.result = parse(p[0]); } return null;
+  }
+  if (/^UPDATE async_jobs SET status = 'failed', error = \$1, result = \$2/.test(q)) {
+    const r = row(p[2]); if (r && !(guardCancel && r.status === 'cancelled')) { r.status = 'failed'; r.error = p[0]; r.result = parse(p[1]); } return null;
+  }
+  if (/^UPDATE async_jobs SET status = 'failed', error = \$1, updated_at = CURRENT_TIMESTAMP WHERE id = \$2/.test(q)) {
+    const r = row(p[1]); if (r && !(guardCancel && r.status === 'cancelled')) { r.status = 'failed'; r.error = p[0]; } return null;
+  }
+  if (/^UPDATE async_jobs SET status = 'cancelled'/.test(q)) {
+    const r = row(p[0]);
+    const chargedGuard = /COALESCE\(result->>'stage', ''\) <> 'charged'/.test(q);
+    const types = Array.isArray(p[3]) ? p[3] : null;
+    if (!r || r.user_id !== p[1] || !['pending', 'processing'].includes(r.status) || (types && !types.includes(r.type))
+      || (chargedGuard && r.result && r.result.stage === 'charged')) return [];
+    r.status = 'cancelled'; r.error = p[2];
+    return [{ id: r.id }];
+  }
+  return undefined;
+}
 
 async function dbGet(sql, params = []) {
   const q = norm(sql);
   db.log.push(q.slice(0, 90));
+  const aj = asyncJobsSql(q, params);
+  if (aj !== undefined) return aj;
 
   // ── download_passes: the money table ──────────────────────────────────────────────────────────
   // ⚠️ "unspent" now includes a pass bound to the '(none)' scope: a download that named no company
@@ -135,32 +196,57 @@ async function dbGet(sql, params = []) {
   // ── everything else the handlers read ─────────────────────────────────────────────────────────
   if (/FROM user_resumes/.test(q)) return db.resumeRow;
   if (/FROM resume_metadata/.test(q)) return { id: 1, user_id: params[0], parse_status: 'done', full_name: 'Test User', skills: '["node"]' };
-  if (/FROM user_credits/.test(q)) return { credits_remaining: 0, expiry_date: null };
+  if (/FROM user_credits/.test(q)) {
+    if (db.creditsThrow) throw new Error('Connection terminated unexpectedly');
+    return { credits_remaining: 0, expiry_date: null };
+  }
   if (/FROM users/.test(q)) return { id: params[0], full_name: 'Test User', email: 't@e.st', phone_number: '1', city: 'Pune', country: 'IN', photo_path: null, resume_path: '/uploads/r.pdf', total_generated: 0 };
   if (/FROM employer_brand_profiles/.test(q)) return null;
   if (/FROM jobs WHERE id = \$1/.test(q) && db.hubJob && String(params[0]) === String(db.hubJob.id)) return db.hubJob;
   if (/FROM jobs/.test(q)) return null;
   return null;
 }
+const advisoryLocks = new Map();   // key → the promise the next holder waits on (see withTransaction)
 const dbPath = require.resolve(path.join(ROOT, 'db-config.js'));
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
   get: dbGet,
   // The alias scan is the one query() the money path makes; everything else reads nothing.
   query: async (sql, params) => { const r = await dbGet(sql, params); return Array.isArray(r) ? r : []; },
-  run: async (sql, params) => { db.log.push('RUN ' + norm(sql).slice(0, 70)); db.runs.push({ sql: norm(sql), params }); return {}; },
-  withTransaction: async (fn) => fn({ get: dbGet, run: async () => ({}) }), isUniqueViolation: () => false, getDbType: () => 'postgres',
+  run: async (sql, params) => { db.log.push('RUN ' + norm(sql).slice(0, 70)); db.runs.push({ sql: norm(sql), params }); asyncJobsSql(norm(sql), params || []); return {}; },
+  // T17: with db.serialiseLocks on, pg_advisory_xact_lock really serialises (per key, until the transaction ends) —
+  // what a cancel racing a charge needs to be tested against. Off, the transaction is the plain pass-through it was.
+  withTransaction: async (fn) => {
+    let release = null;
+    const tx = { get: async (sql, params) => {
+      if (db.serialiseLocks && /pg_advisory_xact_lock/.test(norm(sql))) {
+        const key = JSON.stringify(params || []);
+        const prev = advisoryLocks.get(key) || Promise.resolve();
+        let rel; const mine = new Promise((r) => { rel = r; });
+        advisoryLocks.set(key, prev.then(() => mine));
+        await prev;
+        release = rel;
+      }
+      return dbGet(sql, params);
+    }, run: async () => ({}) };
+    try { return await fn(tx); } finally { if (release) release(); }
+  },
+  isUniqueViolation: () => false, getDbType: () => 'postgres',
 } };
 
 // ── entitlements: the PLAN side of the money. `sub` null = no plan; the free allowance is a gate. ─
 // ⚠️ consumeFor (2026-09-14): what consumeOnSuccess answers, per call. Unset = { via: 'plan' }, as before. The real
 // shapes: 'none' (nothing left that may pay — NO usage row) and 'error' are { via, charge: null, ledgerId: null }.
 // Only a payment lands in `consumed`; every call, paid or not, lands in `attempts` with the options it was given.
-const ent = { sub: null, gate: { allowed: true, remaining: 5 }, consumed: [], attempts: [], consumeFor: null, ledgerMax: 0 };
+const ent = { sub: null, gate: { allowed: true, remaining: 5 }, consumed: [], attempts: [], consumeFor: null, ledgerMax: 0, consumeHolds: [] };
+// T17: user `u`'s charge pauses inside consumeOnSuccess — the worker is then INSIDE the usage lock, past its cancel read.
+const holdConsume = (u) => { const h = { u, entered: false }; h.promise = new Promise((r) => { h.release = r; }); ent.consumeHolds.push(h); return h; };
 const entPath = require.resolve(path.join(ROOT, 'server', 'services', 'entitlements.js'));
 require.cache[entPath] = { id: entPath, filename: entPath, loaded: true, exports: {
   activeSubscription: async () => ent.sub,
   canConsumeMany: async () => ent.gate,
   consumeOnSuccess: async (u, kind, detail, opts) => {
+    const hold = ent.consumeHolds.find((h) => h.u === u);
+    if (hold) { hold.entered = true; await hold.promise; }
     const via = ent.consumeFor ? ent.consumeFor(u, kind, detail || {}) : 'plan';
     ent.attempts.push({ u, kind, detail, opts, via, at: db.log.length });
     if (via === 'none' || via === 'error') return { via, charge: null, ledgerId: null };
@@ -201,15 +287,26 @@ const stub = (rel, exports) => {
 
 stub('ai-cover-letter-v2.js', { generateCoverLetter: async (meta, subject) => {
   ai.letterCalls++;
+  const hold = ai.holds.find((h) => String(subject).includes(h.match));
+  if (hold) { hold.entered = true; await hold.promise; }
   if (ai.letterFailOn && String(subject).includes(ai.letterFailOn)) throw new Error('AI provider exploded');
   return { employer_name: String(subject).replace(/^https?:\/\//, ''), cover_letter: 'Dear Hiring Manager,\n\nPlease hire me.\n\nRegards', to: 'Hiring Manager', subject: 'Application', addresses: ['1 Road'] };
 } });
-stub('ai-employer-researcher.js', { researchEmployer: async () => { ai.researchCalls++; return { employer_name: 'Acme Corp', brand_color: '#123456', font_name: 'Lato' }; } });
-stub('server/controllers/notificationsController.js', { notifyCoverLetterGenerated: async () => {}, notifyError: async () => {}, notifySuccess: async () => {} });
+stub('ai-employer-researcher.js', { researchEmployer: async () => {
+  ai.researchCalls++;
+  if (ai.researchHang) return new Promise(() => {});   // T19: a research call that never answers
+  return { employer_name: 'Acme Corp', brand_color: '#123456', font_name: 'Lato' };
+} });
+stub('server/controllers/notificationsController.js', {
+  notifyCoverLetterGenerated: async (u) => { const h = notifyHolds.find((x) => x.u === u); if (h) { h.entered = true; await h.promise; } },
+  notifyError: async () => {}, notifySuccess: async () => {},
+});
 const jobs = { created: 0, failed: [], completed: [] };
 stub('server/services/jobService.js', {
   createJob: async () => 'job' + (++jobs.created), startJob: async () => {}, updateJobProgress: async () => {}, updateJobPartialResult: async () => {},
   failJob: async (id, msg) => { jobs.failed.push({ id, msg }); }, completeJob: async (id, result) => { jobs.completed.push({ id, result }); },
+  // The stub's jobs are never cancelled and never found (a repeat of a stub job is therefore never joined).
+  getJob: async () => null, isCancelled: async () => false,
 });
 const sends = [];
 stub('server/controllers/emailController.js', {
@@ -820,6 +917,561 @@ const boundKeys = (uid) => db.passes.filter((p) => p.user_id === uid && p.bound_
       /lane: 'job_hub_letter'/.test(hubCall) && /models: \[GEMINI_FLASH_MODEL, \.\.\.aiText\.fallbackModels\(\)\]/.test(hubCall) && !/writing\(\)|modelConfig/.test(hubCall), hubCall);
     const rbS = stripS(fsC.readFileSync(path.join(ROOT, 'server', 'controllers', 'resumeBuilderController.js'), 'utf8'));
     ok('…while the résumé lanes still spread aiText.writing() (the measured chain stays theirs)', (rbS.match(/\.\.\.aiText\.writing\(\)/g) || []).length >= 1);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════
+  // 2026-09-19 — "IT WAS 3 COVER LETTERS, I GENERATED 2, AND ALL 3 WERE USED": NO UNIT WITHOUT A LETTER
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════
+  // The quota audit proved four ways a unit left the allowance with no letter to show for it: a Cancel that only
+  // stopped the phone, a lost 202 resent automatically (and the Job Hub's retry), a research call with no timeout
+  // outliving the phone's patience, and a failure AFTER the charge. These drive the real handlers against the REAL
+  // jobService SQL — the fake async_jobs table (asyncJobsSql) honours exactly the WHERE clauses it is sent.
+  const JOBS = require(path.join(ROOT, 'server', 'services', 'jobService.js'));   // the stub object the controllers hold
+  const jsPath = require.resolve(path.join(ROOT, 'server', 'services', 'jobService.js'));
+  const REAL_JOBS = (() => { const had = require.cache[jsPath]; delete require.cache[jsPath]; try { return require(jsPath); } finally { require.cache[jsPath] = had; } })();
+  const STUB_JOBS = { ...JOBS };
+  const REAL_KEYS = ['createJob', 'getJob', 'startJob', 'updateJobProgress', 'updateJobPartialResult', 'completeJob', 'failJob', 'cancelJob', 'isCancelled', 'CANCELLABLE_JOB_TYPES'];
+  const useRealJobs = () => { for (const k of REAL_KEYS) JOBS[k] = REAL_JOBS[k]; };
+  const useStubJobs = () => { for (const k of Object.keys(JOBS)) delete JOBS[k]; Object.assign(JOBS, STUB_JOBS); };
+  const jobRouter = require(path.join(ROOT, 'server', 'routes', 'jobRoutes.js'));
+  const routeOf = (p, m) => { const l = jobRouter.stack.find((x) => x.route && x.route.path === p && x.route.methods[m]); return l && l.route.stack[l.route.stack.length - 1].handle; };
+  const cancelRoute = routeOf('/job-cancel/:jobId', 'post');
+  const statusRoute = routeOf('/job-status/:jobId', 'get');
+  const cancelAs = async (userId, jobId) => { const res = mkRes(); await cancelRoute({ user: { id: userId }, params: { jobId }, body: {}, headers: {} }, res); return res; };
+  const statusAs = async (userId, jobId) => { const res = mkRes(); await statusRoute({ user: { id: userId }, params: { jobId }, headers: {} }, res); return res; };
+  const jobRow = (id) => db.asyncJobs.get(id) || null;
+  const letterAttempts = (uid) => ent.attempts.filter((a) => a.u === uid && a.kind === 'cover_letter');
+  // A job has settled when its worker ended: completed (with a letter or a batch summary), or failed — or, for a
+  // cancelled job, when the worker's own refusal was written against it (a no-op on the row, visible in db.runs).
+  const refusedRun = (id) => db.runs.some((r) => /^UPDATE async_jobs SET status = 'failed'/.test(r.sql) && (r.params || []).includes(id));
+  const settled = (id) => () => { const r = jobRow(id); return !!r && (r.status === 'failed' || !!(r.result && (r.result.success || r.result.results)) || refusedRun(id)); };
+  const batchRouter = require(path.join(ROOT, 'server', 'routes', 'batchRoutes.js'));
+  const batchLayer = batchRouter.stack.find((l) => l.route && l.route.path === '/batch-process');
+  const batchRoute = batchLayer && batchLayer.route.stack[batchLayer.route.stack.length - 1].handle;
+  const savedAsync = process.env.USE_ASYNC_JOBS, savedConc = process.env.BATCH_GENERATE_CONCURRENCY;
+  const keepAlive = setInterval(() => {}, 1000);   // T19's research timer is unref()'d, and its hung call holds nothing open
+
+  try {
+    useRealJobs();
+    process.env.USE_ASYNC_JOBS = 'true';
+    ent.sub = null; ent.gate = { allowed: true, remaining: 3 }; ent.consumeFor = () => 'trial';
+    ok('the cancel and status routes are reachable', typeof cancelRoute === 'function' && typeof statusRoute === 'function' && typeof batchRoute === 'function');
+
+    // ── T17 ──────────────────────────────────────────────────────────────────────────────────────
+    console.log('\n── T17 · ⚠️ a CANCELLED letter is not charged — the Letters page\'s Cancel, the Job Hub\'s deadline ──');
+    {
+      const hold = holdLetter('cancel-me.test');
+      const acc = await call(CL.generateCoverLetterDetails, 170, { recipientEmail: 'hr@cancel-me.test', websiteUrl: 'https://cancel-me.test', position: 'Engineer' });
+      ok('202 with a real job row', acc.statusCode === 202 && !!jobRow(acc.body.jobId), acc.body);
+      await waitFor(() => hold.entered);
+      const c = await cancelAs(170, acc.body.jobId);
+      ok('POST /job-cancel while the letter is being written → cancelled:true', c.statusCode === 200 && c.body && c.body.cancelled === true, { status: c.statusCode, body: c.body });
+      hold.release();
+      await waitFor(settled(acc.body.jobId));
+      ok('⚠️ NOTHING was charged: the worker finished the letter but never asked consumeOnSuccess — no usage row',
+        letterAttempts(170).length === 0, letterAttempts(170));
+      const row = jobRow(acc.body.jobId);
+      ok('⚠️ …the job stays CANCELLED (the worker\'s own refusal did not overwrite it) and holds no letter',
+        !!row && row.status === 'cancelled' && !(row.result && row.result.coverLetterHtml), row && { status: row.status, result: row.result });
+      const st = await statusAs(170, acc.body.jobId);
+      ok('…job-status reads it as failed, reason cancelled, saying nothing was charged (every poller in the field settles)',
+        st.body && st.body.status === 'failed' && st.body.reason === 'cancelled' && st.body.cancelled === true && /nothing was charged/i.test(st.body.error || ''), st.body);
+
+      // Cancelled after the charge landed (the worker is past it, notifying): refused — the letter is delivered.
+      const hn = holdNotify(171);
+      const paid = await call(CL.generateCoverLetterDetails, 171, { recipientEmail: 'hr@charged-first.test', websiteUrl: 'https://charged-first.test', position: 'Engineer' });
+      await waitFor(() => hn.entered);
+      const late = await cancelAs(171, paid.body.jobId);
+      ok('⚠️ a cancel AFTER the charge is refused (cancelled:false, still processing) — "nothing was charged" would be a lie',
+        late.body && late.body.cancelled === false && late.body.status === 'processing', late.body);
+      hn.release();
+      await waitFor(settled(paid.body.jobId));
+      const prow = jobRow(paid.body.jobId);
+      ok('…and the letter it paid for is delivered: the job completes WITH it, charged exactly once',
+        !!prow && prow.status === 'completed' && prow.result && /Please hire me/.test(prow.result.coverLetterHtml || '') && letterAttempts(171).length === 1,
+        prow && { status: prow.status, attempts: letterAttempts(171).length });
+      // A cancel that arrives WHILE the charge is being decided (the worker inside the usage lock, past its cancel read):
+      // it takes the same lock, so it waits for that decision — and then finds the job paid for, and refuses.
+      db.serialiseLocks = true;
+      const hc = holdConsume(173);
+      const race = await call(CL.generateCoverLetterDetails, 173, { recipientEmail: 'hr@race.test', websiteUrl: 'https://race.test', position: 'Engineer' });
+      await waitFor(() => hc.entered);
+      const racing = cancelAs(173, race.body.jobId);
+      await new Promise((r) => setTimeout(r, 40));
+      hc.release();
+      const rc = await racing;
+      await waitFor(settled(race.body.jobId));
+      db.serialiseLocks = false;
+      ok('⚠️ a cancel racing the charge waits for it (the SAME usage lock): refused, and the paid letter is delivered — never "cancelled" over a charge',
+        rc.body && rc.body.cancelled === false && jobRow(race.body.jobId).status === 'completed' && letterAttempts(173).length === 1,
+        { cancel: rc.body, status: jobRow(race.body.jobId).status, attempts: letterAttempts(173).length });
+      // ⚠️ THE LOCK IS UNAVAILABLE (lock_timeout, a dead connection): the cancel is NOT written without it. The worker marks
+      // 'charged' only after its charge returns, so a cancel landing outside the lock could say "nothing was charged" about
+      // a unit already spent. The honest answer is "still running" — and the letter it pays for is delivered.
+      {
+        const hl = holdLetter('no-lock.test');
+        const nl = await call(CL.generateCoverLetterDetails, 174, { recipientEmail: 'hr@no-lock.test', websiteUrl: 'https://no-lock.test', position: 'Engineer' });
+        await waitFor(() => hl.entered);
+        const realLock = CL.withUsageLock;
+        CL.withUsageLock = async () => { throw new Error('canceling statement due to lock timeout'); };
+        const nc = await cancelAs(174, nl.body.jobId);
+        CL.withUsageLock = realLock;
+        ok('⚠️ lock unavailable → the cancel is REFUSED (cancelled:false, still processing) — never written outside the lock',
+          nc.body && nc.body.cancelled === false && nc.body.status === 'processing' && jobRow(nl.body.jobId).status === 'processing', { cancel: nc.body, row: jobRow(nl.body.jobId) && jobRow(nl.body.jobId).status });
+        hl.release();
+        await waitFor(settled(nl.body.jobId));
+        ok('…and the letter finishes and is delivered, charged exactly once', jobRow(nl.body.jobId).status === 'completed' && letterAttempts(174).length === 1,
+          { status: jobRow(nl.body.jobId).status, attempts: letterAttempts(174).length });
+      }
+      // ⚠️ THE 'charged' MARK IS RETRIED. It is what makes a later cancel refuse a PAID letter; a mark that failed once used
+      // to be logged and dropped, and the next cancel would then succeed against a unit already spent.
+      {
+        const realMark = JOBS.updateJobPartialResult;
+        let failed = 0;
+        JOBS.updateJobPartialResult = async (id, partial) => {
+          if (partial && partial.stage === 'charged' && failed < 2) { failed++; throw new Error('connection reset'); }
+          return realMark(id, partial);
+        };
+        const hm = holdNotify(175);
+        const mk = await call(CL.generateCoverLetterDetails, 175, { recipientEmail: 'hr@mark-retry.test', websiteUrl: 'https://mark-retry.test', position: 'Engineer' });
+        await waitFor(() => hm.entered);
+        const markedRow = jobRow(mk.body.jobId);
+        JOBS.updateJobPartialResult = realMark;
+        ok('⚠️ the mark failed twice and was RETRIED: the paid job reads stage "charged"',
+          failed === 2 && !!markedRow && markedRow.result && markedRow.result.stage === 'charged', { failed, result: markedRow && markedRow.result });
+        const mc = await cancelAs(175, mk.body.jobId);
+        ok('…so a cancel after the charge is refused — never "nothing was charged" over a spent unit', mc.body && mc.body.cancelled === false, mc.body);
+        hm.release();
+        await waitFor(settled(mk.body.jobId));
+        ok('…and the letter is delivered, charged once', jobRow(mk.body.jobId).status === 'completed' && letterAttempts(175).length === 1,
+          { status: jobRow(mk.body.jobId).status, attempts: letterAttempts(175).length });
+      }
+      const after = await cancelAs(171, paid.body.jobId);
+      ok('a cancel of a finished job changes nothing (cancelled:false, completed)', after.body && after.body.cancelled === false && after.body.status === 'completed', after.body);
+      ok('another user\'s job → 404, and it is not touched', (await cancelAs(999, paid.body.jobId)).statusCode === 404 && jobRow(paid.body.jobId).status === 'completed');
+      const other = await REAL_JOBS.createJob(171, 'resume_generate_ai', {});
+      const refused = await cancelAs(171, other);
+      ok('a job type whose worker cannot honour a cancel → 409, left running', refused.statusCode === 409 && jobRow(other).status === 'pending', { status: refused.statusCode, row: jobRow(other) });
+
+      // Generate All: cancelled half-way — the letter already paid for is kept, the rest are skipped UNCHARGED, and
+      // nothing at all is SENT after the user said stop.
+      process.env.BATCH_GENERATE_CONCURRENCY = '1';
+      const hb = holdLetter('b2-batch.test');
+      const sends0 = sends.length;
+      const bres = mkRes();
+      await batchRoute({ user: { id: 172 }, body: { mode: 'generate-and-send', recipients: [
+        { email: 'a@b1-batch.test', website: 'b1-batch.test', position: 'Engineer' },
+        { email: 'b@b2-batch.test', website: 'b2-batch.test', position: 'Engineer' },
+        { email: 'c@b3-batch.test', website: 'b3-batch.test', position: 'Engineer' },
+      ] }, headers: {}, ip: '1.1.1.1' }, bres);
+      ok('batch: 202 with a real job row', bres.statusCode === 202 && !!jobRow(bres.body.jobId), bres.body);
+      await waitFor(() => hb.entered);
+      const bc = await cancelAs(172, bres.body.jobId);
+      ok('batch: cancelled while its SECOND letter is being written', bc.body && bc.body.cancelled === true, bc.body);
+      hb.release();
+      await waitFor(settled(bres.body.jobId));
+      const brow = jobRow(bres.body.jobId) || {};
+      const sum = brow.result || {};
+      const rr = sum.results || {};
+      ok('⚠️ batch: exactly ONE unit — the letter finished before the cancel; the one being written and the one not started are free',
+        letterAttempts(172).length === 1 && letterAttempts(172)[0].detail.recipientEmail === 'a@b1-batch.test', letterAttempts(172).map((a) => a.detail.recipientEmail));
+      ok('…the two are recorded as cancelled, not generated (cancelledCount 2), and the paid letter is KEPT in the result',
+        rr[0] && rr[0].generated === true && !!(rr[0].generationData && rr[0].generationData.coverLetterHtml)
+          && rr[1] && rr[1].generated === false && rr[1].reason === 'cancelled' && rr[2] && rr[2].generated === false && rr[2].reason === 'cancelled'
+          && sum.cancelledCount === 2, { rr, cancelledCount: sum.cancelledCount });
+      ok('⚠️ …NOTHING was sent after the cancel (not even the paid letter), and the batch still reads cancelled',
+        sends.length === sends0 && brow.status === 'cancelled' && rr[0].sent === false, { sent: sends.slice(sends0), status: brow.status });
+      ok('the batch\'s letters are labelled on their usage row (lane letters_batch)', letterAttempts(172)[0].detail.lane === 'letters_batch' && letterAttempts(172)[0].detail.screen === 'job_cover_letter', letterAttempts(172)[0].detail);
+      process.env.BATCH_GENERATE_CONCURRENCY = savedConc === undefined ? '' : savedConc;
+      if (savedConc === undefined) delete process.env.BATCH_GENERATE_CONCURRENCY;
+    }
+
+    // ── T18 ──────────────────────────────────────────────────────────────────────────────────────
+    console.log('\n── T18 · ⚠️ one tap, one letter job: a resend of the same request never runs (or charges) twice ──');
+    {
+      const hold = holdLetter('dupe.test');
+      const B = { recipientEmail: 'hr@dupe.test', websiteUrl: 'https://dupe.test', position: 'Engineer', clientBuildId: 'tap-180-a' };
+      const size0 = db.asyncJobs.size;
+      const [r1, r2] = await Promise.all([call(CL.generateCoverLetterDetails, 180, B), call(CL.generateCoverLetterDetails, 180, B)]);
+      ok('two copies of one tap at once → both 202 with the SAME job id, one of them marked deduped',
+        r1.statusCode === 202 && r2.statusCode === 202 && r1.body.jobId === r2.body.jobId && (!!r1.body.deduped !== !!r2.body.deduped), { r1: r1.body, r2: r2.body });
+      ok('⚠️ …and exactly ONE job was created', db.asyncJobs.size === size0 + 1, db.asyncJobs.size - size0);
+      await waitFor(() => hold.entered);
+      hold.release();
+      await waitFor(settled(r1.body.jobId));
+      const r3 = await call(CL.generateCoverLetterDetails, 180, B);
+      ok('the SAME tap retried after the letter finished (the 202 was lost) joins the finished job — no new job',
+        r3.statusCode === 202 && r3.body.jobId === r1.body.jobId && r3.body.deduped === true && db.asyncJobs.size === size0 + 1, r3.body);
+      CL._internals.letterClaims.clear();   // a restart between the lost 202 and the retry: memory is empty
+      const r4 = await call(CL.generateCoverLetterDetails, 180, B);
+      ok('⚠️ …and after a RESTART async_jobs still finds it (input->>clientBuildId) — no new job',
+        r4.statusCode === 202 && r4.body.jobId === r1.body.jobId && r4.body.deduped === true && db.asyncJobs.size === size0 + 1, r4.body);
+      ok('⚠️ ONE unit for the four requests', letterAttempts(180).length === 1, letterAttempts(180).length);
+      ok('the Letters page\'s letter is labelled on its usage row (lane letters_page)', letterAttempts(180)[0].detail.lane === 'letters_page', letterAttempts(180)[0].detail);
+
+      // The Letters page as installed sends NO clientBuildId: its automatic resend joins the job still being written.
+      const hold2 = holdLetter('resend.test');
+      const L = { recipientEmail: 'hr@resend.test', websiteUrl: 'https://resend.test', position: 'Engineer' };
+      const f1 = await call(CL.generateCoverLetterDetails, 181, L);
+      await waitFor(() => hold2.entered);
+      const f2 = await call(CL.generateCoverLetterDetails, 181, L);
+      ok('⚠️ the automatic resend (no clientBuildId) while the letter is being written joins that job — no second job',
+        f2.statusCode === 202 && f2.body.jobId === f1.body.jobId && f2.body.deduped === true, { f1: f1.body, f2: f2.body });
+      hold2.release();
+      await waitFor(settled(f1.body.jobId));
+      ok('…one unit', letterAttempts(181).length === 1, letterAttempts(181).length);
+      const f3 = await call(CL.generateCoverLetterDetails, 181, L);
+      await waitFor(settled(f3.body.jobId));
+      ok('…while the same request AFTER that letter finished is a new letter (a deliberate tap), not a join',
+        f3.statusCode === 202 && f3.body.jobId !== f1.body.jobId && !f3.body.deduped && letterAttempts(181).length === 2, f3.body);
+
+      // A tap whose job FAILED is not joined: its retry really runs again.
+      ai.letterFailOn = 'fail-once.test';
+      const F = { recipientEmail: 'hr@fail-once.test', websiteUrl: 'https://fail-once.test', position: 'Engineer', clientBuildId: 'tap-182' };
+      const g1 = await call(CL.generateCoverLetterDetails, 182, F);
+      await waitFor(settled(g1.body.jobId));
+      ai.letterFailOn = null;
+      const g2 = await call(CL.generateCoverLetterDetails, 182, F);
+      await waitFor(settled(g2.body.jobId));
+      ok('a clientBuildId whose job FAILED is not joined — the retry runs a new job, and only that one is charged',
+        jobRow(g1.body.jobId).status === 'failed' && g2.body.jobId !== g1.body.jobId && !g2.body.deduped && jobRow(g2.body.jobId).status === 'completed' && letterAttempts(182).length === 1,
+        { g1: jobRow(g1.body.jobId) && jobRow(g1.body.jobId).status, g2: g2.body });
+    }
+
+    // ── T19 ──────────────────────────────────────────────────────────────────────────────────────
+    console.log('\n── T19 · ⚠️ the employer research next to the letter is bounded — a hung call cannot hold a paid letter ──');
+    {
+      const t0budget = CL._internals.letterTiming.researchBudgetMs;
+      ok('the research budget is 60 s — inside the letter\'s own budget, so the job cannot outlive the phone\'s wait',
+        CL._internals.LETTER_RESEARCH_BUDGET_MS === 60 * 1000 && CL._internals.LETTER_RESEARCH_BUDGET_MS < CL._internals.LEGACY_LETTER_BUDGET_MS);
+      CL._internals.letterTiming.researchBudgetMs = 60;
+      ai.researchHang = true;
+      process.env.USE_ASYNC_JOBS = 'false';
+      const t0 = Date.now();
+      const r = await Promise.race([
+        call(CL.generateCoverLetterDetails, 190, { recipientEmail: 'hr@hang-research.test', websiteUrl: 'https://hang-research.test', position: 'Engineer' }),
+        new Promise((res) => setTimeout(() => res('STILL WAITING'), 3000)),
+      ]);
+      const took = Date.now() - t0;
+      ai.researchHang = false; CL._internals.letterTiming.researchBudgetMs = t0budget; process.env.USE_ASYNC_JOBS = 'true';
+      ok('⚠️ a research call that NEVER answers: the letter is delivered anyway, with the default brand',
+        r !== 'STILL WAITING' && r.statusCode === 200 && /Please hire me/.test(r.body.coverLetterHtml || '') && r.body.brandColor === '#262633' && r.body.fontName === 'Lato',
+        r === 'STILL WAITING' ? r : { status: r.statusCode, brand: r.body && r.body.brandColor });
+      ok('…after the research budget, not the research\'s own time', r !== 'STILL WAITING' && took < 2000, took);
+    }
+
+    // ── T20 ──────────────────────────────────────────────────────────────────────────────────────
+    console.log('\n── T20 · ⚠️ a failure AFTER the charge does not throw a paid letter away ──');
+    {
+      db.creditsThrow = true;
+      process.env.USE_ASYNC_JOBS = 'false';
+      let runMark = db.runs.length;
+      const s = await call(CL.generateCoverLetterDetails, 200, { recipientEmail: 'hr@after-charge.test', websiteUrl: 'https://after-charge.test', position: 'Engineer' });
+      ok('⚠️ the (display-only) credit balance cannot be read after the charge → still 200 WITH the letter, creditsRemaining 0',
+        s.statusCode === 200 && /Please hire me/.test(s.body.coverLetterHtml || '') && s.body.creditsRemaining === 0, { status: s.statusCode, body: s.body && (s.body.error || s.body.creditsRemaining) });
+      ok('…charged once, and nothing given back (the letter WAS delivered)',
+        letterAttempts(200).length === 1 && !db.runs.slice(runMark).some((r) => /^DELETE FROM usage_ledger/.test(r.sql)));
+      process.env.USE_ASYNC_JOBS = 'true';
+      const a = await call(CL.generateCoverLetterDetails, 201, { recipientEmail: 'hr@after-charge-async.test', websiteUrl: 'https://after-charge-async.test', position: 'Engineer' });
+      await waitFor(settled(a.body.jobId));
+      ok('…and the async job COMPLETES with it (it used to fail as "Failed to generate the cover letter")',
+        jobRow(a.body.jobId).status === 'completed' && /Please hire me/.test((jobRow(a.body.jobId).result || {}).coverLetterHtml || '') && letterAttempts(201).length === 1, jobRow(a.body.jobId));
+      db.creditsThrow = false;
+
+      // completeJob throwing once (a dropped connection at the worst moment) is asked again, not failed.
+      let throwsLeft = 1;
+      JOBS.completeJob = async (id, result) => { if (throwsLeft-- > 0) throw new Error('Connection terminated unexpectedly'); return REAL_JOBS.completeJob(id, result); };
+      const b = await call(CL.generateCoverLetterDetails, 202, { recipientEmail: 'hr@complete-once.test', websiteUrl: 'https://complete-once.test', position: 'Engineer' });
+      await waitFor(settled(b.body.jobId));
+      JOBS.completeJob = REAL_JOBS.completeJob;
+      ok('⚠️ a completeJob that throws once is asked again: the paid letter COMPLETES, it is not failed',
+        jobRow(b.body.jobId).status === 'completed' && /Please hire me/.test((jobRow(b.body.jobId).result || {}).coverLetterHtml || '') && letterAttempts(202).length === 1, jobRow(b.body.jobId));
+    }
+
+    // ── T21 ──────────────────────────────────────────────────────────────────────────────────────
+    console.log('\n── T21 · ⚠️ a paid Job Hub letter is stored by the SERVER — leaving the screen no longer loses it ──');
+    {
+      const runMark = db.runs.length;
+      const acc = await call(CL.generateCoverLetterDetails, 210, { recipientEmail: '', websiteUrl: 'https://hub-store.test', position: 'Backend Engineer', jobId: 'job-uuid-210', clientBuildId: 'hub-210' });
+      await waitFor(settled(acc.body.jobId));
+      const later = db.runs.slice(runMark);
+      const insAt = later.findIndex((r) => /^INSERT INTO job_cover_letters/.test(r.sql) && r.params && r.params[0] === 210);
+      const doneAt = later.findIndex((r) => /^UPDATE async_jobs SET status = CASE WHEN status = 'cancelled'/.test(r.sql) && r.params && r.params[1] === acc.body.jobId);
+      const ins = insAt >= 0 ? later[insAt] : null;
+      ok('⚠️ the letter is written to the job\'s job_cover_letters row by the server, for THIS job',
+        !!ins && ins.params[1] === 'job-uuid-210' && /Please hire me/.test(ins.params[2] || '') && ins.params[5] === 'Backend Engineer', ins && ins.params.slice(0, 6));
+      ok('…BEFORE the job reads completed — the phone\'s own save (with the office it picked) always lands after it', insAt >= 0 && doneAt > insAt, { insAt, doneAt });
+      ok('…and its usage row names the Job Hub (lane job_hub_letter), screen unchanged',
+        letterAttempts(210).length === 1 && letterAttempts(210)[0].detail.lane === 'job_hub_letter' && letterAttempts(210)[0].detail.screen === 'job_cover_letter', letterAttempts(210).map((a) => a.detail));
+
+      const hold = holdLetter('hub-cancel.test');
+      const runMark2 = db.runs.length;
+      const c = await call(CL.generateCoverLetterDetails, 211, { recipientEmail: '', websiteUrl: 'https://hub-cancel.test', position: 'Engineer', jobId: 'job-uuid-211', clientBuildId: 'hub-211' });
+      await waitFor(() => hold.entered);
+      await cancelAs(211, c.body.jobId);
+      hold.release();
+      await waitFor(settled(c.body.jobId));
+      ok('a Job Hub letter cancelled before its charge (the user left the job) is neither charged nor stored',
+        letterAttempts(211).length === 0 && !db.runs.slice(runMark2).some((r) => /^INSERT INTO job_cover_letters/.test(r.sql)), letterAttempts(211));
+    }
+
+    // ── T22 · the code rules behind T17–T21 (comment-stripped) ────────────────────────────────────
+    {
+      const fsx = require('fs');
+      const stripX = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+      const clX = stripX(fsx.readFileSync(path.join(ROOT, 'server', 'controllers', 'coverLetterController.js'), 'utf8'));
+      const work = (clX.match(/async function executeGenerationWork\([\s\S]*?\n\}/) || [''])[0];
+      const lockAt = work.indexOf('withUsageLock(');
+      ok('⚠️ the cancel is read INSIDE the usage lock, before the pass claim and the charge',
+        lockAt > 0 && /withUsageLock\(userId, 'cover_letter', async \(\) => \{\s*if \(await letterJobCancelled\(jobId\)\) \{ cancelled = true; return; \}/.test(work.slice(lockAt))
+          && work.indexOf('letterJobCancelled(jobId)', lockAt) < work.indexOf('claimGeneration(', lockAt) && work.indexOf('claimGeneration(', lockAt) < work.indexOf('consumeOnSuccess(', lockAt));
+      ok('…and the AI still runs BEFORE the lock (a cancel costs the model call, never the unit)', work.indexOf('writeLegacyLetter(') > 0 && work.indexOf('writeLegacyLetter(') < lockAt);
+    }
+  } finally {
+    clearInterval(keepAlive);
+    useStubJobs();
+    ent.consumeFor = null; ent.gate = { allowed: true, remaining: 5 };
+    if (savedAsync === undefined) delete process.env.USE_ASYNC_JOBS; else process.env.USE_ASYNC_JOBS = savedAsync;
+    if (savedConc === undefined) delete process.env.BATCH_GENERATE_CONCURRENCY; else process.env.BATCH_GENERATE_CONCURRENCY = savedConc;
+  }
+
+  // ── T23 ──────────────────────────────────────────────────────────────────────────────────────
+  // THE PHONE'S HALF. The server can refuse to charge a cancelled letter only if the phone says so, and can dedupe a
+  // retry only if the phone sends the same id. The REAL client code, transpiled (MobileApp's own typescript) and run in
+  // a sandbox on a virtual clock (every timer fires at once and moves the clock by its delay) — the pattern of
+  // MobileApp/scripts/test-home-builds.js.
+  console.log('\n── T23 · the phone\'s half: the Job Hub waits 6 min and then CANCELS; the builder follows ONE build ──');
+  {
+    const vm = require('vm');
+    const fsT = require('fs');
+    const tsc = require(path.join(ROOT, 'MobileApp', 'node_modules', 'typescript'));
+    const tjs = (src, name) => tsc.transpileModule(src, { compilerOptions: { module: tsc.ModuleKind.CommonJS, target: tsc.ScriptTarget.ES2020, esModuleInterop: true }, fileName: name }).outputText;
+    const clock = { now: 1_700_000_000_000 };
+    const VDate = class extends Date { static now() { return clock.now; } };
+    const vTimeout = (fn, ms) => { clock.now += Number(ms) || 0; setImmediate(fn); return 0; };
+    const sandboxOf = (extra) => vm.createContext({ console: { log() {}, warn() {}, error() {} }, setTimeout: vTimeout, clearTimeout() {}, setInterval: () => 0, clearInterval() {}, Date: VDate, JSON, Math, Promise, String, Number, Array, Object, Error, encodeURIComponent, ...extra });
+
+    // ── the Job Hub letter client (services/aiHubService.ts) ──
+    const net = { calls: [], answer: () => ({ status: 'processing' }), cancel: { cancelled: true, status: 'cancelled' } };
+    const axiosErr = (status) => Object.assign(new Error('Request failed ' + status), { isAxiosError: true, response: { status } });
+    const fakeAxios = {
+      isAxiosError: (e) => !!(e && e.isAxiosError),
+      get: async (url) => { net.calls.push(['GET', url]); const a = net.answer(url); if (a instanceof Error) throw a; return { data: a }; },
+      post: async (url, body) => {
+        net.calls.push(['POST', url, body]);
+        if (/\/job-cancel\//.test(url)) { net.cancelled = true; return { data: net.cancel }; }
+        if (/\/generate-cover-letter-details$/.test(url)) return { data: { jobId: 'hub-job-1', status: 'pending' } };
+        return { data: {} };
+      },
+    };
+    const MOCKS = {
+      axios: { __esModule: true, default: fakeAxios, ...fakeAxios },
+      'react-native': { AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) } },
+      'expo-secure-store': { getItemAsync: async () => JSON.stringify({ token: 'tok' }) },
+      '@react-native-async-storage/async-storage': { __esModule: true, default: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} } },
+      '../config': { API_BASE: 'https://api.test/api' },
+      './employerHomeService': { loadJobListing: async () => null },
+      './deviceId': { deviceHeader: async () => ({}) },
+    };
+    const hubJs = tjs(fsT.readFileSync(path.join(ROOT, 'MobileApp', 'services', 'aiHubService.ts'), 'utf8'), 'aiHubService.ts');
+    const hubMod = { exports: {} };
+    const hubReq = (id) => { if (id in MOCKS) return MOCKS[id]; throw new Error('unmocked require: ' + id); };
+    vm.runInContext(`(function (module, exports, require) {\n${hubJs}\n})`, sandboxOf({}))(hubMod, hubMod.exports, hubReq);
+    const HUB = hubMod.exports;
+    const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }));
+
+    net.calls.length = 0;
+    const started = await HUB.startJobCoverLetter('https://acme.test', 'Engineer', undefined, undefined, 'job-uuid-1', 'Acme', 'cl-tap-1');
+    const sent = net.calls.find((c) => c[0] === 'POST' && /generate-cover-letter-details/.test(c[1]));
+    ok('⚠️ the Job Hub sends the tap\'s clientBuildId with the letter request', started === 'hub-job-1' && !!sent && sent[2].clientBuildId === 'cl-tap-1' && sent[2].jobId === 'job-uuid-1', sent && sent[2]);
+
+    net.calls.length = 0; net.cancelled = false; net.answer = () => ({ status: 'processing' }); net.cancel = { cancelled: true, status: 'cancelled' };
+    let t0 = clock.now;
+    const r1 = await settle(HUB.pollJobCoverLetter('hub-job-1'));
+    const cancelPosts = net.calls.filter((c) => c[0] === 'POST' && /\/job-cancel\/hub-job-1$/.test(c[1]));
+    ok('⚠️ it waits SIX minutes (not five) — longer than the server\'s own bound on a letter job', clock.now - t0 >= 6 * 60 * 1000, (clock.now - t0) / 60000);
+    ok('⚠️ …then CANCELS the job, and says truthfully that nothing was charged (code TIMED_OUT)',
+      !r1.ok && r1.e.code === 'TIMED_OUT' && /nothing was charged/.test(r1.e.message) && cancelPosts.length === 1, { e: r1.e && r1.e.message, cancels: cancelPosts.length });
+
+    net.calls.length = 0; net.cancelled = false;
+    net.cancel = { cancelled: false, status: 'processing' };
+    net.answer = () => (net.cancelled ? { status: 'completed', data: { coverLetterHtml: '<p>Paid letter</p>', companyName: 'Acme', subject: 's' } } : { status: 'processing' });
+    const r2 = await settle(HUB.pollJobCoverLetter('hub-job-1'));
+    ok('⚠️ a cancel REFUSED at the deadline (the letter is paid for, being finished) → it keeps waiting and hands the letter over',
+      r2.ok && r2.v.coverLetterHtml === '<p>Paid letter</p>', r2.ok ? r2.v : r2.e && r2.e.message);
+
+    net.answer = () => ({ status: 'failed', reason: 'cancelled', error: 'Cancelled — nothing was charged for this letter.' });
+    const r3 = await settle(HUB.pollJobCoverLetter('hub-job-1'));
+    net.answer = () => ({ status: 'failed', reason: 'quota_exhausted', error: 'Your plan allowance was used up.' });
+    const r4 = await settle(HUB.pollJobCoverLetter('hub-job-1'));
+    ok('a cancelled job settles as CANCELLED; a quota refusal carries its reason (the screen opens Plans)',
+      !r3.ok && r3.e.code === 'CANCELLED' && !r4.ok && r4.e.reason === 'quota_exhausted', { r3: r3.e && r3.e.code, r4: r4.e && r4.e.reason });
+    net.calls.length = 0; net.answer = () => ({ status: 'processing' });
+    const r5 = await settle(HUB.pollJobCoverLetter('hub-job-1', undefined, () => true));
+    ok('the screen that asked is gone → it stops at once (ABANDONED), not a single status read more', !r5.ok && r5.e.code === 'ABANDONED' && net.calls.length === 0, net.calls);
+
+    const jd = fsT.readFileSync(path.join(ROOT, 'MobileApp', 'app', '(ai-hub)', 'job-detail.tsx'), 'utf8');
+    ok('⚠️ job-detail: one build id per tap, kept for a retry only after no answer, and the job in flight cancelled when the user leaves',
+      /const buildId = clBuildRef\.current\?\.reuse \? clBuildRef\.current\.id : newClientBuildId\(\);/.test(jd)
+        && /startJobCoverLetter\([\s\S]{0,400}?buildId,\s*\);/.test(jd)
+        && /if \(inFlight\) cancelLetterJob\(inFlight\);/.test(jd)
+        && /pollJobCoverLetter\(jobId, \(\) => \{[\s\S]{0,200}?\}, \(\) => clLeftRef\.current\);/.test(jd));
+
+    // ── the Resume Builder (app/(resume-builder)/index.tsx): its build client, cut out and run as it is ──
+    const rbSrc = fsT.readFileSync(path.join(ROOT, 'MobileApp', 'app', '(resume-builder)', 'index.tsx'), 'utf8');
+    const from = rbSrc.indexOf('// ── THE BUILD RUNS AS A BACKGROUND JOB');
+    const to = rbSrc.indexOf('// A ready-to-edit starter resume');
+    ok('the builder\'s build client is where this test expects it', from > 0 && to > from);
+    const rbJs = tjs(rbSrc.slice(from, to), 'rbClient.ts');
+    const web = { calls: [], saved: [], post: null, status: () => ({ status: 'processing' }) };
+    const resp = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+    const fakeFetch = async (url, init = {}) => {
+      web.calls.push([init.method || 'GET', url, init.body ? JSON.parse(init.body) : null]);
+      if (/\/resume-builder\/generate-ai$/.test(url)) {
+        if (typeof web.post === 'function') return web.post(JSON.parse(init.body));
+        if (web.post instanceof Error) throw web.post; return web.post;
+      }
+      if (/\/resume-builder$/.test(url)) { const s = web.saved.length > 1 ? web.saved.shift() : web.saved[0]; return resp(200, { resumeData: s }); }
+      if (/\/job-status\//.test(url)) { const a = web.status(decodeURIComponent(url.split('/job-status/')[1])); return a && a.__http ? resp(a.__http, {}) : resp(200, a); }
+      return resp(404, {});
+    };
+    const RB = vm.runInContext(`(function () {\n${rbJs}\nreturn { runResumeBuild, newBuildId, BUILD_DEADLINE_MS, rerunOf };\n})`,
+      sandboxOf({ fetch: fakeFetch, API_BASE: 'https://api.test/api' }))();
+    const H = { 'Content-Type': 'application/json', Authorization: 'Bearer tok' };
+    const PAY = { name: 'N', rawText: 'story' };
+
+    web.calls.length = 0; web.saved = [{ v: 'old' }]; web.post = resp(202, { jobId: 'rb-job-1', status: 'pending' });
+    let polls = 0; web.status = () => (++polls < 4 ? { status: 'processing' } : { status: 'completed', data: { resumeData: { v: 'new' } } });
+    const b1 = await RB.runResumeBuild(PAY, 'rb-tap-1', H, () => false);
+    const post1 = web.calls.find((c) => c[0] === 'POST');
+    ok('⚠️ the builder sends the build as a JOB (__async) carrying the tap\'s clientBuildId, and follows that job to its resume',
+      b1.kind === 'done' && b1.resumeData.v === 'new' && post1 && post1[2].__async === true && post1[2].clientBuildId === 'rb-tap-1' && post1[2].rawText === 'story', { b1, body: post1 && post1[2] });
+
+    web.saved = [{ v: 'old' }, { v: 'landed' }]; web.status = () => ({ status: 'processing' });
+    t0 = clock.now;
+    const b2 = await RB.runResumeBuild(PAY, 'rb-tap-2', H, () => false);
+    ok('⚠️ no 120-second give-up: it follows the build for 5½ minutes', RB.BUILD_DEADLINE_MS === 5.5 * 60 * 1000 && clock.now - t0 >= RB.BUILD_DEADLINE_MS, (clock.now - t0) / 60000);
+    ok('⚠️ …and at the deadline it LOOKS before it speaks: the build already saved → it opens that resume, no regenerate', b2.kind === 'done' && b2.resumeData.v === 'landed', b2);
+    web.saved = [{ v: 'same' }];
+    const b3 = await RB.runResumeBuild(PAY, 'rb-tap-3', H, () => false);
+    ok('…not saved yet → "late" (still building: Keep waiting re-joins it), never "failed"', b3.kind === 'late', b3);
+
+    web.post = resp(202, { jobId: 'rb-job-4' }); web.status = () => ({ status: 'failed', reason: 'quota_exhausted', error: 'You have used your 3 free resume generations.' });
+    const b4 = await RB.runResumeBuild(PAY, 'rb-tap-4', H, () => false);
+    web.post = new Error('Network request failed');
+    const b5 = await RB.runResumeBuild(PAY, 'rb-tap-5', H, () => false);
+    web.post = resp(202, { jobId: 'rb-job-6' }); web.status = () => ({ status: 'failed', error: 'We could not finish building your resume.' });
+    const b6 = await RB.runResumeBuild(PAY, 'rb-tap-6', H, () => false);
+    web.post = resp(200, { success: true, resumeData: { v: 'sync' } });
+    const b7 = await RB.runResumeBuild(PAY, 'rb-tap-7', H, () => false);
+    ok('a job refused for quota → Plans; no answer to the POST → a retry of the SAME build; a failed job → a new build; asJob\'s sync fallback → done',
+      b4.kind === 'quota' && b5.kind === 'failed' && b5.retrySame === true && b6.kind === 'failed' && b6.retrySame === false && b7.kind === 'done' && b7.resumeData.v === 'sync',
+      { b4: b4.kind, b5, b6, b7: b7.kind });
+    web.post = resp(403, { reason: 'regen_limit', error: 'Your free plan includes one regeneration.' });
+    const b8 = await RB.runResumeBuild(PAY, 'rb-tap-8', H, () => false);
+    web.post = resp(202, { jobId: 'rb-job-9' }); web.status = () => ({ status: 'failed', reason: 'regen_limit', error: 'Your free plan includes one regeneration.' });
+    const b9 = await RB.runResumeBuild(PAY, 'rb-tap-9', H, () => false);
+    ok('the free plan\'s one regeneration used — refused at the POST (403) or by the job — is regen_limit (Plans), never a Try again',
+      b8.kind === 'regen_limit' && b9.kind === 'regen_limit' && /outcome\.kind === 'regen_limit'[\s\S]{0,300}\/\(subscription\)\/plans/.test(rbSrc), { b8, b9 });
+    ok('⚠️ the builder\'s Try again / Keep waiting repeat the SAME build — its id AND its track — (a fresh one only after a real failure), and nothing says "tap Generate again"',
+      /autoGenerate\(v, \.\.\.rerunOf\(outcome, buildId\)\)/.test(rbSrc)
+        && /generateFromStory\(\.\.\.rerunOf\(outcome, buildId\)\)/.test(rbSrc)
+        && (rbSrc.match(/\(\) => leftRef\.current, track,\n/g) || []).length === 2
+        && !/controller\.abort\(\), 120_000|tap "Generate" again/.test(rbSrc));
+
+    // ── ⚠️ KEEP WAITING, TAPPED LATE, WAS A SECOND CHARGE ──
+    // The server side, modelled as asJob really is: one clientBuildId is ONE job for 15 minutes from its FIRST POST
+    // (IDEMPOTENCY_TTL_MS, and findDurableJob's `created_at > NOW() - INTERVAL '15 minutes'`) — after that the same id
+    // is a brand-new job; and every job that finishes is charged once (consumeOnSuccess) and saved. The old rerun
+    // re-POSTed the same id and re-read `before`: past the window, a second job and a second unit for one resume.
+    const TTL = 15 * 60 * 1000;
+    const srv = { seen: {}, jobs: {}, made: 0, charges: 0, lose202: false };
+    srv.post = (body) => {
+      const id = body.clientBuildId; const prior = srv.seen[id];
+      if (prior && clock.now - prior.at < TTL) return resp(202, { jobId: prior.jobId, status: 'pending', deduped: true });
+      const jobId = 'rb-srv-' + (++srv.made);
+      srv.seen[id] = { at: clock.now, jobId }; srv.jobs[jobId] = { status: 'processing' };
+      if (srv.lose202) throw new Error('Network request failed');   // it reached the server; the answer never came back
+      return resp(202, { jobId, status: 'pending' });
+    };
+    srv.finish = (jobId, v) => { srv.jobs[jobId] = { status: 'completed', data: { resumeData: { v } } }; srv.charges++; web.saved = [{ v }]; };
+    srv.status = (jobId) => srv.jobs[jobId] || { __http: 404 };
+    const reset = () => { srv.seen = {}; srv.jobs = {}; srv.made = 0; srv.charges = 0; srv.lose202 = false; web.calls.length = 0; web.post = srv.post; web.status = srv.status; };
+    const postsIn = (from) => web.calls.slice(from).filter((c) => c[0] === 'POST').length;
+    const MIN = 60 * 1000;
+
+    // (a) the reviewer's scenario, exactly: late at 5½ min, the build finishes and is charged, Keep waiting 10 min later.
+    reset(); web.saved = [{ v: 'old' }];
+    const l1 = await RB.runResumeBuild(PAY, 'rb-late-1', H, () => false);
+    ok('a build still running at the deadline → "late", carrying its job id and the resume from BEFORE its first POST',
+      l1.kind === 'late' && l1.track && l1.track.jobId === 'rb-srv-1' && l1.track.before === JSON.stringify({ v: 'old' }) && srv.made === 1, l1);
+    srv.finish('rb-srv-1', 'finished');
+    clock.now += 10 * MIN;                                        // the phone put down: now >15 min past the first POST
+    const [id1, tr1] = RB.rerunOf(l1, 'rb-late-1');
+    ok('Keep waiting repeats THIS build: the same id and the same track', id1 === 'rb-late-1' && tr1 === l1.track, { id1, tr1 });
+    let mark = web.calls.length;
+    const k1 = await RB.runResumeBuild(PAY, id1, H, () => false, tr1);
+    ok('⚠️ Keep waiting past asJob\'s 15 minutes FOLLOWS the job it has — no second POST, no second job, ONE charge — and opens the resume',
+      k1.kind === 'done' && k1.resumeData.v === 'finished' && postsIn(mark) === 0 && srv.made === 1 && srv.charges === 1,
+      { k1, posts: postsIn(mark), made: srv.made, charges: srv.charges });
+    // …and that is not luck of the model: the same id POSTed now IS a new job (what the old rerun did).
+    const probe = await RB.runResumeBuild(PAY, 'rb-late-1', H, () => false);
+    ok('(control) the SAME id POSTed past 15 minutes is a brand-new job — the second charge this closes', srv.made === 2, { made: srv.made, probe: probe.kind });
+
+    // (b) Keep waiting while the job is STILL running: late again, same track, never a POST; then it lands.
+    reset(); web.saved = [{ v: 'old' }];
+    const l2 = await RB.runResumeBuild(PAY, 'rb-late-2', H, () => false);
+    clock.now += 20 * MIN;
+    mark = web.calls.length;
+    const [id2, tr2] = RB.rerunOf(l2, 'rb-late-2');
+    const k2 = await RB.runResumeBuild(PAY, id2, H, () => false, tr2);
+    const [id2b, tr2b] = RB.rerunOf(k2, id2);
+    const k2b = await RB.runResumeBuild(PAY, id2b, H, () => false, tr2b);
+    ok('…still running → "late" again with the SAME track, and not one POST however often Keep waiting is tapped',
+      k2b.kind === 'late' && k2.kind === 'late' && k2.track.jobId === 'rb-srv-1' && k2.track.before === l2.track.before && postsIn(mark) === 0 && srv.made === 1,
+      { k2, posts: postsIn(mark) });
+
+    // (c) the job row is gone (cleaned up after 24 h) but the resume landed: the CARRIED snapshot still recognises it.
+    reset(); web.saved = [{ v: 'old' }];
+    const l3 = await RB.runResumeBuild(PAY, 'rb-late-3', H, () => false);
+    srv.finish('rb-srv-1', 'landed-then-cleaned'); delete srv.jobs['rb-srv-1'];
+    clock.now += 25 * 60 * MIN;
+    mark = web.calls.length;
+    const [id3, tr3] = RB.rerunOf(l3, 'rb-late-3');
+    const k3 = await RB.runResumeBuild(PAY, id3, H, () => false, tr3);
+    ok('⚠️ …its job row gone a day later: the snapshot from before the FIRST POST (carried, not re-read) finds the resume that landed — no POST',
+      k3.kind === 'done' && k3.resumeData.v === 'landed-then-cleaned' && postsIn(mark) === 0 && srv.made === 1 && srv.charges === 1, { k3, posts: postsIn(mark) });
+
+    // (d) the lost 202: the POST reached the server and the build ran, but no answer came back — Try again 20 min later.
+    reset(); web.saved = [{ v: 'old' }]; srv.lose202 = true;
+    const f4 = await RB.runResumeBuild(PAY, 'rb-lost-4', H, () => false);
+    srv.lose202 = false; srv.finish('rb-srv-1', 'ran-unseen');
+    clock.now += 20 * MIN;
+    const [id4, tr4] = RB.rerunOf(f4, 'rb-lost-4');
+    mark = web.calls.length;
+    const k4 = await RB.runResumeBuild(PAY, id4, H, () => false, tr4);
+    ok('⚠️ a lost 202 retried past the window: the saved resume differs from the CARRIED snapshot → opened, not POSTed again',
+      f4.kind === 'failed' && f4.retrySame === true && id4 === 'rb-lost-4' && tr4 && tr4.jobId === null && tr4.before === JSON.stringify({ v: 'old' })
+        && k4.kind === 'done' && k4.resumeData.v === 'ran-unseen' && postsIn(mark) === 0 && srv.made === 1 && srv.charges === 1,
+      { f4, k4, posts: postsIn(mark), made: srv.made });
+
+    // (e) the POST never reached the server: nothing landed → the SAME id is POSTed once, and that build is the one charge.
+    reset(); web.saved = [{ v: 'old' }];
+    web.post = () => { throw new Error('Network request failed'); };
+    const f5 = await RB.runResumeBuild(PAY, 'rb-offline-5', H, () => false);
+    web.post = srv.post;
+    let polls5 = 0; web.status = (j) => (++polls5 < 3 ? srv.status(j) : (srv.jobs[j].status === 'processing' && srv.finish(j, 'first-and-only'), srv.status(j)));
+    mark = web.calls.length;
+    const [id5, tr5] = RB.rerunOf(f5, 'rb-offline-5');
+    const k5 = await RB.runResumeBuild(PAY, id5, H, () => false, tr5);
+    const post5 = web.calls.slice(mark).filter((c) => c[0] === 'POST');
+    ok('…and a POST that never arrived: nothing landed → the SAME id POSTed exactly once, one job, one charge',
+      k5.kind === 'done' && k5.resumeData.v === 'first-and-only' && post5.length === 1 && post5[0][2].clientBuildId === 'rb-offline-5' && srv.made === 1 && srv.charges === 1,
+      { k5, posts: post5.length, made: srv.made });
+
+    // (f) a real failure is a NEW build: fresh id, no track (a fresh snapshot is read).
+    const [id6, tr6] = RB.rerunOf({ kind: 'failed', message: 'x', retrySame: false }, 'rb-dead-6');
+    ok('a real failure → Try again is a NEW build: a fresh id and no carried track', id6 !== 'rb-dead-6' && /^rb-/.test(id6) && tr6 === undefined, { id6, tr6 });
   }
 
   // ── tidy: the handlers are real, so they wrote real files. Remove everything THIS RUN created

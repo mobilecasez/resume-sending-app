@@ -102,6 +102,11 @@ router.post('/batch-process', authenticateToken, async (req, res) => {
     }
 });
 
+/** Was this batch cancelled (POST /job-cancel/:jobId)? A read that fails answers no — the batch goes on as before. */
+async function batchCancelled(jobId) {
+    try { return await jobService.isCancelled(jobId); } catch (_) { return false; }
+}
+
 /**
  * Process an entire batch job server-side.
  * Updates job progress and result as each recipient is processed.
@@ -157,11 +162,15 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
             const idx = recipient.originalIndex;
             try {
                 console.log(`[Batch ${jobId}] Generating for recipient ${idx}: ${recipient.email}`);
+                // jobId: a cancel of THIS batch (POST /job-cancel/:jobId) is read under the usage lock before each
+                // letter's charge — every letter not yet paid for is then skipped, uncharged (reason 'cancelled').
                 const genResult = await executeGenerationWork(userId, user, {
                     recipientEmail: recipient.email,
                     websiteUrl: recipient.website,
                     position: recipient.position || '',
                     passEnv,
+                    jobId,
+                    lane: 'letters_batch',
                 });
 
                 generatedCoverLetters[idx] = genResult;
@@ -189,6 +198,15 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
     if (mode === 'send' || mode === 'generate-and-send') {
         for (const recipient of validRecipients) {
             const idx = recipient.originalIndex;
+
+            // ⚠️ A CANCELLED BATCH SENDS NOTHING MORE. The user tapped Cancel; an email that leaves after that cannot
+            // be called back. Read per recipient — an unreadable flag is "not cancelled", as it always was.
+            if (await batchCancelled(jobId)) {
+                results[idx] = { ...(results[idx] || {}), sent: false, sendError: 'Cancelled' };
+                completedSteps++;
+                sendsDone++;
+                continue;
+            }
 
             try {
                 // Use generated cover letter or the one provided by client
@@ -283,6 +301,8 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
         summary.generatedCount = Object.values(results).filter(r => r.generated).length;
         // How many letters were refused because nothing was left to pay for them — the client's cue for Plans.
         summary.quotaExhaustedCount = Object.values(results).filter(r => r.reason === 'quota_exhausted').length;
+        // …and how many were skipped, uncharged, because the batch was cancelled first.
+        summary.cancelledCount = Object.values(results).filter(r => r.reason === 'cancelled').length;
     }
     if (mode === 'send' || mode === 'generate-and-send') {
         summary.sentCount = Object.values(results).filter(r => r.sent).length;

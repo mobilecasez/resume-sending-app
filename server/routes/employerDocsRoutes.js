@@ -361,11 +361,36 @@ router.get('/:id', authenticateToken, async (req, res) => {
 });
 
 /**
+ * The letter's printed lines the customization page edits (2026-09-19: "whatever details are on the PDF should come in
+ * an editable page"), with the longest each may be. `sender` is an object of its own — the letterhead / sign-off block
+ * over the profile (coverLetterController.mergeLetterSender): name, title, email, phone, location, each one line.
+ * Absent (or null) = the profile's / the design's own line; the renderers read these and nothing else.
+ */
+const LETTER_LINE_MAX = { subject: 300, companyName: 200, companyAddress: 600, salutation: 200, closing: 200 };
+const LETTER_SENDER_KEYS = ['name', 'title', 'email', 'phone', 'location'];
+const LETTER_SENDER_MAX = 200;
+/**
+ * ⚠️ THE LINES THE BUILD WROTE ARE NOT RE-JUDGED. subject / companyName / companyAddress existed before the page did: the
+ * letter build stores them straight from the AI and the research (employerLetterController — an AI subject or a
+ * researched office has no length cap there). The page sends the whole payload back on EVERY save, so a stored line
+ * over a cap made the letter un-editable — a paragraph fix refused as 'invalid' because of a subject nobody touched.
+ * A line sent back EXACTLY as stored is the letter's own text, not an edit: never refused, never rewritten. Anything
+ * the user changed meets the caps like everything else.
+ */
+const LETTER_BUILD_LINES = ['subject', 'companyName', 'companyAddress'];
+const keptAsStored = (k, v, stored) => LETTER_BUILD_LINES.includes(k) && !!stored && typeof stored === 'object'
+  && k in stored && JSON.stringify(stored[k]) === JSON.stringify(v);
+
+/**
  * The payload must still be the kind of document the row is, or the next render breaks: a resume
  * without an object personal_info crashes every template, and a letter without its HTML 400s on
  * download (the renderer refuses empty content).
+ * ⚠️ A letter's printed lines are checked too — they reach every design's letterhead, greeting and sign-off. A wrong
+ * TYPE (a number, an array, a sender with a key we do not print) or a line past its cap is refused whole, never cut:
+ * the phone caps its inputs at the same lengths (services/letterHtml), so a refusal here is a client bug, not typing.
+ * `stored` (the letter's payload as it is saved now) excuses only a build-written line sent back unchanged (keptAsStored).
  */
-function payloadProblem(kind, payload) {
+function payloadProblem(kind, payload, stored = null) {
   if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) return 'invalid';
   if (kind === 'resume') {
     const pi = payload.personal_info;
@@ -375,7 +400,46 @@ function payloadProblem(kind, payload) {
   if (typeof html !== 'string' || !html.trim()) return 'invalid';
   // Refuse, never trim — a letter cut mid-tag renders as a broken letter the user then sends.
   if (Buffer.byteLength(html, 'utf8') > MAX_LETTER_HTML_BYTES) return 'too_big';
+  for (const [k, max] of Object.entries(LETTER_LINE_MAX)) {
+    const v = payload[k];
+    if (v == null || keptAsStored(k, v, stored)) continue;
+    if (typeof v !== 'string' || v.length > max) return 'invalid';
+  }
+  const sender = payload.sender;
+  if (sender != null) {
+    if (typeof sender !== 'object' || Array.isArray(sender)) return 'invalid';
+    for (const [k, v] of Object.entries(sender)) {
+      if (!LETTER_SENDER_KEYS.includes(k)) return 'invalid';
+      if (v == null) continue;
+      if (typeof v !== 'string' || v.length > LETTER_SENDER_MAX) return 'invalid';
+    }
+  }
   return null;
+}
+
+/** One printed line: C0 controls (a line break included) become a space, runs collapse, ends trimmed. */
+const letterLine = (v) => String(v).replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * The letter's printed lines as they are STORED (after payloadProblem said yes): each one line, control characters
+ * gone. An empty greeting / closing is removed — '' would read as "print nothing" to nobody, the design's line prints —
+ * and a sender left with no key is removed, so an untouched letter keeps exactly the keys it had. Everything else in
+ * the payload (the letter HTML is normalised on its own, position, locations, brand) is left as it came — and so is a
+ * build-written line sent back unchanged (keptAsStored): saving a paragraph never re-spells the address.
+ */
+function normaliseLetterFields(payload, stored = null) {
+  const out = { ...payload };
+  for (const k of Object.keys(LETTER_LINE_MAX)) {
+    if (out[k] == null || keptAsStored(k, out[k], stored)) continue;
+    out[k] = letterLine(out[k]);
+    if ((k === 'salutation' || k === 'closing') && !out[k]) delete out[k];
+  }
+  if (out.sender != null) {
+    const s = {};
+    for (const k of LETTER_SENDER_KEYS) if (typeof out.sender[k] === 'string') s[k] = letterLine(out.sender[k]);
+    if (Object.keys(s).length) out.sender = s; else delete out.sender;
+  } else if ('sender' in out) delete out.sender;
+  return out;
 }
 
 /** The only markup a stored letter may carry — each WITHOUT attributes. */
@@ -478,6 +542,27 @@ function normaliseLetterHtml(input) {
   return out;
 }
 
+// GET /api/employer-docs/:id/sender — the sender block a LETTER prints where it does not override it: the profile, read
+// exactly as every renderer reads it (coverLetterController.buildCLSender: users + the résumé's title), including the
+// "City, Country" location /users/profile does not carry. The customization page shows it, and writes an override only
+// where the user's line differs from it. ⚠️ Read-only: no render, no AI, no charge. Scoped like every route here — a
+// résumé id is refused (bad_kind), another user's id is 'gone'.
+router.get('/:id/sender', authenticateToken, async (req, res) => {
+  try {
+    const row = await docs.slimById(req.user.id, req.params.id, req);
+    if (!row) return res.status(404).json({ success: false, reason: 'gone' });
+    if (row.kind !== 'cover_letter') return res.status(400).json({ success: false, reason: 'bad_kind' });
+    const { buildCLSender } = require('../controllers/coverLetterController');
+    const s = await buildCLSender(req.user.id);
+    const sender = {};
+    for (const k of LETTER_SENDER_KEYS) sender[k] = s && typeof s[k] === 'string' ? s[k] : '';
+    return res.json({ success: true, sender });
+  } catch (e) {
+    console.error('[employerDocs] sender route failed:', e.message);
+    return res.status(500).json({ success: false, reason: 'failed' });
+  }
+});
+
 /** Does this letter HTML still say anything? Tags, whitespace-only references and zero-width chars are not text. */
 function letterHasText(html) {
   return String(html)
@@ -495,17 +580,22 @@ router.put('/:id', authenticateToken, async (req, res) => {
     // client drop the user's unsaved edits, and a blip must not do that.
     const row = await docs.slimById(req.user.id, req.params.id, req);
     if (!row) return res.status(404).json({ success: false, reason: 'gone' });
-    let problem = payloadProblem(row.kind, payload);
+    // A letter's saved payload, for the build-written lines it sends back unchanged (keptAsStored). One read-only
+    // SELECT; null (a blip, a race with a delete) only means every line meets the caps — never a wrong 'gone'.
+    const stored = row.kind === 'cover_letter'
+      ? ((await docs.getById(req.user.id, row.id, req, { kind: 'cover_letter' }).catch(() => null)) || {}).payload || null
+      : null;
+    let problem = payloadProblem(row.kind, payload, stored);
     if (problem === 'too_big') return res.status(413).json({ success: false, reason: 'too_big' });
     if (problem) return res.status(400).json({ success: false, reason: 'invalid' });
     if (row.kind === 'cover_letter') {
-      // The letter is STORED normalised (see normaliseLetterHtml) — never as the client sent it.
-      payload = { ...payload, coverLetterHtml: normaliseLetterHtml(payload.coverLetterHtml) };
+      // The letter is STORED normalised (see normaliseLetterHtml / normaliseLetterFields) — never as the client sent it.
+      payload = { ...normaliseLetterFields(payload, stored), coverLetterHtml: normaliseLetterHtml(payload.coverLetterHtml) };
       if (!letterHasText(payload.coverLetterHtml)) {
         return res.status(400).json({ success: false, reason: 'invalid', error: 'This letter has no text left to save.' });
       }
       // Re-escaping can grow the text ("&" → "&amp;"); the cap holds for what is stored, refused, never cut.
-      problem = payloadProblem(row.kind, payload);
+      problem = payloadProblem(row.kind, payload, stored);
       if (problem === 'too_big') return res.status(413).json({ success: false, reason: 'too_big' });
       if (problem) return res.status(400).json({ success: false, reason: 'invalid' });
     }

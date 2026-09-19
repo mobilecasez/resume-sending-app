@@ -151,7 +151,8 @@ export default function ResumeRebuildCard() {
     try {
       track('home_rebuild_card_tap', { hasBuilt, score: sc });
       if (hasBuilt) {
-        require('expo-router').router?.push?.('/(resume-builder)/preview');
+        // `from: 'home'`: the editor's Back returns to this Dashboard, never to the builder's story form.
+        require('expo-router').router?.push?.({ pathname: '/(resume-builder)/preview', params: { from: 'home' } });
         return;
       }
       // Mirror enhanceFromScore: claim the free pass BEFORE navigating, so the "free" on the

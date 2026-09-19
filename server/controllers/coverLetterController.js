@@ -450,6 +450,29 @@ function letterQuotaRefusal() {
 }
 
 /**
+ * The worker's answer for a job the user cancelled (POST /job-cancel/:jobId) before its letter was paid for: the
+ * letter is not charged and not delivered. Reason 'cancelled' — batch-process records it per letter, the async job's
+ * failJobWithReason leaves the cancel's own row alone (it never overwrites 'cancelled').
+ */
+function letterCancelled() {
+    const e = new Error('Cancelled — nothing was charged for this letter.');
+    e.userFacing = true;
+    e.reason = 'cancelled';
+    return e;
+}
+
+/**
+ * Has the job this letter belongs to been cancelled? No job id (the sync lane, a direct call) is never cancelled.
+ * ⚠️ AN UNREADABLE FLAG IS "NOT CANCELLED": the letter exists and is delivered with its charge, exactly as before
+ * cancelling existed — a database that cannot answer this read is not a reason to throw a finished letter away.
+ */
+async function letterJobCancelled(jobId) {
+    if (!jobId) return false;
+    try { return await jobService.isCancelled(jobId); }
+    catch (e) { console.warn(`[coverLetter] could not read job ${jobId}'s cancel flag (${e.message}) — treated as not cancelled`); return false; }
+}
+
+/**
  * Fail an async job AND keep its machine-readable reason. The same single UPDATE as middleware/asyncJob.js
  * failJobWithReason, which is not exported: this worker creates its own job rows rather than running under
  * asJob. ⚠️ ONE statement, not updateJobPartialResult then failJob — between two writes a poller would read a
@@ -458,8 +481,9 @@ function letterQuotaRefusal() {
  * `retryable`, so a poller can tell "try again in a minute" from "nothing you can do").
  */
 async function failJobWithReason(jobId, message, reason, extra = null) {
+    // Never over a cancel (jobService.failJob keeps the same rule): the cancel's words are what the poller reads.
     await dbConfig.run(
-        `UPDATE async_jobs SET status = 'failed', error = $1, result = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
+        `UPDATE async_jobs SET status = 'failed', error = $1, result = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3 AND status <> 'cancelled'`,
         [message, JSON.stringify({ reason, error: message, ...(extra || {}) }), jobId]
     );
 }
@@ -1112,15 +1136,146 @@ const generateCoverLetters = async (req, res) => {
     }
 };
 
+// ── ONE TAP, ONE LETTER JOB — /generate-cover-letter-details is idempotent ──────────────────────────────────
+//
+// ⚠️ A LOST 202 WAS A SECOND CHARGE. The job starts the moment it is created; when the 202 never reached the phone
+// (a tunnel, a dropped socket) the Letters page resent the POST by itself — up to twice — and the Job Hub's retry
+// did the same by hand. Every copy was a new job that wrote a letter and consumed a unit: two units, one letter on
+// screen. The rule is middleware/asyncJob.js's, which this route cannot wear (it runs its own worker):
+//   • a body carrying `clientBuildId` (one per tap, reused by THAT tap's retries) is deduped per (user, id) for 15
+//     minutes — in memory, claimed SYNCHRONOUSLY before the first await, then in async_jobs (input->>'clientBuildId'),
+//     so a restart between the lost 202 and the retry still finds the job;
+//   • a body WITHOUT one (the Letters page, in every build already installed) joins an IDENTICAL request's job while
+//     that job is still running in this process — same recipient, site, position and posting. That is exactly the
+//     automatic resend, and a second tap on the same letter while the first is being written: both mean "that
+//     letter, once". The claim is released when the job ends, so the next deliberate tap is a new letter.
+// A repeat is answered 202 { jobId, deduped: true } with the FIRST job's id; neither the gate nor the worker runs again.
+// ⚠️ ONLY A LIVE OR FINISHED JOB IS JOINED. A failed or cancelled one is not — a Try again after "Google's AI is busy"
+// must really try again — and neither is a job that cannot be found.
+// ⚠️ BEFORE THE GATE, on purpose: the retry of a letter that spent the LAST unit would otherwise be refused 402 while
+// the letter it paid for sits finished in the first job.
+// Async lane only — the synchronous lane has no job id to hand back.
+const LETTER_BUILD_TTL_MS = 15 * 60 * 1000;
+const LETTER_INFLIGHT_TTL_MS = 10 * 60 * 1000;   // a safety net only: an in-flight claim is released when its job ends
+const LETTER_CLAIMS_MAX = 5000;
+const letterClaims = new Map();   // key → { at, ttlMs, jobIdPromise: Promise<string|null> }
+
+function letterBuildIdOf(body) {
+    const v = body && body.clientBuildId;
+    if (typeof v !== 'string') return null;
+    const t = v.trim();
+    return t && t.length <= 128 ? t : null;
+}
+
+/** What makes two requests WITHOUT a clientBuildId "the same letter": recipient, site, position and posting. */
+function letterRequestKeyOf(userId, body) {
+    const b = body || {};
+    const s = (v) => String(v == null ? '' : v).trim().toLowerCase();
+    const site = s(b.websiteUrl).replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+    return `${userId}|same|` + JSON.stringify([s(b.recipientEmail), site, s(b.position), s(b.jobId), s(b.companyName), s(b.jobUrl)]);
+}
+
+function pruneLetterClaims(now) {
+    // No early break: two TTLs live in this map, so insertion order is not expiry order.
+    for (const [k, v] of letterClaims) {
+        if (now - v.at >= v.ttlMs || letterClaims.size > LETTER_CLAIMS_MAX) letterClaims.delete(k);
+    }
+}
+
+/** May a repeat be handed this job? Only one still running, or finished. Unreadable → yes: joining cannot charge twice. */
+async function letterJobJoinable(jobId, userId) {
+    try {
+        const row = await jobService.getJob(jobId, userId);
+        return !!row && row.status !== 'failed' && row.status !== 'cancelled';
+    } catch (e) {
+        console.warn(`[coverLetter] could not read job ${jobId} for a repeat (${e.message}) — joining it`);
+        return true;
+    }
+}
+
+/**
+ * Join the job an earlier copy of this request made, or take the claim to make it.
+ * → { joinedJobId } | { settle(jobIdOrNull), release() }
+ * ⚠️ CALL IT BEFORE THE HANDLER'S FIRST AWAIT: up to its own first await it runs synchronously, and that is what
+ * lets exactly one of two racing copies create the job while the other waits for its id.
+ */
+async function joinOrClaimLetterJob(key, userId, ttlMs) {
+    const now = Date.now();
+    pruneLetterClaims(now);
+    const prior = letterClaims.get(key);
+    if (prior && now - prior.at < prior.ttlMs) {
+        const priorId = await prior.jobIdPromise;
+        if (priorId && await letterJobJoinable(priorId, userId)) return { joinedJobId: priorId };
+        // Another waiter re-claimed while this one waited: wait for THAT claim instead of racing it.
+        const current = letterClaims.get(key);
+        if (current && current !== prior) return joinOrClaimLetterJob(key, userId, ttlMs);
+    }
+    let resolveClaim;
+    const mine = { at: Date.now(), ttlMs, jobIdPromise: new Promise((r) => { resolveClaim = r; }) };
+    letterClaims.delete(key);   // re-insert at the END
+    letterClaims.set(key, mine);
+    let settled = false;
+    return {
+        // The job this claim produced (null: none — the gate refused, the request failed): a waiter joins it or retries.
+        settle: (jobId) => {
+            if (settled) return;
+            settled = true;
+            resolveClaim(jobId || null);
+            if (!jobId && letterClaims.get(key) === mine) letterClaims.delete(key);
+        },
+        release: () => { if (letterClaims.get(key) === mine) letterClaims.delete(key); },
+    };
+}
+
+/** The durable half: this clientBuildId's live or finished job in async_jobs, within the 15 minutes. */
+async function findLetterJobByBuildId(userId, clientBuildId) {
+    const row = await dbConfig.get(
+        `SELECT id FROM async_jobs
+          WHERE user_id = $1 AND type = 'generate_cover_letter' AND input->>'clientBuildId' = $2
+            AND created_at > NOW() - INTERVAL '15 minutes' AND status NOT IN ('failed', 'cancelled')
+          ORDER BY created_at DESC LIMIT 1`,
+        [userId, clientBuildId]
+    );
+    return row ? row.id : null;
+}
+
 // Generate cover letter details (for review page)
 const generateCoverLetterDetails = async (req, res) => {
     const requestId = Date.now();
     const startTime = Date.now();
     const useAsync = process.env.USE_ASYNC_JOBS !== 'false';
-    
+    let claim = null;   // this request's claim on "one tap, one job" (async lane only)
+
     try {
         const userId = req.user.id;
         let { recipientEmail, websiteUrl, position, responsibilities, jobLocation, jobId: sourceJobId, companyName: companyNameHint, jobUrl, jobText } = req.body;
+
+        // ONE TAP, ONE JOB (see letterClaims above) — before the first await, and before the gate.
+        const clientBuildId = useAsync ? letterBuildIdOf(req.body) : null;
+        if (useAsync) {
+            const got = await joinOrClaimLetterJob(
+                clientBuildId ? `${userId}|build|${clientBuildId}` : letterRequestKeyOf(userId, req.body),
+                userId, clientBuildId ? LETTER_BUILD_TTL_MS : LETTER_INFLIGHT_TTL_MS,
+            );
+            if (got.joinedJobId) {
+                console.log(`🔁 [${requestId}] repeat of a letter request for user ${userId} — the same job ${got.joinedJobId}, not re-run`);
+                return res.status(202).json({ jobId: got.joinedJobId, status: 'pending', deduped: true });
+            }
+            claim = got;
+            if (clientBuildId) {
+                const durable = await findLetterJobByBuildId(userId, clientBuildId).catch((e) => {
+                    console.warn(`[coverLetter] durable clientBuildId lookup failed (memory only this time): ${e.message}`);
+                    return null;
+                });
+                if (durable) {
+                    claim.settle(durable);
+                    console.log(`🔁 [${requestId}] clientBuildId repeat for user ${userId} — job ${durable} found in async_jobs, not re-run`);
+                    return res.status(202).json({ jobId: durable, status: 'pending', deduped: true });
+                }
+            }
+        }
+        // Which screen this letter is for, on its usage row: the Job Hub sends the job it is for, the Letters page does not.
+        const lane = sourceJobId ? 'job_hub_letter' : 'letters_page';
         // The real posting, when the user pasted one (letterListingOf — context for the prompt only).
         const listing = letterListingOf({ jobUrl, jobText, position, companyNameHint });
         // The company a PASS attaches to, and whether one covers this generation. Resolved here and
@@ -1227,17 +1382,24 @@ const generateCoverLetterDetails = async (req, res) => {
 
         if (useAsync) {
             // ASYNC MODE: Create job and return immediately
+            // clientBuildId rides in the input: it is what the durable half of "one tap, one job" finds after a restart.
+            // sourceJobId (the Job Hub's job) is where the finished letter is stored server-side (processGenerationJob).
             const jobId = await jobService.createJob(userId, 'generate_cover_letter', {
                 recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing,
-                passEmployer, passViaPass, passEnv
+                passEmployer, passViaPass, passEnv, lane,
+                ...(sourceJobId ? { sourceJobId: String(sourceJobId) } : {}),
+                ...(clientBuildId ? { clientBuildId } : {}),
             });
             console.log(`🚀 [${requestId}] Async job created: ${jobId}`);
+            if (claim) claim.settle(jobId);
+            // A request with no clientBuildId is "the same letter" only while it is being written.
+            const inFlightClaim = clientBuildId ? null : claim;
 
             // Respond immediately with 202
             res.status(202).json({ jobId, status: 'pending' });
 
             // Fire and forget — process in background
-            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing, passEmployer, passViaPass, passEnv }).catch(err => {
+            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing, passEmployer, passViaPass, passEnv, lane, sourceJobId: sourceJobId ? String(sourceJobId) : null }).catch(err => {
                 console.error(`❌ [${requestId}] Async job ${jobId} failed:`, err.message);
                 // The stored failure message is shown to the user by the poller —
                 // only deliberately user-facing text may pass through.
@@ -1253,7 +1415,7 @@ const generateCoverLetterDetails = async (req, res) => {
                 } else {
                     jobService.failJob(jobId, safeMsg).catch(console.error);
                 }
-            });
+            }).finally(() => { if (inFlightClaim) inFlightClaim.release(); });
 
         } else {
             // SYNC MODE: Original behavior — hold connection until done
@@ -1261,7 +1423,7 @@ const generateCoverLetterDetails = async (req, res) => {
             // on the pass and then charged again by the plan when the letter landed.
             const result = await executeGenerationWork(userId, user, {
                 recipientEmail, websiteUrl, position, responsibilities, jobLocation, companyNameHint, listing,
-                passEmployer, passViaPass, passEnv,
+                passEmployer, passViaPass, passEnv, lane,
             });
 
             const duration = Date.now() - startTime;
@@ -1283,14 +1445,46 @@ const generateCoverLetterDetails = async (req, res) => {
         // The worker's refusal (nothing left to pay for the finished letter) keeps its 402 and its reason.
         res.status(error.reason === 'quota_exhausted' ? 402 : 500)
             .json({ error: safeMessage, ...(error.reason ? { reason: error.reason } : {}) });
+    } finally {
+        // Every way out that made no job (a 402, a 400, an error) lets a waiting copy retry instead of joining nothing.
+        if (claim) claim.settle(null);
     }
 };
+
+// ── THE RESEARCH NEXT TO THE LETTER IS BOUNDED ─────────────────────────────────────────────────────────────
+// ⚠️ researchEmployer is ONE model call with no timeout at all (ai-employer-researcher.js), and on a brand-cache miss
+// the worker waited for it next to the letter (Promise.all). A research that hung kept a PAID letter from being
+// delivered: the Job Hub gave up at five minutes, the user tapped again and paid again, and the first letter was
+// charged the moment the research finally answered. It only picks a brand colour and a font — so after
+// LETTER_RESEARCH_BUDGET_MS the letter goes out with the defaults, and a job can never outlive the metadata wait +
+// LEGACY_LETTER_BUDGET_MS. The research itself is not cancelled (the SDK call cannot be); its late answer is dropped.
+const LETTER_RESEARCH_BUDGET_MS = 60 * 1000;
+const letterTiming = { researchBudgetMs: LETTER_RESEARCH_BUDGET_MS };   // exported through _internals: suites shrink it
+
+function boundedLetterResearch(researchSubject) {
+    let timer = null;
+    const late = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            console.warn(`[employer] research for ${researchSubject} took over ${Math.round(letterTiming.researchBudgetMs / 1000)}s — the letter goes out with the default brand`);
+            resolve(null);
+        }, letterTiming.researchBudgetMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    const research = Promise.resolve()
+        .then(() => researchEmployer(researchSubject))
+        .catch((e) => { console.error('[employer] research failed:', e.message); return null; });
+    return Promise.race([research, late]).finally(() => clearTimeout(timer));
+}
 
 /**
  * The actual heavy generation work — used by both sync and async modes
  */
 // `report(stage, label)` — the async job's retry reporter (legacyJobReporter); absent in sync mode and batch-process.
-async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null, passEmployer = null, passViaPass = false, passEnv = null, report = null }) {
+// `jobId` — the async job this letter belongs to (the single-letter job, or batch-process's batch): a cancel of it is
+//   read under the usage lock, before anything is charged. `onCharged()` — called under that lock the moment the
+//   charge lands (processGenerationJob marks its job 'charged', which is what makes a later cancel refuse).
+// `lane` — which screen asked ('letters_page', 'job_hub_letter', 'letters_batch'), written on the usage row.
+async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null, jobLocation = null, companyNameHint = null, listing = null, passEmployer = null, passViaPass = false, passEnv = null, report = null, jobId = null, onCharged = null, lane = null }) {
     console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}, hasResponsibilities=${!!(responsibilities && responsibilities.length)}, jobLocation=${jobLocation || 'none'}, companyHint=${companyNameHint || 'none'}`);
     // Who do we actually research? The website — or the company name when the only URL is a job board.
     const { normalizedWebsiteUrl, researchSubject } = letterResearchSubjectOf(websiteUrl, companyNameHint);
@@ -1302,6 +1496,13 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
 
     if (!resumeMetadata) {
         throw new Error('Resume not processed yet. Please wait a moment after uploading and try again.');
+    }
+
+    // Cancelled while the résumé was being read (up to 20 s) — or, in a batch, before this letter's turn came: no AI
+    // call for a letter nobody is waiting for. (The deciding read is the one under the usage lock below.)
+    if (await letterJobCancelled(jobId)) {
+        console.log(`🛑 [executeGenerationWork] job ${jobId} was cancelled before the letter to ${normalizedWebsiteUrl} was written — not written, not charged`);
+        throw letterCancelled();
     }
 
     console.log(`[coverLetterController] Starting generation for user ${userId}, url=${normalizedWebsiteUrl}, position=${position}`);
@@ -1324,10 +1525,11 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         fontName = cached.font_name;
     } else {
         // Cache miss — run cover letter generation + full employer research IN PARALLEL
+        // (the research bounded: boundedLetterResearch answers null after LETTER_RESEARCH_BUDGET_MS)
         console.log(`🔍 [employer] Cache miss — running cover letter + employer research in parallel`);
         const [clResult, researchData] = await Promise.all([
             writeLegacyLetter(resumeMetadata, researchSubject, position, responsibilities, jobLocation, listing, { report }),
-            researchEmployer(researchSubject),
+            boundedLetterResearch(researchSubject),
         ]);
         aiResult = clResult.letter;
         brandColor = researchData?.brand_color || '#262633';
@@ -1358,9 +1560,16 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     // over anyway — a free letter per parallel tap. It now throws the quota_exhausted refusal: sync → 402, the
     // async job → failed WITH its reason, batch-process → that one letter refused. 'error' (or anything
     // unrecognised) is not a payment either, and whatever it wrote goes back.
+    // ⚠️ AND A CANCELLED LETTER IS NOT CHARGED (2026-09-19). The Letters page's Cancel and the Job Hub's deadline used
+    // to stop only the phone; this worker carried on and charged a letter nobody would ever see. The cancel is read
+    // HERE, under the same lock POST /job-cancel takes, before the pass or the allowance is touched — and the moment
+    // a charge lands, onCharged marks the job 'charged' (still under the lock), which is what makes a later cancel
+    // refuse. So a letter is either cancelled and free, or paid for and delivered: never paid for and thrown away.
     let used = null;
+    let cancelled = false;
     try {
         await withUsageLock(userId, 'cover_letter', async () => {
+            if (await letterJobCancelled(jobId)) { cancelled = true; return; }
             // ⚠️ Spend the PASS first when one covered this. Falls back to the plan if the claim did
             // not land (another tap won the same pass) — losing that race must not mean a free letter.
             let spentPass = false;
@@ -1379,13 +1588,32 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
                 companyName,
                 position,
                 recipientEmail,
+                // Which screen wrote it, so the Usage screen (and support) can tell the letters apart: every lane in
+                // this file used to write the same screen below. `screen` keeps its old value — reports group on it.
+                ...(lane ? { lane } : {}),
                 screen: 'job_cover_letter'
             }, { storeEnv: passEnv || undefined });
+            if (onCharged && used && (used.via === 'pass' || used.via === 'plan' || used.via === 'trial')) {
+                // ⚠️ RETRIED. The mark is what makes a later cancel refuse a PAID letter (cancelJob's 'charged' guard); left
+                // unwritten, a cancel after this point would say "nothing was charged" about a unit already spent.
+                let marked = false;
+                for (let tryNo = 1; tryNo <= 3 && !marked; tryNo++) {
+                    try { await onCharged(); marked = true; } catch (markError) {
+                        console.warn(`[executeGenerationWork] could not mark job ${jobId} charged (try ${tryNo}/3): ${markError.message}`);
+                        if (tryNo < 3) await new Promise((r) => setTimeout(r, 150 * tryNo));
+                    }
+                }
+                if (!marked) console.error(`❌ [executeGenerationWork] job ${jobId} is CHARGED but not marked — a cancel now would wrongly succeed against a paid letter; support: user ${userId}`);
+            }
         });
     } catch (lockError) {
         // The lock's transaction failed (lock_timeout, a dead connection, its COMMIT). What ran under it was on
         // the pool and is not rolled back, so `used` — this letter's own answer — decides, never the lock.
         console.error(`❌ [executeGenerationWork] usage lock failed for user ${userId}:`, lockError.message);
+    }
+    if (cancelled) {
+        console.log(`🛑 [executeGenerationWork] job ${jobId} was cancelled — user ${userId}'s letter to ${companyName} is not charged and not delivered`);
+        throw letterCancelled();
     }
     const via = used && used.via ? used.via : 'error';
     if (via === 'none') {
@@ -1407,9 +1635,18 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         [userId]
     ).catch((counterError) => console.error('❌ total_generated not updated:', counterError.message));
 
-    // Get updated credits
-    const creditCheck = await checkUserCredits(userId, 0);
-    console.log(`💰 User ${userId} now has ${creditCheck.remaining} credits remaining`);
+    // Get updated credits — DISPLAY ONLY (creditsRemaining below; credits pay for no letter since 2026-09-13).
+    // ⚠️ NEVER A REASON TO LOSE A PAID LETTER. checkUserCredits rethrows a database error, and this runs AFTER the
+    // charge: the worker used to throw here, the job failed with "Failed to generate the cover letter", and the unit
+    // stayed spent on a letter nobody received. A failed read is now shown as 0.
+    let creditsRemaining = 0;
+    try {
+        const creditCheck = await checkUserCredits(userId, 0);
+        creditsRemaining = creditCheck.remaining;
+        console.log(`💰 User ${userId} now has ${creditsRemaining} credits remaining`);
+    } catch (creditError) {
+        console.warn(`[executeGenerationWork] credit balance unreadable for user ${userId} (${creditError.message}) — the paid letter is delivered anyway`);
+    }
 
     // Create notification
     try {
@@ -1429,8 +1666,58 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         fontName,
         metadata: {},
         creditsUsed: 1,
-        creditsRemaining: creditCheck.remaining
+        creditsRemaining
     };
+}
+
+/**
+ * The address line the Job Hub shows for a letter: the office the server put first (the job's own office when it
+ * matched, else the HQ), its parts joined once each. '' when nothing real was found.
+ */
+function jobHubAddressOf(locations) {
+    const list = Array.isArray(locations) ? locations : [];
+    const best = list.find((l) => l && l.matchesJobLocation) || list.find((l) => l && l.isHeadquarters) || list[0];
+    if (!best) return '';
+    const parts = [];
+    for (const p of [best.address, best.city, best.country]) {
+        const t = String(p || '').trim();
+        if (!t || t === ADDRESS_NOT_AVAILABLE) continue;
+        if (parts.some((q) => q.toLowerCase().includes(t.toLowerCase()))) continue;
+        parts.push(t);
+    }
+    return parts.join(', ');
+}
+
+/**
+ * ⚠️ A PAID JOB HUB LETTER IS STORED BY THE SERVER, NOT ONLY BY THE PHONE. The job-detail screen saved the letter
+ * (saveJobCoverLetter) only in its own success path — so a user who left the screen, or whose app gave up waiting,
+ * had paid for a letter that existed nowhere but async_jobs.result, deleted a day later; reopening the job showed
+ * nothing and invited a second paid generation. The letter now lands on the job's job_cover_letters row as soon as it
+ * is paid for, through aiHubController's own save handler (the canonical job id, the never-erase-a-letter and
+ * never-demote-applied rules are its, reused rather than copied). The phone's own save, which follows, still writes
+ * the office the user picked. Never throws: the letter is delivered through the job either way.
+ */
+async function storeJobHubLetter(userId, sourceJobId, input, result) {
+    try {
+        const hub = require('./aiHubController');
+        const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+        await hub.saveJobCoverLetter({
+            user: { id: userId },
+            params: { jobId: String(sourceJobId) },
+            body: {
+                coverLetterHtml: result.coverLetterHtml,
+                companyName: result.companyName,
+                websiteUrl: input.websiteUrl,
+                position: input.position,
+                companyAddress: jobHubAddressOf(result.locations),
+                companyLocations: result.locations || [],
+            },
+        }, res);
+        if (res.statusCode >= 400) console.error(`[coverLetter] ⚠️ the Job Hub letter for job ${sourceJobId} (user ${userId}) was not stored (${res.statusCode}) — the phone's own save is the fallback`);
+        else console.log(`💾 [coverLetter] Job Hub letter stored on job ${sourceJobId} for user ${userId}`);
+    } catch (e) {
+        console.error(`[coverLetter] ⚠️ the Job Hub letter for job ${sourceJobId} (user ${userId}) was not stored:`, e.message);
+    }
 }
 
 /**
@@ -1438,14 +1725,35 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
  */
 async function processGenerationJob(jobId, userId, input) {
     await jobService.startJob(jobId);
+    // Cancelled before its worker got to it: nothing ran, nothing is charged, and the cancel's row stays as it is.
+    if (await letterJobCancelled(jobId)) {
+        console.log(`🛑 Async job ${jobId} was cancelled before it started — nothing written, nothing charged`);
+        return;
+    }
     await jobService.updateJobProgress(jobId, 10);
 
     const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
     await jobService.updateJobProgress(jobId, 20);
 
     // The retry reporter rides only here: the job row is where a poller would read "Google's AI is busy".
-    const result = await executeGenerationWork(userId, user, { ...input, report: legacyJobReporter(jobId) });
-    await jobService.completeJob(jobId, result);
+    // The cancel is read under the usage lock (jobId), and the charge marks the job 'charged' under it (onCharged).
+    const result = await executeGenerationWork(userId, user, {
+        ...input,
+        jobId,
+        report: legacyJobReporter(jobId),
+        onCharged: () => jobService.updateJobPartialResult(jobId, { stage: 'charged', label: 'Finishing your letter' }),
+    });
+    // The Job Hub's letter is stored BEFORE the job reads completed: a poller that sees "completed" (and then saves
+    // the office its user picked) always writes after this, never under it.
+    if (input && input.sourceJobId) await storeJobHubLetter(userId, input.sourceJobId, input, result);
+    // ⚠️ A PAID LETTER IS NOT FAILED OVER ONE WRITE. A completeJob that threw left the job to the catch, which failed
+    // it — the unit spent, the letter gone. Asked once more; only a second failure fails the job.
+    try {
+        await jobService.completeJob(jobId, result);
+    } catch (completeError) {
+        console.warn(`[coverLetter] completeJob failed for job ${jobId} (${completeError.message}) — asking once more`);
+        await jobService.completeJob(jobId, result);
+    }
     console.log(`✅ Async job ${jobId} completed successfully`);
 }
 
@@ -1602,6 +1910,76 @@ async function buildCLSender(userId) {
     } catch {}
     const location = u.city && u.country ? `${u.city}, ${u.country}` : (u.city || u.country || '');
     return { name: u.full_name || '', email: u.email || '', phone: u.phone_number || '', location, title };
+}
+
+// ── A saved letter's own printed lines (the customization page, 2026-09-19) ──────────────────────────────────────────
+// The owner: "whatever details are on the PDF should come in an editable page". A Home employer letter's payload may
+// carry, beside its body, the lines every design prints around it:
+//   sender      { name, title, email, phone, location } — each key laid over the profile (buildCLSender) for THIS letter
+//   salutation  the greeting over the design's own ("Dear Hiring Manager," / "Dear Sir or Madam,")
+//   closing     the sign-off word over the design's own (Sincerely, / Best regards, / Respectfully, …)
+// PUT /employer-docs/:id validates and stores them (employerDocsRoutes payloadProblem / normaliseLetterFields); every
+// render of a SAVED letter — the Home cards, the gallery pages, the PDF, the Word file, a re-download — reads them
+// through the three helpers below and nothing else, so the card is the file. A letter without them renders exactly as
+// before (the classic lanes never pass them at all).
+const LETTER_SENDER_KEYS = ['name', 'title', 'email', 'phone', 'location'];
+/** One printed line: control characters and line breaks become spaces, runs collapse, cut at `max`. '' for a non-string. */
+function letterLineOf(v, max = 200) {
+    if (typeof v !== 'string') return '';
+    return v.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max).trim();
+}
+/** The overrides a payload's `sender` really holds: string keys we print, each one line. {} for anything else. */
+function letterSenderOverrideOf(v) {
+    const out = {};
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+    for (const k of LETTER_SENDER_KEYS) if (typeof v[k] === 'string') out[k] = letterLineOf(v[k]);
+    return out;
+}
+/**
+ * mergeLetterSender(profile, override) → the sender block a letter PRINTS. Pure. A key the override holds (a string)
+ * wins — '' means "print nothing" — except the name, which falls back to the profile when blank (a letter is always
+ * signed). ⚠️ The profile's key ORDER is kept (the Home card cache hashes JSON.stringify of this object): a letter with
+ * no override hashes exactly as it did before overrides existed, so no stored card is thrown away by this change.
+ */
+function mergeLetterSender(profile, override) {
+    const out = { ...(profile && typeof profile === 'object' ? profile : {}) };
+    const o = letterSenderOverrideOf(override);
+    for (const k of LETTER_SENDER_KEYS) {
+        if (!(k in o)) continue;
+        if (k === 'name' && !o[k]) continue;
+        out[k] = o[k];
+    }
+    return out;
+}
+/** senderForLetter(userId, payload) → buildCLSender(userId) with the letter's own sender laid over it. */
+async function senderForLetter(userId, payload) {
+    return mergeLetterSender(await buildCLSender(userId), payload && payload.sender);
+}
+/** A saved letter's greeting / closing, only when it set one: {} or { salutation?, closing? } — spread into render data. */
+function letterLinesOf(payload) {
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const out = {};
+    const salutation = letterLineOf(p.salutation);
+    const closing = letterLineOf(p.closing);
+    if (salutation) out.salutation = salutation;
+    if (closing) out.closing = closing;
+    return out;
+}
+/**
+ * The Original (Branded) design's PDFKit generator reads the users ROW, not a sender block: a copy of the row with the
+ * letter's name / email / phone laid over it, plus the title and location it prints (designation / location) and the
+ * greeting / closing — only the keys the letter overrides, so an untouched letter hands the generator the row itself.
+ */
+function richLetterArgsOf(user, payload) {
+    const o = letterSenderOverrideOf(payload && payload.sender);
+    const u = { ...(user || {}) };
+    if (o.name) u.full_name = o.name;
+    if ('email' in o) u.email = o.email;
+    if ('phone' in o) u.phone_number = o.phone;
+    const opts = { ...letterLinesOf(payload) };
+    if ('title' in o) opts.designation = o.title;
+    if ('location' in o) opts.location = o.location;
+    return { user: u, opts };
 }
 
 // Profile photo → compact JPEG data URI (flatten transparency to white).
@@ -1854,6 +2232,9 @@ async function employerLetterDocFor(userId, req) {
  * brandColor / brandFont are the letter's brand (letterBrandOf — the stored design.brand, then the research,
  * then the payload's own colour): the same pair the employer-cards thumbnails were rendered with, so the
  * file matches the card. `brand` is the pair itself, for the Word builder.
+ * The letter's own lines are read at the call sites, from the doc only (senderForLetter / letterLinesOf /
+ * richLetterArgsOf): the classic lane destructures this same shape from the client's BODY, which must not be able to
+ * name a greeting or a sender for a letter it merely sent.
  */
 function savedLetterInput(doc, body) {
     const p = doc.payload || {};
@@ -1912,11 +2293,16 @@ async function generateCoverLetterTemplatePdf(req, res) {
             // A saved letter's Google font is set by the PDFKit generator too (resolveFontPaths downloads it, and
             // falls back to Lato on its own); a font that is not on Google Fonts stays null, as before.
             const richFont = doc && brandFont && brandFont.google ? brandFont.family : null;
-            const result = await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont);
+            // A saved letter's own sender / greeting / closing (richLetterArgsOf); the classic lane calls it as it always did.
+            const rich = doc ? richLetterArgsOf(user, doc.payload) : null;
+            const result = rich
+                ? await generateRichCoverLetterPDF(rich.user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont, rich.opts)
+                : await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, richFont);
             fileName = result.fileName;
         } else {
-            const sender = await buildCLSender(userId);
-            const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
+            // A saved letter prints its own sender block, greeting and closing (the same data its Home cards rendered).
+            const sender = doc ? await senderForLetter(userId, doc.payload) : await buildCLSender(userId);
+            const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml, ...(doc ? letterLinesOf(doc.payload) : {}) };
             // Doc mode renders the saved letter in its employer's brand (the same opts the cards used); the
             // classic lane's body carries no brand and renders exactly as it always has.
             const pdf = await clRenderer.renderPdf(tplId, data, doc ? { mode, brandColor, brandFont } : { mode });
@@ -1968,8 +2354,9 @@ async function generateCoverLetterTemplateDocx(req, res) {
         }
         if (!(await requirePaidForDownload(userId, res, passEmployer, req))) return;
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
-        const sender = await buildCLSender(userId);
-        const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
+        // A saved letter prints its own sender block, greeting and closing — in Word exactly as in its PDF.
+        const sender = doc ? await senderForLetter(userId, doc.payload) : await buildCLSender(userId);
+        const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml, ...(doc ? letterLinesOf(doc.payload) : {}) };
         const photo = await loadCLPhotoDataUri(userId).catch(() => null);
 
         const { buildCoverLetterDocx } = require('../utils/docxBuilder');
@@ -2059,6 +2446,12 @@ module.exports = {
     // photo and brand colour the downloads above use — so a card is the file they would download.
     formatCoverLetterWithHTML,
     buildCLSender,
+    // A saved letter's own printed lines (the customization page): its sender over the profile, its greeting / closing,
+    // and the PDFKit generator's arguments for them — employerLetterController's cards read them through these too.
+    senderForLetter,
+    mergeLetterSender,
+    letterLinesOf,
+    richLetterArgsOf,
     loadCLPhotoDataUri,
     lookupBrandColor,
     // The one reading of an employer letter's brand (see letterBrandOf): the build stores what
@@ -2085,5 +2478,7 @@ module.exports = {
     ADDRESS_NOT_AVAILABLE,
     LEGACY_LETTER_MODEL,
     // exposed for tests / diagnostics only: the legacy letter's AI call and its parsing
-    _internals: { LETTER_FALLBACKS, letterFallbacks, writeLegacyLetter, parseLegacyLetterJson, legacyAiRefusal, LEGACY_LETTER_MODEL, legacyLetterConfig, LEGACY_LETTER_BUDGET_MS },
+    _internals: { LETTER_FALLBACKS, letterFallbacks, writeLegacyLetter, parseLegacyLetterJson, legacyAiRefusal, LEGACY_LETTER_MODEL, legacyLetterConfig, LEGACY_LETTER_BUDGET_MS,
+        // the research bound (letterTiming.researchBudgetMs is the knob a suite shrinks) and "one tap, one job"'s claims
+        LETTER_RESEARCH_BUDGET_MS, letterTiming, boundedLetterResearch, letterClaims, LETTER_BUILD_TTL_MS, jobHubAddressOf },
 };

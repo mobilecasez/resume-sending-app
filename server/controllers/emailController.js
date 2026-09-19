@@ -750,7 +750,17 @@ function formatCoverLetterWithHTML(coverLetterText, metadata) {
     return html;
 }
 
-async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyName, companyAddress, photoPath, signaturePath, brandColor = null, fontName = null) {
+// letterOpts (a saved Home letter's own lines, from the customization page — coverLetterController.richLetterArgsOf):
+//   salutation / closing  over 'Dear Hiring Manager,' / 'Best regards,'
+// and userData.location (a string) prints in place of the city / country lines. Without them — every other caller —
+// the PDF is exactly what it always was.
+async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyName, companyAddress, photoPath, signaturePath, brandColor = null, fontName = null, letterOpts = {}) {
+    const lineOf = (v) => (typeof v === 'string' ? v.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200).trim() : '');
+    const customSalutation = lineOf(letterOpts && letterOpts.salutation);
+    const customClosing = lineOf(letterOpts && letterOpts.closing);
+    const salutation = customSalutation || 'Dear Hiring Manager,';
+    const closing = customClosing || 'Best regards,';
+    const ownLocation = typeof userData.location === 'string';
     console.log('\n');
     console.log('═══════════════════════════════════════════════════════');
     console.log('📄 createCoverLetterPDFFromHTML CALLED');
@@ -805,6 +815,10 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
                 estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
             }
             
+            // A custom greeting / closing may run past one line (~75 chars at 10pt): its extra lines, estimated alike.
+            for (const custom of [customSalutation, customClosing]) {
+                if (custom) estimatedContentHeight += (Math.ceil(custom.length / 75) - 1) * lineHeight;
+            }
             estimatedContentHeight += 10; // Before closing
             estimatedContentHeight += 30; // Best regards
             if (signaturePath) estimatedContentHeight += 50; // Signature
@@ -1078,11 +1092,16 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             if (userData.phoneNumber) {
                 doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
             }
-            if (userData.city) {
-                doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
-            }
-            if (userData.country) {
-                doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
+            if (ownLocation) {
+                // The letter's own location, one line where the city and country go ('' prints nothing).
+                if (userData.location) doc.text(userData.location, 20, contactY + 24, { lineBreak: false });
+            } else {
+                if (userData.city) {
+                    doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
+                }
+                if (userData.country) {
+                    doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
+                }
             }
             
             // RIGHT CONTENT AREA
@@ -1096,7 +1115,9 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             // Contact details on right
             doc.font(F).fontSize(9).fillColor('#4d4d4d');
             const rightX = pageWidth - 40;
-            if (userData.city && userData.country) {
+            if (ownLocation) {
+                if (userData.location) doc.text(userData.location, rightX - doc.widthOfString(userData.location), contentY, { lineBreak: false });
+            } else if (userData.city && userData.country) {
                 const locationText = `${userData.city}, ${userData.country}`;
                 doc.text(locationText, rightX - doc.widthOfString(locationText), contentY, { lineBreak: false });
             }
@@ -1129,8 +1150,9 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
 
             // Opening
             doc.font(F).fontSize(10).fillColor('#000000');
-            doc.text('Dear Hiring Manager,', contentX, contentY, { width: contentWidth });
-            contentY += 25;
+            doc.text(salutation, contentX, contentY, { width: contentWidth });
+            // A custom greeting that wraps pushes the letter down by its own height; the default's step is unchanged.
+            contentY += customSalutation ? Math.max(25, doc.heightOfString(salutation, { width: contentWidth }) + 13) : 25;
             
             // Helper function to extract text segments with bold info
             function extractTextSegments(node, segments, inheritBold = false) {
@@ -1215,8 +1237,8 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             // Closing
             contentY += 10;
             doc.font(F).fontSize(10).fillColor('#000000');
-            doc.text('Best regards,', contentX, contentY, { width: contentWidth });
-            contentY += 30;
+            doc.text(closing, contentX, contentY, { width: contentWidth });
+            contentY += customClosing ? Math.max(30, doc.heightOfString(closing, { width: contentWidth }) + 18) : 30;
             
             // Signature
             if (signaturePath) {
@@ -1251,7 +1273,11 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
 }
 
 // TWO-COLUMN cover letter PDF generator (like Cover_Letter_Google_New.pdf from Dec 4)
-async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, companyAddress = '', brandColor = null, fontName = null) {
+// letterOpts — ONLY a saved Home letter's own lines (coverLetterController.richLetterArgsOf; every other caller passes
+// nothing and gets the letter it always got): { salutation?, closing?, designation?, location? }. designation /
+// location, when given as strings, replace the résumé's job title and the user's city / country ('' prints none).
+async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, companyAddress = '', brandColor = null, fontName = null, letterOpts = {}) {
+    const lo = letterOpts && typeof letterOpts === 'object' ? letterOpts : {};
     console.log('\n📄 [COMMON] Generating PDF with:');
     console.log('  User:', user.email);
     console.log('  Company:', companyName);
@@ -1281,8 +1307,9 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
         phoneNumber: user.phone_number,
         city: user.city,
         country: user.country,
-        designation: designation
+        designation: typeof lo.designation === 'string' ? lo.designation : designation
     };
+    if (typeof lo.location === 'string') userData.location = lo.location;
 
     // Get photo and signature paths
     const photoPath = user.photo_path ? path.join(__dirname, '../..', user.photo_path) : null;
@@ -1335,7 +1362,8 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
         photoPath,
         signaturePath,
         brandColor,
-        fontName
+        fontName,
+        { salutation: lo.salutation, closing: lo.closing }
     );
 
     console.log(`✅ [COMMON] PDF generated: ${fileName} at ${filePath}\n`);

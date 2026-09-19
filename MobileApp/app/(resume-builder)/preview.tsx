@@ -7,22 +7,24 @@
 // AsyncStorage cache (that is the base copy other screens fall back to), no seed-sample flag, and no
 // Regenerate (a regeneration rewrites the base résumé and has its own free-limit accounting).
 // Without `docId` every line below behaves exactly as it did before doc mode existed.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  ActivityIndicator, Image, Platform, TextInput, Alert, Modal, StatusBar, KeyboardAvoidingView,
+  ActivityIndicator, Image, Platform, TextInput, Alert,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { WebView } from 'react-native-webview';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { readBuilderEmployer } from '../../services/builderEmployer';
 import { fetchDoc, saveDocPayload } from '../../services/employerDocs';
+// The rich-text editor (Quill) and read renderer live in components/rich-text/RichText — shared with the
+// cover-letter customization page, so the two pages edit and show bold the same way.
+import { RichTextModal, ContentText } from '../../components/rich-text/RichText';
 
 /** A route param → a real doc id, or null. Anything that is not a positive integer is "no doc". */
 function docIdOf(raw: unknown): number | null {
@@ -49,94 +51,6 @@ type ResumeData = {
   skills: { technical: string[]; soft: string[] };
 };
 
-// Resume prose is stored as HTML (Quill native) so heading/bold/italic/underline are preserved and
-// shown in the preview. Legacy resumes used **markdown** — convert those to HTML when opening the
-// editor. The PDF/DOCX renderers strip tags (inline formatting is preview-only, as it always was).
-function mdToHtml(value: string): string {
-  const v = String(value || '');
-  if (/<[a-z][\s\S]*>/i.test(v)) return v;                         // already HTML — use as-is
-  let h = v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  const lines = h.split(/\n/);
-  return lines.map((l) => `<p>${l || '<br>'}</p>`).join('') || '<p><br></p>';
-}
-
-// ── Focused full-screen Quill rich-text editor (mirrors Letters/Review) ────────
-function RichTextModal({ visible, title, initialMd, onCancel, onDone }:
-  { visible: boolean; title: string; initialMd: string; onCancel: () => void; onDone: (html: string) => void }) {
-  const insets = useSafeAreaInsets();
-  const initHtml = useMemo(() => mdToHtml(initialMd), [initialMd]);
-  const [liveHtml, setLiveHtml] = useState(initHtml);
-  useEffect(() => { if (visible) setLiveHtml(initHtml); }, [visible, initHtml]);
-
-  const editorHtml = `<!DOCTYPE html><html><head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
-  <script src="https://cdn.quilljs.com/1.3.6/quill.min.js"></script>
-  <style>
-    html { height:100%; }
-    /* Flex column: toolbar pinned (flex:0), editor area scrolls internally (flex:1) — so the
-       formatting controls never scroll away while editing long content. */
-    body { margin:0; padding:0; height:100%; width:100%; overflow:hidden; background:#fff;
-           font-family:-apple-system,system-ui,sans-serif; -webkit-text-size-adjust:100%;
-           display:flex; flex-direction:column; }
-    .ql-toolbar.ql-snow { flex:0 0 auto; background:#fff; border:0; border-bottom:1px solid #eef1f7; }
-    .ql-container.ql-snow { flex:1 1 auto; min-height:0; border:0; max-width:100%; font-size:16px; }
-    .ql-editor { padding:16px; line-height:1.6; color:#0B0F22; word-break:break-word; overflow-wrap:break-word; white-space:pre-wrap; overflow-y:auto; }
-    .ql-editor.ql-blank::before { color:#8A93B2; font-style:normal; left:16px; right:16px; }
-  </style></head><body>
-  <div id="editor">${initHtml}</div>
-  <script>
-    var quill = new Quill('#editor', { theme:'snow', placeholder:'Write here…',
-      modules:{ toolbar:[[{ header:[2,3,false] }],['bold','italic','underline'],['clean']] } });
-    function emit(){ window.ReactNativeWebView && window.ReactNativeWebView.postMessage(quill.root.innerHTML); }
-    quill.on('text-change', emit);
-    setTimeout(function(){ quill.focus(); }, 250);
-  </script></body></html>`;
-
-  return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onCancel} statusBarTranslucent={false}>
-      {/* Explicit top padding (insets / Android status-bar height) so the bar never hides behind
-          the notch / clock. */}
-      <View style={{ flex: 1, backgroundColor: T.surface, paddingTop: Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : 8) }}>
-        <StatusBar barStyle="dark-content" backgroundColor={T.surface} />
-        <View style={rt.bar}>
-          <TouchableOpacity onPress={onCancel} hitSlop={8}><Text style={rt.cancel}>Cancel</Text></TouchableOpacity>
-          <Text style={rt.title} numberOfLines={1}>{title}</Text>
-          <TouchableOpacity onPress={() => onDone(liveHtml)} style={rt.doneBtn} activeOpacity={0.85}>
-            <Ionicons name="checkmark" size={14} color="#fff" /><Text style={rt.doneText}>Done</Text>
-          </TouchableOpacity>
-        </View>
-        <View style={rt.hint}>
-          <Ionicons name="text" size={12} color={T.blue} />
-          <Text style={rt.hintText}>Select text, then use the toolbar — heading, <Text style={{ fontWeight: '800' }}>B</Text>, <Text style={{ fontStyle: 'italic' }}>I</Text>, underline.</Text>
-        </View>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <WebView
-            key={initialMd}
-            source={{ html: editorHtml }}
-            style={{ flex: 1 }}
-            originWhitelist={['*']}
-            javaScriptEnabled
-            domStorageEnabled
-            keyboardDisplayRequiresUserAction={false}
-            onMessage={(e) => setLiveHtml(e.nativeEvent.data)}
-          />
-        </KeyboardAvoidingView>
-      </View>
-    </Modal>
-  );
-}
-const rt = StyleSheet.create({
-  bar:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: T.border },
-  cancel:   { fontSize: 14, fontWeight: '600', color: T.muted },
-  title:    { flex: 1, textAlign: 'center', fontSize: 14, fontWeight: '800', color: T.ink, marginHorizontal: 10 },
-  doneBtn:  { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.emerald, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 7 },
-  doneText: { fontSize: 13, fontWeight: '800', color: '#fff' },
-  hint:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(79,141,255,0.08)', paddingHorizontal: 16, paddingVertical: 8 },
-  hintText: { fontSize: 11.5, color: T.blueDeep, fontWeight: '600' },
-});
-
 function Chip({ label, color }: { label: string; color: string }) {
   return (
     <View style={[chip.wrap, { backgroundColor: color + '18', borderColor: color + '33' }]}>
@@ -157,48 +71,6 @@ function getInitials(name?: string | null): string {
   const parts = safe.split(/\s+/).filter(Boolean);
   if (parts.length >= 2) return ((parts[0][0] || '') + (parts[parts.length - 1][0] || '')).toUpperCase();
   return (safe[0] || '?').toUpperCase();
-}
-
-function decodeEntities(s: string): string {
-  return s.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#39;/gi, "'").replace(/&quot;/gi, '"').replace(/&apos;/gi, "'");
-}
-// Read renderer — shows rich formatting (bold/italic/underline/heading) from the stored HTML, and
-// still understands legacy **markdown**. A stack tokenizer supports nesting (e.g. bold + italic).
-function ContentText({ text, style, bulletVerb }: { text: string; style?: any; bulletVerb?: boolean }) {
-  let src = String(text || '');
-  // Only REAL rich-text tags flip HTML mode. The old test (/<[a-z]…>/) matched any angle-bracket
-  // aside a user typed — "<3 years>", "&lt;placeholder&gt;" — and then silently deleted it as an
-  // "unknown tag". Unknown tags are also no longer stripped in HTML mode for the same reason.
-  if (/<\/?(h[1-6]|p|div|li|ul|ol|br|strong|b|em|i|u|span)\b[^>]*>/i.test(src)) {
-    src = src.replace(/<h[1-6][^>]*>/gi, '⟦b⟧').replace(/<\/h[1-6]>/gi, '⟦/⟧\n')
-             .replace(/<\/(p|div|li)>/gi, '\n').replace(/<(p|div|li)[^>]*>/gi, '').replace(/<br\s*\/?>/gi, '\n')
-             .replace(/<(strong|b)\b[^>]*>/gi, '⟦b⟧').replace(/<\/(strong|b)>/gi, '⟦/⟧')
-             .replace(/<(em|i)\b[^>]*>/gi, '⟦i⟧').replace(/<\/(em|i)>/gi, '⟦/⟧')
-             .replace(/<u\b[^>]*>/gi, '⟦u⟧').replace(/<\/u>/gi, '⟦/⟧')
-             .replace(/<\/?(span|ul|ol)\b[^>]*>/gi, '');
-    src = decodeEntities(src);
-  } else {
-    src = src.replace(/\*\*(.+?)\*\*/g, '⟦b⟧$1⟦/⟧').replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, '$1⟦i⟧$2⟦/⟧');
-  }
-  src = src.replace(/[\s\n]+$/g, '').replace(/\n{3,}/g, '\n\n');
-  const tokens = src.split(/(⟦b⟧|⟦i⟧|⟦u⟧|⟦\/⟧)/);
-  const stack: string[] = [];
-  const nodes: React.ReactNode[] = [];
-  let k = 0;
-  for (const tk of tokens) {
-    if (tk === '⟦b⟧') stack.push('b');
-    else if (tk === '⟦i⟧') stack.push('i');
-    else if (tk === '⟦u⟧') stack.push('u');
-    else if (tk === '⟦/⟧') stack.pop();
-    else if (tk) {
-      const st: any = {};
-      if (stack.includes('b')) { st.fontWeight = '700'; st.color = T.inkSoft; }
-      if (stack.includes('i')) st.fontStyle = 'italic';
-      if (stack.includes('u')) st.textDecorationLine = 'underline';
-      nodes.push(<Text key={k++} style={st}>{tk}</Text>);
-    }
-  }
-  return <Text style={style} selectable>{nodes.length ? nodes : src}</Text>;
 }
 
 // Plain input for structured fields (role, dates, skills…)
@@ -234,15 +106,40 @@ function ProseRow({ md, placeholder, color, dot, onEdit, onRemove }:
 
 export default function ResumePreview() {
   const router = useRouter();
-  const { docId: wantDocId } = useLocalSearchParams<{ docId?: string }>();
+  // `from: 'home'` — Home (the hero's Customize, the mint button, a library card) and the old Dashboard card
+  // say who opened the editor, for the one stack leave() cannot read on its own (see leave).
+  const { docId: wantDocId, from } = useLocalSearchParams<{ docId?: string; from?: string }>();
   // Doc mode — see the header. Constant for the life of the screen.
   const docId = docIdOf(wantDocId);
+  const fromHome = (Array.isArray(from) ? from[0] : from) === 'home';
   const rating = useRatingPrompt();
-  // ⚠️ Doc mode was opened from Home or the gallery, never from the builder index — replacing with
-  // the builder would drop the user into "Tell us your story" for a résumé they did not come from.
+  // The (resume-builder) Stack itself — leave() reads WHAT is sitting under this screen, as the gallery's
+  // goEdit does, before it decides between back() and the builder.
+  const navigation = useNavigation();
+  // ⚠️ BACK RETURNS TO WHERE THE EDITOR WAS OPENED. Home, the old Dashboard card and the gallery all open it
+  // as a PUSHED screen, so Back is a back(). It used to replace with the builder index for everything but doc
+  // mode — so Customize on a chip with no saved résumé, then Back, dropped the user into "Tell us your story"
+  // instead of the Home they tapped it on (the owner's report, 2026-09-19). The replace dates from when the
+  // builder index was the only way in; only a preview sitting ON that index / its manual form (AI generate,
+  // the sample seed, the View card) keeps it, and so does a cold open with no history to go back to.
+  // ⚠️ `from: 'home'` settles the one stack the route below cannot: a builder group reused under Home still has
+  // its index below this screen, and back() would walk into it — so Home's editor pops the WHOLE group.
+  // No BackHandler / usePreventRemove here: iOS swipe-back and Android back pop natively, and already did.
   const leave = () => {
-    if (docId && router.canGoBack()) router.back();
-    else router.replace('/(resume-builder)');
+    const st: any = (navigation as any)?.getState?.();
+    const routes: any[] = st?.routes || [];
+    const meIdx = typeof st?.index === 'number' ? st.index : routes.length - 1;
+    // Route names inside this Stack are the file names ('index', 'manual'); split guards a fuller form.
+    const below = String(routes[meIdx - 1]?.name || '').split('/').pop();
+    const onBuilder = below === 'index' || below === 'manual';
+    if (fromHome && onBuilder) {
+      const group: any = (navigation as any)?.getParent?.();
+      if (group?.canGoBack?.()) { group.goBack(); return; }
+    }
+    // Doc mode was never opened from the builder index — replacing with it would drop the user into
+    // "Tell us your story" for a résumé they did not come from — so it goes back whatever sits below.
+    if ((docId || !onBuilder) && router.canGoBack()) { router.back(); return; }
+    router.replace('/(resume-builder)');
   };
   const goBack = async () => { if (!(await rating.ask('resume'))) leave(); };
   const closeRating = () => { rating.close(); leave(); };

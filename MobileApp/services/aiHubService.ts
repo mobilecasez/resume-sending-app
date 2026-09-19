@@ -834,8 +834,36 @@ export async function captureJob(
 }
 
 /**
+ * One id per TAP on Generate, reused by that tap's retries (see startJobCoverLetter's clientBuildId).
+ * Never per request: a fresh id on the retry is exactly how one letter became two charges.
+ */
+export function newClientBuildId(): string {
+  return `cl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Tell the server this letter job is no longer wanted (the user left the job, or the wait ran out).
+ *   { cancelled: true }                        — stopped before it was paid for: nothing is charged
+ *   { cancelled: false, status: 'processing' } — already paid for and being finished: it will arrive
+ *   { cancelled: false, status: 'completed' }  — it had already finished
+ * Never throws — null when the server could not be asked (an older server answers 404: nothing to cancel).
+ */
+export async function cancelLetterJob(jobId: string): Promise<{ cancelled: boolean; status?: string | null } | null> {
+  if (!jobId || jobId.startsWith('__sync__')) return null;
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.post(`${API_BASE}/job-cancel/${encodeURIComponent(jobId)}`, {}, { headers, timeout: 15000 });
+    return data && typeof data.cancelled === 'boolean' ? data : null;
+  } catch { return null; }
+}
+
+/**
  * Generate a cover letter for a specific job using the existing cover letter pipeline.
  * Uses /api/generate-cover-letter-details (same as Letters page) — returns jobId for polling.
+ *
+ * ⚠️ `clientBuildId` — ONE PER TAP (newClientBuildId), and the SAME one when the user retries after a timeout or a
+ * dropped connection. The server answers a repeat with the job it already started (or finished) instead of writing —
+ * and charging — the letter a second time. A POST whose 202 was lost used to be a second paid letter.
  */
 export async function startJobCoverLetter(
   websiteUrl: string,
@@ -843,10 +871,12 @@ export async function startJobCoverLetter(
   responsibilities?: string[],
   jobLocation?: string,
   jobId?: string,
-  companyName?: string
+  companyName?: string,
+  clientBuildId?: string,
 ): Promise<string> {
   const headers = await getAuthHeader();
   const body: Record<string, any> = { websiteUrl, position, recipientEmail: '' };
+  if (clientBuildId) body.clientBuildId = clientBuildId;
   // The employer's real name. When the only URL we have is a job board (instahyre/naukri/…), the
   // server researches THIS instead of the board — otherwise the letter is addressed to the board.
   if (companyName && companyName.trim()) body.companyName = companyName.trim();
@@ -882,10 +912,19 @@ export async function startJobCoverLetter(
 
 /**
  * Poll until the cover letter job is complete. Returns coverLetterHtml.
+ *
+ * ⚠️ THE DEADLINE CANCELS THE JOB, AND IT OUTLASTS THE SERVER'S OWN. At five minutes this used to say "Please try
+ * again" and walk away while the server carried on — and charged the letter a minute later, with nothing to show it:
+ * the retry was a second charge. The server now bounds a letter job well inside six minutes (its research can no
+ * longer hang), so this waits six, then CANCELS it: a letter not yet paid for is then never charged, and one already
+ * paid for is being finished — its answer says so, and this keeps waiting for it (a short grace) instead of giving up.
+ * `isAbandoned()` — the screen that asked is gone (it has already cancelled the job): stop polling, quietly.
+ * Errors carry `code` (TIMED_OUT / CANCELLED / ABANDONED / LOST) and `reason` (the server's, e.g. quota_exhausted).
  */
 export async function pollJobCoverLetter(
   jobId: string,
-  onProgress?: () => void
+  onProgress?: () => void,
+  isAbandoned?: () => boolean,
 ): Promise<{ coverLetterHtml: string; companyName: string; subject: string; locations?: Array<{ address: string; city: string; country: string; isHeadquarters: boolean; matchesJobLocation?: boolean }> }> {
   // Sync mode shortcut
   if (jobId.startsWith('__sync__')) {
@@ -895,13 +934,35 @@ export async function pollJobCoverLetter(
   // Must always SETTLE (mirrors pollUntilDone): a hard deadline + give-up on consecutive 404/401
   // (job row gone after a redeploy / expired session). Without these, a vanished job left the
   // promise pending forever — button stuck on "loading", polling in the background until restart.
-  const DEADLINE_MS = 5 * 60 * 1000;
+  const DEADLINE_MS = 6 * 60 * 1000;
+  const PAID_GRACE_MS = 90 * 1000;   // after a refused cancel: the letter is paid for and being finished
   const startedAt = Date.now();
+  let deadline = startedAt + DEADLINE_MS;
+  let graced = false;
   let gone = 0;   // consecutive 404/401 responses
+  const fail = (message: string, code: string, reason?: string | null) => {
+    const e: any = new Error(message); e.code = code; if (reason) e.reason = reason; return e;
+  };
   return new Promise((resolve, reject) => {
     const tick = async () => {
-      if (Date.now() - startedAt > DEADLINE_MS) {
-        reject(new Error('This is taking longer than expected. Please try again.'));
+      if (isAbandoned?.()) { reject(fail('Stopped.', 'ABANDONED')); return; }
+      if (Date.now() > deadline) {
+        if (graced) {
+          // Paid for, and still not handed over: the server stores it on the job — it shows when the job is reopened.
+          reject(fail('Your letter is still being saved. Reopen this job in a minute to see it.', 'TIMED_OUT'));
+          return;
+        }
+        const c = await cancelLetterJob(jobId);
+        if (c && c.cancelled) {
+          reject(fail('This took too long, so we stopped it — nothing was charged. Please try again.', 'TIMED_OUT'));
+          return;
+        }
+        if (c && (c.status === 'processing' || c.status === 'completed')) {
+          graced = true; deadline = Date.now() + PAID_GRACE_MS;   // completed: the next read resolves it
+          setTimeout(tick, 0);
+          return;
+        }
+        reject(fail('This is taking longer than expected. Please try again.', 'TIMED_OUT'));
         return;
       }
       try {
@@ -910,7 +971,8 @@ export async function pollJobCoverLetter(
         if (data.status === 'completed') {
           resolve(data.data);
         } else if (data.status === 'failed') {
-          reject(new Error(data.error || 'Cover letter generation failed'));
+          const reason = typeof data.reason === 'string' ? data.reason : null;
+          reject(fail(data.error || 'Cover letter generation failed', reason === 'cancelled' ? 'CANCELLED' : 'FAILED', reason));
         } else {
           onProgress?.();
           setTimeout(tick, 2500);
@@ -919,7 +981,7 @@ export async function pollJobCoverLetter(
         if (axios.isAxiosError(err) && [401, 404].includes(err.response?.status ?? 0)) {
           gone += 1;
           if (gone >= 2) {
-            reject(new Error('We lost track of this generation. Please try again.'));
+            reject(fail('We lost track of this generation. Please try again.', 'LOST'));
             return;
           }
         }

@@ -74,8 +74,14 @@ function exec(sqlRaw, p = []) {
   }
   if (/^INSERT INTO usage_ledger /.test(sql)) {
     const id = db.nextId++;
-    db.ledger.push({ id, user_id: Number(p[0]), kind: p[1], source: p[2], plan_key: p[3], created_at: new Date(db.now) });
+    const detail = (() => { try { return JSON.parse(p[4]); } catch { return null; } })();
+    db.ledger.push({ id, user_id: Number(p[0]), kind: p[1], source: p[2], plan_key: p[3], detail, created_at: new Date(db.now) });
     return [{ id }];
+  }
+  // getUsage — the Usage screen's list, newest first.
+  if (/^SELECT id, kind, source, plan_key, detail, created_at FROM usage_ledger WHERE user_id = \$1 ORDER BY created_at DESC LIMIT \$2$/.test(sql)) {
+    return db.ledger.filter((r) => r.user_id === Number(p[0])).sort((a, b) => ts(b.created_at) - ts(a.created_at)).slice(0, Number(p[1]))
+      .map((r) => ({ id: r.id, kind: r.kind, source: r.source, plan_key: r.plan_key, detail: r.detail || {}, created_at: r.created_at }));
   }
   if (/^INSERT INTO quota_grants /.test(sql)) {
     if (db.grants.some((g) => g.user_id === Number(p[0]) && g.idem_key === p[4])) return [];
@@ -373,6 +379,64 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     const body = src.slice(src.indexOf('async function usageFor'), src.indexOf('// ── the deduction'));
     ok('⚠️ usageFor is read-only: no INSERT into the ledger, no consume, exported for the gates',
       body.length > 200 && !/INSERT INTO usage_ledger|consumeOnSuccess\(/.test(body) && typeof ent.usageFor === 'function');
+  }
+
+  // ── 2026-09-19: "it was 3 cover letters, I generated 2" — the Usage screen must be able to say WHICH rows count ──
+  // The ledger listed every row ever written with nothing to tell them apart (pre-cutover history, an earlier plan's
+  // period, the other build's letters), and every letter lane but Home wrote the same screen. Now each row carries the
+  // environment that paid (detail.env) and getUsage marks the rows the paying pool counts right now (counted).
+  console.log('── the Usage screen: which rows count, and which build paid ──');
+  {
+    const sandbox = { headers: { 'x-store-env': 'Sandbox' }, socket: { remoteAddress: '10.0.0.1' } };
+    seedTrial(80, '2026-09-13T12:00:00Z');
+    const c1 = await ent.consumeOnSuccess(80, 'cover_letter', { screen: 'job_cover_letter', lane: 'letters_page' }, sandbox);
+    const c2 = await ent.consumeOnSuccess(80, 'cover_letter', { screen: 'home_employer_letter' }, req());
+    const c3 = await ent.consumeOnSuccess(80, 'cover_letter', { screen: 'job_cover_letter', lane: 'job_hub_letter' }, { storeEnv: 'Sandbox' });
+    const d = (c) => (db.ledger.find((r) => r.id === c.ledgerId) || {}).detail || {};
+    ok('⚠️ consumeOnSuccess writes the environment that PAID on the row: Sandbox for a TestFlight request, the lane kept',
+      d(c1).env === 'Sandbox' && d(c1).lane === 'letters_page' && d(c1).screen === 'job_cover_letter', d(c1));
+    ok('…Production for every other request (the fail-closed default), and the worker\'s carried storeEnv is honoured',
+      d(c2).env === 'Production' && d(c3).env === 'Sandbox', { c2: d(c2), c3: d(c3) });
+    seedUse(80, 'cover_letter', 'trial', '2026-09-10T00:00:00Z');   // before the cutover: history
+    seedUse(80, 'cover_letter', 'trial', '2026-09-13T06:00:00Z');   // after the cutover, before THIS user's start
+    seedUse(80, 'cover_letter', 'credits', '2026-09-12T00:00:00Z'); // the old credits pool
+    const items = await ent.getUsage(80, 50, req());
+    const st = await ent.getStatus(80, req());
+    const counted = items.filter((i) => i.kind === 'cover_letter' && i.counted === true);
+    ok('⚠️ getUsage marks exactly the rows the Free allowance counts — as many as getStatus calls used, the same three',
+      counted.length === 3 && st.used.letters === 3 && counted.every((i) => [c1.ledgerId, c2.ledgerId, c3.ledgerId].includes(i.id)), { counted: counted.map((i) => i.id), used: st.used });
+    ok('…and every other row is counted:false (pre-cutover, before the start, credits) — never missing the flag',
+      items.length === 6 && items.filter((i) => i.counted === false).length === 3 && items.every((i) => typeof i.counted === 'boolean'), items.map((i) => [i.source, i.counted]));
+
+    // A plan: its own period's 'plan' rows count; the free rows before it and the previous period's do not.
+    seedTrial(81, '2026-09-13T00:00:00Z');
+    seedSub(81, 'starter', '2026-09-14T00:00:00Z');
+    seedUse(81, 'cover_letter', 'plan', '2026-09-14T06:00:00Z');
+    seedUse(81, 'cover_letter', 'plan', '2026-08-20T00:00:00Z');
+    seedUse(81, 'cover_letter', 'trial', '2026-09-13T08:00:00Z');
+    const pl = await ent.getUsage(81, 50, req());
+    ok('a subscriber: only this period\'s plan rows are counted', pl.filter((i) => i.counted).length === 1 && pl.find((i) => i.counted).source === 'plan'
+      && ts(pl.find((i) => i.counted).createdAt) === ts('2026-09-14T06:00:00Z'), pl.map((i) => [i.source, i.createdAt, i.counted]));
+
+    // The environment decides WHICH pool is paying: a TestFlight plan is not the App Store's.
+    seedTrial(82, '2026-09-13T00:00:00Z');
+    db.subs.push({ user_id: 82, plan_key: 'plus', status: 'active', source: 'apple', store: 'apple', environment: 'Sandbox',
+      period_start: new Date('2026-09-14T00:00:00Z'), period_end: new Date(ts(db.now) + 20 * DAY) });
+    seedUse(82, 'cover_letter', 'plan', '2026-09-14T09:00:00Z');
+    const inSandbox = await ent.getUsage(82, 50, sandbox);
+    const inProd = await ent.getUsage(82, 50, req());
+    ok('⚠️ the same row is counted in the environment whose plan paid (Sandbox) and not in the other — getUsage reads the request',
+      inSandbox.length === 1 && inSandbox[0].counted === true && inProd.length === 1 && inProd[0].counted === false, { inSandbox, inProd });
+
+    // …and the Usage screen shows it: the rows that count on top, the rest under their own heading (an older server's
+    // rows, with no flag at all, stay on top as they always were).
+    const usageSrc = fs.readFileSync(path.join(ROOT, 'MobileApp', 'app', '(subscription)', 'usage.tsx'), 'utf8');
+    ok('usage.tsx: counted rows first, counted:false under "Before your current allowance" (absent/null → shown as before)',
+      /items\.filter\(\(it\) => it\.counted !== false\)/.test(usageSrc) && /Before your current allowance/.test(usageSrc)
+        && /items\.filter\(\(it\) => it\.counted === false\)\.map/.test(usageSrc));
+    ok('usage.tsx: each row names where it was made (its lane) and a TestFlight row says so',
+      /WHERE\[String\(it\.detail\?\.lane/.test(usageSrc) && /letters_page: 'Letters page'/.test(usageSrc) && /job_hub_letter: 'Job Hub'/.test(usageSrc)
+        && /letters_batch: /.test(usageSrc) && /it\.detail\?\.env === 'Sandbox'/.test(usageSrc));
   }
 
   console.log('── source: the credit lane is really gone ──');

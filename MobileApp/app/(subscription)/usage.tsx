@@ -36,6 +36,22 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
 // was paid in credits, which cannot happen since 2026-09-13.
 const SOURCE_OTHER = { label: 'Used', color: T.faint };
 
+// ⚠️ "IT WAS 3 COVER LETTERS, I GENERATED 2 AND ALL 3 WERE USED." The history listed every row ever written, with
+// nothing to say which ones the allowance counts or where each letter was made — every letter lane but Home wrote the
+// same screen. The server now marks each row `counted` (one of the rows the paying pool counts right now) and names
+// its lane; rows that are NOT counted (before the Free plan started, an earlier plan period, the old credits) move
+// under their own heading, so "3 used" can be matched against exactly three rows. `counted` absent (an older server)
+// or null (the pool could not be read) → the row shows as it always did.
+type UsageRow = UsageItem & { counted?: boolean | null };
+
+// Where the letter or resume was made — from the row's lane (new rows) or its screen (every row).
+const WHERE: Record<string, string> = {
+  letters_page: 'Letters page', job_hub_letter: 'Job Hub', job_hub_cover_letter: 'Job Hub', letters_batch: 'Generate All',
+  letters: 'Letters page', home_employer_letter: 'Home', employer_home: 'Home', resume_builder: 'Resume Builder',
+  job_cover_letter: 'Letters page / Job Hub', rewards: 'Reward',
+};
+const whereOf = (it: UsageRow) => WHERE[String(it.detail?.lane || '')] || WHERE[String(it.detail?.screen || '')] || '';
+
 const when = (iso: string) => {
   try { return new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
   catch { return ''; }
@@ -54,10 +70,37 @@ function QuotaBar({ label, used, total, color }: { label: string; used: number; 
   );
 }
 
+function LedgerRow({ it, muted = false }: { it: UsageRow; muted?: boolean }) {
+  const src = SOURCE_META[it.source] || SOURCE_OTHER;
+  const isLetter = it.kind === 'cover_letter';
+  const title = isLetter
+    ? (it.detail?.position ? `${it.detail.position}` : 'Cover letter')
+    : (it.detail?.name ? `Resume — ${it.detail.name}` : 'Tailored resume');
+  const sub2 = isLetter ? (it.detail?.companyName || it.detail?.recipientEmail || '') : '';
+  const where = whereOf(it);
+  // A TestFlight (Sandbox) row: its letter lives in the TestFlight build, not the App Store one.
+  const testBuild = it.detail?.env === 'Sandbox';
+  return (
+    <View style={[s.row, muted && s.rowMuted]}>
+      <View style={[s.rowIcon, { backgroundColor: isLetter ? 'rgba(6,182,212,0.12)' : 'rgba(167,139,250,0.14)' }]}>
+        <Ionicons name={isLetter ? 'mail-outline' : 'document-text-outline'} size={16} color={isLetter ? T.cyan : '#7C6BFF'} />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={s.rowTitle} numberOfLines={1}>{title}</Text>
+        {!!sub2 && <Text style={s.rowSub} numberOfLines={1}>{sub2}</Text>}
+        <Text style={s.rowWhen}>{when(it.createdAt)}{where ? ` · ${where}` : ''}{testBuild ? ' · TestFlight' : ''}</Text>
+      </View>
+      <View style={[s.srcPill, { backgroundColor: src.color + '18', borderColor: src.color + '44' }]}>
+        <Text style={[s.srcText, { color: src.color }]}>{src.label}</Text>
+      </View>
+    </View>
+  );
+}
+
 export default function UsageScreen() {
   const router = useRouter();
   const [status, setStatus] = useState<SubscriptionStatus | null>(null);
-  const [items, setItems] = useState<UsageItem[]>([]);
+  const [items, setItems] = useState<UsageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -144,29 +187,18 @@ export default function UsageScreen() {
       <Text style={s.sectionTitle}>Usage history</Text>
       {items.length === 0 ? (
         <View style={s.empty}><Ionicons name="receipt-outline" size={34} color={T.faint} /><Text style={s.emptyText}>Nothing used yet — deductions appear here only after a successful generation.</Text></View>
-      ) : items.map((it) => {
-        const src = SOURCE_META[it.source] || SOURCE_OTHER;
-        const isLetter = it.kind === 'cover_letter';
-        const title = isLetter
-          ? (it.detail?.position ? `${it.detail.position}` : 'Cover letter')
-          : (it.detail?.name ? `Resume — ${it.detail.name}` : 'Tailored resume');
-        const sub2 = isLetter ? (it.detail?.companyName || it.detail?.recipientEmail || '') : '';
-        return (
-          <View key={it.id} style={s.row}>
-            <View style={[s.rowIcon, { backgroundColor: isLetter ? 'rgba(6,182,212,0.12)' : 'rgba(167,139,250,0.14)' }]}>
-              <Ionicons name={isLetter ? 'mail-outline' : 'document-text-outline'} size={16} color={isLetter ? T.cyan : '#7C6BFF'} />
-            </View>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={s.rowTitle} numberOfLines={1}>{title}</Text>
-              {!!sub2 && <Text style={s.rowSub} numberOfLines={1}>{sub2}</Text>}
-              <Text style={s.rowWhen}>{when(it.createdAt)}</Text>
-            </View>
-            <View style={[s.srcPill, { backgroundColor: src.color + '18', borderColor: src.color + '44' }]}>
-              <Text style={[s.srcText, { color: src.color }]}>{src.label}</Text>
-            </View>
-          </View>
-        );
-      })}
+      ) : (
+        <>
+          {items.filter((it) => it.counted !== false).map((it) => <LedgerRow key={it.id} it={it} />)}
+          {items.some((it) => it.counted === false) ? (
+            <>
+              <Text style={s.olderTitle}>Before your current allowance</Text>
+              <Text style={s.olderNote}>Not counted in what you have left.</Text>
+              {items.filter((it) => it.counted === false).map((it) => <LedgerRow key={it.id} it={it} muted />)}
+            </>
+          ) : null}
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -199,6 +231,9 @@ const s = StyleSheet.create({
   empty: { alignItems: 'center', gap: 10, padding: 30 },
   emptyText: { fontSize: 12.5, color: T.faint, textAlign: 'center', lineHeight: 18 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: T.card, borderRadius: 16, borderWidth: 1, borderColor: T.line, padding: 12, marginBottom: 9 },
+  rowMuted: { opacity: 0.6 },
+  olderTitle: { fontSize: 13, fontWeight: '800', color: T.muted, marginTop: 14, letterSpacing: -0.1 },
+  olderNote: { fontSize: 11.5, color: T.faint, fontWeight: '600', marginTop: 2, marginBottom: 9 },
   rowIcon: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   rowTitle: { fontSize: 13.5, fontWeight: '800', color: T.ink },
   rowSub: { fontSize: 12, color: T.muted, marginTop: 1 },

@@ -1208,6 +1208,98 @@ const reset = () => { db.log.length = 0; db.answer = () => null; db.throwOn = nu
   docs.slimById = async () => { throw new Error('db down'); };
   r = await callRoute('put', '/:id', { params: { id: '9' }, body: { payload: { personal_info: {} } } });
   ok('⚠️ PUT during a database blip → 500, never 404 gone', r.statusCode === 500, r.body);
+
+  // ⚠️ THE LETTER'S PRINTED LINES (the customization page, 2026-09-19). A letter payload may now carry its own sender
+  // block, greeting and closing beside subject / company / address; every design prints them. A wrong TYPE or a line
+  // past its cap is refused whole (the phone caps its inputs the same), and what is stored is one clean line each.
+  {
+    docs.slimById = async () => ({ id: 9, kind: 'cover_letter' });
+    let put = null;
+    docs.updatePayload = async (uid, id, payload) => { put = payload; return { ok: true, updatedAt: 'now' }; };
+    const letterPut = async (extra) => { put = null; return callRoute('put', '/:id', { params: { id: '9' }, body: { payload: { coverLetterHtml: '<p>Dear team</p>', ...extra } } }); };
+    const bad = [
+      [{ sender: { name: 'A', website: 'x.com' } }, 'a sender key nothing prints'],
+      [{ sender: 'Ann' }, 'a sender that is not an object'],
+      [{ sender: ['Ann'] }, 'a sender array'],
+      [{ sender: { phone: 5 } }, 'a non-string sender line'],
+      [{ sender: { title: 't'.repeat(201) } }, 'a sender line over 200'],
+      [{ salutation: 's'.repeat(201) }, 'a greeting over 200'],
+      [{ closing: 7 }, 'a non-string closing'],
+      [{ subject: 's'.repeat(301) }, 'a subject over 300'],
+      [{ companyName: 'c'.repeat(201) }, 'a company over 200'],
+      [{ companyAddress: 'a'.repeat(601) }, 'an address over 600'],
+    ];
+    const let400 = [];
+    for (const [extra, why] of bad) { const rr = await letterPut(extra); if (rr.statusCode !== 400 || rr.body.reason !== 'invalid' || put) let400.push(why); }
+    ok('⚠️ PUT refuses a wrongly-shaped or over-long printed line (400 invalid, nothing written)', let400.length === 0, let400);
+    const TAB = String.fromCharCode(9), NUL = String.fromCharCode(0);
+    r = await letterPut({
+      subject: 'Re:' + NUL + ' Engineer', salutation: ' Dear Ms.\nSmith, ', closing: 'Kind' + TAB + 'regards,',
+      sender: { name: 'Ann', phone: '', location: null }, companyName: 'Acme', companyAddress: 'One St,\nTown', position: 'Engineer', locations: [{ address: 'x' }],
+    });
+    ok('⚠️ a valid letter stores each printed line as ONE clean line (breaks / tabs / control characters → a space)',
+      r.statusCode === 200 && put && put.subject === 'Re: Engineer' && put.salutation === 'Dear Ms. Smith,' && put.closing === 'Kind regards,'
+      && put.companyAddress === 'One St, Town' && JSON.stringify(put.sender) === JSON.stringify({ name: 'Ann', phone: '' }), put);
+    ok('…keys it does not know about are kept as they came (position, locations — the page never loses a field)',
+      put && put.position === 'Engineer' && Array.isArray(put.locations) && put.locations[0].address === 'x');
+    r = await letterPut({ salutation: '  ', closing: '', sender: { location: null } });
+    ok('an emptied greeting / closing and an empty sender are REMOVED (the design\'s own lines print again)',
+      r.statusCode === 200 && put && !('salutation' in put) && !('closing' in put) && !('sender' in put), put);
+    r = await letterPut({});
+    ok('a letter with none of them stores none of them (an untouched letter gains no keys)', r.statusCode === 200 && put
+      && !['sender', 'salutation', 'closing'].some((k) => k in put), put && Object.keys(put));
+
+    // ⚠️ THE BUILD'S OWN LINES ARE NOT RE-JUDGED. The build stores the AI's subject and the researched office uncapped,
+    // and the page sends the whole payload back on every save: a stored 350-character subject must not make a paragraph
+    // fix 'invalid', and a two-line office must not be re-spelled by a save that never touched it.
+    const LONG_SUBJECT = 'Application for ' + 'x'.repeat(340);
+    const TWO_LINE = 'Langenhorner Chaussee 600\n22419 Hamburg';
+    const realGetById = docs.getById;
+    let getCalls = 0;
+    docs.getById = async (uid, id, rq, o) => { getCalls++; return { id: 9, kind: 'cover_letter', payload: { coverLetterHtml: '<p>Old</p>', subject: LONG_SUBJECT, companyAddress: TWO_LINE, companyName: 'Nordex' } }; };
+    r = await letterPut({ subject: LONG_SUBJECT, companyAddress: TWO_LINE, companyName: 'Nordex' });
+    ok('⚠️ a build-written subject over 300 / a two-line address sent back UNCHANGED → 200, stored exactly as they were',
+      r.statusCode === 200 && put && put.subject === LONG_SUBJECT && put.companyAddress === TWO_LINE && getCalls === 1, r.body);
+    r = await letterPut({ subject: LONG_SUBJECT + '!', companyAddress: TWO_LINE });
+    ok('…but the same subject CHANGED meets the cap like any edit (400 invalid, nothing written)', r.statusCode === 400 && !put, r.body);
+    r = await letterPut({ subject: LONG_SUBJECT, companyAddress: 'Erich-Schlesinger-Str. 50\n18059 Rostock' });
+    ok('…and an edited address is made one clean line while the unchanged long subject rides along',
+      r.statusCode === 200 && put && put.companyAddress === 'Erich-Schlesinger-Str. 50 18059 Rostock' && put.subject === LONG_SUBJECT, put);
+    docs.getById = async () => null;
+    r = await letterPut({ subject: LONG_SUBJECT });
+    ok('…with no stored copy to compare (a blip) every line meets the caps — refused, never a wrong "gone"', r.statusCode === 400 && r.body.reason === 'invalid' && !put, r.body);
+    docs.getById = realGetById;
+
+    // GET /:id/sender — the profile block the page shows and compares its overrides against. Read-only.
+    const lay = layers.find((x) => x.m === 'get' && x.p === '/:id/sender');
+    ok('GET /:id/sender exists behind authenticateToken', !!lay && lay.s[0] === auth.authenticateToken && lay.s.length === 2);
+    const CLC = require(path.join(ROOT, 'server/controllers/coverLetterController.js'));
+    const realB = CLC.buildCLSender;
+    CLC.buildCLSender = async () => ({ name: 'Ann', email: 'a@x.co', phone: '1', location: 'Berlin, Germany', title: 'Engineer' });
+    r = await callRoute('get', '/:id/sender', { params: { id: '9' } });
+    ok('…it answers the five printed lines, the "City, Country" location included', r.statusCode === 200 && r.body.sender.location === 'Berlin, Germany'
+      && Object.keys(r.body.sender).join(',') === 'name,title,email,phone,location', r.body);
+    docs.slimById = async () => ({ id: 9, kind: 'resume' });
+    r = await callRoute('get', '/:id/sender', { params: { id: '9' } });
+    ok('…a résumé id → 400 bad_kind', r.statusCode === 400 && r.body.reason === 'bad_kind');
+    docs.slimById = async () => null;
+    r = await callRoute('get', '/:id/sender', { params: { id: '9' } });
+    ok('…someone else\'s id → 404 gone', r.statusCode === 404 && r.body.reason === 'gone');
+    CLC.buildCLSender = realB;
+
+    // The merge every render of a saved letter makes (cards, PDF, Word, re-download).
+    const prof = { name: 'Ann', email: 'a@x.co', phone: '1', location: 'Berlin, Germany', title: 'Engineer' };
+    ok('mergeLetterSender: an override wins, \'\' prints nothing, a blank name keeps the profile\'s, unknown keys ignored',
+      JSON.stringify(CLC.mergeLetterSender(prof, { phone: '2', email: '', name: ' ', website: 'x' })) === JSON.stringify({ ...prof, email: '', phone: '2' }));
+    ok('⚠️ …and with no override it is the profile block itself, in the same key order (the card cache hashes it)',
+      JSON.stringify(CLC.mergeLetterSender(prof, undefined)) === JSON.stringify(prof) && JSON.stringify(CLC.mergeLetterSender(prof, {})) === JSON.stringify(prof));
+    ok('letterLinesOf: only the lines a letter set', JSON.stringify(CLC.letterLinesOf({ salutation: 'Hi,', closing: '  ' })) === JSON.stringify({ salutation: 'Hi,' }) && JSON.stringify(CLC.letterLinesOf({})) === '{}');
+    const row = { id: 7, full_name: 'Ann', email: 'a@x.co', phone_number: '1', city: 'Berlin', country: 'Germany' };
+    const ra = CLC.richLetterArgsOf(row, { sender: { name: 'Ann B', title: 'Lead', location: '' }, closing: 'Thanks,' });
+    ok('richLetterArgsOf: the Original design\'s users row with the letter\'s lines laid over it, and only those',
+      ra.user.full_name === 'Ann B' && ra.user.email === 'a@x.co' && ra.opts.designation === 'Lead' && ra.opts.location === '' && ra.opts.closing === 'Thanks,' && !('salutation' in ra.opts)
+      && JSON.stringify(CLC.richLetterArgsOf(row, {})) === JSON.stringify({ user: row, opts: {} }), ra);
+  }
   Object.assign(docs, realDocs);
 
   // ⚠️ "STALE" MUST MEAN "THE USER'S MATERIAL MOVED", NOT "THE PHONE FORGOT THE POSTING". The listing

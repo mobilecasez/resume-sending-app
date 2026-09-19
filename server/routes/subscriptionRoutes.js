@@ -23,7 +23,8 @@ router.get('/subscription/status', authenticateToken, async (req, res) => {
 // The detailed ledger — every deduction with what it was for and which pool paid it.
 router.get('/subscription/usage', authenticateToken, async (req, res) => {
   try {
-    const items = await ents.getUsage(req.user.id, parseInt(req.query.limit, 10) || 100);
+    // req: which environment's pool is paying decides which rows are `counted` (a TestFlight plan is not the App Store's).
+    const items = await ents.getUsage(req.user.id, parseInt(req.query.limit, 10) || 100, req);
     res.json({ success: true, items });
   } catch (e) {
     console.error('[subscription] usage:', e.message);

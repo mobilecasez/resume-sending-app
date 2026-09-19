@@ -96,8 +96,11 @@ module.exports = function build(data, opts) {
   const bodyHtml = has(data.bodyHtml) ? String(data.bodyHtml) : '';
   const bodyPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').trim();
   const bodyHasSalutation = /^(dear|hello|hi|to\s+whom|greetings)\b/i.test(bodyPlain);
-  if (!bodyHasSalutation) {
-    out.push(new Paragraph({ spacing: { before: 80, after: 160 }, children: [run('Dear Hiring Manager,', { bold: true, color: accent, size: 21 })] }));
+  // A saved letter's own greeting (data.salutation, set on its customization page) always prints, as the PDF prints it;
+  // without one, the layout's own line — unless the body already opens with a greeting.
+  const salutation = has(data.salutation) ? String(data.salutation) : '';
+  if (salutation || !bodyHasSalutation) {
+    out.push(new Paragraph({ spacing: { before: 80, after: 160 }, children: [run(salutation || 'Dear Hiring Manager,', { bold: true, color: accent, size: 21 })] }));
   }
 
   // ── Body ─────────────────────────────────────────────────────────────────────
@@ -107,7 +110,7 @@ module.exports = function build(data, opts) {
 
   // ── Closing + signature — always appended. The AI body never signs off (the prompt
   //    forbids it); the PDF renders style.closing + name unconditionally, so we match it. ─
-  out.push(new Paragraph({ spacing: { before: 200, after: has(s.name) ? 220 : 0 }, children: [run('Best regards,', { color: '27313F', size: 21 })] }));
+  out.push(new Paragraph({ spacing: { before: 200, after: has(s.name) ? 220 : 0 }, children: [run(has(data.closing) ? String(data.closing) : 'Best regards,', { color: '27313F', size: 21 })] }));
   if (has(s.name)) {
     out.push(new Paragraph({ children: [run(String(s.name), { bold: true, color: dark, size: 21 })] }));
   }

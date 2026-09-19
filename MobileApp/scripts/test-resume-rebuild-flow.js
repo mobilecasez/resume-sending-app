@@ -77,8 +77,12 @@ ok('the a4 band comes from the template entry (variants recolor it; a brand re-h
 console.log('── app: the preview screen no longer breaks ──');
 ok('a server miss falls back to the AsyncStorage copy', /if \(!gotServerCopy\) \{[\s\S]{0,200}resumeBuilderData/.test(prev));
 ok('getInitials cannot crash on a missing name', /const safe = String\(name \|\| ''\)\.trim\(\);/.test(prev));
-ok('ContentText only enters HTML mode on real rich-text tags', /<\\\/\?\(h\[1-6\]\|p\|div\|li\|ul\|ol\|br\|strong\|b\|em\|i\|u\|span\)/.test(prev));
-ok('the old strip-everything tail is gone', !/\.replace\(\/<\[\^>\]\+>\/g, ''\);/.test(prev.slice(prev.indexOf('function ContentText'))));
+// ⚠️ RETARGETED 2026-09-19: ContentText (and the Quill modal) moved to components/rich-text/RichText.tsx, shared with the
+// cover-letter customization page — the preview imports it, so the renderer rules are read where the renderer lives.
+const rich = R('../components/rich-text/RichText.tsx');
+ok('the preview renders prose with the SHARED ContentText', /import \{[^}]*\bContentText\b[^}]*\} from '\.\.\/\.\.\/components\/rich-text\/RichText';/.test(prev) && !/function ContentText/.test(prev));
+ok('ContentText only enters HTML mode on real rich-text tags', /<\\\/\?\(h\[1-6\]\|p\|div\|li\|ul\|ol\|br\|strong\|b\|em\|i\|u\|span\)/.test(rich));
+ok('the old strip-everything tail is gone', rich.indexOf('function ContentText') > 0 && !/\.replace\(\/<\[\^>\]\+>\/g, ''\);/.test(rich.slice(rich.indexOf('function ContentText'))));
 
 console.log('── app: preview action bar ──');
 // ⚠️ It now carries the EMPLOYER. Without it the download reached the server with employer:null,

@@ -106,10 +106,13 @@ module.exports = function build(data, opts) {
 
   // ── Salutation (only if the body doesn't already carry one) ──────────────────
   const bodyHtml = has(data.bodyHtml) ? String(data.bodyHtml) : '';
-  if (!hasSalutation(bodyHtml)) {
+  // A saved letter's own greeting (data.salutation, set on its customization page) always prints, as the PDF prints it;
+  // without one, the layout's own line — unless the body already opens with a greeting.
+  const salutation = has(data.salutation) ? String(data.salutation) : '';
+  if (salutation || !hasSalutation(bodyHtml)) {
     out.push(new Paragraph({
       spacing: { before: 80, after: 160 },
-      children: [run(SALUTATION, { color: '1F2937', size: 21 })],
+      children: [run(salutation || SALUTATION, { color: '1F2937', size: 21 })],
     }));
   }
 
@@ -123,7 +126,7 @@ module.exports = function build(data, opts) {
   //    appends it unconditionally) ─────────────────────────────────────────────
   out.push(new Paragraph({
     spacing: { before: 160, after: has(s.name) ? 220 : 0 },
-    children: [run(CLOSING, { color: '27313F', size: 21 })],
+    children: [run(has(data.closing) ? String(data.closing) : CLOSING, { color: '27313F', size: 21 })],
   }));
   if (has(s.name)) {
     out.push(new Paragraph({

@@ -703,7 +703,12 @@ async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) 
     const tpls = [...new Set(ids)].map((id) => clTemplates.TEMPLATES.find((t) => t.id === id)).filter(Boolean);
     if (!tpls.length) return [];
     const wantPage = size === 'page';
-    const sender = await cl.buildCLSender(userId);
+    // The sender block THIS letter prints: the profile with the letter's own overrides laid over it (its customization
+    // page — coverLetterController.senderForLetter, the reading its PDF and Word file make), so a card is the file.
+    // ⚠️ The hash is of that MERGED block: an override changes the key, and a letter with none hashes exactly as before
+    // (mergeLetterSender keeps buildCLSender's key order) — no stored card is thrown away. Its greeting / closing ride in
+    // `data`; a PUT that changes them moves updated_at, which is in the key already.
+    const sender = await cl.senderForLetter(userId, p);
     const senderHash = sha(JSON.stringify(sender)).slice(0, 24);
     const branded = tpls.some((t) => t.generic);
     const companyName = p.companyName || doc.employer_name || '';
@@ -755,7 +760,7 @@ async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) 
     if (missing.length) {
         try {
             const photo = missing.some((t) => t.generic) ? await cl.loadCLPhotoDataUri(userId) : null;
-            const data = { sender, company: { name: companyName, address: p.companyAddress || '' }, bodyHtml: p.coverLetterHtml };
+            const data = { sender, company: { name: companyName, address: p.companyAddress || '' }, bodyHtml: p.coverLetterHtml, ...cl.letterLinesOf(p) };
             const rendered = await clRenderer.renderPreviews(data, { photo, brandColor: accent, brandFont }, missing);
             await fs.mkdir(dir, { recursive: true });
             for (const r of rendered || []) {

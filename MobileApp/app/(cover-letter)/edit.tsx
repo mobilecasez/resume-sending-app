@@ -1,30 +1,50 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// THE LETTER EDITOR (route /(cover-letter)/edit, param `docId`): one employer's own cover letter — the
-// version the AI wrote for THAT company (user_employer_documents, kind 'cover_letter') — opened from Home's
-// zoomed page (Customize). Loaded via GET /employer-docs/:id, saved via PUT /employer-docs/:id.
+// THE LETTER CUSTOMIZATION PAGE (route /(cover-letter)/edit, param `docId`): one employer's own cover letter — the
+// version the AI wrote for THAT company (user_employer_documents, kind 'cover_letter') — opened from Home's letter page
+// (Customize my Cover Letter). Loaded via GET /employer-docs/:id, saved via PUT /employer-docs/:id.
 //
-// ⚠️ NOTHING HERE GENERATES OR CHARGES. Save stores the user's own words (saveDocPayload is never an AI call);
-// View PDF only opens the gallery, which charges nothing until the user taps a download there.
+// THE OWNER'S ASK (2026-09-19): "make it like the Resume customization page, with multiple edit buttons — divide the
+// paragraphs with edit buttons, then photo on top, then Subject, address of the employer — whatever details are on the
+// PDF should come in an editable page … with bold formatting retained". So this page is the résumé page's twin, built
+// from the same pieces (components/rich-text/RichText): the hero with the photo, Section cards with Edit / Cancel / Done,
+// one card per paragraph, the same Quill box. Top to bottom it follows the printed letter:
+//   hero (photo, name, title, contacts)  → FROM (payload.sender, over the profile)
+//   DATE                                 → read-only: every design prints the day of the download
+//   TO                                   → payload.companyName / companyAddress (the Original design's "Hiring Manager," as is)
+//   SUBJECT                              → payload.subject — stored with the letter, NOT printed by any design (said so)
+//   GREETING                             → payload.salutation ('' = the design's own line)
+//   PARAGRAPH 1…n                        → payload.coverLetterHtml, one card per <p> (services/letterHtml)
+//   SIGN-OFF                             → payload.closing + the name + the signature (read-only; Original design only)
 //
-// ⚠️ PLAIN TEXT, NOT RICH TEXT. The stored letter is HTML the server normalises to p/br/strong/b/em/i/ul/ol/li
-// (employerDocsRoutes normaliseLetterHtml). The editor shows it as paragraphs separated by blank lines with
-// **bold** — the only formatting a letter really uses — so there is no WebView/Quill to load or break, and
-// the text → HTML side ESCAPES EVERYTHING FIRST: whatever the user types (or pastes), the only markup that
-// leaves this screen is <p>, <br> and <strong> written by letterTextToHtml itself.
-//   Lost on an edit: italics and list markup (a list comes back as "• " lines). Nothing is lost by just
-//   opening and leaving — a letter is only re-written when the user taps Save or View PDF with changes.
+// ⚠️ NOTHING HERE GENERATES OR CHARGES. Every write is saveDocPayload (PUT, the user's own words, never an AI call);
+// Download / Preview only opens the gallery, which charges nothing until the user taps a download there.
 //
-// ⚠️ "NOT SAVED" IS SAID OUT LOUD. Every failure (no connection, 400, too big) leaves the status on Not saved
-// with the reason; the user is never told an edit was kept when it was not. 'gone' (the server says the doc
-// no longer exists) → an Alert and back, exactly like the résumé editor's doc mode.
+// ⚠️ BOLD STAYS BOLD. A paragraph card shows its <strong> runs bold (ContentText), its Edit opens the résumé's Quill box
+// holding the same <strong> (bold in the box too), and Quill hands <strong> back — narrowed to BOLD ONLY, the one format
+// every design prints. Not a heading or underline (the server strips them), and NOT ITALIC: the Original (Branded)
+// download is drawn by PDFKit (emailController.createCoverLetterPDFFromHTML) with a regular and a bold face only, so an
+// italic run the card, the Original's own thumbnail and every other design showed slanted would print upright in that
+// file. (The owner asked for bold; a stored <em> — the generator writes <strong> only — still shows in its card, as
+// the HTML designs print it.)
+// test-letter-editor proves every entry of LETTER_FORMATS prints in all 7 designs, the Word file and the PDFKit download.
+// letterHtml.cleanInline escapes every text run on the way in, so a letter's own words can never become markup here.
 //
-// ⚠️ VIEW PDF RENDERS THE SERVER'S COPY. The gallery (templates.tsx doc mode) re-reads the document by docId,
-// so unsaved edits would silently be missing from the PDF — View PDF saves first, and when that save fails
-// it asks instead of pretending ("View saved version" is the explicit way through).
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// ⚠️ SAVED ON DONE, SAID OUT LOUD. A field card saves on Done (like the résumé); a paragraph saves when its editor's
+// Done is tapped, and so does a move or a removal. A failed paragraph save keeps the edit ON SCREEN as "Not saved" with
+// Retry and arms the unsaved-changes guard — the user is never told an edit was kept when it was not. 'gone' (the
+// server says the doc no longer exists) → an Alert and back.
+//
+// ⚠️ AN UNTOUCHED LETTER IS NOT REWRITTEN. Saving a field card sends the stored letter HTML back byte for byte; only a
+// paragraph change re-joins the cards. Only the fields the user changed are written (withLetterFields) — no sender /
+// greeting / closing key appears on a letter nobody customised.
+//
+// ⚠️ DOWNLOAD / PREVIEW RENDERS THE SERVER'S COPY. The gallery (templates.tsx doc mode) re-reads the document by docId,
+// so a paragraph edit that failed to save would silently be missing from the PDF — it retries first, and when that
+// fails it asks instead of pretending ("View saved version" is the explicit way through).
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Platform, TextInput, Alert,
+  View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Platform, TextInput, Alert, Image,
   KeyboardAvoidingView, Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -34,16 +54,16 @@ import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 // usePreventRemove is the one guard that also reaches the NATIVE dismiss (see the unsaved-changes block below).
 import { usePreventRemove, type NavigationAction } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import { API_BASE } from '../../config';
 import { fetchDoc, saveDocPayload } from '../../services/employerDocs';
-
-// The résumé editor's palette (app/(resume-builder)/preview.tsx) — the two editors must read as one product.
-const T = {
-  bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
-  navy: '#0B1120', ink: '#0B0F22', inkSoft: '#1A2046',
-  muted: '#5A6480', faint: '#8A93B2', border: 'rgba(11,15,34,0.07)',
-  blue: '#4F8DFF', blueDeep: '#2563EB', cyan: '#06B6D4',
-  emerald: '#10B981', violet: '#A78BFA', rose: '#EF4444',
-};
+import { T, RichTextModal, ContentText, ProfileHero, Section, sec, type RichFormat } from '../../components/rich-text/RichText';
+import {
+  splitLetterParagraphs, joinLetterParagraphs, quillToBlocks, editorHtmlOf, hasText, oneLine,
+  letterFieldsOf, withLetterFields, fieldsDiffer, effectiveSender,
+  LINE_MAX, SUBJECT_MAX, ADDRESS_MAX,
+  type LetterBlock, type LetterFields, type LetterSender, type SenderKey,
+} from '../../services/letterHtml';
 
 /** A route param → a real doc id, or null. Anything that is not a positive integer is "no doc". */
 function docIdOf(raw: unknown): number | null {
@@ -53,136 +73,76 @@ function docIdOf(raw: unknown): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-/* ── HTML ↔ TEXT (pure; unit-checked by a scratch round-trip: paragraphs, bold per paragraph, bold list items,
-   a bold run split by a space, typed **bold**, <br>, & < >, <script>) ── */
-
-// Elements whose CONTENT is never letter text — dropped whole, the same idea as the server's
-// LETTER_DROP_WITH_CONTENT, so a stored letter that somehow carries one never shows its source as words.
-const DROP_WITH_CONTENT_RE =
-  /<(script|style|iframe|noscript|template|textarea|title|object|svg|math|head|select)\b[\s\S]*?(?:<\/\1\s*>|$)/gi;
-
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
-  rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', sbquo: '‚', bdquo: '„',
-  ndash: '–', mdash: '—', hellip: '…', bull: '•', middot: '·',
-  euro: '€', pound: '£', copy: '©', reg: '®', trade: '™', deg: '°',
-  eacute: 'é', egrave: 'è', aacute: 'á', agrave: 'à', iacute: 'í', oacute: 'ó',
-  uacute: 'ú', auml: 'ä', ouml: 'ö', uuml: 'ü', Auml: 'Ä', Ouml: 'Ö',
-  Uuml: 'Ü', szlig: 'ß', ccedil: 'ç', ntilde: 'ñ',
-};
-
-/** ONE pass, so "&amp;lt;" becomes the text "&lt;" and never "<". Unknown names stay as written. */
-function decodeEntities(s: string): string {
-  return s.replace(/&(#\d{1,7}|#x[0-9a-f]{1,6}|[a-z][a-z0-9]{1,31});/gi, (m, body: string) => {
-    if (body[0] === '#') {
-      const code = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
-      if (!isFinite(code) || code <= 0 || code > 0x10ffff) return m;
-      if (code === 160) return ' ';
-      // "&#1;" / "&#2;" would forge markBold's sentinels; no C0 control belongs in a letter anyway.
-      if (code < 32 && code !== 9 && code !== 10) return '';
-      try { return String.fromCodePoint(code); } catch { return m; }
-    }
-    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : m;
-  });
-}
-
-// Control-character sentinels for <strong>/<b> while other tags are stripped; any already in the source are removed first.
-const BOLD_OPEN = '\u0001';
-const BOLD_CLOSE = '\u0002';
+/** The letter's editor makes only what EVERY design prints (see the header): bold. ⚠️ Not italic — the Original PDF can't. */
+const LETTER_FORMATS: RichFormat[] = ['bold'];
 
 /**
- * Sentinel-marked text → "**bold**" that is BALANCED ON EVERY LINE.
- * ⚠️ NEVER MERGE BOLD ACROSS A LINE BREAK. The old text-level merge ("**", any \s gap, "**" — and \s includes \n) turned
- * <p><strong>Re: …</strong></p><p><strong>Dear Ms. Smith,</strong></p> into "**Re: …\n\nDear Ms. Smith,**", which
- * letterTextToHtml (bold is matched inside ONE paragraph) saved back as literal asterisks with the bold gone.
- * So bold is tracked as a DEPTH across the whole letter (a <strong> left open over a </p> keeps the next line
- * bold, the way a browser renders it; nested <b> inside <strong> is not "****"), and every line opens and
- * closes its own markers. Merging happens only between runs on the SAME line: a whitespace-only gap between
- * two bold runs joins them (<strong>Hello</strong> <strong>World</strong> → **Hello World**), an empty or
- * whitespace-only bold run is plain, and a run's edge whitespace sits outside its markers.
+ * One authenticated GET (the profile photo / signature, the profile's sender block). null = no answer — these only
+ * decorate the page, so a miss never blocks the letter. ⚠️ API_BASE is read per call (the admin switch reassigns it);
+ * the store-environment header rides on fetch itself (services/storeEnv patches it for our origin).
  */
-function markBold(s: string): string {
-  let depth = 0;
-  return s.split('\n').map((line) => {
-    const runs: { text: string; bold: boolean }[] = [];
-    for (const part of line.split(/([\u0001\u0002])/)) {
-      if (part === BOLD_OPEN) { depth += 1; continue; }
-      if (part === BOLD_CLOSE) { depth = Math.max(0, depth - 1); continue; }
-      if (!part) continue;
-      const bold = depth > 0 && /\S/.test(part);
-      const last = runs[runs.length - 1];
-      if (last && last.bold === bold) last.text += part;
-      else runs.push({ text: part, bold });
-    }
-    for (let i = 1; i < runs.length - 1; i++) {
-      if (!runs[i].bold && runs[i - 1].bold && runs[i + 1].bold && !/\S/.test(runs[i].text)) {
-        runs[i - 1].text += runs[i].text + runs[i + 1].text;
-        runs.splice(i, 2);
-        i -= 1;
-      }
-    }
-    return runs.map((r) => {
-      if (!r.bold) return r.text;
-      const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(r.text);
-      return m ? `${m[1]}**${m[2]}**${m[3]}` : `**${r.text}**`;
-    }).join('');
-  }).join('\n');
+async function getJson(path: string, ms = 15000): Promise<any | null> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const raw = await SecureStore.getItemAsync('userSession');
+    const token = JSON.parse(raw || '{}')?.token;
+    if (!token) return null;
+    const r = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && typeof j === 'object' ? j : null;
+  } catch { return null; }
+  finally { clearTimeout(timer); }
 }
 
-/**
- * Stored letter HTML → the editor's text. <p> = a paragraph (blank line), <br> = a line break,
- * <strong>/<b> = **bold**, every other tag stripped, entities decoded.
- * Beyond the bare strip: a list item starts its own "• " line and a block element (div, heading) breaks a
- * paragraph — stripping those silently would glue a list or a <div>-per-paragraph letter into one run-on line.
- */
-export function letterHtmlToText(html: string): string {
-  let s = String(html == null ? '' : html).replace(/[\u0001\u0002]/g, '');
-  s = s.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  s = s.replace(DROP_WITH_CONTENT_RE, '');
-  // Source newlines/tabs are just whitespace in HTML; only tags make breaks.
-  s = s.replace(/[\r\n\t]+/g, ' ');
-  s = s.replace(/<br\s*\/?>/gi, '\n');
-  s = s.replace(/<\/?p(?:\s[^>]*)?>/gi, '\n\n');
-  s = s.replace(/<\/?(?:div|h[1-6]|blockquote|section|article|header|footer|table|tr)(?:\s[^>]*)?>/gi, '\n\n');
-  s = s.replace(/<li(?:\s[^>]*)?>/gi, '\n• ');
-  s = s.replace(/<\/li\s*>/gi, '');
-  s = s.replace(/<\/?(?:ul|ol)(?:\s[^>]*)?>/gi, '\n\n');      // a list is its own paragraph of "• " lines
-  s = s.replace(/<(?:strong|b)(?:\s[^>]*)?>/gi, BOLD_OPEN).replace(/<\/(?:strong|b)\s*>/gi, BOLD_CLOSE);
-  s = s.replace(/<[^>]*>/g, '');                            // after this only text, \n and the two sentinels remain
-  s = decodeEntities(s);                                    // before markBold, so "&nbsp;" counts as a gap
-  s = markBold(s);
-  return s
-    .split('\n')
-    .map((line) => line.replace(/ {2,}/g, ' ').trim())
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+function todayLong(): string {
+  try { return new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }); }
+  catch { return new Date().toDateString(); }
 }
 
-const escapeHtml = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/* ── SMALL PIECES (the résumé page's inputs, in its styles) ──────────────────────────────────────── */
 
-/**
- * The editor's text → letter HTML. Escaped FIRST (so typed or pasted markup is only ever text), then:
- * blank line(s) → a new <p>, a single newline → <br>, **x** → <strong>x</strong> (matched inside ONE paragraph,
- * which is why letterHtmlToText balances the markers on every line).
- */
-export function letterTextToHtml(text: string): string {
-  const src = escapeHtml(String(text == null ? '' : text).replace(/\r\n?/g, '\n'));
-  return src
-    .split(/\n[ \t]*\n[\s]*/)
-    .map((para) => para.trim())
-    .filter(Boolean)
-    .map((para) => {
-      const lines = para.split('\n').map((l) => l.trim()).join('<br>');
-      return `<p>${lines.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')}</p>`;
-    })
-    .join('');
+function EI({ value, onChange, placeholder, multiline, maxLength, editable = true }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; multiline?: boolean; maxLength?: number; editable?: boolean;
+}) {
+  return (
+    <TextInput
+      value={value || ''}
+      onChangeText={onChange}
+      placeholder={placeholder}
+      placeholderTextColor={T.faint}
+      multiline={!!multiline}
+      maxLength={maxLength}
+      editable={editable}
+      blurOnSubmit={!multiline}
+      returnKeyType={multiline ? 'default' : 'done'}
+      style={[ed.input, multiline && ed.inputMulti, !editable && ed.inputOff]}
+    />
+  );
+}
+function Label({ text }: { text: string }) { return <Text style={ed.label}>{text}</Text>; }
+function AddBtn({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) {
+  return (
+    <TouchableOpacity onPress={onPress} disabled={disabled} style={[ed.addBtn, disabled && ed.dim]} activeOpacity={0.8}>
+      <Ionicons name="add" size={15} color={T.blue} /><Text style={ed.addText}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+function IconBtn({ icon, color, onPress, disabled, label }: { icon: any; color: string; onPress: () => void; disabled?: boolean; label: string }) {
+  return (
+    <TouchableOpacity onPress={onPress} disabled={disabled} hitSlop={6} style={[ed.iconBtn, disabled && ed.dim]} accessibilityLabel={label}>
+      <Ionicons name={icon} size={15} color={color} />
+    </TouchableOpacity>
+  );
 }
 
 /* ── THE SCREEN ────────────────────────────────────────────────────────────────────────────────────── */
 
-type Save = { state: 'idle' } | { state: 'saving' } | { state: 'saved' } | { state: 'error'; message: string };
 type Loaded = { employer: string; payload: Record<string, any> };
+type FieldCard = 'from' | 'to' | 'subject' | 'greeting' | 'signoff';
+/** The paragraph editor's target: an index to replace, or null to append (Add paragraph). */
+type RichTarget = { title: string; initial: string; index: number | null };
 
 export default function CoverLetterEdit() {
   const router = useRouter();
@@ -194,12 +154,24 @@ export default function CoverLetterEdit() {
   const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);                     // Try again
   const [doc, setDoc] = useState<Loaded | null>(null);
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
-  // What the SERVER holds right now (loaded, or last saved). Dirty = the fields differ from it.
-  const [base, setBase] = useState<{ subject: string; body: string; html: string }>({ subject: '', body: '', html: '' });
-  const [save, setSave] = useState<Save>({ state: 'idle' });
-  const [kbOpen, setKbOpen] = useState(false);
+  // The profile: the photo and signature (GET /users/profile — both read-only here), and the sender block the letter
+  // prints where it does not override it (GET /employer-docs/:id/sender — buildCLSender, the renderers' own reading).
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [signature, setSignature] = useState<string | null>(null);
+  const [basics, setBasics] = useState<Partial<LetterSender> | null>(null);
+  const [profileSender, setProfileSender] = useState<LetterSender | null>(null);
+  const [senderState, setSenderState] = useState<'loading' | 'ok' | 'failed'>('loading');
+  const [senderNonce, setSenderNonce] = useState(0);
+  // The field card being edited, what it opened with, and its working copy (only the difference is written).
+  const [editing, setEditing] = useState<FieldCard | null>(null);
+  const [opened, setOpened] = useState<LetterFields | null>(null);
+  const [draft, setDraft] = useState<LetterFields | null>(null);
+  // Paragraph changes the server has NOT confirmed (a failed save) — shown, guarded, retried. null = none.
+  const [bodyDraft, setBodyDraft] = useState<string | null>(null);
+  const [bodyError, setBodyError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedOnce, setSavedOnce] = useState(false);
+  const [rich, setRich] = useState<RichTarget | null>(null);
   const savingRef = useRef(false);
   // Leaving on purpose (gone, discard confirmed) must not trip the unsaved-changes guard.
   // The REF is for code that runs right after an await (no re-render in between); the STATE is what the
@@ -208,14 +180,13 @@ export default function CoverLetterEdit() {
   const leavingRef = useRef(false);
   const [exit, setExit] = useState<{ action?: NavigationAction } | null>(null);
 
-  const dirty = !!doc && (subject !== base.subject || body !== base.body);
-  const empty = !body.trim();
-
-  useEffect(() => {
-    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbOpen(true));
-    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbOpen(false));
-    return () => { show.remove(); hide.remove(); };
-  }, []);
+  const storedHtml = doc && typeof doc.payload.coverLetterHtml === 'string' ? doc.payload.coverLetterHtml : '';
+  const bodyHtml = bodyDraft ?? storedHtml;
+  const blocks = useMemo(() => splitLetterParagraphs(bodyHtml), [bodyHtml]);
+  const fields = useMemo(() => (doc ? letterFieldsOf(doc.payload, doc.employer, profileSender) : null), [doc, profileSender]);
+  const fieldDirty = !!editing && fieldsDiffer(opened, draft);
+  // Armed while a field card holds an unsaved change, a paragraph change is not on the server, or a save is in flight.
+  const dirty = fieldDirty || bodyDraft !== null || saving;
 
   const goneOut = useCallback(() => {
     leavingRef.current = true;
@@ -236,66 +207,147 @@ export default function CoverLetterEdit() {
       // A résumé doc id here would be edited as a letter and saved back as one — refuse to open it.
       if (d.kind !== 'cover_letter') { setLoadFailed('This document is not a cover letter.'); setLoading(false); return; }
       const p = d.payload && typeof d.payload === 'object' ? d.payload : {};
-      const html = typeof p.coverLetterHtml === 'string' ? p.coverLetterHtml : '';
-      const subj = typeof p.subject === 'string' ? p.subject : '';
-      const text = letterHtmlToText(html);
       setDoc({ employer: d.employer || '', payload: p });
-      setSubject(subj);
-      setBody(text);
-      setBase({ subject: subj, body: text, html });
-      setSave({ state: 'idle' });
+      setBodyDraft(null);
+      setBodyError(null);
       setLoading(false);
     })();
     return () => { alive = false; };
-    // router / goneOut are stable for this screen; nonce is the retry.
+    // goneOut is stable for this screen; nonce is the retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId, nonce]);
 
-  /**
-   * Store the fields. { html } = the letter now on the server; { error } = it was NOT saved (the message is
-   * already on screen); { error: null } = nothing was attempted (no doc, a save already running, or gone).
-   */
-  const doSave = async (): Promise<{ html: string } | { error: string | null }> => {
-    if (!doc || !docId || savingRef.current) return { error: null };
-    if (empty) {
-      const message = 'A letter needs some text before it can be saved.';
-      setSave({ state: 'error', message });
-      return { error: message };
-    }
-    savingRef.current = true;
-    setSave({ state: 'saving' });
-    const wantSubject = subject.replace(/[\r\n]+/g, ' ').trim();
-    const wantBody = body;
-    const html = letterTextToHtml(wantBody);
-    try {
-      const payload = { ...doc.payload, subject: wantSubject, coverLetterHtml: html };
-      const r = await saveDocPayload(docId, payload).catch(() => ({ ok: false as const, reason: 'network' as const, message: undefined }));
-      if (r.ok) {
-        setDoc({ ...doc, payload });
-        // The baseline is what was SENT; fields typed during the request stay dirty on purpose.
-        setBase({ subject: wantSubject, body: wantBody, html });
-        // A subject saved trimmed must not read as a pending change; newer typing is left alone.
-        setSubject((cur) => (cur !== wantSubject && cur.replace(/[\r\n]+/g, ' ').trim() === wantSubject ? wantSubject : cur));
-        setSave({ state: 'saved' });
-        return { html };
+  // The profile pieces decorate the page and never hold the letter back; the sender block alone gates the FROM edits
+  // (an override is only written against the real profile value, see withLetterFields).
+  useEffect(() => {
+    if (!docId) return;
+    let alive = true;
+    (async () => {
+      setSenderState('loading');
+      const [prof, snd] = await Promise.all([getJson('/users/profile'), getJson(`/employer-docs/${docId}/sender`)]);
+      if (!alive) return;
+      if (prof) {
+        setPhoto(prof.profileImage || prof.profile_image || null);
+        setSignature(typeof prof.signature === 'string' && prof.signature ? prof.signature : null);
+        setBasics({ name: prof.fullName || '', email: prof.email || '', phone: prof.phone || '' });
       }
-      if (r.reason === 'gone') { setSave({ state: 'error', message: 'This letter no longer exists.' }); goneOut(); return { error: null }; }
-      const message = r.reason === 'too_big'
-        ? 'This letter is too long to store. Shorten it and try again.'
-        : (r.message || 'Check your connection and try again.');
-      setSave({ state: 'error', message });
-      return { error: message };
+      const s = snd && snd.success !== false && snd.sender && typeof snd.sender === 'object' ? snd.sender : null;
+      if (s) { setProfileSender(effectiveSender(s, null)); setSenderState('ok'); } else setSenderState('failed');
+    })();
+    return () => { alive = false; };
+  }, [docId, senderNonce]);
+
+  /**
+   * Store a payload. true = it is on the server now. false = it is NOT (the reason was already said out loud, unless
+   * `quiet`); 'gone' leaves the screen. A second save while one is in flight is refused, never queued.
+   */
+  const persist = async (next: Record<string, any>, opts: { quiet?: boolean } = {}): Promise<boolean> => {
+    if (!doc || !docId || savingRef.current) return false;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const r = await saveDocPayload(docId, next).catch(() => ({ ok: false as const, reason: 'network' as const, message: undefined }));
+      if (r.ok) {
+        setDoc((cur) => (cur ? { ...cur, payload: next } : cur));
+        setSavedOnce(true);
+        return true;
+      }
+      if (r.reason === 'gone') { goneOut(); return false; }
+      if (!opts.quiet && !leavingRef.current) {
+        if (r.reason === 'too_big') Alert.alert('Too long to save', 'This letter is too long to store. Shorten it and try again.');
+        else Alert.alert('Could not save', r.message || 'Check your connection and try again.');
+      }
+      return false;
     } finally {
       savingRef.current = false;
+      setSaving(false);
     }
   };
 
-  const onSavePress = async () => {
-    Keyboard.dismiss();
-    const r = await doSave();
-    // The inline status already says Not saved; the Alert makes sure a user who looked away sees it.
-    if ('error' in r && r.error && !leavingRef.current) Alert.alert('Not saved', r.error);
+  /* ── field cards ── */
+
+  const startEdit = (card: FieldCard) => {
+    if (!fields || saving || editing) return;
+    if (card === 'from' && !profileSender) return;   // the Edit is not drawn then either
+    const copy: LetterFields = { ...fields, sender: { ...fields.sender } };
+    setOpened(copy);
+    setDraft({ ...copy, sender: { ...copy.sender } });
+    setEditing(card);
   };
+  const cancelEdit = () => {
+    if (saving) return;
+    Keyboard.dismiss();
+    setEditing(null); setOpened(null); setDraft(null);
+  };
+  const setField = (k: 'companyName' | 'companyAddress' | 'subject' | 'salutation' | 'closing', v: string) =>
+    setDraft((d) => (d ? { ...d, [k]: v } : d));
+  const setSender = (k: SenderKey, v: string) => setDraft((d) => (d ? { ...d, sender: { ...d.sender, [k]: v } } : d));
+
+  const saveCard = async () => {
+    if (!doc || !editing || !draft || !opened || savingRef.current) return;
+    Keyboard.dismiss();
+    if (!fieldsDiffer(opened, draft)) { cancelEdit(); return; }   // nothing changed: nothing to store
+    // Only what changed — the letter HTML rides along exactly as stored (see the header).
+    const next = withLetterFields(doc.payload, opened, draft, profileSender);
+    if (await persist(next)) { setEditing(null); setOpened(null); setDraft(null); }
+  };
+
+  /* ── paragraph cards ── */
+
+  /** The cards, re-joined and stored. Refused before any request when no paragraph would have words left. */
+  const commitBlocks = async (next: LetterBlock[], opts: { quiet?: boolean } = {}): Promise<boolean> => {
+    if (!doc || savingRef.current) return false;
+    if (!next.some((b) => hasText(b.html))) {
+      Alert.alert('A letter needs some text', 'Keep at least one paragraph with words in it.');
+      return false;
+    }
+    const html = joinLetterParagraphs(next);
+    if (bodyDraft === null && html === joinLetterParagraphs(blocks)) return true;   // nothing moved: nothing to store
+    setBodyDraft(html);
+    setBodyError(null);
+    if (await persist({ ...doc.payload, coverLetterHtml: html }, opts)) { setBodyDraft(null); return true; }
+    if (!leavingRef.current) setBodyError('Your last paragraph change is not saved yet.');
+    return false;
+  };
+  const retryBody = (opts: { quiet?: boolean } = {}) => (bodyDraft === null ? Promise.resolve(true) : commitBlocks(splitLetterParagraphs(bodyDraft), opts));
+
+  const openParagraph = (index: number | null) => {
+    if (editing || saving) return;
+    const b = index == null ? null : blocks[index];
+    setRich({ title: index == null ? 'New paragraph' : `Paragraph ${index + 1}`, initial: editorHtmlOf(b), index });
+  };
+  const onRichDone = (html: string) => {
+    const target = rich;
+    setRich(null);
+    if (!target) return;
+    const replacement = quillToBlocks(html);
+    if (target.index == null) {
+      if (replacement.length) commitBlocks([...blocks, ...replacement]);   // an empty new paragraph adds nothing
+      return;
+    }
+    commitBlocks([...blocks.slice(0, target.index), ...replacement, ...blocks.slice(target.index + 1)]);
+  };
+  const moveBlock = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= blocks.length || saving) return;
+    const next = blocks.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    commitBlocks(next);
+  };
+  const removeBlock = (i: number) => {
+    if (saving) return;
+    const next = blocks.filter((_, j) => j !== i);
+    if (!next.some((b) => hasText(b.html))) {
+      Alert.alert('A letter needs some text', 'This is the last paragraph. Edit it instead of removing it.');
+      return;
+    }
+    Alert.alert(`Remove paragraph ${i + 1}?`, 'It is taken out of this letter only. Your other letters are unchanged.', [
+      { text: 'Keep', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => { commitBlocks(next); } },
+    ]);
+  };
+
+  /* ── the gallery ── */
 
   const openGallery = async (html: string) => {
     if (!doc || !docId) return;
@@ -315,18 +367,18 @@ export default function CoverLetterEdit() {
   };
 
   const onViewPdf = async () => {
-    if (!doc || savingRef.current) return;
+    if (!doc || savingRef.current || editing) return;
     Keyboard.dismiss();
-    if (!dirty) { openGallery(base.html); return; }
-    const r = await doSave();
-    if ('html' in r) { openGallery(r.html); return; }
-    if (leavingRef.current || !r.error) return;
+    if (bodyDraft === null) { openGallery(storedHtml); return; }
+    const pending = bodyDraft;
+    if (await retryBody({ quiet: true })) { openGallery(pending); return; }
+    if (leavingRef.current) return;
     Alert.alert(
       'Your changes are not saved',
       'The PDF shows the letter as it is saved on our side, so it would not include your latest edits.',
       [
         { text: 'Keep editing', style: 'cancel' },
-        { text: 'View saved version', onPress: () => openGallery(base.html) },
+        { text: 'View saved version', onPress: () => openGallery(storedHtml) },
       ],
     );
   };
@@ -341,13 +393,18 @@ export default function CoverLetterEdit() {
   // The Discard path does not dispatch from inside the callback: the hook reads its condition from the last
   // render, so the action waits in `exit` until a render with the guard down (the effect below).
   usePreventRemove(dirty && !exit, ({ data }) => {
-    Alert.alert('Discard your changes?', 'Your edits to this letter are not saved.', [
-      { text: 'Keep editing', style: 'cancel' },
-      {
-        text: 'Discard', style: 'destructive',
-        onPress: () => { leavingRef.current = true; setExit({ action: data.action }); },
-      },
-    ]);
+    const inFlight = savingRef.current;
+    Alert.alert(
+      inFlight ? 'Still saving' : 'Discard your changes?',
+      inFlight ? 'Your last change is still being saved. If you leave now it may not be kept.' : 'Your edits to this letter are not saved.',
+      [
+        { text: 'Keep editing', style: 'cancel' },
+        {
+          text: 'Discard', style: 'destructive',
+          onPress: () => { leavingRef.current = true; setExit({ action: data.action }); },
+        },
+      ],
+    );
   });
 
   useEffect(() => {
@@ -358,7 +415,7 @@ export default function CoverLetterEdit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exit]);
 
-  // The Back pill goes through the same removal as the hardware back, so a dirty letter asks here too.
+  // The Back pill goes through the same removal as the hardware back, so unsaved changes ask here too.
   const leave = () => {
     if (router.canGoBack()) router.back();
     else router.replace('/' as never);
@@ -373,9 +430,9 @@ export default function CoverLetterEdit() {
       </SafeAreaView>
     );
   }
-  if (!doc) {
+  if (!doc || !fields) {
     return (
-      <SafeAreaView style={[s.safe, s.center, { gap: 12, paddingHorizontal: 32 }]} edges={['top']}>
+      <SafeAreaView style={[s.safe, s.center, s.emptyWrap]} edges={['top']}>
         <Ionicons name="document-text-outline" size={48} color={T.faint} />
         <Text style={s.emptyTitle}>Could not open this letter</Text>
         {!!loadFailed && <Text style={s.emptyText}>{loadFailed}</Text>}
@@ -392,62 +449,98 @@ export default function CoverLetterEdit() {
   }
 
   const p = doc.payload || {};
-  const company = String(p.companyName || doc.employer || '').trim();
-  const position = String(p.position || '').trim();
-  const manager = String(p.hiringManager || '').trim();
-  const busy = save.state === 'saving';
+  const cur: LetterFields = editing && draft ? draft : fields;
+  // What the hero prints: the letter's overrides over the profile (over /users/profile's basics while the sender block
+  // is unknown — display only; edits wait for the real block).
+  const shownSender = effectiveSender(profileSender || basics, p.sender);
+  const heroSender = editing === 'from' && draft ? draft.sender : shownSender;
+  const offices = Array.from(new Set((Array.isArray(p.locations) ? p.locations : [])
+    .map((l: any) => oneLine(l && l.address, ADDRESS_MAX)).filter(Boolean))) as string[];
+  const cardBusy = editing !== null;             // a field card is open → the other Edit buttons step aside
+  const sectionProps = (card: FieldCard) => ({
+    editing: editing === card, busy: cardBusy && editing !== card, saving,
+    onEdit: () => startEdit(card), onDone: saveCard, onCancel: cancelEdit,
+  });
+  const showSave = fieldDirty || bodyDraft !== null;
 
-  let statusIcon: any = 'ellipse-outline';
+  let statusIcon: any = 'checkmark-circle';
   let statusText = '';
-  let statusColor = T.faint;
-  if (busy) { statusText = 'Saving…'; statusColor = T.blue; }
-  else if (dirty) { statusIcon = 'ellipse'; statusText = save.state === 'error' ? 'Not saved' : 'Unsaved changes'; statusColor = save.state === 'error' ? T.rose : '#F59E0B'; }
-  else if (save.state === 'saved') { statusIcon = 'checkmark-circle'; statusText = 'Saved'; statusColor = T.emerald; }
-  else if (save.state === 'error') { statusIcon = 'alert-circle'; statusText = 'Not saved'; statusColor = T.rose; }
+  let statusColor = T.emerald;
+  if (saving) { statusIcon = 'ellipse-outline'; statusText = 'Saving…'; statusColor = T.blue; }
+  else if (bodyDraft !== null) { statusIcon = 'alert-circle'; statusText = 'Not saved'; statusColor = T.rose; }
+  else if (savedOnce && !fieldDirty) { statusText = 'Saved'; }
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* Top bar */}
       <View style={s.topBar}>
-        <TouchableOpacity onPress={leave} style={s.backPill} activeOpacity={0.8}>
-          <Ionicons name="arrow-back" size={14} color={T.ink} />
-          <Text style={s.backPillText}>Back</Text>
+        <TouchableOpacity onPress={editing ? cancelEdit : leave} style={s.backPill} activeOpacity={0.8}>
+          <Ionicons name={editing ? 'close' : 'arrow-back'} size={14} color={T.ink} />
+          <Text style={s.backPillText}>{editing ? 'Cancel' : 'Back'}</Text>
         </TouchableOpacity>
         {/* Say WHOSE letter this is — editing it changes nothing for any other employer. */}
         <View style={s.docHead} pointerEvents="none">
           <Text style={s.docEyebrow}>TAILORED COVER LETTER</Text>
           <Text style={s.docTitle} numberOfLines={1}>{doc.employer ? `${doc.employer} letter` : 'Employer letter'}</Text>
         </View>
-        <TouchableOpacity
-          onPress={onSavePress}
-          style={[s.saveBtn, (!dirty || busy || empty) && { opacity: 0.45 }]}
-          activeOpacity={0.8}
-          disabled={!dirty || busy || empty}
-          accessibilityLabel="Save letter"
-        >
-          {busy ? <ActivityIndicator size="small" color={T.blue} /> : <Ionicons name="checkmark-circle-outline" size={14} color={T.blue} />}
-          <Text style={s.saveText}>{busy ? 'Saving' : 'Save'}</Text>
-        </TouchableOpacity>
+        {showSave ? (
+          <TouchableOpacity
+            onPress={() => { if (editing) saveCard(); else retryBody(); }}
+            style={[s.saveBtn, saving && ed.dim]}
+            activeOpacity={0.8}
+            disabled={saving}
+            accessibilityLabel="Save letter"
+          >
+            {saving ? <ActivityIndicator size="small" color={T.blue} /> : <Ionicons name="checkmark-circle-outline" size={14} color={T.blue} />}
+            <Text style={s.saveText}>{saving ? 'Saving' : 'Save'}</Text>
+          </TouchableOpacity>
+        ) : <View style={s.savePlaceholder} />}
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={s.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-          {/* Hero: who the letter goes to */}
-          <View style={s.heroCard}>
-            <LinearGradient colors={['#0B1120', '#162550', '#0d1f45']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.heroGradient}>
-              <View style={s.heroDeco1} /><View style={s.heroDeco2} />
-              <View style={s.heroRow}>
-                <View style={s.heroIcon}><Ionicons name="mail-open-outline" size={20} color="#fff" /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.heroEyebrow}>TO</Text>
-                  <Text style={s.heroName} numberOfLines={2}>{company || 'The hiring team'}</Text>
-                  {!!(position || manager) && (
-                    <Text style={s.heroMeta} numberOfLines={2}>{[position, manager].filter(Boolean).join(' · ')}</Text>
-                  )}
+          {/* 1 — the sender, as the letterhead prints it */}
+          <ProfileHero
+            photo={photo}
+            name={heroSender.name}
+            subtitle={heroSender.title}
+            contacts={[
+              { icon: 'mail-outline', text: heroSender.email },
+              { icon: 'call-outline', text: heroSender.phone },
+              { icon: 'location-outline', text: heroSender.location },
+            ]}
+            onEdit={!cardBusy && profileSender ? () => startEdit('from') : undefined}
+          />
+          {senderState === 'failed' && !editing && (
+            <TouchableOpacity onPress={() => setSenderNonce((n) => n + 1)} style={s.noteCard} activeOpacity={0.85}>
+              <Ionicons name="cloud-offline-outline" size={15} color={T.muted} />
+              <Text style={s.noteText}>Could not load your details, so they cannot be edited yet.</Text>
+              <Text style={s.noteAction}>Try again</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* FROM — opened by the hero's Edit, like the résumé's DETAILS */}
+          {editing === 'from' && draft && (
+            <Section title="FROM" icon="person-outline" color={T.blue} {...sectionProps('from')}>
+              <View style={s.photoRow}>
+                <View style={s.photoThumb}>
+                  {photo ? <Image source={{ uri: photo }} style={s.photoImg} /> : <Ionicons name="person" size={18} color={T.faint} />}
                 </View>
+                <Text style={s.photoNote}>Your profile photo — change it in Profile. It prints on the Original (Branded) design.</Text>
               </View>
-            </LinearGradient>
-          </View>
+              <Label text="Full name" />
+              <EI value={draft.sender.name} onChange={(v) => setSender('name', v)} placeholder={profileSender?.name || 'Your name'} maxLength={LINE_MAX} />
+              <Label text="Title" />
+              <EI value={draft.sender.title} onChange={(v) => setSender('title', v)} placeholder="e.g. Senior Software Engineer" maxLength={LINE_MAX} />
+              <Label text="Email" />
+              <EI value={draft.sender.email} onChange={(v) => setSender('email', v)} placeholder="email@example.com" maxLength={LINE_MAX} />
+              <Label text="Phone" />
+              <EI value={draft.sender.phone} onChange={(v) => setSender('phone', v)} placeholder="Phone" maxLength={LINE_MAX} />
+              <Label text="Location" />
+              <EI value={draft.sender.location} onChange={(v) => setSender('location', v)} placeholder="City, Country" maxLength={LINE_MAX} />
+              <Text style={s.hint}>Changes print on this letter only — your profile stays as it is. A blank line is left off the letter (the Original design prints “Applicant” for a blank title); a blank name uses your profile name.</Text>
+            </Section>
+          )}
 
           {/* Save status — never silent */}
           {!!statusText && (
@@ -456,77 +549,180 @@ export default function CoverLetterEdit() {
               <Text style={[s.statusText, { color: statusColor }]}>{statusText}</Text>
             </View>
           )}
-          {save.state === 'error' && !busy && (
-            <TouchableOpacity onPress={onSavePress} style={s.errorCard} activeOpacity={0.85} disabled={empty}>
+          {!!bodyError && bodyDraft !== null && !saving && (
+            <TouchableOpacity onPress={() => retryBody()} style={s.errorCard} activeOpacity={0.85}>
               <Ionicons name="alert-circle-outline" size={16} color={T.rose} />
-              <Text style={s.errorText}>Not saved — {save.message}</Text>
-              {!empty && <Text style={s.errorRetry}>Retry</Text>}
+              <Text style={s.errorText}>Not saved — {bodyError}</Text>
+              <Text style={s.errorRetry}>Retry</Text>
             </TouchableOpacity>
           )}
 
-          {/* Subject */}
-          <View style={s.card}>
-            <View style={s.cardHead}>
-              <View style={[s.cardIcon, { backgroundColor: T.cyan + '18' }]}><Ionicons name="pricetag-outline" size={14} color={T.cyan} /></View>
-              <Text style={s.cardTitle}>SUBJECT</Text>
+          {/* 2 — the date every design prints */}
+          <View style={s.dateCard}>
+            <View style={[sec.iconWrap, s.dateIcon]}><Ionicons name="calendar-outline" size={14} color={T.cyan} /></View>
+            <View style={s.fill}>
+              <Text style={sec.title}>DATE</Text>
+              <Text style={s.dateText}>{todayLong()}</Text>
             </View>
-            <TextInput
-              value={subject}
-              onChangeText={(v) => setSubject(v.replace(/[\r\n]+/g, ' '))}
-              placeholder="Application for …"
-              placeholderTextColor={T.faint}
-              style={s.input}
-              maxLength={300}
-              returnKeyType="done"
-              blurOnSubmit
-              editable={!busy}
-            />
+            <Text style={s.dateNote}>Dated the day{'\n'}you download</Text>
           </View>
 
-          {/* Letter body */}
-          <View style={s.card}>
-            <View style={s.cardHead}>
-              <View style={[s.cardIcon, { backgroundColor: T.blue + '18' }]}><Ionicons name="document-text-outline" size={14} color={T.blue} /></View>
-              <Text style={s.cardTitle}>LETTER</Text>
-            </View>
-            <Text style={s.hint}>Leave a blank line between paragraphs. Wrap words in **double asterisks** to make them bold.</Text>
-            <TextInput
-              value={body}
-              onChangeText={setBody}
-              placeholder="Dear hiring team, …"
-              placeholderTextColor={T.faint}
-              style={[s.input, s.inputBody]}
-              multiline
-              scrollEnabled={false}
-              textAlignVertical="top"
-              autoCapitalize="sentences"
-              editable={!busy}
-            />
-            {empty && <Text style={[s.hint, { color: T.rose, marginTop: 6, marginBottom: 0 }]}>A letter needs some text before it can be saved.</Text>}
-          </View>
+          {/* 3 — the recipient */}
+          <Section title="TO" icon="business-outline" color={T.violet} {...sectionProps('to')}>
+            <Text style={s.toManager}>Hiring Manager,</Text>
+            {editing === 'to' && draft ? (
+              <>
+                <Label text="Company name" />
+                <EI value={draft.companyName} onChange={(v) => setField('companyName', v)} placeholder={doc.employer || 'Company'} maxLength={LINE_MAX} />
+                <Label text="Address" />
+                <EI value={draft.companyAddress} onChange={(v) => setField('companyAddress', v)} placeholder="Street, City, Country" multiline maxLength={ADDRESS_MAX} />
+                {offices.length > 1 && (
+                  <>
+                    <Label text="Or pick an office we found" />
+                    <View style={s.chipsRow}>
+                      {offices.map((o) => (
+                        <TouchableOpacity key={o} onPress={() => setField('companyAddress', o)} activeOpacity={0.8}
+                          style={[s.officeChip, oneLine(draft.companyAddress, ADDRESS_MAX) === o && s.officeChipOn]}>
+                          <Ionicons name="location-outline" size={12} color={T.violet} />
+                          <Text style={s.officeText} numberOfLines={2}>{o}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </>
+                )}
+                <Text style={s.hint}>Line breaks print as commas. “Hiring Manager,” is printed as it is, on the Original (Branded) design only.</Text>
+              </>
+            ) : (
+              <>
+                <Text style={s.toCompany}>{cur.companyName || doc.employer || '—'}</Text>
+                {cur.companyAddress ? <Text style={s.toAddress}>{cur.companyAddress}</Text> : <Text style={s.emptyHint}>No address. Tap Edit to add one.</Text>}
+              </>
+            )}
+          </Section>
 
-          <View style={{ height: 24 }} />
+          {/* 4 — the subject (stored, never printed — and it says so) */}
+          <Section title="SUBJECT" icon="pricetag-outline" color={T.cyan} {...sectionProps('subject')}>
+            {editing === 'subject' && draft ? (
+              <EI value={draft.subject} onChange={(v) => setField('subject', v.replace(/[\r\n]+/g, ' '))} placeholder="Application for …" maxLength={SUBJECT_MAX} />
+            ) : cur.subject ? <Text style={s.fieldText}>{cur.subject}</Text> : <Text style={s.emptyHint}>No subject yet. Tap Edit to add one.</Text>}
+            <Text style={[s.hint, s.hintTight]}>Saved with this letter only — handy as your email subject. The letter designs do not print a subject line.</Text>
+          </Section>
+
+          {/* 5 — the greeting */}
+          <Section title="GREETING" icon="hand-right-outline" color={T.emerald} {...sectionProps('greeting')}>
+            {editing === 'greeting' && draft ? (
+              <>
+                <EI value={draft.salutation} onChange={(v) => setField('salutation', v.replace(/[\r\n]+/g, ' '))} placeholder="Design default (Dear Hiring Manager,)" maxLength={LINE_MAX} />
+                <Text style={[s.hint, s.hintTight]}>Leave it blank for each design’s own greeting — German Professional says “Dear Sir or Madam,”.</Text>
+              </>
+            ) : (
+              <>
+                <Text style={s.fieldText}>{cur.salutation || 'Dear Hiring Manager,'}</Text>
+                {!cur.salutation && <Text style={[s.hint, s.hintTight]}>The design’s own greeting (German Professional: “Dear Sir or Madam,”).</Text>}
+              </>
+            )}
+          </Section>
+
+          {/* 6 — the letter, one card per paragraph */}
+          {blocks.map((b, i) => (
+            <Section
+              key={`p${i}`}
+              title={`PARAGRAPH ${i + 1}`}
+              icon={b.kind === 'list' ? 'list-outline' : 'reorder-four-outline'}
+              color={T.blue}
+              editing={false}
+              busy={cardBusy}
+              saving={saving}
+              actions={(
+                <View style={s.paraActions}>
+                  <IconBtn icon="chevron-up" color={T.muted} label={`Move paragraph ${i + 1} up`} onPress={() => moveBlock(i, -1)} disabled={saving || i === 0} />
+                  <IconBtn icon="chevron-down" color={T.muted} label={`Move paragraph ${i + 1} down`} onPress={() => moveBlock(i, 1)} disabled={saving || i === blocks.length - 1} />
+                  <IconBtn icon="trash-outline" color={T.rose} label={`Remove paragraph ${i + 1}`} onPress={() => removeBlock(i)} disabled={saving} />
+                  <TouchableOpacity onPress={() => openParagraph(i)} disabled={saving} style={[sec.editBtn, saving && ed.dim]} hitSlop={6} activeOpacity={0.8}>
+                    <Ionicons name="create-outline" size={13} color={T.blue} /><Text style={sec.editText}>Edit</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            >
+              <TouchableOpacity activeOpacity={0.7} onPress={() => openParagraph(i)} disabled={cardBusy || saving}>
+                <ContentText text={b.kind === 'list' ? b.html : `<p>${b.html}</p>`} style={s.paraText} />
+              </TouchableOpacity>
+            </Section>
+          ))}
+          {!cardBusy && <AddBtn label="Add paragraph" onPress={() => openParagraph(null)} disabled={saving} />}
+
+          {/* 7 — the sign-off */}
+          <Section title="SIGN-OFF" icon="ribbon-outline" color={T.violet} {...sectionProps('signoff')}>
+            {editing === 'signoff' && draft ? (
+              <>
+                <Label text="Closing" />
+                <EI value={draft.closing} onChange={(v) => setField('closing', v.replace(/[\r\n]+/g, ' '))} placeholder="Design default (Sincerely,)" maxLength={LINE_MAX} />
+                <Label text="Name printed under it" />
+                {profileSender ? (
+                  <EI value={draft.sender.name} onChange={(v) => setSender('name', v)} placeholder={profileSender.name || 'Your name'} maxLength={LINE_MAX} />
+                ) : <Text style={s.fieldText}>{shownSender.name || '—'}</Text>}
+                <Text style={[s.hint, s.hintTight]}>Leave the closing blank for each design’s own (Sincerely, / Best regards, / Respectfully, …).</Text>
+              </>
+            ) : (
+              <>
+                <Text style={s.fieldText}>{cur.closing || 'Sincerely,'}</Text>
+                {!cur.closing && <Text style={[s.hint, s.hintTight]}>Each design prints its own closing (Sincerely, / Best regards, / Respectfully, / Yours faithfully, …).</Text>}
+              </>
+            )}
+            {!!signature && (
+              <View style={s.sigWrap}>
+                <Image source={{ uri: signature }} style={s.sigImg} resizeMode="contain" />
+                <Text style={s.sigNote}>Your signature prints on the Original (Branded) design.</Text>
+              </View>
+            )}
+            {editing !== 'signoff' && <Text style={s.signName}>{shownSender.name || 'Your name'}</Text>}
+          </Section>
+
+          <View style={editing ? s.tailShort : s.tail} />
         </ScrollView>
-
-        {/* Action bar — hidden while typing so the letter keeps the screen. */}
-        {!kbOpen && (
-          <View style={s.bottomBar}>
-            <TouchableOpacity onPress={onViewPdf} activeOpacity={0.88} disabled={busy} style={[s.primaryOuter, busy && { opacity: 0.6 }]}>
-              <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primaryBtn}>
-                {busy ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="document-outline" size={16} color="#fff" />}
-                <Text style={s.primaryText}>{dirty ? 'Save & View PDF' : 'View PDF'}</Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-        )}
       </KeyboardAvoidingView>
+
+      {/* Floating action bar (hidden while a card is edited) — like the résumé's; nothing here regenerates or charges. */}
+      {!editing && (
+        <View style={s.floatingBar}>
+          <TouchableOpacity onPress={onViewPdf} activeOpacity={0.88} disabled={saving} style={[s.primaryOuter, saving && ed.dim]}>
+            <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primaryBtn}>
+              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="download-outline" size={16} color="#fff" />}
+              <Text style={s.primaryText}>Download / Preview</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <RichTextModal
+        visible={!!rich}
+        title={rich?.title || ''}
+        initialMd={rich?.initial || ''}
+        formats={LETTER_FORMATS}
+        hint={<>Select words, then tap <Text style={s.hintBold}>B</Text> for bold. Enter starts a new paragraph.</>}
+        onCancel={() => setRich(null)}
+        onDone={onRichDone}
+      />
     </SafeAreaView>
   );
 }
 
+const ed = StyleSheet.create({
+  input:      { backgroundColor: T.bgSoft, borderRadius: 10, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, paddingVertical: Platform.select({ ios: 10, default: 8 }), fontSize: 13, color: T.ink, marginBottom: 8 },
+  inputMulti: { minHeight: 64, textAlignVertical: 'top' },
+  inputOff:   { opacity: 0.55 },
+  label:      { fontSize: 11, fontWeight: '700', color: T.muted, marginBottom: 4, marginTop: 4 },
+  addBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 10, borderWidth: 1, borderColor: T.blue + '40', backgroundColor: T.blue + '10', paddingVertical: 11, marginBottom: 12 },
+  addText:    { fontSize: 12.5, fontWeight: '700', color: T.blue },
+  iconBtn:    { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: T.bgSoft },
+  dim:        { opacity: 0.4 },
+});
+
 const s = StyleSheet.create({
   safe:         { flex: 1, backgroundColor: T.bg },
+  fill:         { flex: 1 },
   center:       { justifyContent: 'center', alignItems: 'center' },
+  emptyWrap:    { gap: 12, paddingHorizontal: 32 },
   topBar:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
   backPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3, zIndex: 1 },
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
@@ -535,17 +731,16 @@ const s = StyleSheet.create({
   docTitle:     { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.3, marginTop: 1 },
   saveBtn:      { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(79,141,255,0.1)', borderRadius: 16, paddingVertical: 7, paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(79,141,255,0.2)', zIndex: 1 },
   saveText:     { fontSize: 12, fontWeight: '700', color: T.blue },
+  savePlaceholder: { width: 72 },
   scroll:       { padding: 16 },
 
-  heroCard:     { borderRadius: 24, overflow: 'hidden', marginBottom: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.22, shadowRadius: 24, elevation: 10 },
-  heroGradient: { paddingVertical: 20, paddingHorizontal: 18 },
-  heroDeco1:    { position: 'absolute', width: 160, height: 160, borderRadius: 80, backgroundColor: 'rgba(6,182,212,0.12)', top: -50, right: -50 },
-  heroDeco2:    { position: 'absolute', width: 90, height: 90, borderRadius: 45, backgroundColor: 'rgba(167,139,250,0.14)', bottom: -30, left: -20 },
-  heroRow:      { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  heroIcon:     { width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.14)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
-  heroEyebrow:  { fontSize: 9, fontWeight: '800', color: 'rgba(255,255,255,0.55)', letterSpacing: 1.2 },
-  heroName:     { fontSize: 18, fontWeight: '800', color: '#fff', letterSpacing: -0.4, marginTop: 2 },
-  heroMeta:     { fontSize: 12, color: 'rgba(255,255,255,0.72)', marginTop: 3, fontWeight: '500' },
+  noteCard:     { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: T.surface, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12, borderWidth: 1, borderColor: T.border },
+  noteText:     { flex: 1, fontSize: 12, color: T.muted, lineHeight: 17 },
+  noteAction:   { fontSize: 12, fontWeight: '800', color: T.blueDeep },
+  photoRow:     { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: T.bgSoft, borderRadius: 12, padding: 10, marginBottom: 8 },
+  photoThumb:   { width: 40, height: 40, borderRadius: 20, overflow: 'hidden', backgroundColor: T.border, alignItems: 'center', justifyContent: 'center' },
+  photoImg:     { width: 40, height: 40, borderRadius: 20 },
+  photoNote:    { flex: 1, fontSize: 11.5, color: T.muted, lineHeight: 16 },
 
   statusRow:    { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-end', marginBottom: 8, paddingHorizontal: 4 },
   statusText:   { fontSize: 11.5, fontWeight: '700' },
@@ -553,15 +748,36 @@ const s = StyleSheet.create({
   errorText:    { flex: 1, fontSize: 12.5, color: T.rose, fontWeight: '600', lineHeight: 17 },
   errorRetry:   { fontSize: 12.5, color: T.rose, fontWeight: '800' },
 
-  card:         { backgroundColor: T.surface, borderRadius: 20, padding: 16, marginBottom: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 3 },
-  cardHead:     { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
-  cardIcon:     { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  cardTitle:    { fontSize: 10, fontWeight: '800', color: T.faint, letterSpacing: 1.2 },
-  hint:         { fontSize: 11.5, color: T.faint, lineHeight: 16, marginBottom: 8 },
-  input:        { backgroundColor: T.bgSoft, borderRadius: 10, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, paddingVertical: Platform.select({ ios: 10, default: 8 }), fontSize: 14, color: T.ink },
-  inputBody:    { minHeight: 280, lineHeight: 21, paddingTop: 12, paddingBottom: 12 },
+  dateCard:     { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: T.surface, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 3 },
+  dateIcon:     { backgroundColor: T.cyan + '18' },
+  dateText:     { fontSize: 14, fontWeight: '700', color: T.ink, marginTop: 3 },
+  dateNote:     { fontSize: 11, color: T.faint, textAlign: 'right', lineHeight: 15 },
 
-  bottomBar:    { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.select({ ios: 28, default: 16 }), shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
+  toManager:    { fontSize: 12.5, color: T.faint, marginBottom: 4 },
+  toCompany:    { fontSize: 14, fontWeight: '700', color: T.ink },
+  toAddress:    { fontSize: 12.5, color: T.muted, lineHeight: 18, marginTop: 3 },
+  chipsRow:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+  officeChip:   { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%', borderRadius: 12, borderWidth: 1, borderColor: T.violet + '33', backgroundColor: T.violet + '12', paddingHorizontal: 9, paddingVertical: 6 },
+  officeChipOn: { borderColor: T.violet, backgroundColor: T.violet + '26' },
+  officeText:   { fontSize: 11.5, fontWeight: '600', color: T.inkSoft, flexShrink: 1 },
+
+  fieldText:    { fontSize: 13.5, color: T.ink, lineHeight: 20 },
+  emptyHint:    { fontSize: 12.5, color: T.faint, lineHeight: 18 },
+  hint:         { fontSize: 11.5, color: T.faint, lineHeight: 16, marginTop: 2 },
+  hintTight:    { marginTop: 6 },
+  hintBold:     { fontWeight: '800' },
+
+  paraActions:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  paraText:     { fontSize: 13, color: T.muted, lineHeight: 20 },
+
+  sigWrap:      { marginTop: 10, gap: 4 },
+  sigImg:       { width: 140, height: 46 },
+  sigNote:      { fontSize: 11, color: T.faint },
+  signName:     { fontSize: 13.5, fontWeight: '800', color: T.ink, marginTop: 10 },
+
+  tail:         { height: 96 },
+  tailShort:    { height: 32 },
+  floatingBar:  { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.select({ ios: 28, default: 16 }), shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
   primaryOuter: { borderRadius: 16, overflow: 'hidden' },
   primaryBtn:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 50, borderRadius: 16 },
   primaryText:  { fontSize: 14, fontWeight: '800', color: '#fff' },

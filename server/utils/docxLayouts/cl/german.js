@@ -128,8 +128,11 @@ module.exports = function build(data, opts) {
 
   // ── Salutation (only if the body doesn't already open with one) ─────────────
   const bodyHtml = String(data.bodyHtml || '');
-  if (!hasSalutation(bodyHtml)) {
-    out.push(new Paragraph({ spacing: { before: 80, after: 160 }, children: [run(SALUTATION, { color: ink, size: 21 })] }));
+  // A saved letter's own greeting (data.salutation, set on its customization page) always prints, as the PDF prints it;
+  // without one, the layout's own line — unless the body already opens with a greeting.
+  const salutation = has(data.salutation) ? String(data.salutation) : '';
+  if (salutation || !hasSalutation(bodyHtml)) {
+    out.push(new Paragraph({ spacing: { before: 80, after: 160 }, children: [run(salutation || SALUTATION, { color: ink, size: 21 })] }));
   }
 
   // ── Body — justified, conservative ──────────────────────────────────────────
@@ -139,7 +142,7 @@ module.exports = function build(data, opts) {
 
   // ── Closing + signature — always appended (the AI body never signs off; the PDF
   //    appends it unconditionally) ─────────────────────────────────────────────
-  out.push(new Paragraph({ spacing: { before: 200, after: 0 }, children: [run(CLOSING, { color: '27313F', size: 21 })] }));
+  out.push(new Paragraph({ spacing: { before: 200, after: 0 }, children: [run(has(data.closing) ? String(data.closing) : CLOSING, { color: '27313F', size: 21 })] }));
   if (has(s.name)) {
     out.push(new Paragraph({ spacing: { before: 300 }, children: [run(String(s.name), { bold: true, color: '111827', size: 21 })] }));
   }

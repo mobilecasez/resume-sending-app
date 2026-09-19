@@ -102,8 +102,11 @@ module.exports = function build(data, opts) {
   //    the AI prompt forbids it, mirroring the PDF's always-on salutation). ─────
   const bodyHtml = has(data.bodyHtml) ? String(data.bodyHtml) : '';
   const bodyPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').trim();
-  if (bodyHtml && !/^(dear|hello|hi|to\s+whom|greetings)\b/i.test(bodyPlain)) {
-    out.push(new Paragraph({ spacing: { before: 80, after: 160 }, children: [run('Dear Hiring Manager,', { color: dark, size: 21 })] }));
+  // A saved letter's own greeting (data.salutation, set on its customization page) always prints, as the PDF prints it;
+  // without one, the layout's own line — unless the body already opens with a greeting.
+  const salutation = has(data.salutation) ? String(data.salutation) : '';
+  if (salutation || (bodyHtml && !/^(dear|hello|hi|to\s+whom|greetings)\b/i.test(bodyPlain))) {
+    out.push(new Paragraph({ spacing: { before: 80, after: 160 }, children: [run(salutation || 'Dear Hiring Manager,', { color: dark, size: 21 })] }));
   }
 
   // ── Body — justified, friendly indigo letter. htmlToParagraphs handles <p>/<br>/<b>. ─
@@ -114,7 +117,7 @@ module.exports = function build(data, opts) {
 
   // ── Closing + signature — always appended. The AI body never signs off; the PDF
   //    renders style.closing + name unconditionally, so we match it. ────────────
-  out.push(new Paragraph({ spacing: { before: 200, after: has(s.name) ? 220 : 0 }, children: [run('Sincerely,', { color: '27313F', size: 21 })] }));
+  out.push(new Paragraph({ spacing: { before: 200, after: has(s.name) ? 220 : 0 }, children: [run(has(data.closing) ? String(data.closing) : 'Sincerely,', { color: '27313F', size: 21 })] }));
   if (has(s.name)) {
     out.push(new Paragraph({ children: [run(String(s.name), { bold: true, color: ink, size: 21 })] }));
   }
