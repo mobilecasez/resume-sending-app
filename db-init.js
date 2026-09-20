@@ -1856,6 +1856,22 @@ async function runPostgresMigrations(db) {
         }
         console.log('✅ Migration 050: users.google_granted_scopes + google_token_client + microsoft_granted_scopes done');
 
+        // ── Migration 051: PAYMENTS WE TAKE OURSELVES ON GOOGLE PLAY (INDIA) ─────────────────────
+        // Google Play's user choice billing lets an app in India offer its own payment method beside
+        // Play's, for a service fee 4 points lower — in exchange for reporting every such payment to
+        // Google within 24 HOURS. This table IS that obligation: one row per payment, carrying the
+        // externalTransactionToken Google minted, what we charged, whether the plan was granted and
+        // whether Google has been told. Unreported rows are found by status='paid'.
+        // ⚠️ The feature ships OFF (UCB_ENABLED + UCB_PRICES_INR); the table exists first so a
+        // payment can never arrive somewhere that has nowhere to put it. See
+        // server/services/userChoiceBilling.js.
+        {
+            const { TABLE_SQL: UCB_TABLE_SQL, INDEX_SQL: UCB_INDEX_SQL } = require('./server/services/userChoiceBilling');
+            await col(UCB_TABLE_SQL);
+            for (const sql of UCB_INDEX_SQL) await col(sql);
+        }
+        console.log('✅ Migration 051: ucb_transactions (Play user choice billing) done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

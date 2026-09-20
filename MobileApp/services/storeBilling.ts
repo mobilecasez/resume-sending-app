@@ -21,6 +21,7 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import type { Purchase, PurchaseError, ProductSubscription } from 'react-native-iap';
+import { userChoiceModeWanted } from './userChoiceBilling';
 
 /** A subscription product as the STORE describes it. `displayPrice` is the localized truth. */
 export type StoreSubscriptionProduct = {
@@ -109,7 +110,14 @@ export function initStoreBilling(): Promise<boolean> {
   if (!m) return Promise.resolve(false);
   connectPromise = (async () => {
     try {
-      await m.initConnection();
+      // ⚠️ USER CHOICE BILLING IS DECIDED HERE OR NOT AT ALL. Google fixes the billing mode when the
+      // client connects, and this is Android's only connection (App.js's iOS-only effect owns the
+      // other one), so the mode has to be known BEFORE the first connect — which is why the answer
+      // is the flag the last config fetch cached, not a fresh call. It is safe to be wrong either
+      // way: in 'user-choice' Google still shows its own chooser only where the programme applies
+      // (India, enrolled app), and otherwise the purchase runs exactly as it does today.
+      const wantsUserChoice = Platform.OS === 'android' && await userChoiceModeWanted();
+      await m.initConnection(wantsUserChoice ? { alternativeBillingModeAndroid: 'user-choice' } : undefined);
       return true;
     } catch (e: any) {
       connectPromise = null;   // transient (Play Services updating) — let a later attempt retry

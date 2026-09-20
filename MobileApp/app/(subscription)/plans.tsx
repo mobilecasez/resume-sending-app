@@ -43,6 +43,7 @@ import type { Purchase } from 'react-native-iap';
 import {
   buyDownloadPass, fetchPassPrice, fetchDownloadState, type DownloadState,
 } from '../../services/downloadPassService';
+import { fetchUcbConfig, payWithOurGateway } from '../../services/userChoiceBilling';
 
 const T = {
   bg: '#F0F4FA', card: '#FFFFFF', ink: '#0B0F22', muted: '#5B6B8A', faint: '#8896B0',
@@ -154,6 +155,10 @@ export default function PlansScreen() {
    */
   const [storeChecked, setStoreChecked] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  // The plan a tap is currently buying, readable from a listener closure that was created
+  // before the tap happened (Google's chooser fires long after the effect mounted).
+  const busyKeyRef = useRef<string | null>(null);
+
   const [restoring, setRestoring] = useState(false);
   const alive = useRef(true);
   const recovered = useRef(false);
@@ -201,6 +206,8 @@ export default function PlansScreen() {
    * The one place a store purchase turns into an entitlement.
    * Verify first, finish second, and never in the other order.
    */
+  useEffect(() => { busyKeyRef.current = busyKey; }, [busyKey]);
+
   const settleOne = useCallback(async (purchase: Purchase): Promise<Settlement> => {
     const res = await verifyStoreSubscription({
       productId: purchase.productId,
@@ -231,6 +238,58 @@ export default function PlansScreen() {
 
   // Independent of the subscription load: a slow or missing pass product must never hold up the
   // plan list, and a failure here just leaves the card in its "offered when you tailor" state.
+  // ── Google Play user choice billing (Android, India) ──────────────────────────────────────────
+  // Two halves, and they belong on this screen because this is the only place a plan is bought.
+  //  1. Refresh the config. Its real job is to leave the flag behind for the NEXT cold start, since
+  //     the billing mode is fixed when the connection opens, before any of this runs.
+  //  2. Listen for Google's chooser. When the user picks us, Google hands over a token and the
+  //     normal Play purchase never happens — nothing else in the app would ever hear about it.
+  // ⚠️ Both are Android-only and both are no-ops until the server says the programme is on.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let on = true;
+    let sub: { remove: () => void } | null = null;
+
+    fetchUcbConfig().then((cfg) => {
+      if (!on || !cfg.enabled) return;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const iap = require('react-native-iap');
+        if (typeof iap.userChoiceBillingListenerAndroid !== 'function') return;
+        sub = iap.userChoiceBillingListenerAndroid(async (details: { externalTransactionToken: string; products: string[] }) => {
+          const sku = (details?.products || [])[0] || null;
+          const plan = (status?.plans || []).find((p) => skuFor(p) === sku) || null;
+          const planKey = plan?.key || busyKeyRef.current;
+          if (!planKey || !details?.externalTransactionToken) return;
+
+          setBusyKey(planKey);
+          try {
+            const r = await payWithOurGateway({
+              planKey,
+              externalTransactionToken: details.externalTransactionToken,
+              who: {},
+            });
+            const fresh = await loadStatus();
+            if (r.status === 'done') {
+              const label = fresh?.subscription?.label || plan?.label || planKey;
+              Alert.alert(`You’re on ${label}`,
+                'Thank you — your payment went through. This plan covers a fixed period and does not renew by itself.');
+            } else if (r.status === 'paid_unconfirmed') {
+              Alert.alert('Payment received — activating',
+                'Your payment went through but we could not confirm it with our server yet. Nothing is lost: reopen this screen in a moment and your plan will be here.');
+            } else if (r.status === 'failed') {
+              Alert.alert('Payment not completed', 'Nothing was charged. You can try again, or pay through Google Play instead.');
+            }
+          } finally {
+            if (alive.current) setBusyKey(null);
+          }
+        });
+      } catch { /* no billing module in this build — nothing to listen to */ }
+    }).catch(() => {});
+
+    return () => { on = false; try { sub?.remove(); } catch { /* already gone */ } };
+  }, [status, loadStatus]);
+
   useEffect(() => {
     let on = true;
     fetchPassPrice().then((p) => { if (on) setPassPrice(p); }).catch(() => {});
