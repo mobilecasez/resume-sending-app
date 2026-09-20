@@ -6,6 +6,12 @@ const live = require('../services/liveAnalytics');   // first-party analytics (a
 const CryptoJS = require('crypto-js');
 const validator = require('validator');
 const jwksRsa = require('jwks-rsa');
+// ⚠️ WHAT A CONNECTION WAS ACTUALLY GRANTED (2026-09-20). Google's granular consent returns an access token AND a
+// refresh token even when the user leaves "Send email on your behalf" unticked, so a sign-in-only account used to be
+// recorded here as a send-ready mailbox — and the refusal only surfaced after the user had written a whole message
+// (the owner's build-210 report, user 618). Every flow below now records `tokenData.scope` and the exact OAuth client
+// id it exchanged with. See server/services/mailScopes.js.
+const mailScopes = require('../services/mailScopes');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
@@ -25,6 +31,21 @@ function encryptOAuthToken(token) {
         console.error('OAuth token encryption error:', error);
         return null;
     }
+}
+
+/**
+ * Record what a Google connection was actually granted (Migration 050) — its own best-effort UPDATE, never folded into
+ * the statement that writes the tokens, so a column a deploy has not created yet can never take sign-in down with it.
+ * ⚠️ THE CLIENT ID IS ONLY WRITTEN WHEN THIS CONSENT MINTED A REFRESH TOKEN. Otherwise the row's refresh token is older
+ * than this exchange and belongs to whichever client minted it; overwriting the id would point every future refresh at
+ * the wrong client — the exact failure this whole change exists to stop.
+ */
+async function recordGoogleGrant(userId, { scopes, clientId, hasRefresh }) {
+    const patch = {};
+    if (scopes) patch.googleScopes = scopes;
+    if (clientId && hasRefresh) patch.googleClient = clientId;
+    if (!Object.keys(patch).length) return;
+    await mailScopes.recordGrant(dbConfig, userId, patch);
 }
 
 // Mirror the relevant auth audit events into the first-party analytics stream (app_events) so
@@ -369,8 +390,15 @@ const googleMobileCallback = (req, res) => {
 const googleAuth = async (req, res) => {
     try {
         console.log('\n=== Google OAuth Request ===');
-        console.log('Request Body:', JSON.stringify(req.body, null, 2));
+        // ⚠️ LENGTHS ONLY, NEVER CHARACTERS (2026-09-20, the rule emailController's decryptOAuthToken already follows).
+        // This used to dump req.body verbatim, which put every mobile sign-in's raw authorization `code` and PKCE
+        // `codeVerifier` into the application log — the two values an attacker needs to redeem that consent themselves.
         const { accessToken, code, codeVerifier, redirectUri: clientRedirectUri, isMobile, platform } = req.body;
+        console.log('Request shape:', {
+            hasAccessToken: !!accessToken, codeLength: code ? String(code).length : 0,
+            codeVerifierLength: codeVerifier ? String(codeVerifier).length : 0,
+            redirectUri: clientRedirectUri || null, isMobile: !!isMobile, platform: platform || null,
+        });
         console.log('Parsed values:', {
             hasAccessToken: !!accessToken,
             hasCode: !!code,
@@ -381,7 +409,12 @@ const googleAuth = async (req, res) => {
         
         let finalAccessToken = accessToken;
         let finalRefreshToken = null; // Store refresh token from OAuth
-        
+        // What the consent actually granted, and which OAuth client minted the tokens (Migration 050). Both stay null
+        // when the client handed us a bare access token — we learn nothing then, and "unknown" must never be recorded
+        // over a grant we already know about.
+        let grantedScopes = null;
+        let tokenClientId = null;
+
         // If authorization code is provided (mobile flow with PKCE), exchange it for access token
         if (code) {
             console.log('Authorization code provided, exchanging for access token...');
@@ -467,7 +500,15 @@ const googleAuth = async (req, res) => {
             if (!tokenResponse.ok) {
                 const errorData = await tokenResponse.json();
                 console.error('Google token exchange error:', errorData);
-                console.error('Token params used:', tokenParams);
+                // ⚠️ SHAPE ONLY, NEVER THE PARAMS (2026-09-20, the same rule as the request log above). This used to
+                // print `tokenParams` verbatim — the raw authorization `code`, the PKCE `code_verifier` and, on the
+                // web/Android-relay path, GOOGLE_WEB_CLIENT_SECRET — into the application log, and a failed exchange
+                // (replayed code, redirect_uri mismatch, wrong Android client) is exactly when it ran.
+                console.error('Token params shape:', {
+                    client_id: tokenParams.client_id, redirect_uri: tokenParams.redirect_uri,
+                    codeLength: tokenParams.code ? String(tokenParams.code).length : 0,
+                    hasCodeVerifier: !!tokenParams.code_verifier, hasClientSecret: !!tokenParams.client_secret,
+                });
                 return res.status(401).json({ error: 'Failed to exchange authorization code', details: errorData });
             }
             
@@ -477,6 +518,12 @@ const googleAuth = async (req, res) => {
             console.log('Refresh token present:', !!tokenData.refresh_token);
             finalAccessToken = tokenData.access_token;
             finalRefreshToken = tokenData.refresh_token; // Store refresh token
+            // ⚠️ `scope` has always been in this response and was always thrown away. It is the only thing that says
+            // whether the user ticked "Send email on your behalf" — without it a sign-in-only account is indistinguishable
+            // from a mailbox until the user taps Send.
+            grantedScopes = mailScopes.scopeString(tokenData.scope);
+            tokenClientId = clientId;
+            console.log('Granted scopes:', grantedScopes || '(none reported)', '— can send:', mailScopes.canSendWith('google', grantedScopes));
             console.log('Successfully exchanged code for access token');
         }
         
@@ -563,6 +610,8 @@ const googleAuth = async (req, res) => {
                     newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
                 }
 
+                await recordGoogleGrant(newUserId, { scopes: grantedScopes, clientId: tokenClientId, hasRefresh: !!finalRefreshToken });
+
                 // Give 5 free credits ONLY to first-time registrations
                 if (!wasPreviouslyDeleted) {
                     try {
@@ -596,6 +645,10 @@ const googleAuth = async (req, res) => {
                     flow: 'mobile_api',
                     isSignup: true,   // new account → analytics counts this as signup, not login
                     has_refresh_token: !!finalRefreshToken,
+                    // Whether this consent can actually send mail — the one fact the 2026-09-20 report showed missing
+                    // from every audit row (⚠️ the grant, never the token).
+                    can_send: mailScopes.canSendWith('google', grantedScopes),
+                    scopes_known: mailScopes.scopesKnown(grantedScopes),
                     expires_at: expiresAt.toISOString()
                 }, req);
 
@@ -666,11 +719,15 @@ const googleAuth = async (req, res) => {
                     );
                 }
                 
+                await recordGoogleGrant(user.id, { scopes: grantedScopes, clientId: tokenClientId, hasRefresh: !!finalRefreshToken });
+
                 // Log OAuth token refresh
                 await logSecurityEvent(user.id, 'OAUTH_TOKEN_GRANTED', 'oauth', {
                     provider: 'google',
                     flow: 'mobile_api',
                     has_refresh_token: !!finalRefreshToken,
+                    can_send: mailScopes.canSendWith('google', grantedScopes),
+                    scopes_known: mailScopes.scopesKnown(grantedScopes),
                     expires_at: expiresAt.toISOString()
                 }, req);
                 
@@ -747,8 +804,12 @@ const microsoftCallback = (req, res) => {
 // Microsoft OAuth API endpoint for mobile (returns JSON)
 const microsoftAuth = async (req, res) => {
     try {
-        console.log('Microsoft OAuth Request Body:', req.body);
         const { accessToken, code, codeVerifier, redirectUri: clientRedirectUri } = req.body;
+        // ⚠️ LENGTHS ONLY, NEVER CHARACTERS — the same rule as googleAuth above and emailController's decryptOAuthToken.
+        console.log('Microsoft OAuth request shape:', {
+            hasAccessToken: !!accessToken, codeLength: code ? String(code).length : 0,
+            codeVerifierLength: codeVerifier ? String(codeVerifier).length : 0, redirectUri: clientRedirectUri || null,
+        });
         
         let finalAccessToken = accessToken;
         let finalRefreshToken = null;
@@ -1603,6 +1664,11 @@ const linkGoogle = async (req, res) => {
         const tokenData = await tokenResponse.json();
         const accessToken = tokenData.access_token;
         const refreshToken = tokenData.refresh_token;
+        // What this consent actually granted (Migration 050). ⚠️ Google returns BOTH tokens even when the user leaves
+        // "Send email on your behalf" unticked on the granular-consent screen, so this string is the only difference
+        // between a mailbox and a sign-in — and the Send page must hear about it now, not after a message is written.
+        const grantedScopes = mailScopes.scopeString(tokenData.scope);
+        const canSend = mailScopes.canSendWith('google', grantedScopes);
 
         // Verify the Google account
         const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
@@ -1646,17 +1712,30 @@ const linkGoogle = async (req, res) => {
             updateParams
         );
 
+        await recordGoogleGrant(userId, { scopes: grantedScopes, clientId, hasRefresh: !!refreshToken });
+
         await logSecurityEvent(userId, 'OAUTH_ACCOUNT_LINKED', 'oauth', {
             provider: 'google',
             linked_email: googleUser.email,
-            flow: 'account_link'
+            flow: 'account_link',
+            can_send: canSend,
+            scopes_known: mailScopes.scopesKnown(grantedScopes)
         }, req);
 
+        // ⚠️ A CONSENT WITHOUT THE SEND PERMISSION IS STILL A SUCCESSFUL SIGN-IN (2026-09-20). It is a 200 with
+        // canSend:false, not an error: nothing went wrong with connecting, and the tokens are real and stored. What
+        // changes is that the page hears it HERE and offers the one action that fixes it, instead of showing a green
+        // "Connected" card over an account that will refuse the message the user is about to write (the owner's
+        // build-210 report). An older app ignores the extra fields and behaves exactly as before.
         return res.json({
             success: true,
             linkedEmail: googleUser.email,
             provider: 'google',
-            message: `Google account (${googleUser.email}) connected successfully. Emails will now be sent from your Gmail.`
+            canSend,
+            ...(canSend ? {} : { reason: 'scope' }),
+            message: canSend
+                ? `Google account (${googleUser.email}) connected successfully. Emails will now be sent from your Gmail.`
+                : mailScopes.sendPermissionMessage('google', 'scope', googleUser.email)
         });
     } catch (error) {
         console.error('Link Google error:', error);
@@ -1675,7 +1754,8 @@ const linkMicrosoft = async (req, res) => {
 
         let finalAccessToken = accessToken;
         let finalRefreshToken = null;
-        
+        let grantedScopes = null;
+
         // If authorization code provided, exchange for tokens (PKCE flow)
         if (code) {
             const redirectUri = clientRedirectUri || 'msauth://com.cvapplyr.app/callback';
@@ -1708,8 +1788,9 @@ const linkMicrosoft = async (req, res) => {
             const tokenData = await tokenResponse.json();
             finalAccessToken = tokenData.access_token;
             finalRefreshToken = tokenData.refresh_token;
+            grantedScopes = mailScopes.scopeString(tokenData.scope);
         }
-        
+
         if (!finalAccessToken) {
             return res.status(400).json({ error: 'Access token or authorization code is required' });
         }
@@ -1743,28 +1824,48 @@ const linkMicrosoft = async (req, res) => {
             expiresAt.toISOString()
         ];
         
+        // ⚠️ A LINK WITH NO REFRESH TOKEN LASTS ONE HOUR (2026-09-20). The bare-`accessToken` branch above never gets
+        // one, and this guard used to simply SKIP the column — leaving whatever was there (possibly a stale token for a
+        // different mailbox) and storing the account as send-ready anyway. Now a fresh link that genuinely brings none
+        // clears the stale one, so the row can never claim a capability it does not have, and the page is told.
+        const outlookLasting = !!finalRefreshToken;
         if (finalRefreshToken) {
             updateFields.push('microsoft_refresh_token = ?');
             updateParams.push(encryptOAuthToken(finalRefreshToken));
+        } else {
+            updateFields.push('microsoft_refresh_token = NULL');
         }
-        
+
         updateParams.push(userId);
         await dbConfig.run(
             `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
             updateParams
         );
+        if (grantedScopes) await mailScopes.recordGrant(dbConfig, userId, { microsoftScopes: grantedScopes });
+
+        // Microsoft's consent is all-or-nothing for a personal account, so a partial grant is unlikely here — but it is
+        // recorded and checked exactly like Gmail's, because "we assumed" is what produced the owner's loop.
+        const msCanSend = mailScopes.canSendWith('microsoft', grantedScopes) && outlookLasting;
+        const msReason = !mailScopes.canSendWith('microsoft', grantedScopes) ? 'scope' : (outlookLasting ? null : 'no_refresh');
 
         await logSecurityEvent(userId, 'OAUTH_ACCOUNT_LINKED', 'oauth', {
             provider: 'microsoft',
             linked_email: msEmail,
-            flow: 'account_link'
+            flow: 'account_link',
+            can_send: msCanSend,
+            scopes_known: mailScopes.scopesKnown(grantedScopes),
+            has_refresh_token: outlookLasting
         }, req);
 
         return res.json({
             success: true,
             linkedEmail: msEmail,
             provider: 'microsoft',
-            message: `Microsoft account (${msEmail}) connected successfully. Emails will now be sent from your Outlook.`
+            canSend: msCanSend,
+            ...(msReason ? { reason: msReason } : {}),
+            message: msCanSend
+                ? `Microsoft account (${msEmail}) connected successfully. Emails will now be sent from your Outlook.`
+                : mailScopes.sendPermissionMessage('microsoft', msReason, msEmail)
         });
     } catch (error) {
         console.error('Link Microsoft error:', error);

@@ -18,7 +18,26 @@
 //   MESSAGE            → a short note written FROM the letter (free AI, template fallback), Edit / Rewrite
 //   ATTACHMENTS        → the letter PDF and the résumé (tailored > Builder > uploaded), each with Change → the smart
 //                        upload sheet (components/send/SmartAttachSheet: our versions, or a PDF / Word from the phone)
+//                        and, for every file WE render, its page size (One Page / A4 Pages)
 //   the Send bar       → idle / sending / sent
+//
+// ⚠️ ONE GRID, ONE INSET (owner, 2026-09-20: "it looks very misallsigned textboxes doesnt have alignment for the text
+// and placeholders"). Every field on this page — TO, SUBJECT, MESSAGE — draws its value inside the SAME box (s.fieldBox
+// / s.input, both built from FIELD_BOX), so the read text, the editor's text and the placeholder share one left edge
+// and nothing moves sideways when Edit is tapped; labels and hints sit at the card's own content edge. Every control
+// this page owns is at least FIELD_H (44 pt) tall or carries a hitSlop, and nothing is measured in fixed heights, so
+// the page holds at 320 pt and at the largest accessibility text size. (The Section card's own Edit / Cancel / Done
+// live in the SHARED components/rich-text/RichText — enlarging them there would restyle the résumé page too.)
+// ⚠️ THE MESSAGE IS WRITTEN BY AN AI CALL THAT TAKES SECONDS, so the MESSAGE card shows a real loader in its place and
+// the Send button is DISABLED until the FIRST note lands (canSend's `writing`, passed only while nothing has been seen
+// — bodySeen) — never a button that answers with a modal. A REWRITE is not that case: the note it replaces stays on
+// screen and stays sendable. Either way the loader carries the one action that ends the wait now (stopWriting), because
+// that call can run 30 s and then fail while Send, Edit and Rewrite are all unavailable.
+// ⚠️ EACH ATTACHMENT'S PAGE SIZE IS THE ONE THAT IS RENDERED. It travels inside letterWire / resumeWire, so it is part
+// of a Send's fingerprint (a changed size can never join the job that mailed the old layout), and it is remembered for
+// the next letter (SIZES_KEY). Defaults: One Page for the letter, A4 for the résumé — NOT the route's `mode` param.
+// Every design can be switched between the two, "Original (Branded)" included (its A4 comes from the design's own HTML
+// twin — coverLetterController renderLetterPdfFile; see services/letterSend for why it used to be the exception).
 //
 // ⚠️ OPENING THIS PAGE SENDS NOTHING AND CHARGES NOTHING. It reads a draft and asks for a free AI note. The one call
 // that can cost anything is the Send tap, which the server gates and charges EXACTLY like the Download on the page
@@ -35,8 +54,8 @@
 //   • the pending Send is kept on the phone (pendingKey) from the tap until a definite answer: Back mid-send asks first,
 //     and a reopened page POLLS that job — it sends nothing — then shows what really happened;
 //   • 'unknown_outcome' (the provider may have taken it) never says "nothing was sent" and never offers a blind retry;
-//   • Send waits for a file that is still uploading, and asks before sending the standard note while the AI one is
-//     still being written (a late AI answer is dropped once a Send has started — it was never sent).
+//   • Send waits for a file that is still uploading, and asks before sending the standard note while the FIRST AI one
+//     is still being written (a late AI answer is dropped once a Send has started — it was never sent).
 // ⚠️ THE MESSAGE SAYS WHAT IS ATTACHED. The standard note comes in two shapes (with / without a résumé) and follows the
 // attachment row; an AI note is rewritten for the new set (free); a user's own words are never touched — they are
 // asked about if they say a résumé is attached and none is.
@@ -73,9 +92,11 @@ import {
   addRecipients, removeRecipient, canSend, defaultResumeChoice, isGated, isEmail, reasonMessage, providerName,
   sizeLabel, draftKey, newClientBuildId, pendingKey, parsePending, canJoin, sendFingerprint, saysResumeAttached,
   failureAction, parseClassicLetter, letterKeyOf, pendingLetterKeyOf,
+  parseSizes, sizeText, DEFAULT_SIZES, SIZES_KEY,
   MAX_RECIPIENTS, SUBJECT_MAX, BODY_MAX, CLASSIC_SEND_KEY,
   type EmailDraft, type MailAccount, type MailProvider, type LetterAttachment, type ResumeAttachment,
   type SendReason, type SendResult, type SendOutcome, type PendingSend, type LetterRef, type ClassicLetter,
+  type PageSize, type PageSizes,
 } from '../../services/letterSend';
 
 /** A route param → a real doc id, or null. */
@@ -101,7 +122,11 @@ export default function SendLetter() {
   const classicMode = !docId && paramOf(params.classic) === '1';
   const template = paramOf(params.template) || undefined;
   const modeParam = paramOf(params.mode);
-  const pageMode: 'a4' | 'onepage' | undefined = modeParam === 'a4' || modeParam === 'onepage' ? modeParam : undefined;
+  // ⚠️ NO LONGER A DEFAULT (2026-09-20). The preview seeds its own toggle from the document's stored design.mode, so
+  // this arrives as 'a4' for a letter saved that way — and the owner asked for One Page by default here. The letter's
+  // size now comes from DEFAULT_SIZES / SIZES_KEY; this is only what a Send carries when the letter is a device file
+  // (nothing of ours is rendered then, so it changes nothing).
+  const pageMode: PageSize | undefined = modeParam === 'a4' || modeParam === 'onepage' ? modeParam : undefined;
   const { linkGoogle, linkMicrosoft } = useMailLink();
   // WHICH LETTER every call is about (see the header): a saved letter's id, or — once read from CLASSIC_SEND_KEY — the
   // classic letter itself; and its key on the phone (the draft, the pending Send). Refs: the callbacks outlive renders.
@@ -126,15 +151,26 @@ export default function SendLetter() {
   const [body, setBody] = useState('');
   const [bodySource, setBodySource] = useState<'template' | 'ai' | 'user'>('template');
   const [bodyLoading, setBodyLoading] = useState(false);
+  // ⚠️ HAS A MESSAGE EVER BEEN ON SCREEN? (review, 2026-09-20). Set the moment one is rendered in the card — never
+  // while the loader stands in its place — and never unset. It decides the two rules below: the Send button is taken
+  // away only while NOTHING has been seen (canSend's `writing`), and the "still being written" question is asked only
+  // about that same first note. A Rewrite replaces a message the user has READ: holding the whole page hostage to it
+  // for up to 30 s (fetchEmailBody's abort), with the note hidden behind a spinner, was worse than build 210.
+  const [bodySeen, setBodySeen] = useState(false);
   const [editing, setEditing] = useState<'subject' | 'body' | null>(null);
   const [fieldDraft, setFieldDraft] = useState('');
 
-  const [letterAtt, setLetterAtt] = useState<LetterAttachment>({ source: 'doc' });
+  const [letterAtt, setLetterAtt] = useState<LetterAttachment>({ source: 'doc', size: DEFAULT_SIZES.letter });
   const [resumeAtt, setResumeAtt] = useState<ResumeAttachment>({ source: 'none' });
   const [sheet, setSheet] = useState<'letter' | 'resume' | null>(null);
   const sheetFor = useRef<'letter' | 'resume'>('letter');
   const [uploading, setUploading] = useState<'letter' | 'resume' | null>(null);
   const [thumb, setThumb] = useState<string | null>(null);
+  const [resumeThumb, setResumeThumb] = useState<string | null>(null);
+  // The size the NEXT letter starts from (SIZES_KEY) — kept as a ref so writing it back never re-renders the page, and
+  // mirrored into this letter's own draft blob (sizeTick puts that write on the draft effect).
+  const sizesRef = useRef<PageSizes>({ ...DEFAULT_SIZES });
+  const [sizeTick, setSizeTick] = useState(0);
 
   // null until read, and null when it could not be read (readDownloadState): the padlock is only drawn from a real
   // answer (the server decides on Send regardless).
@@ -185,6 +221,20 @@ export default function SendLetter() {
     bodyFor.current = withResume;
   };
 
+  useEffect(() => { if (!loading && !bodyLoading && body.trim()) setBodySeen(true); }, [loading, bodyLoading, body]);
+
+  /**
+   * STOP WAITING FOR THE AI NOTE — the one exit from the loader (review, 2026-09-20: the button, Edit and Rewrite were
+   * all unavailable while it was written, so a slow or retried model call left the page frozen with a perfectly good
+   * note underneath it). What is already on file becomes the message — the standard note, or the one the Rewrite was
+   * replacing — and the answer still on its way is dropped (bodyGen), exactly as a Send mid-write drops it.
+   */
+  const stopWriting = () => {
+    if (!bodyLoading) return;
+    bodyGen.current++;
+    setBodyLoading(false);
+  };
+
   const refreshDl = async (employer?: string | null) => {
     const st = await readDownloadState(employer ?? (draft ? draft.letter.employer : null) ?? null);
     if (st && alive.current) setDl(st);
@@ -217,31 +267,40 @@ export default function SendLetter() {
       if (!live) return;
       if (!r.ok) { setLoadFail(r.reason); setLoading(false); return; }
       const d = r.draft;
-      const firstResume = defaultResumeChoice(d.resume.options, d.resume.default);
-      const firstFor = firstResume.source !== 'none';
+      // The page sizes: what was chosen last (any letter), else the owner's defaults — never the route's `mode` param.
+      let nextSizes: PageSizes = { ...DEFAULT_SIZES };
+      try { nextSizes = parseSizes(await AsyncStorage.getItem(SIZES_KEY)); } catch { /* the defaults */ }
       let nextTo = d.recipients.prefill.map((c) => c.email).slice(0, MAX_RECIPIENTS);
       let nextSubject = d.subject;
-      // The standard note for what is attached by default (see the header).
-      let nextBody = firstFor ? d.bodies.withResume : d.bodies.letterOnly;
       let nextSource: 'template' | 'ai' | 'user' = 'template';
-      let nextFor = firstFor;
+      let savedBody: string | null = null;
+      let savedFor: boolean | null = null;
       let pend: PendingSend | null = null;
       try {
         const raw = await AsyncStorage.getItem(draftKey(key, d.letter.updatedAt));
         const saved = raw ? JSON.parse(raw) : null;
         if (saved && typeof saved === 'object') {
+          // This letter's own sizes win over the last-used ones: reopening the same letter is exact.
+          if (saved.sizes) nextSizes = parseSizes(saved.sizes);
           if (Array.isArray(saved.to)) nextTo = saved.to.filter(isEmail).slice(0, MAX_RECIPIENTS);
           if (typeof saved.subject === 'string' && saved.subject.trim()) nextSubject = saved.subject.slice(0, SUBJECT_MAX);
           if (typeof saved.body === 'string' && saved.body.trim() && (saved.source === 'ai' || saved.source === 'user')) {
-            nextBody = saved.body.slice(0, BODY_MAX);
+            savedBody = saved.body.slice(0, BODY_MAX);
             nextSource = saved.source;
             // The set that note was written for (a draft kept before this was recorded: the letter + résumé note).
-            nextFor = typeof saved.withResume === 'boolean' ? saved.withResume : true;
+            savedFor = typeof saved.withResume === 'boolean' ? saved.withResume : true;
           }
         }
       } catch { /* no saved draft: the server's defaults */ }
       try { pend = parsePending(await AsyncStorage.getItem(pendingKey(pendingId.current as string)), Date.now()); } catch { pend = null; }
       if (!live) return;
+      const firstResume = defaultResumeChoice(d.resume.options, d.resume.default, nextSizes.resume);
+      const firstFor = firstResume.source !== 'none';
+      // The standard note for what is attached by default (see the header).
+      const nextFor = savedFor === null ? firstFor : savedFor;
+      const nextBody = savedBody === null ? (firstFor ? d.bodies.withResume : d.bodies.letterOnly) : savedBody;
+      sizesRef.current = nextSizes;
+      setLetterAtt({ source: 'doc', size: nextSizes.letter });
       setDraft(d);
       setAccount(d.account);
       setTo(nextTo);
@@ -289,10 +348,10 @@ export default function SendLetter() {
     if (!restored.current || !letterKey.current || !draft || phase === 'sent') return;
     const key = draftKey(letterKey.current, draft.letter.updatedAt);
     const t = setTimeout(() => {
-      AsyncStorage.setItem(key, JSON.stringify({ to, subject, body, source: bodySource, withResume: bodyFor.current })).catch(() => {});
+      AsyncStorage.setItem(key, JSON.stringify({ to, subject, body, source: bodySource, withResume: bodyFor.current, sizes: sizesRef.current })).catch(() => {});
     }, 400);
     return () => clearTimeout(t);
-  }, [to, subject, body, bodySource, draft, docId, phase]);
+  }, [to, subject, body, bodySource, draft, docId, phase, sizeTick]);
 
   // THE NOTE FOLLOWS THE ATTACHMENTS (see the header): the résumé taken off (or put back) → the standard note for that
   // set, and an AI note is written again for it (free). The user's own words are never replaced — doSend asks instead.
@@ -309,6 +368,39 @@ export default function SendLetter() {
     // Only the attachment set (and a freshly loaded draft) decides this; the rest is read as of that render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasResume, draft]);
+
+  /**
+   * THE TAILORED RÉSUMÉ'S REAL PAGE, exactly the way the letter's is fetched above: ONE card, once, lazily, with the
+   * icon as the fallback (the "previews are free, lazy-batched, never all-at-once" rule).
+   * ⚠️ WHY (owner, 2026-09-20: "for tailored resume that we generated its not showing the icon properly"). The row's
+   * 40×52 frame is a PAGE thumbnail — beside the letter's real rendered page, a lone glyph floating in an empty
+   * page-shaped box is what he saw. The résumé kind goes through the same helper, and the option already carries the
+   * docId and the design (letterSendController resumeOptionsFor).
+   * ⚠️ IT HANGS ON THE KEY, NOT ON THE ATTACHMENT (review, 2026-09-20). Depending on `resumeAtt` re-ran this effect
+   * on every tap of the row's OWN page-size control (setResumeSize returns a new object), which cancelled the card
+   * still being rendered — chromium takes seconds — and then bailed on the "already asked" marker, so the row fell
+   * back to the icon for the rest of the screen's life: the very symptom this fetch exists to fix, reachable through
+   * the control beside it. The key is the document and its design, the only two things that change the page; and the
+   * marker is set when a card actually ARRIVES, so a discarded or failed render can be asked for again.
+   */
+  const resumeCardFor = useRef<string | null>(null);
+  const tailoredCardKey = resumeAtt.source === 'tailored' && resumeAtt.option.docId && resumeAtt.option.template
+    ? `${resumeAtt.option.docId}:${resumeAtt.option.template}` : null;
+  useEffect(() => {
+    if (!tailoredCardKey || resumeCardFor.current === tailoredCardKey) return;
+    const cut = tailoredCardKey.indexOf(':');
+    const rid = Number(tailoredCardKey.slice(0, cut));
+    const tpl = tailoredCardKey.slice(cut + 1);
+    let live = true;
+    fetchDocCards('resume', rid, [tpl], { size: 'card' })
+      .then((got) => {
+        if (!live || !got || got === 'gone') return;
+        const c = got.cards.find((x) => x.id === tpl);
+        if (c && c.image) { resumeCardFor.current = tailoredCardKey; setResumeThumb(c.image); }
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [tailoredCardKey]);
 
   /* ── recipients ── */
 
@@ -375,8 +467,28 @@ export default function SendLetter() {
     // The server is the authority on which mailbox now sends — read it back rather than assume.
     const d = await fetchEmailDraft(ref);
     if (!alive.current) return;
-    setAccount(d.ok ? d.draft.account : { provider: p, ready: true, reconnect: false, address: r.address });
+    // ⚠️ A SIGN-IN THAT CANNOT SEND IS SAID OUT LOUD HERE (2026-09-20, the owner on build 210: "it showed me an error..
+    // that reconnect gmail which looks incorrect to me"). Google returns both tokens with "Send email on your behalf"
+    // left unticked, so `ok` alone was never the question. Told now, with the message still unwritten — and the
+    // standing failure is only cleared when the mailbox can actually send, so a card that still says "allow sending"
+    // is never left sitting under a cleared error.
+    // ⚠️ AND THE LINK'S OWN "no" OUTRANKS THE READ-BACK (second pass). The draft is built from the stored TOKENS, and
+    // a row holding only an access token still reads ready/canSend true — so an Outlook link that came back without a
+    // refresh token ('no_refresh', it would stop working within the hour) would be shown as a green "Connected" and
+    // land the user in this very loop an hour later. What the link itself answered is never discarded.
+    const sendable = r.canSend === false ? false : d.ok ? d.draft.account.canSend : r.canSend;
+    setAccount(
+      d.ok
+        ? { ...d.draft.account, canSend: sendable }
+        : { provider: p, ready: true, canSend: sendable, reconnect: false, address: r.address }
+    );
     setShowSwitch(false);
+    if (!sendable) {
+      // 'no_refresh' is a sign-in that will lapse, not a permission that was withheld: the honest title for it is
+      // Reconnect, over the link's own sentence ("Connect again and stay signed in").
+      Alert.alert(reasonMessage(r.reason === 'no_refresh' ? 'reconnect' : 'scope', { provider: p }).title, r.message);
+      return;
+    }
     setFailure((f) => (f && (f.reason === 'reconnect' || f.reason === 'scope' || f.reason === 'no_mail_account') ? null : f));
   };
 
@@ -391,12 +503,32 @@ export default function SendLetter() {
     const which = sheetFor.current;
     setSheet(null);
     if (which === 'letter') {
-      if (key === 'doc') setLetterAtt({ source: 'doc' });
+      if (key === 'doc') setLetterAtt({ source: 'doc', size: sizesRef.current.letter });
       return;
     }
     if (key === 'none') { setResumeAtt({ source: 'none' }); return; }
     const opt = draft ? draft.resume.options.find((o) => o.id === key) : undefined;
-    if (opt) setResumeAtt({ source: opt.id, option: opt });
+    if (opt) setResumeAtt({ source: opt.id, option: opt, size: sizesRef.current.resume });
+  };
+
+  /**
+   * A page size the user chose — on the attachment (what is rendered and what the fingerprint sees), kept for the next
+   * letter (SIZES_KEY) and mirrored into this letter's draft (sizeTick). Never while a Send is running.
+   */
+  const rememberSize = (patch: Partial<PageSizes>) => {
+    sizesRef.current = { ...sizesRef.current, ...patch };
+    AsyncStorage.setItem(SIZES_KEY, JSON.stringify(sizesRef.current)).catch(() => {});
+    setSizeTick((n) => n + 1);
+  };
+  const setLetterSize = (size: PageSize) => {
+    if (phaseRef.current !== 'idle') return;
+    setLetterAtt((a) => (a.source === 'doc' ? { ...a, size } : a));
+    rememberSize({ letter: size });
+  };
+  const setResumeSize = (size: PageSize) => {
+    if (phaseRef.current !== 'idle') return;
+    setResumeAtt((a) => (a.source === 'none' || a.source === 'file' ? a : { ...a, size }));
+    rememberSize({ resume: size });
   };
   const onDevice = async (f: DeviceFile) => {
     const which = sheetFor.current;
@@ -463,7 +595,16 @@ export default function SendLetter() {
       return;
     }
     if (r.reason === 'reconnect' || r.reason === 'scope' || r.reason === 'no_mail_account') {
-      setAccount((a) => ({ provider: (r.provider || (a && a.provider)) ?? null, ready: false, reconnect: r.reason !== 'no_mail_account', address: a ? a.address : null }));
+      // ⚠️ 'scope' LEAVES THE ACCOUNT CONNECTED (2026-09-20). It is signed in and simply not allowed to send, so the
+      // card keeps its address and asks for the permission — calling it disconnected is the wrong story and the wrong
+      // button. Only 'reconnect' / 'no_mail_account' really mean there is nothing to send from.
+      setAccount((a) => ({
+        provider: (r.provider || (a && a.provider)) ?? null,
+        ready: r.reason === 'scope' ? true : false,
+        canSend: r.reason === 'scope' ? false : true,
+        reconnect: r.reason === 'reconnect',
+        address: a ? a.address : null,
+      }));
     }
     const ours = r.reason === 'bad_recipients' || r.reason === 'network' || r.reason === 'lost' || r.reason === 'server_outdated' || !r.message;
     setFailure({ reason: r.reason, title: m.title, message: ours ? m.message : (r.message as string) });
@@ -494,8 +635,9 @@ export default function SendLetter() {
     }
     const check = canSend({ to: list, subject, body, account, busy: false, hasLetter: true });
     if (!check.ok) { Alert.alert('Not ready to send', check.why || 'Please check the page.'); return; }
-    // The AI note is still being written: what is on file is the standard note the user has not even seen — ask.
-    if (bodyLoading && !opts.standardNote) {
+    // The FIRST AI note is still being written: what is on file is the standard note the user has not even seen — ask.
+    // (A Rewrite is not this case: the message on file is the one they read, and the tap sends exactly that.)
+    if (bodyLoading && !bodySeen && !opts.standardNote) {
       Alert.alert('Your message is still being written', 'Wait a few seconds for the note written from your letter, or send the standard note now.', [
         { text: 'Wait', style: 'cancel' },
         { text: 'Send the standard note', onPress: () => doSendRef.current({ ...opts, standardNote: true }) },
@@ -512,7 +654,13 @@ export default function SendLetter() {
     }
     // The Download's rule, before any request: a locked account sees the paywall, never a round trip to a refusal.
     if (!opts.afterUnlock && needsPay) { openPaywall(); return; }
-    const req = { to: list, subject, body, template, mode: pageMode, letter: letterAtt, resume: resumeAtt };
+    // The top-level `mode` is the letter's size, kept for a server older than the per-attachment one (letterChoiceOf
+    // reads letter.mode first and falls back to this).
+    const req = {
+      to: list, subject, body, template,
+      mode: letterAtt.source === 'doc' ? letterAtt.size : pageMode,
+      letter: letterAtt, resume: resumeAtt,
+    };
     // A classic letter travels in the request, so its own text is part of what this Send is: a kept id may not be reused
     // for a REGENERATED letter (its pending Send is kept per posting, not per version — see the header).
     const fp = sendFingerprint(req, typeof ref === 'number' ? '' : letterKeyOf(ref));
@@ -604,19 +752,25 @@ export default function SendLetter() {
 
   const acct = account || draft.account;
   const ready = !!acct.ready;
+  // ⚠️ Connected but never allowed to send (2026-09-20). The card says so and offers "Allow Gmail to send" — the
+  // permission screen, not a reconnect — instead of showing a green tick over a mailbox that will refuse the message.
+  const needsPermission = ready && acct.canSend === false;
   const who = providerName(acct.provider);
   // A classic letter names the design as its preview did (its own catalogue's name); a saved one reads Home's catalogue.
   const designName = classicDesign || (LETTER_DESIGNS.find((d) => d.id === template) || { name: 'Your design' }).name;
-  const modeLabel = pageMode === 'a4' ? 'A4 pages' : 'One page';
+  const letterSize: PageSize = letterAtt.source === 'doc' ? letterAtt.size : DEFAULT_SIZES.letter;
+  const resumeSize: PageSize = resumeAtt.source !== 'none' && resumeAtt.source !== 'file' ? resumeAtt.size : DEFAULT_SIZES.resume;
   const busy = phase !== 'idle';
   // An address typed but not yet a chip counts: Send commits it (doSend) — see canSend.
   const typedTo = toInput.trim();
   const typedList = typedTo ? addRecipients(to, typedTo) : null;
   const count = typedList && !typedList.error ? typedList.list.length : to.length;
-  const check = canSend({ to, typed: typedTo, subject, body, account: acct, busy: false, hasLetter: true, uploading: !!uploading });
+  // ⚠️ `writing` is part of the rule, so the disabled button and the bar note come from ONE place (see the header) —
+  // and only for the FIRST note (bodySeen): a Rewrite never takes away a message the user has already read.
+  const check = canSend({ to, typed: typedTo, subject, body, account: acct, busy: false, hasLetter: true, uploading: !!uploading, writing: bodyLoading && !bodySeen });
   const sendLabel = phase === 'sending' ? 'Sending…' : phase === 'sent' ? 'Done'
     : count ? `Send to ${count} ${count === 1 ? 'recipient' : 'recipients'}` : 'Send';
-  const barNote = phase !== 'idle' ? null : !check.ok ? check.why : bodyLoading ? 'Still writing your message from the letter…' : null;
+  const barNote = phase !== 'idle' ? null : check.why;
   const employer = draft.letter.employer || draft.letter.companyName || 'this employer';
 
   // The error card's one button: the fix its message names (failureAction), never a blind retry of a request that can
@@ -627,8 +781,9 @@ export default function SendLetter() {
     : failAct === 'back' ? { label: failure.reason === 'server_outdated' ? 'Back to Download' : 'Go back', run: leave }
       : failAct === 'choose_again' ? { label: 'Choose again', run: () => openSheet(letterAtt.source === 'file' && failure.reason === 'file_gone' ? 'letter' : 'resume') }
         : failAct === 'reconnect' ? { label: `Reconnect ${who}`, run: () => { connect(acct.provider || 'google'); } }
-          : failAct === 'retry' ? { label: 'Try again', run: () => { doSend(); } }
-            : failAct === 'send_again' ? { label: 'Send again', run: () => { doSend(); } }
+          : failAct === 'allow_sending' ? { label: `Allow ${who} to send`, run: () => { connect(acct.provider || 'google'); } }
+            : failAct === 'retry' ? { label: 'Try again', run: () => { doSend(); } }
+              : failAct === 'send_again' ? { label: 'Send again', run: () => { doSend(); } }
               // A plan short by a file cannot be fixed on the sheet (it would unlock itself): change the files instead.
               : failAct === 'attachments' || (failAct === 'plans' && !locked) ? { label: 'Change attachments', run: () => openSheet(attachSheetFor) }
                 : failAct === 'plans' ? { label: 'See options', run: openPaywall }
@@ -637,10 +792,15 @@ export default function SendLetter() {
                       : failAct === 'body' ? { label: 'Edit the message', run: () => startEdit('body') }
                         : null;
 
+  // ⚠️ ONE ICONOGRAPHY FOR DOCUMENTS (owner, 2026-09-20). Everything WE render is a document — 'document-text', tinted
+  // by which document it is; a file the user brought is 'document-attach'. The old 'sparkles' / 'person-outline' said
+  // nothing about the FILE, and 'sparkles' inside a page-shaped frame read as a missing thumbnail. What makes the
+  // tailored résumé special is now a small badge beside its title, not the document's icon.
   const letterOptions: AttachOption[] = [
     {
       key: 'doc', icon: 'document-text', tint: T.violet, label: `This letter · ${designName}`,
-      hint: `${modeLabel} · PDF — the design you were previewing`, selected: letterAtt.source === 'doc', locked,
+      hint: `${sizeText(letterSize)} · PDF — the design you were previewing`,
+      selected: letterAtt.source === 'doc', locked,
     },
     ...(letterAtt.source === 'file'
       ? [{ key: 'file', icon: 'document-attach', tint: T.blue, label: letterAtt.file.name, hint: `Your file · ${sizeLabel(letterAtt.file.size)}`, selected: true }]
@@ -649,7 +809,7 @@ export default function SendLetter() {
   const resumeOptions: AttachOption[] = [
     ...draft.resume.options.map((o) => ({
       key: o.id,
-      icon: o.id === 'tailored' ? 'sparkles' : o.id === 'builder' ? 'document-text' : 'cloud-upload',
+      icon: 'document-text',
       tint: o.id === 'tailored' ? T.emerald : o.id === 'builder' ? T.blue : T.cyan,
       label: o.label, hint: o.detail, selected: resumeAtt.source === o.id, locked: o.gated && locked,
     })),
@@ -659,14 +819,25 @@ export default function SendLetter() {
     { key: 'none', icon: 'remove-circle-outline', tint: T.muted, label: 'No résumé', hint: 'Send the cover letter only', selected: resumeAtt.source === 'none' },
   ];
 
+  // Each row says what the FILE is, in the same "which · how · kind" order under a title that names the kind (the
+  // letter's title already says "Cover letter"; a résumé's title is its own name, so its line says the kind itself).
+  const letterSub = letterAtt.source === 'doc'
+    ? `${designName} · ${sizeText(letterSize)} · PDF`
+    : `${letterAtt.file.name} · ${sizeLabel(letterAtt.file.size)}`;
   const resumeTitle = resumeAtt.source === 'file' ? resumeAtt.file.name
     : resumeAtt.source === 'none' ? '' : resumeAtt.option.label;
-  const resumeSub = resumeAtt.source === 'file' ? `Your file · ${sizeLabel(resumeAtt.file.size)}`
-    : resumeAtt.source === 'none' ? '' : resumeAtt.option.detail;
+  const resumeSub = resumeAtt.source === 'file' ? `Résumé · your file · ${sizeLabel(resumeAtt.file.size)}`
+    : resumeAtt.source === 'none' ? ''
+      : resumeAtt.source === 'uploaded' ? `Résumé · ${resumeAtt.option.detail}`
+        : `Résumé · ${resumeAtt.option.detail.replace(/ · PDF$/, '')} · ${sizeText(resumeSize)} · PDF`;
+  // The size control belongs to the files WE render: a device file and the uploaded CV are the user's own bytes,
+  // attached unchanged, so there is nothing to choose. (Exactly the set isGated covers, so the padlock follows it too.)
+  const resumeSizable = resumeAtt.source === 'tailored' || resumeAtt.source === 'builder';
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
-      {/* Top bar — the customization page's */}
+      {/* Top bar — the customization page's. ⚠️ A FLEX ROW, not an absolute centre: `left: 96, right: 96` left the
+          title 128 pt on a 320 pt screen, so a real employer name was clipped before it began. */}
       <View style={s.topBar}>
         <TouchableOpacity onPress={onBack} style={s.backPill} activeOpacity={0.8}>
           <Ionicons name={editing ? 'close' : 'arrow-back'} size={14} color={T.ink} />
@@ -679,6 +850,8 @@ export default function SendLetter() {
         <View style={s.topSpacer} />
       </View>
 
+      {/* ⚠️ THE SEND BAR IS INSIDE THE KEYBOARD AVOIDER (2026-09-20). It used to be an absolutely positioned sibling,
+          so the keyboard covered it while an address was being typed — the one moment the page asks for typing. */}
       <KeyboardAvoidingView style={s.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           {phase === 'sent' && result ? (
@@ -700,15 +873,17 @@ export default function SendLetter() {
                   <Ionicons name={acct.provider === 'microsoft' ? 'logo-microsoft' : acct.provider === 'google' ? 'logo-google' : 'mail-outline'} size={20} color="#fff" />
                 </View>
                 <View style={s.fill}>
-                  <Text style={s.acctEyebrow}>{ready ? 'SENDING FROM' : 'SEND FROM YOUR OWN MAILBOX'}</Text>
+                  <Text style={s.acctEyebrow}>
+                    {needsPermission ? 'SENDING NOT ALLOWED YET' : ready ? 'SENDING FROM' : 'SEND FROM YOUR OWN MAILBOX'}
+                  </Text>
                   <Text style={s.acctAddr} numberOfLines={1}>
                     {ready ? (acct.address || who) : acct.reconnect ? `${who.charAt(0).toUpperCase()}${who.slice(1)} needs you to sign in again` : 'No mailbox connected yet'}
                   </Text>
                 </View>
                 {ready && (
-                  <View style={s.okPill}>
-                    <Ionicons name="checkmark-circle" size={11} color="#fff" />
-                    <Text style={s.okPillText}>Connected</Text>
+                  <View style={needsPermission ? s.warnPill : s.okPill}>
+                    <Ionicons name={needsPermission ? 'lock-closed' : 'checkmark-circle'} size={11} color="#fff" />
+                    <Text style={s.okPillText}>{needsPermission ? 'Not allowed' : 'Connected'}</Text>
                   </View>
                 )}
               </View>
@@ -717,19 +892,26 @@ export default function SendLetter() {
                   Your application goes out from your own Gmail or Outlook: it lands in your Sent folder and replies come straight back to you. We never send it from our address.
                 </Text>
               )}
-              {(!ready || showSwitch) && phase !== 'sent' && (
+              {/* ⚠️ Said here, before the message is written (2026-09-20). The account is signed in; only the send
+                  permission is missing — Google's consent screen shows it as a checkbox that starts unticked. */}
+              {needsPermission && (
+                <Text style={s.acctWhy}>{reasonMessage('scope', { provider: acct.provider }).message}</Text>
+              )}
+              {(!ready || needsPermission || showSwitch) && phase !== 'sent' && (
                 <View style={s.connectRow}>
                   {(['google', 'microsoft'] as MailProvider[]).map((p) => (
                     <TouchableOpacity key={p} style={s.connectBtn} activeOpacity={0.85} disabled={!!linking} onPress={() => connect(p)}>
                       {linking === p ? <ActivityIndicator size="small" color={T.ink} /> : <Ionicons name={p === 'google' ? 'logo-google' : 'logo-microsoft'} size={15} color={T.ink} />}
                       <Text style={s.connectText}>
-                        {`${acct.reconnect && acct.provider === p ? 'Reconnect' : 'Connect'} ${p === 'google' ? 'Gmail' : 'Outlook'}`}
+                        {needsPermission && acct.provider === p
+                          ? `Allow ${p === 'google' ? 'Gmail' : 'Outlook'} to send`
+                          : `${acct.reconnect && acct.provider === p ? 'Reconnect' : 'Connect'} ${p === 'google' ? 'Gmail' : 'Outlook'}`}
                       </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
               )}
-              {ready && !showSwitch && phase === 'idle' && (
+              {ready && !needsPermission && !showSwitch && phase === 'idle' && (
                 <TouchableOpacity onPress={() => setShowSwitch(true)} hitSlop={8} style={s.switchBtn}>
                   <Text style={s.switchText}>Use another account</Text>
                 </TouchableOpacity>
@@ -750,63 +932,72 @@ export default function SendLetter() {
             </View>
           )}
 
-          {/* 2 — who it goes to */}
+          {/* 2 — who it goes to. Every group is labelled at the card's content edge and boxed on the one field inset. */}
           <Section title="TO" icon="people-outline" color={T.violet} editing={false} busy={false} saving={false}>
-            {to.length ? (
-              <View style={s.chipsRow}>
-                {to.map((e) => {
-                  const name = contactName(e);
-                  return (
-                    <View key={e} style={s.toChip}>
-                      <Ionicons name="person-circle-outline" size={14} color={T.violet} />
-                      <Text style={s.toChipText} numberOfLines={1}>{name ? `${name} · ${e}` : e}</Text>
-                      {!busy && (
-                        <TouchableOpacity onPress={() => { setTo(removeRecipient(to, e)); setToError(null); }} hitSlop={8} accessibilityLabel={`Remove ${e}`}>
-                          <Ionicons name="close" size={13} color={T.muted} />
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  );
-                })}
-              </View>
-            ) : (
-              <Text style={s.emptyHint}>No address yet — add the recruiter’s or hiring manager’s email.</Text>
-            )}
+            <View style={s.fieldBox}>
+              {to.length ? (
+                <View style={s.chipsRow}>
+                  {to.map((e) => {
+                    const name = contactName(e);
+                    return (
+                      <View key={e} style={s.toChip}>
+                        <Ionicons name="person-circle-outline" size={14} color={T.violet} />
+                        <Text style={s.toChipText} numberOfLines={2}>{name ? `${name} · ${e}` : e}</Text>
+                        {!busy && (
+                          <TouchableOpacity onPress={() => { setTo(removeRecipient(to, e)); setToError(null); }} hitSlop={10} accessibilityLabel={`Remove ${e}`}>
+                            <Ionicons name="close" size={13} color={T.muted} />
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : (
+                <Text style={s.emptyHint}>No address yet — add the recruiter’s or hiring manager’s email.</Text>
+              )}
+            </View>
             {phase !== 'sent' && to.length < MAX_RECIPIENTS && (
-              <View style={s.addRow}>
-                <TextInput
-                  ref={toRef}
-                  value={toInput}
-                  onChangeText={onToChange}
-                  onSubmitEditing={() => addTyped(toInput)}
-                  placeholder="name@company.com"
-                  placeholderTextColor={T.faint}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoComplete="email"
-                  returnKeyType="done"
-                  blurOnSubmit={false}
-                  editable={!busy}
-                  style={[s.input, s.addInput]}
-                />
-                <TouchableOpacity onPress={() => addTyped(toInput)} disabled={!toInput.trim() || busy} style={[s.addBtn, (!toInput.trim() || busy) && s.dim]} activeOpacity={0.85}>
-                  <Ionicons name="add" size={15} color="#fff" /><Text style={s.addBtnText}>Add</Text>
-                </TouchableOpacity>
-              </View>
+              <>
+                <Text style={s.fieldLabel}>Add an address</Text>
+                {/* ⚠️ stretch, not centre: the field and its Add button used to be 38 pt and 35 pt tall, so the button
+                    sat 1.5 pt out top and bottom. One minHeight, one alignment — they cannot differ again. */}
+                <View style={s.addRow}>
+                  <TextInput
+                    ref={toRef}
+                    value={toInput}
+                    onChangeText={onToChange}
+                    onSubmitEditing={() => addTyped(toInput)}
+                    placeholder="name@company.com"
+                    placeholderTextColor={T.faint}
+                    keyboardType="email-address"
+                    keyboardAppearance="light"
+                    selectionColor={T.blue}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="email"
+                    returnKeyType="done"
+                    blurOnSubmit={false}
+                    editable={!busy}
+                    style={[s.input, s.addInput]}
+                  />
+                  <TouchableOpacity onPress={() => addTyped(toInput)} disabled={!toInput.trim() || busy} style={[s.addBtn, (!toInput.trim() || busy) && s.dim]} activeOpacity={0.85}>
+                    <Ionicons name="add" size={15} color="#fff" /><Text style={s.addBtnText}>Add</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
             )}
             {!!toError && <Text style={s.fieldError}>{toError}</Text>}
             {phase !== 'sent' && draft.recipients.suggestions.filter((c) => !to.some((a) => a.toLowerCase() === c.email.toLowerCase())).length > 0 && (
               <>
-                <Text style={s.label}>{`Contacts we know at ${employer}`}</Text>
-                <View style={s.chipsRow}>
+                <Text style={s.fieldLabel}>{`Contacts we know at ${employer}`}</Text>
+                <View style={[s.chipsRow, s.chipsRowTail]}>
                   {draft.recipients.suggestions
                     .filter((c) => !to.some((a) => a.toLowerCase() === c.email.toLowerCase()))
                     .map((c) => (
                       <TouchableOpacity key={c.email} style={s.suggestChip} activeOpacity={0.8} disabled={busy || to.length >= MAX_RECIPIENTS}
                         onPress={() => { const r = addRecipients(to, c.email); setTo(r.list); setToError(r.error); }}>
                         <Ionicons name="add-circle-outline" size={13} color={T.violet} />
-                        <Text style={s.suggestText} numberOfLines={1}>{c.name ? `${c.name}${c.role ? ` · ${c.role}` : ''}` : c.email}</Text>
+                        <Text style={s.suggestText} numberOfLines={2}>{c.name ? `${c.name}${c.role ? ` · ${c.role}` : ''}` : c.email}</Text>
                       </TouchableOpacity>
                     ))}
                 </View>
@@ -821,10 +1012,17 @@ export default function SendLetter() {
             editing={editing === 'subject'} busy={(!!editing && editing !== 'subject') || busy} saving={false}
             onEdit={() => startEdit('subject')} onDone={doneEdit} onCancel={cancelEdit}
           >
+            {/* ⚠️ The read state is the SAME box as the editor (s.fieldBox / s.input, both FIELD_BOX), so the sentence
+                does not jump 13 pt sideways the moment Edit is tapped — the owner's "textboxes doesnt have alignment". */}
             {editing === 'subject' ? (
               <TextInput value={fieldDraft} onChangeText={(v) => setFieldDraft(v.replace(/[\r\n]+/g, ' '))} maxLength={SUBJECT_MAX}
-                placeholder="Application for …" placeholderTextColor={T.faint} style={s.input} autoFocus />
-            ) : subject ? <Text style={s.fieldText}>{subject}</Text> : <Text style={s.emptyHint}>No subject yet. Tap Edit to add one.</Text>}
+                placeholder="Application for …" placeholderTextColor={T.faint} keyboardAppearance="light" selectionColor={T.blue}
+                style={s.input} autoFocus />
+            ) : (
+              <View style={s.fieldBox}>
+                {subject ? <Text style={s.fieldText}>{subject}</Text> : <Text style={s.emptyHint}>No subject yet. Tap Edit to add one.</Text>}
+              </View>
+            )}
           </Section>
 
           {/* 4 — the message, written from the letter */}
@@ -845,23 +1043,44 @@ export default function SendLetter() {
           >
             {editing === 'body' ? (
               <TextInput value={fieldDraft} onChangeText={setFieldDraft} maxLength={BODY_MAX} multiline
-                placeholder="Your message" placeholderTextColor={T.faint} style={[s.input, s.inputMulti]} autoFocus />
+                placeholder="Your message" placeholderTextColor={T.faint} keyboardAppearance="light" selectionColor={T.blue}
+                style={[s.input, s.inputMulti]} autoFocus />
             ) : bodyLoading ? (
-              <View style={s.shimmer}>
-                <View style={[s.shimLine, s.shimW45]} />
-                <View style={[s.shimLine, s.shimW96]} />
-                <View style={[s.shimLine, s.shimW88]} />
-                <View style={[s.shimLine, s.shimW70]} />
-                <View style={s.shimNote}>
+              /* ⚠️ A REAL LOADER, IN THE MESSAGE'S OWN BOX (owner, 2026-09-20: "if the message is loading then please
+                 show loader"). The spinner and its line come FIRST — the skeleton under them used to be the only
+                 signal and was drawn in T.bgSoft on the white card, a contrast ratio of about 1.05:1, i.e. invisible.
+                 Still not animated: one Animated driver per view tree (builds 126-128).
+                 ⚠️ AND IT IS NEVER A DEAD END (review, 2026-09-20). A REWRITE keeps the message that is being replaced
+                 on screen (it was read, and the Send button stays live for it); a FIRST note shows the skeleton, since
+                 the standard note underneath has not been seen. Either way one action ends the wait now — the model
+                 call can run 30 s and then fail, and Send, Edit and Rewrite are all unavailable while it does. */
+              <View style={[s.fieldBox, s.writingBox]} accessibilityLabel={bodySeen ? 'Writing a new message from your letter' : 'Writing your message from the letter'}>
+                <View style={s.writingHead}>
                   <ActivityIndicator size="small" color={T.blue} />
-                  <Text style={s.shimText}>Writing a short note from your letter…</Text>
+                  <Text style={s.writingText}>{bodySeen ? 'Writing a new message from your letter…' : 'Writing a short note from your letter…'}</Text>
                 </View>
+                {bodySeen ? (
+                  <Text style={[s.bodyText, s.writingPrev]} selectable>{body}</Text>
+                ) : (
+                  <>
+                    <View style={[s.shimLine, s.shimW96]} />
+                    <View style={[s.shimLine, s.shimW88]} />
+                    <View style={[s.shimLine, s.shimW96]} />
+                    <View style={[s.shimLine, s.shimW70]} />
+                    <View style={[s.shimLine, s.shimW45]} />
+                  </>
+                )}
+                <TouchableOpacity onPress={stopWriting} style={s.stopBtn} activeOpacity={0.8}
+                  accessibilityRole="button" accessibilityLabel={bodySeen ? 'Keep this message' : 'Use the standard note'}>
+                  <Ionicons name="close-circle-outline" size={14} color={T.muted} />
+                  <Text style={s.stopText}>{bodySeen ? 'Keep this message' : 'Use the standard note'}</Text>
+                </TouchableOpacity>
               </View>
             ) : (
-              <Text style={s.bodyText} selectable>{body}</Text>
+              <View style={s.fieldBox}><Text style={s.bodyText} selectable>{body}</Text></View>
             )}
             {!bodyLoading && editing !== 'body' && (
-              <Text style={[s.hint, s.hintTight]}>
+              <Text style={s.hint}>
                 {bodySource === 'ai' ? 'Written from your letter — free. Edit anything.'
                   : bodySource === 'user' ? 'Your message.'
                     : 'A short standard note. Tap Rewrite for one written from your letter — free.'}
@@ -869,33 +1088,40 @@ export default function SendLetter() {
             )}
           </Section>
 
-          {/* 5 — the attachments, each with Change → the smart upload sheet */}
+          {/* 5 — the attachments: what each file is, its page size, and Change → the smart upload sheet.
+              ⚠️ A COLUMN, NOT A ROW. At 320 pt the old row left the title column about 62 pt beside its fixed
+              furniture (a 40 pt thumb, a ~78 pt Change pill, a 26 pt remove) and clamped both lines to one. */}
           <Section title="ATTACHMENTS" icon="attach-outline" color={T.emerald} editing={false} busy={false} saving={false}>
             <View style={s.attRow}>
-              <View style={s.attThumb}>
-                {letterAtt.source === 'doc' && thumb
-                  ? <Image source={{ uri: thumb }} style={s.attThumbImg} contentFit="cover" />
-                  : <Ionicons name={letterAtt.source === 'file' ? 'document-attach' : 'document-text'} size={20} color={T.violet} />}
+              <View style={s.attHead}>
+                <View style={s.attThumb}>
+                  {letterAtt.source === 'doc' && thumb
+                    ? <Image source={{ uri: thumb }} style={s.attThumbImg} contentFit="cover" />
+                    : <Ionicons name={letterAtt.source === 'file' ? 'document-attach' : 'document-text'} size={20} color={T.violet} />}
+                </View>
+                <View style={s.fill}>
+                  <Text style={s.attTitle} numberOfLines={2}>Cover letter</Text>
+                  <Text style={s.attSub} numberOfLines={3}>{letterSub}</Text>
+                  {letterAtt.source === 'doc' && locked && (
+                    <View style={s.lockBadge}><Ionicons name="lock-closed" size={9} color={T.muted} /><Text style={s.lockText}>Paid plans</Text></View>
+                  )}
+                </View>
               </View>
-              <View style={s.fill}>
-                <Text style={s.attTitle}>Cover letter</Text>
-                <Text style={s.attSub} numberOfLines={1}>
-                  {letterAtt.source === 'doc' ? `${designName} · ${modeLabel} · PDF` : `${letterAtt.file.name} · ${sizeLabel(letterAtt.file.size)}`}
-                </Text>
-                {letterAtt.source === 'doc' && locked && (
-                  <View style={s.lockBadge}><Ionicons name="lock-closed" size={9} color={T.muted} /><Text style={s.lockText}>Paid plans</Text></View>
-                )}
-              </View>
+              {letterAtt.source === 'doc' && phase === 'idle' && (
+                <SizeToggle which="Cover letter" value={letterSize} onChange={setLetterSize} />
+              )}
               {uploading === 'letter' ? <ActivityIndicator size="small" color={T.blue} /> : phase === 'idle' ? (
-                <TouchableOpacity onPress={() => openSheet('letter')} style={s.changeBtn} activeOpacity={0.8}>
-                  <Text style={s.changeText}>Change</Text><Ionicons name="chevron-down" size={12} color={T.blue} />
-                </TouchableOpacity>
+                <View style={s.attActions}>
+                  <TouchableOpacity onPress={() => openSheet('letter')} style={s.changeBtn} activeOpacity={0.8} accessibilityLabel="Change the cover letter">
+                    <Ionicons name="swap-horizontal" size={13} color={T.blue} /><Text style={s.changeText}>Change</Text>
+                  </TouchableOpacity>
+                </View>
               ) : null}
             </View>
 
             {resumeAtt.source === 'none' ? (
               uploading === 'resume' ? (
-                <View style={[s.attRow, s.attRowTop]}><ActivityIndicator size="small" color={T.blue} /><Text style={s.attSub}>Uploading your file…</Text></View>
+                <View style={[s.attRow, s.attRowTop]}><View style={s.attHead}><ActivityIndicator size="small" color={T.blue} /><Text style={s.attSub}>Uploading your file…</Text></View></View>
               ) : phase === 'idle' ? (
                 <TouchableOpacity onPress={() => openSheet('resume')} style={s.addAtt} activeOpacity={0.85}>
                   <Ionicons name="add-circle-outline" size={16} color={T.blue} />
@@ -904,23 +1130,35 @@ export default function SendLetter() {
               ) : null
             ) : (
               <View style={[s.attRow, s.attRowTop]}>
-                <View style={s.attThumb}>
-                  <Ionicons name={resumeAtt.source === 'tailored' ? 'sparkles' : resumeAtt.source === 'file' ? 'document-attach' : 'person-outline'} size={19} color={T.emerald} />
+                <View style={s.attHead}>
+                  <View style={s.attThumb}>
+                    {resumeAtt.source === 'tailored' && resumeThumb
+                      ? <Image source={{ uri: resumeThumb }} style={s.attThumbImg} contentFit="cover" />
+                      : <Ionicons name={resumeAtt.source === 'file' ? 'document-attach' : 'document-text'} size={20} color={T.emerald} />}
+                  </View>
+                  <View style={s.fill}>
+                    <View style={s.attTitleRow}>
+                      <Text style={s.attTitle} numberOfLines={2}>{resumeTitle || 'Résumé'}</Text>
+                      {resumeAtt.source === 'tailored' && (
+                        <View style={s.aiBadge}><Ionicons name="sparkles" size={9} color={T.emerald} /><Text style={s.aiBadgeText}>Tailored</Text></View>
+                      )}
+                    </View>
+                    <Text style={s.attSub} numberOfLines={3}>{resumeSub}</Text>
+                    {isGated(resumeAtt) && locked && (
+                      <View style={s.lockBadge}><Ionicons name="lock-closed" size={9} color={T.muted} /><Text style={s.lockText}>Paid plans</Text></View>
+                    )}
+                  </View>
                 </View>
-                <View style={s.fill}>
-                  <Text style={s.attTitle} numberOfLines={1}>{resumeTitle || 'Résumé'}</Text>
-                  <Text style={s.attSub} numberOfLines={1}>{resumeSub}</Text>
-                  {isGated(resumeAtt) && locked && (
-                    <View style={s.lockBadge}><Ionicons name="lock-closed" size={9} color={T.muted} /><Text style={s.lockText}>Paid plans</Text></View>
-                  )}
-                </View>
+                {resumeSizable && phase === 'idle' && (
+                  <SizeToggle which="Résumé" value={resumeSize} onChange={setResumeSize} />
+                )}
                 {uploading === 'resume' ? <ActivityIndicator size="small" color={T.blue} /> : phase === 'idle' ? (
                   <View style={s.attActions}>
-                    <TouchableOpacity onPress={() => openSheet('resume')} style={s.changeBtn} activeOpacity={0.8}>
-                      <Text style={s.changeText}>Change</Text><Ionicons name="chevron-down" size={12} color={T.blue} />
+                    <TouchableOpacity onPress={() => openSheet('resume')} style={s.changeBtn} activeOpacity={0.8} accessibilityLabel="Change the résumé">
+                      <Ionicons name="swap-horizontal" size={13} color={T.blue} /><Text style={s.changeText}>Change</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setResumeAtt({ source: 'none' })} hitSlop={8} style={s.removeBtn} accessibilityLabel="Remove the résumé">
-                      <Ionicons name="close" size={14} color={T.muted} />
+                    <TouchableOpacity onPress={() => setResumeAtt({ source: 'none' })} style={s.removeBtn} activeOpacity={0.8} accessibilityLabel="Remove the résumé">
+                      <Ionicons name="close" size={15} color={T.muted} /><Text style={s.removeText}>Remove</Text>
                     </TouchableOpacity>
                   </View>
                 ) : null}
@@ -935,27 +1173,28 @@ export default function SendLetter() {
 
           <View style={editing ? s.tailShort : s.tail} />
         </ScrollView>
-      </KeyboardAvoidingView>
 
-      {/* The Send bar (hidden while a field is edited) — the customization page's floating bar */}
-      {!editing && (
-        <View style={s.floatingBar}>
-          {!!barNote && <Text style={s.whyText}>{barNote}</Text>}
-          <TouchableOpacity
-            onPress={() => (phase === 'sent' ? leave() : doSend())}
-            activeOpacity={0.88}
-            disabled={phase === 'sending' || (phase === 'idle' && !check.ok)}
-            style={[s.primaryOuter, phase === 'idle' && !check.ok && s.dim]}
-            accessibilityLabel={sendLabel}
-          >
-            <LinearGradient colors={phase === 'sent' ? ['#10B981', '#059669'] : ['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primaryBtn}>
-              {phase === 'sending' ? <ActivityIndicator size="small" color="#fff" />
-                : <Ionicons name={phase === 'sent' ? 'checkmark-done' : needsPay ? 'lock-closed' : 'send'} size={16} color="#fff" />}
-              <Text style={s.primaryText}>{sendLabel}</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-        </View>
-      )}
+        {/* The Send bar (hidden while a field is edited) — the customization page's bar, now the keyboard avoider's
+            last child, so it rides above the keyboard instead of under it. */}
+        {!editing && (
+          <View style={s.sendBar}>
+            {!!barNote && <Text style={s.whyText}>{barNote}</Text>}
+            <TouchableOpacity
+              onPress={() => (phase === 'sent' ? leave() : doSend())}
+              activeOpacity={0.88}
+              disabled={phase === 'sending' || (phase === 'idle' && !check.ok)}
+              style={[s.primaryOuter, phase === 'idle' && !check.ok && s.dim]}
+              accessibilityLabel={sendLabel}
+            >
+              <LinearGradient colors={phase === 'sent' ? ['#10B981', '#059669'] : ['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.primaryBtn}>
+                {phase === 'sending' ? <ActivityIndicator size="small" color="#fff" />
+                  : <Ionicons name={phase === 'sent' ? 'checkmark-done' : needsPay ? 'lock-closed' : 'send'} size={16} color="#fff" />}
+                <Text style={s.primaryText}>{sendLabel}</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        )}
+      </KeyboardAvoidingView>
 
       <SmartAttachSheet
         visible={!!sheet}
@@ -979,6 +1218,55 @@ export default function SendLetter() {
   );
 }
 
+/**
+ * One attachment's page layout — the download gallery's own control (templates.tsx's SegBtn: the same two icons, the
+ * same two words), so the choice reads the same wherever the user meets it.
+ * ⚠️ BOTH SIDES ARE ALWAYS LIVE (2026-09-20). This control was briefly disabled on "Original (Branded)", the design the
+ * owner's own letter ranks first — the server now renders that design's A4 as well (services/letterSend), so there is
+ * no design left whose layout the user cannot change, and a dead control here would be the bug he reported.
+ */
+function SizeToggle({ which, value, onChange }: { which: string; value: PageSize; onChange: (v: PageSize) => void }) {
+  return (
+    <View style={s.sizeWrap}>
+      <Text style={s.sizeLabel}>Page layout</Text>
+      <View style={s.segWrap}>
+        {(['onepage', 'a4'] as PageSize[]).map((v) => {
+          const on = value === v;
+          return (
+            <TouchableOpacity
+              key={v}
+              style={[s.segBtn, on && s.segBtnOn]}
+              activeOpacity={0.85}
+              onPress={() => onChange(v)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: on }}
+              accessibilityLabel={`${which} · ${sizeText(v)}`}
+            >
+              <Ionicons name={v === 'a4' ? 'documents-outline' : 'document-outline'} size={14} color={on ? '#fff' : T.muted} />
+              <Text style={[s.segTxt, on && s.segTxtOn]}>{sizeText(v)}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * ONE FIELD BOX for the whole page (see the header): the read state, the editor and the placeholder all sit on this
+ * inset, and nothing on the page is a fixed height — FIELD_H is a MINIMUM, so a scaled accessibility size grows the
+ * control instead of clipping its text.
+ */
+const FIELD_H = 44;
+const FIELD_PAD_H = 12;
+const FIELD_PAD_V = Platform.select({ ios: 10, default: 8 }) as number;
+const FIELD_BOX = {
+  backgroundColor: T.bgSoft, borderRadius: 10, borderWidth: 1, borderColor: T.border,
+  paddingHorizontal: FIELD_PAD_H, paddingVertical: FIELD_PAD_V, minHeight: FIELD_H, marginBottom: 8,
+};
+/** The skeleton's grey: drawn on T.bgSoft, so T.bgSoft itself (the old shimLine) was invisible — about 1.05:1. */
+const SKELETON = 'rgba(11,15,34,0.11)';
+
 const s = StyleSheet.create({
   safe:         { flex: 1, backgroundColor: T.bg },
   fill:         { flex: 1 },
@@ -988,18 +1276,19 @@ const s = StyleSheet.create({
   emptyWrap:    { gap: 12, paddingHorizontal: 32 },
   emptyTitle:   { fontSize: 16, fontWeight: '700', color: T.ink, textAlign: 'center' },
   emptyText:    { fontSize: 13, color: T.muted, textAlign: 'center', lineHeight: 19 },
-  retryBtn:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(79,141,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 8, borderWidth: 1, borderColor: 'rgba(79,141,255,0.2)' },
+  retryBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, minHeight: FIELD_H, backgroundColor: 'rgba(79,141,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 8, borderWidth: 1, borderColor: 'rgba(79,141,255,0.2)' },
   retryText:    { fontSize: 13, fontWeight: '700', color: T.blueDeep },
-  goBackBtn:    { backgroundColor: T.blue, borderRadius: 12, paddingHorizontal: 24, paddingVertical: 10 },
+  goBackBtn:    { alignItems: 'center', justifyContent: 'center', minHeight: FIELD_H, backgroundColor: T.blue, borderRadius: 12, paddingHorizontal: 24, paddingVertical: 10 },
   goBackText:   { color: '#fff', fontWeight: '700' },
 
-  topBar:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
-  backPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3, zIndex: 1 },
+  topBar:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 10 },
+  backPill:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, minHeight: FIELD_H, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 14, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
-  docHead:      { position: 'absolute', left: 96, right: 96, alignItems: 'center', justifyContent: 'center', zIndex: 0 },
+  docHead:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
   docEyebrow:   { fontSize: 9, fontWeight: '800', color: T.faint, letterSpacing: 1.2 },
-  docTitle:     { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.3, marginTop: 1 },
-  topSpacer:    { width: 72 },
+  docTitle:     { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.3, marginTop: 1, textAlign: 'center' },
+  // Only as wide as the Back pill's own icon, so the title reads centred without stealing width at 320 pt.
+  topSpacer:    { width: 14 },
   scroll:       { padding: 16 },
 
   doneCard:     { alignItems: 'center', gap: 8, backgroundColor: T.surface, borderRadius: 20, padding: 20, marginBottom: 12, borderWidth: 1.5, borderColor: T.emerald + '55' },
@@ -1016,73 +1305,100 @@ const s = StyleSheet.create({
   acctEyebrow:  { fontSize: 9, fontWeight: '800', color: 'rgba(255,255,255,0.6)', letterSpacing: 1.2 },
   acctAddr:     { fontSize: 15, fontWeight: '800', color: '#fff', marginTop: 2 },
   okPill:       { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(16,185,129,0.85)', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4 },
+  // Connected, but not allowed to send — amber, never the green tick that said "ready" over a mailbox that refuses.
+  warnPill:     { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(245,158,11,0.9)', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4 },
   okPillText:   { fontSize: 10.5, fontWeight: '800', color: '#fff' },
   acctWhy:      { fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 17 },
-  connectRow:   { flexDirection: 'row', gap: 8 },
-  connectBtn:   { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#fff', borderRadius: 14, paddingVertical: 11 },
-  connectText:  { fontSize: 13, fontWeight: '800', color: T.ink },
-  switchBtn:    { alignSelf: 'flex-start' },
+  connectRow:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  // flex, never a fixed width: at 320 pt (and at the largest text size) the label wraps inside the button instead of
+  // being clipped, and minHeight lets the button grow with it.
+  connectBtn:   { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: FIELD_H, backgroundColor: '#fff', borderRadius: 14, paddingVertical: 11, paddingHorizontal: 10 },
+  connectText:  { fontSize: 13, fontWeight: '800', color: T.ink, flexShrink: 1 },
+  switchBtn:    { alignSelf: 'flex-start', paddingVertical: 4 },
   switchText:   { fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.7)', textDecorationLine: 'underline' },
 
   errorCard:    { backgroundColor: 'rgba(239,68,68,0.07)', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(239,68,68,0.22)', padding: 14, marginBottom: 12, gap: 6 },
   errorHead:    { flexDirection: 'row', alignItems: 'center', gap: 6 },
   errorTitle:   { fontSize: 13.5, fontWeight: '800', color: T.rose },
   errorText:    { fontSize: 12.5, color: T.inkSoft, lineHeight: 18 },
-  errorBtn:     { alignSelf: 'flex-start', backgroundColor: T.rose, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 7, marginTop: 4 },
+  errorBtn:     { alignSelf: 'flex-start', alignItems: 'center', justifyContent: 'center', minHeight: FIELD_H, backgroundColor: T.rose, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 7, marginTop: 4 },
   errorBtnText: { fontSize: 12.5, fontWeight: '800', color: '#fff' },
 
-  chipsRow:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
-  toChip:       { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: '100%', borderRadius: 14, borderWidth: 1, borderColor: T.violet + '40', backgroundColor: T.violet + '14', paddingHorizontal: 10, paddingVertical: 6 },
+  chipsRow:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  chipsRowTail: { marginBottom: 4 },
+  toChip:       { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: '100%', minHeight: 32, borderRadius: 14, borderWidth: 1, borderColor: T.violet + '40', backgroundColor: T.violet + '14', paddingHorizontal: 10, paddingVertical: 6 },
   toChipText:   { fontSize: 12.5, fontWeight: '700', color: T.inkSoft, flexShrink: 1 },
-  suggestChip:  { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%', borderRadius: 12, borderWidth: 1, borderColor: T.border, backgroundColor: T.bgSoft, paddingHorizontal: 9, paddingVertical: 6 },
+  suggestChip:  { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%', minHeight: FIELD_H, borderRadius: 12, borderWidth: 1, borderColor: T.border, backgroundColor: T.bgSoft, paddingHorizontal: 10, paddingVertical: 8 },
   suggestText:  { fontSize: 11.5, fontWeight: '600', color: T.inkSoft, flexShrink: 1 },
-  addRow:       { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  addRow:       { flexDirection: 'row', alignItems: 'stretch', gap: 8, marginBottom: 8 },
   addInput:     { flex: 1, marginBottom: 0 },
-  addBtn:       { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: T.violet, borderRadius: 10, paddingHorizontal: 12, paddingVertical: Platform.select({ ios: 10, default: 9 }) },
+  addBtn:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minHeight: FIELD_H, backgroundColor: T.violet, borderRadius: 10, paddingHorizontal: 14, paddingVertical: FIELD_PAD_V },
   addBtnText:   { fontSize: 12.5, fontWeight: '800', color: '#fff' },
-  fieldError:   { fontSize: 12, color: T.rose, fontWeight: '600', marginTop: 6 },
-  label:        { fontSize: 11, fontWeight: '700', color: T.muted, marginBottom: 6, marginTop: 10 },
+  fieldError:   { fontSize: 12, color: T.rose, fontWeight: '600', marginBottom: 6 },
+  // Labels and hints sit at the CARD's content edge; the value they describe sits on the field inset inside its box.
+  fieldLabel:   { fontSize: 11, fontWeight: '700', color: T.muted, marginBottom: 6, marginTop: 2 },
 
-  input:        { backgroundColor: T.bgSoft, borderRadius: 10, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, paddingVertical: Platform.select({ ios: 10, default: 8 }), fontSize: 13, color: T.ink, marginBottom: 8 },
+  fieldBox:     { ...FIELD_BOX, justifyContent: 'center' },
+  input:        { ...FIELD_BOX, fontSize: 13, color: T.ink },
   inputMulti:   { minHeight: 180, textAlignVertical: 'top' },
   fieldText:    { fontSize: 13.5, color: T.ink, lineHeight: 20 },
   bodyText:     { fontSize: 13, color: T.inkSoft, lineHeight: 20 },
-  emptyHint:    { fontSize: 12.5, color: T.faint, lineHeight: 18, marginBottom: 8 },
-  hint:         { fontSize: 11.5, color: T.faint, lineHeight: 16, marginTop: 6 },
-  hintTight:    { marginTop: 8 },
+  emptyHint:    { fontSize: 12.5, color: T.faint, lineHeight: 18 },
+  hint:         { fontSize: 11.5, color: T.faint, lineHeight: 16, marginTop: 2 },
+  hintTight:    { marginTop: 6 },
 
   msgActions:   { flexDirection: 'row', alignItems: 'center', gap: 6 },
   rewriteBtn:   { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: T.violet + '18', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: T.violet + '33' },
   rewriteText:  { fontSize: 11.5, fontWeight: '700', color: T.violet },
-  shimmer:      { gap: 8, paddingVertical: 2 },
-  shimLine:     { height: 10, borderRadius: 5, backgroundColor: T.bgSoft },
+  // The loader box is as tall as a written note, so the card does not jump when the note lands.
+  writingBox:   { minHeight: 150, justifyContent: 'flex-start', gap: 9, paddingVertical: 12 },
+  writingHead:  { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+  writingText:  { fontSize: 12.5, color: T.inkSoft, fontWeight: '700', flexShrink: 1 },
+  shimLine:     { height: 10, borderRadius: 5, backgroundColor: SKELETON },
   shimW45:      { width: '45%' },
   shimW96:      { width: '96%' },
   shimW88:      { width: '88%' },
   shimW70:      { width: '70%' },
-  shimNote:     { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
-  shimText:     { fontSize: 12, color: T.muted, fontWeight: '600' },
+  // The message a Rewrite is replacing: still legible under the spinner (s.dim's 0.45 is for a control, not for text).
+  writingPrev:  { opacity: 0.6 },
+  // The one way out of the wait (stopWriting) — a full 44 pt row, not a link tucked under the spinner.
+  stopBtn:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: FIELD_H, marginTop: 2 },
+  stopText:     { fontSize: 12.5, fontWeight: '700', color: T.muted },
 
-  attRow:       { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: T.bgSoft, borderRadius: 14, padding: 10 },
+  attRow:       { backgroundColor: T.bgSoft, borderRadius: 14, padding: 10, gap: 10 },
   attRowTop:    { marginTop: 8 },
+  attHead:      { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  // A page thumbnail, so it keeps the page's shape at every text size (an image does not scale with the text).
   attThumb:     { width: 40, height: 52, borderRadius: 8, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   attThumbImg:  { width: 40, height: 52 },
-  attTitle:     { fontSize: 13.5, fontWeight: '800', color: T.ink },
-  attSub:       { fontSize: 11.5, color: T.muted, marginTop: 1 },
-  attActions:   { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  attTitleRow:  { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
+  attTitle:     { fontSize: 13.5, fontWeight: '800', color: T.ink, flexShrink: 1 },
+  attSub:       { fontSize: 11.5, color: T.muted, marginTop: 2, lineHeight: 16 },
+  aiBadge:      { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: T.emerald + '1F', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 },
+  aiBadgeText:  { fontSize: 10, fontWeight: '800', color: T.emerald },
+  attActions:   { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
   lockBadge:    { flexDirection: 'row', alignItems: 'center', gap: 3, alignSelf: 'flex-start', backgroundColor: T.surface, borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, marginTop: 4 },
   lockText:     { fontSize: 10, fontWeight: '800', color: T.muted },
-  changeBtn:    { flexDirection: 'row', alignItems: 'center', gap: 2, paddingVertical: 5, paddingHorizontal: 9, borderRadius: 9, backgroundColor: 'rgba(79,141,255,0.1)' },
+  changeBtn:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, minHeight: FIELD_H, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, backgroundColor: 'rgba(79,141,255,0.1)' },
   changeText:   { fontSize: 12.5, fontWeight: '700', color: T.blue },
-  removeBtn:    { width: 26, height: 26, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: T.surface },
-  addAtt:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 8, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: T.blue + '55', paddingVertical: 14 },
+  removeBtn:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, minHeight: FIELD_H, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, backgroundColor: T.surface },
+  removeText:   { fontSize: 12.5, fontWeight: '700', color: T.muted },
+  addAtt:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: FIELD_H, marginTop: 8, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: T.blue + '55', paddingVertical: 14 },
   addAttText:   { fontSize: 13, fontWeight: '700', color: T.blue },
 
-  tail:         { height: 120 },
-  tailShort:    { height: 32 },
-  floatingBar:  { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.select({ ios: 28, default: 16 }), gap: 6, shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
+  sizeWrap:     { gap: 6 },
+  sizeLabel:    { fontSize: 10.5, fontWeight: '800', color: T.faint, letterSpacing: 0.8 },
+  segWrap:      { flexDirection: 'row', backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, padding: 4, gap: 4 },
+  segBtn:       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: FIELD_H, paddingVertical: 9, paddingHorizontal: 6, borderRadius: 9 },
+  segBtnOn:     { backgroundColor: T.navy },
+  segTxt:       { fontSize: 12.5, fontWeight: '700', color: T.muted, flexShrink: 1 },
+  segTxtOn:     { color: '#fff' },
+
+  tail:         { height: 24 },
+  tailShort:    { height: 12 },
+  sendBar:      { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.select({ ios: 28, default: 16 }), gap: 6, shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
   whyText:      { fontSize: 11.5, color: T.muted, textAlign: 'center', fontWeight: '600' },
-  primaryOuter: { borderRadius: 16, overflow: 'hidden' },
-  primaryBtn:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 50, borderRadius: 16 },
-  primaryText:  { fontSize: 14.5, fontWeight: '800', color: '#fff' },
+  primaryOuter: { borderRadius: 16, overflow: 'hidden', minHeight: 50 },
+  primaryBtn:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 50, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 16 },
+  primaryText:  { fontSize: 14.5, fontWeight: '800', color: '#fff', flexShrink: 1 },
 });

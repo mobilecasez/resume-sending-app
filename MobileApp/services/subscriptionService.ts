@@ -129,6 +129,32 @@ export type UsageItem = {
   planKey: string | null; detail: Record<string, any>; createdAt: string;
 };
 
+/**
+ * ⚠️ "THE ENTITLEMENTS JUST CHANGED" — ONE SIGNAL, FIRED WHERE THE SERVER SAID SO (2026-09-20).
+ *
+ * The owner subscribed from the plans screen and came back to a wizard still showing "The free plan on this device
+ * was already used by another account…". Nothing was cached — fetchSubscriptionStatus always hits the network — the
+ * screens simply never asked again. The precedent for the pattern is markProfileChanged / consumeProfileChanged in
+ * profileSetupService, but a flag that is only read on the NEXT focus is not enough here: the plans screen is pushed
+ * ON TOP of the screen holding the stale refusal, so it is mounted and can clear itself the moment the purchase
+ * lands. Hence listeners.
+ *
+ * ⚠️ IT IS FIRED ONLY WHERE THE SERVER CONFIRMED AN ENTITLEMENT — never optimistically from a store callback: this
+ * app grants nothing locally (see the section header below), and a signal that ran ahead of the server would clear a
+ * refusal the build then makes again. And it is not the whole fix: the owner's own plan arrived as an ADMIN grant,
+ * which no client purchase event can ever observe — so screens re-read on focus and on foreground as well.
+ * Listeners are called defensively; one that throws must not stop the others or the purchase flow around them.
+ */
+type EntitlementListener = () => void;
+const entitlementListeners = new Set<EntitlementListener>();
+export function markEntitlementsChanged(): void {
+  for (const fn of Array.from(entitlementListeners)) { try { fn(); } catch { /* a screen's re-read is never fatal */ } }
+}
+export function subscribeEntitlements(fn: EntitlementListener): () => void {
+  entitlementListeners.add(fn);
+  return () => { entitlementListeners.delete(fn); };
+}
+
 export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
   // x-store-env joins the request so a TestFlight tester's SANDBOX plan is visible to them and
   // invisible to everyone else. Sent explicitly rather than relying on the axios default purely to
@@ -293,6 +319,9 @@ export async function verifyStoreSubscription(input: {
       // otherwise a TestFlight tester's next /subscription/status call still asks as Production and
       // reports "no plan" for the purchase that just succeeded, and they buy it again.
       await rememberStoreEnv(data.environment);
+      // The one choke point where a purchase OR a Restore becomes an entitlement (plans.tsx routes both through
+      // here) — so every screen holding a "you have no allowance" refusal can drop it without a restart.
+      markEntitlementsChanged();
       return {
         confirmed: true,
         planKey: data.planKey ?? null,
@@ -318,6 +347,7 @@ export async function adminSetSubscription(userId: number, planKey: string | nul
   try {
     const headers = await authHeader();
     const { data } = await axios.post(`${API_BASE}/admin/set-subscription`, { userId, planKey }, { headers, timeout: 15000 });
+    if (data?.success) markEntitlementsChanged();   // the same grant the owner's own account got, from this phone
     return !!data?.success;
   } catch { return false; }
 }

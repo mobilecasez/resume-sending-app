@@ -253,15 +253,22 @@ export default function ResumeBuilderIndex() {
   // The model is SUBSCRIPTION COUNTS now, not credits — the button shows what the user has
   // LEFT this period (server truth via /subscription/status), never a per-action price.
   const [resumesLeft, setResumesLeft] = useState<number | null>(null);
-  useEffect(() => {
-    (async () => {
-      try {
-        const { fetchSubscriptionStatus } = require('../../services/subscriptionService');
-        const st = await fetchSubscriptionStatus();
-        if (st && st.remaining && typeof st.remaining.resumes === 'number') setResumesLeft(Math.max(0, st.remaining.resumes));
-      } catch {}
-    })();
+  const loadResumesLeft = useCallback(async () => {
+    try {
+      const { fetchSubscriptionStatus } = require('../../services/subscriptionService');
+      const st = await fetchSubscriptionStatus();
+      if (st && st.remaining && typeof st.remaining.resumes === 'number') setResumesLeft(Math.max(0, st.remaining.resumes));
+    } catch {}
   }, []);
+  // ⚠️ RE-READ, NOT READ ONCE (review, 2026-09-20). Read only at mount, "Limit reached — see plans for more" stayed
+  // on the button after the user went to Plans and bought one — the same stale refusal the wizard had. Focus covers
+  // coming back from the plans screen (and a plan granted with no purchase event, e.g. an admin grant); the signal
+  // covers a purchase or a Restore the SERVER confirmed while this screen sat mounted underneath it.
+  useFocusEffect(useCallback(() => { loadResumesLeft(); }, [loadResumesLeft]));
+  useEffect(() => {
+    const { subscribeEntitlements } = require('../../services/subscriptionService');
+    return subscribeEntitlements(() => { loadResumesLeft(); });
+  }, [loadResumesLeft]);
   const [mode, setMode] = useState<'select' | 'ai' | 'loading'>('select');
   const [existingResume, setExistingResume] = useState<{ full_name?: string; email?: string } | null>(null);
   const [buildMethod, setBuildMethod] = useState<'ai' | 'manual'>('manual');

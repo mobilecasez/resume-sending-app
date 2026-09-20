@@ -571,6 +571,20 @@ export type HomeCards = {
    *  hid Write my cover letter from exactly those users. undefined = an older server that does not say
    *  (callers fall back to !sample). */
   hasResume?: boolean;
+  /**
+   * Designs the server chose NOT to wait for on this load — named, with no picture, so the deck can draw them as
+   * skeletons and hydrate them by id. ⚠️ They ride in their own field and never in `cards` because the builds
+   * already in the store mark a card handed to them without a picture as permanently dead (server homeCards):
+   * an old client ignores this key and fills those places from the catalogue instead. Absent on an ids request
+   * (nothing is deferred there) and on an older server.
+   */
+  pending?: HomeCard[];
+  /**
+   * Which résumé these pages are OF — the thumb cache key without the design. Every picture the client has
+   * cached for another value is of a résumé that has since been replaced (an edit, a rebuild, a new photo) and
+   * must be dropped rather than repainted. undefined = an older server that does not say.
+   */
+  version?: string;
 };
 
 /**
@@ -594,6 +608,10 @@ export async function fetchHomeCards(ids?: string[]): Promise<HomeCards | 'none'
     preferred: j.preferred || null, cards: j.cards, sample: !!j.sample,
     // Only a real boolean: an absent field must stay undefined so Home falls back to !sample, never "false".
     ...(typeof j.hasResume === 'boolean' ? { hasResume: j.hasResume } : {}),
+    // Both stay undefined when the server does not send them: an absent version must never read as a version
+    // that CHANGED (that would drop every cached picture on every load against an older server).
+    ...(Array.isArray(j.pending) && j.pending.length ? { pending: j.pending as HomeCard[] } : {}),
+    ...(typeof j.version === 'string' && j.version ? { version: j.version } : {}),
   };
 }
 

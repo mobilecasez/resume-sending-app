@@ -24,6 +24,10 @@
 // sending anything.
 // ⚠️ 'unknown_outcome' (the server's own "the connection dropped after the message was handed over") and a job that is
 // gone never say "nothing was sent": they send the user to their Sent folder, and the next Send asks first.
+// ⚠️ EACH ATTACHMENT CARRIES ITS OWN PAGE SIZE (2026-09-20, the owner: "In the attachment section there should be
+// option of selecting A4 selection and One page selection too… for cover letter keep One page as default and then for
+// Resume keep A4 as default"). PageSize / DEFAULT_SIZES / SIZES_KEY below; the size lives INSIDE LetterAttachment and
+// ResumeAttachment so it reaches the server through letterWire / resumeWire — and so sendFingerprint follows it.
 // ⚠️ TWO KINDS OF LETTER, ONE PAGE (2026-09-20). The preview also opens WITHOUT a saved document — the Job Hub's, the
 // Review screen's and the old Home's letters (templates.tsx's classic picker) — with the same Download, so it has the
 // same Send. Such a letter has no id to name: the preview hands the letter itself to the Send page (CLASSIC_SEND_KEY)
@@ -40,7 +44,15 @@ export const SUBJECT_MAX = 300;
 export const BODY_MAX = 10000;
 
 export type MailProvider = 'google' | 'microsoft';
-export type MailAccount = { provider: MailProvider | null; ready: boolean; reconnect: boolean; address: string | null };
+/**
+ * The mailbox the message goes from. ⚠️ `ready` AND `canSend` ARE DIFFERENT QUESTIONS (2026-09-20, the owner on build
+ * 210: "I logged in with gmail account successfully and then when i clicked send then it showed me an error.. that
+ * reconnect gmail"). `ready` is "is an account connected?"; `canSend` is "did that account actually allow us to send
+ * mail?" — Google hands back both tokens with "Send email on your behalf" left unticked, so the two can disagree, and
+ * the card used to show a green "Connected" over an account that would refuse the message being written.
+ * An older server does not answer `canSend`; parseDraft reads that as true, so nothing changes for anyone else.
+ */
+export type MailAccount = { provider: MailProvider | null; ready: boolean; canSend: boolean; reconnect: boolean; address: string | null };
 export type Contact = { email: string; name?: string; role?: string };
 export type ResumeOptionId = 'tailored' | 'builder' | 'uploaded';
 export type ResumeOption = {
@@ -79,10 +91,18 @@ export type EmailDraft = {
 };
 /** A file picked on the phone and held by the server for this send (POST /:id/send-files). */
 export type PickedFile = { fileId: string; name: string; size: number; mime: string };
-export type LetterAttachment = { source: 'doc' } | { source: 'file'; file: PickedFile };
+/**
+ * The page layout of something WE render — the same two the Download sheets offer ("One Page" / "A4 Pages",
+ * templates.tsx's SegBtn) and the same two words every renderer takes (server/utils/coverLetterRenderer normMode,
+ * resumeBuilderController renderResumeDocPdf). ⚠️ 2026-09-20: it belongs to the ATTACHMENT, not to the page — the
+ * letter and the résumé have different defaults and can be changed apart (the owner's ask), and only a size that
+ * travels INSIDE letterWire / resumeWire reaches sendFingerprint (see there).
+ */
+export type PageSize = 'onepage' | 'a4';
+export type LetterAttachment = { source: 'doc'; size: PageSize } | { source: 'file'; file: PickedFile };
 export type ResumeAttachment =
   | { source: 'none' }
-  | { source: ResumeOptionId; option: ResumeOption }
+  | { source: ResumeOptionId; option: ResumeOption; size: PageSize }
   | { source: 'file'; file: PickedFile };
 export type SendResult = { provider: MailProvider | null; from: string | null; to: string[]; charged: boolean; sentAt: string | null };
 
@@ -146,14 +166,27 @@ export function removeRecipient(list: string[], email: string): string[] {
  * `typed` is what sits in the To field, not yet a chip: Send commits it (doSend), so an address on screen counts —
  * a dimmed button beside a valid address the user can see was a dead end. An invalid one is reported by that commit.
  * `uploading`: a file from the phone is still on its way — a Send now would go out with what the row held BEFORE it.
+ * `writing`: the FIRST note from the letter is still being written (POST /email-body takes seconds). ⚠️ IT IS LAST,
+ * AND IT DISABLES THE BUTTON (owner, 2026-09-20: "if the message is loading then please show loader"). Everything the
+ * user must DO is said first; once the page is otherwise ready the bar simply says what it is waiting for, so nobody
+ * can tap Send and be answered by a modal about a message they have not seen. The Alert in send.tsx's doSend stays as
+ * the guard for the taps that do not come from the button (the failure card's Try again / Send again).
+ * ⚠️ ONLY THE FIRST ONE (review, 2026-09-20). send.tsx passes this while no message has been SEEN yet — never during a
+ * Rewrite, which replaces a note the user has read: taking the button away there would hold a perfectly sendable page
+ * hostage to an AI call that can run 30 s and then fail silently. A Send during a Rewrite drops the late answer.
  */
 export function canSend(s: {
   to: string[]; subject: string; body: string; account: MailAccount | null; busy: boolean; hasLetter: boolean;
-  typed?: string; uploading?: boolean;
+  typed?: string; uploading?: boolean; writing?: boolean;
 }): { ok: boolean; why: string | null } {
   if (s.busy) return { ok: false, why: null };
   if (s.uploading) return { ok: false, why: 'Waiting for your file to finish uploading…' };
   if (!s.account || !s.account.ready) return { ok: false, why: 'Connect Gmail or Outlook to send.' };
+  // ⚠️ Said BEFORE the message is written, not after it is tapped out and Send is pressed (2026-09-20). A connected
+  // account that was never allowed to send is a decided refusal; the card beside this line offers the one fix.
+  if (s.account.canSend === false) {
+    return { ok: false, why: `${s.account.provider === 'microsoft' ? 'Outlook has' : 'Gmail has'} not been allowed to send mail yet.` };
+  }
   if (!s.to.length && !(s.typed && s.typed.trim())) return { ok: false, why: 'Add at least one email address.' };
   if (s.to.length > MAX_RECIPIENTS) return { ok: false, why: `At most ${MAX_RECIPIENTS} addresses.` };
   if (!s.subject.trim()) return { ok: false, why: 'Add a subject.' };
@@ -161,14 +194,53 @@ export function canSend(s: {
   if (!s.body.trim()) return { ok: false, why: 'Add a message.' };
   if (s.body.length > BODY_MAX) return { ok: false, why: 'The message is too long.' };
   if (!s.hasLetter) return { ok: false, why: 'Attach your cover letter.' };
+  if (s.writing) return { ok: false, why: 'Still writing your message from the letter…' };
   return { ok: true, why: null };
 }
 
+/* ── THE PAGE SIZE OF EACH ATTACHMENT ─────────────────────────────────────────────────────────────── */
+
+/**
+ * ⚠️ THE SEND PAGE'S OWN DEFAULTS (owner, 2026-09-20): "for cover letter keep One page as default and then for Resume
+ * keep A4 as default and that user can change it". They deliberately OVERRIDE the `mode` the preview hands over in the
+ * route: the preview seeds its own toggle from the document's stored design.mode, which is 'a4' for the owner's own
+ * letter — so seeding from the route would default the letter to A4 pages, the opposite of what he asked for. What
+ * overrides these is only the choice he made last (SIZES_KEY), never the previous screen.
+ */
+export const DEFAULT_SIZES: { letter: PageSize; resume: PageSize } = { letter: 'onepage', resume: 'a4' };
+/** Where the last choice is kept on the phone — ONE preference for every letter, so the next Send starts from it. */
+export const SIZES_KEY = 'letterSendSizes:v1';
+export type PageSizes = { letter: PageSize; resume: PageSize };
+
+/** What was stored → the two sizes. Absent, unreadable or junk → the defaults above (never a half-read pair). */
+export function parseSizes(raw: unknown): PageSizes {
+  let v: any;
+  try { v = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return { ...DEFAULT_SIZES }; }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return { ...DEFAULT_SIZES };
+  const one = (x: any, d: PageSize): PageSize => (x === 'a4' || x === 'onepage' ? x : d);
+  return { letter: one(v.letter, DEFAULT_SIZES.letter), resume: one(v.resume, DEFAULT_SIZES.resume) };
+}
+
+/** A layout's name — the gallery's own words (templates.tsx's download sheet), so the two pages read as one product. */
+export function sizeText(s: PageSize): string {
+  return s === 'a4' ? 'A4 Pages' : 'One Page';
+}
+
+/**
+ * ⚠️ EVERY LETTER DESIGN CHOOSES ITS PAGE LAYOUT — THERE IS NO EXCEPTION ANY MORE (2026-09-20). "Original (Branded)"
+ * (id 'standard') used to be one: it is flagged `generic` (coverLetterTemplates.js) and its PDF came from the original
+ * PDFKit generator, which only knows how to build a single page sized to the letter's content, so both screens greyed
+ * A4 out for it and said why (`fixedLetterSize`, now gone). That is exactly the half of the owner's sentence — "and
+ * that user can change it" — that his OWN letter (doc 17 ranks 'standard' first) would have met with a dead button.
+ * The server now renders this design's A4 from its own HTML twin instead (coverLetterController renderLetterPdfFile's
+ * `genericA4`), so the choice is real on every design and this screen has nothing left to special-case.
+ */
+
 /** The résumé the page starts with: the server's order is tailored > Builder > uploaded; none when there is none. */
-export function defaultResumeChoice(options: ResumeOption[], def: ResumeOptionId | null): ResumeAttachment {
+export function defaultResumeChoice(options: ResumeOption[], def: ResumeOptionId | null, size: PageSize = DEFAULT_SIZES.resume): ResumeAttachment {
   const list = Array.isArray(options) ? options : [];
   const pick = list.find((o) => o.id === def) || list[0];
-  return pick ? { source: pick.id, option: pick } : { source: 'none' };
+  return pick ? { source: pick.id, option: pick, size } : { source: 'none' };
 }
 
 /** Is this attachment one WE render (so the Download rule — a plan or a pass — applies to it)? */
@@ -178,13 +250,20 @@ export function isGated(a: LetterAttachment | ResumeAttachment): boolean {
   return false;
 }
 
-/** The body the server wants for an attachment choice. */
-export function letterWire(a: LetterAttachment): { source: 'doc' } | { source: 'file'; fileId: string } {
-  return a.source === 'file' ? { source: 'file', fileId: a.file.fileId } : { source: 'doc' };
+/**
+ * The body the server wants for an attachment choice — and the page size WE render it in, on the choice itself
+ * (letterSendController letterChoiceOf / resumeChoiceOf read `mode` there). ⚠️ THE SIZE MUST TRAVEL HERE, not beside
+ * the choices: sendFingerprint hashes these two objects, so a changed size gets a NEW Send id instead of joining the
+ * pending job that already rendered and mailed the old layout (see sendFingerprint). A file from the phone and the
+ * uploaded CV carry none — they are the user's own bytes, attached unchanged.
+ */
+export function letterWire(a: LetterAttachment): { source: 'doc'; mode: PageSize } | { source: 'file'; fileId: string } {
+  return a.source === 'file' ? { source: 'file', fileId: a.file.fileId } : { source: 'doc', mode: a.size };
 }
 export function resumeWire(a: ResumeAttachment): any {
   if (a.source === 'file') return { source: 'file', fileId: a.file.fileId };
-  if (a.source === 'tailored') return { source: 'tailored', docId: a.option.docId };
+  if (a.source === 'tailored') return { source: 'tailored', docId: a.option.docId, mode: a.size };
+  if (a.source === 'builder') return { source: 'builder', mode: a.size };
   return { source: a.source };
 }
 
@@ -218,7 +297,14 @@ export function reasonMessage(reason: SendReason | string | null | undefined, ct
     case 'lost': return { title: 'Still checking', message: 'We lost track of the send. Look in your Sent folder — if it is not there, tap Send again (it will not go out twice).' };
     case 'no_mail_account': return { title: 'Connect your mailbox', message: `Your application is sent from your own Gmail or Outlook, so replies come straight to you. Connect one to send. ${NOTHING}` };
     case 'reconnect': return { title: `Reconnect ${who}`, message: `${Who} needs you to sign in again. Tap Reconnect, then send. ${NOTHING}` };
-    case 'scope': return { title: 'Permission needed', message: `${Who} did not give CVApplyr permission to send mail. Reconnect and allow sending. ${NOTHING}` };
+    // ⚠️ NOT "sign in again" (2026-09-20). The account IS signed in; only the send permission is missing, and the
+    // Google screen that grants it shows it as a checkbox that starts unticked — so the message names the checkbox.
+    case 'scope': return {
+      title: 'Allow sending',
+      message: ctx.provider === 'microsoft'
+        ? `${Who} is connected, but it did not allow CVApplyr to send mail. Tap Allow sending and accept the “Send mail as you” permission. ${NOTHING}`
+        : `${Who} is connected, but you did not allow CVApplyr to send mail. Tap Allow sending and tick “Send email on your behalf”. ${NOTHING}`,
+    };
     case 'bad_recipients': return { title: 'Check the addresses', message: `${detail || 'One of the email addresses is not valid.'} ${NOTHING}` };
     case 'bad_recipient': return { title: 'Address refused', message: `${Who} refused one of the addresses. Check them and try again. ${NOTHING}` };
     case 'bad_subject': return { title: 'Add a subject', message: `The subject is empty or longer than ${SUBJECT_MAX} characters. ${NOTHING}` };
@@ -437,7 +523,7 @@ export function canJoin(p: PendingSend | null, fp: string, now: number): boolean
  */
 export type FailureAction =
   | 'retry' | 'send_again' | 'attachments' | 'choose_again' | 'recipients' | 'subject' | 'body'
-  | 'reconnect' | 'plans' | 'back' | null;
+  | 'reconnect' | 'allow_sending' | 'plans' | 'back' | null;
 export function failureAction(reason: SendReason | string | null | undefined): FailureAction {
   switch (reason) {
     case 'failed': case 'render_failed': case 'send_failed': case 'provider_busy': case 'network': case 'lost':
@@ -448,7 +534,11 @@ export function failureAction(reason: SendReason | string | null | undefined): F
     case 'bad_recipient': case 'bad_recipients': return 'recipients';
     case 'bad_subject': return 'subject';
     case 'bad_body': return 'body';
-    case 'reconnect': case 'scope': return 'reconnect';
+    case 'reconnect': return 'reconnect';
+    // ⚠️ NOT THE SAME BUTTON (2026-09-20). 'scope' means the account IS signed in and simply was not allowed to send;
+    // "Reconnect" describes the wrong problem and sends the user round the loop the owner described. Both run the same
+    // OAuth screen — what changes is what the button says the user has to do when they get there.
+    case 'scope': return 'allow_sending';
     case 'paid_required': case 'quota_exhausted': return 'plans';
     case 'gone': case 'no_letter': case 'server_outdated': return 'back';
     default: return null;   // no_mail_account (the mailbox card offers Connect), too_many (wait)
@@ -522,7 +612,9 @@ function shapeDraft(j: any): EmailDraft | null {
     sender: { name: str(j.sender && j.sender.name), email: str(j.sender && j.sender.email) },
     recipients: { prefill: contacts(j.recipients && j.recipients.prefill), suggestions: contacts(j.recipients && j.recipients.suggestions) },
     resume: { options: opts, default: def },
-    account: { provider, ready: a.ready === true, reconnect: a.reconnect === true, address: isEmail(a.address) ? String(a.address).trim() : null },
+    // `canSend` absent → true: an older server never answers it, and a mailbox that has always worked must not be
+    // blocked by a field it cannot send (see MailAccount).
+    account: { provider, ready: a.ready === true, canSend: a.canSend !== false, reconnect: a.reconnect === true, address: isEmail(a.address) ? String(a.address).trim() : null },
   };
 }
 

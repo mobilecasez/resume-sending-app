@@ -215,8 +215,101 @@ ok('the batch is capped below the chromium crash threshold', /\.slice\(0, 5\)/.t
 // retry. That card then stayed blank forever, which is exactly what the user reported as "after
 // scrolling few resumes it shows blank resume". What is ON SCREEN wins now; `pref` still leads on
 // the first load, where `asked` is empty.
-ok('the ids the client asked for lead the carousel',
-  /const fallback = \['banner'/.test(ctl) && /\[\.\.\.asked, pref/.test(ctl));
+// ⚠️ RETARGETED AGAIN, 2026-09-20: `pref` and the default spread are no longer APPENDED to an ids request. The
+// hydration wave asks for the handful of designs either side of the one on screen, and the server padded every
+// such request back up to five — up to five extra cold renders and ~800 KB of base64 the client discards (it
+// keeps only the ids in its own `want`). An ids request is now answered with exactly those ids; the first load
+// (no ?ids) still leads with the user's own pick, then the default spread.
+ok('an ids request is answered with EXACTLY those ids — no pref, no fallback padding',
+  /const ids = asked\.length\s*\?\s*\[\.\.\.new Set\(asked\.filter\(\(id\) => TEMPLATE_IDS\.includes\(id\)\)\)\]\.slice\(0, HOME_CARD_MAX\)/.test(ctl)
+  && !/\[\.\.\.asked, pref/.test(ctl));
+ok('…and the first load (no ?ids) still leads with the stored pick, then the one shared default spread',
+  /const HOME_CARD_IDS = \['banner', 'rightrail', 'elegant', 'mono', 'timeline'\];/.test(ctl)
+  && /\[\.\.\.new Set\(\[pref, \.\.\.HOME_CARD_IDS\]\.filter\(\(id\) => id && TEMPLATE_IDS\.includes\(id\)\)\)\]\.slice\(0, HOME_CARD_MAX\)/.test(ctl));
+// ⚠️ THE FIRST LOAD IS BOUNDED AND AN IDS REQUEST IS NOT, and that asymmetry is the whole safety of it: the client
+// marks an id it asked for and did not get a picture for as permanently DEAD, with no retry — so a budget on an ids
+// request would blank those designs on builds already in the store.
+ok('the FIRST load renders within a budget and defers the rest, to finish in the background',
+  /const CARD_RENDER_BUDGET_MS = \d+;/.test(ctl)
+  && /const deadline = asked\.length \? Infinity : Date\.now\(\) \+ CARD_RENDER_BUDGET_MS;/.test(ctl)
+  && /if \(drawn && \(spent \|\| Date\.now\(\) > deadline\)\) \{ later\.push\(id\); continue; \}/.test(ctl)
+  && /if \(later\.length\) renderRestOfHomeCards\(userId, row, later, tag, files\);/.test(ctl));
+// ⚠️ REVIEW 2026-09-20 (round 2): looked at only BETWEEN renders, the budget bounded the gaps and not the request —
+// it let a whole cold render (~4.2 s) start on the last 300 ms of it. The build's own pre-render made that the
+// NORMAL case, not a rare one: the first card joins a render already going, so barely any budget has been spent
+// when it lands, and the next design is then started in full. Measured on the owner's build: a request given 3.5 s
+// answered in ~8.4 s — slower WITH the pre-render's head start than without it.
+ok('⚠️ the budget bounds the REQUEST, not the gaps between renders: a render that would cross it is not waited for',
+  /function withinBudget\(p, ms\) \{/.test(ctl)
+  && /const BUDGET_OUT = Symbol\(/.test(ctl)
+  && /return Promise\.race\(\[p, new Promise\(\(resolve\) => \{\s*timer = setTimeout\(\(\) => resolve\(BUDGET_OUT\), Math\.max\(0, ms\)\);/.test(ctl)
+  && /const c = drawn && Number\.isFinite\(deadline\) \? await withinBudget\(p, deadline - Date\.now\(\)\) : await p;/.test(ctl)
+  && /if \(c === BUDGET_OUT\) \{ spent = true; later\.push\(id\); continue; \}/.test(ctl)
+  && !/const c = await cachedThumb\(userId, row, id, tag\);\s*cards\.push\(cardOf\(id, c\.image\)\);/.test(ctl));
+ok('…and the render it gave up on runs on into the cache, so the background pass and the hydrator JOIN it',
+  /p\.catch\(\(\) => \{\}\);/.test(ctl)                                   // abandoned, never an unhandled rejection
+  && /const going = thumbFlights\.get\(file\);\s*if \(going\) return going;/.test(ctl)
+  && /if \(later\.length\) renderRestOfHomeCards\(userId, row, later, tag, files\);/.test(ctl));
+ok('…and the FIRST picture is never raced (nor is an ids request, whose deadline is Infinity)',
+  /const c = drawn && Number\.isFinite\(deadline\) \? await withinBudget\(p, deadline - Date\.now\(\)\) : await p;/.test(ctl)
+  && /const deadline = asked\.length \? Infinity : Date\.now\(\) \+ CARD_RENDER_BUDGET_MS;/.test(ctl));
+// ⚠️ REVIEW 2026-09-20: the budget is only looked at BETWEEN renders, so a renderer that fails SLOWLY (a retry with
+// a fresh browser easily outlasts it) spent the whole budget on its first failure and deferred all the rest — a 200
+// whose every card was image-less. The client reads that as a deck, not as a failure: five blank pages, no retry
+// affordance, and a hydrator that then marks those ids dead for the session. Nothing is deferred until one card has
+// actually been drawn, and a payload with no picture in it at all is a 500 whatever is queued behind it.
+ok('…and nothing is deferred until a card has actually been DRAWN — a slow FAILURE never passes for a bounded load',
+  /let drawn = false;/.test(ctl)
+  && /if \(drawn && \(spent \|\| Date\.now\(\) > deadline\)\) \{ later\.push\(id\); continue; \}/.test(ctl)
+  && /if \(c\.image\) drawn = true;/.test(ctl));
+ok('…and a response with no picture in it at all is a 500, whatever is queued behind it',
+  /if \(!cards\.length \|\| !cards\.some\(\(c\) => c\.image\)\) return res\.status\(500\)/.test(ctl)
+  && !/!cards\.some\(\(c\) => c\.image\) && !later\.length/.test(ctl));
+// ⚠️ REVIEW 2026-09-20 (round 3): the budget is a PROTOCOL CHANGE, and it was being made to clients that cannot
+// survive it. The first load put the deferred designs in `cards` with no picture — to every client, ungated. The
+// builds already in the store mark any id their hydrator asks for and misses as dead for the session with no retry
+// (`misses` is this release's), and when /resume-builder/templates failed on that load they never apply a hydrated
+// picture to a lead card at all (`if (!slots.length) return cards`). The server ships on deploy and the client only
+// after review, so that is a multi-day window — and temp/ is wiped by every deploy, so EVERY store user's first Home
+// open after a release takes exactly this path. They ride in `pending` now, a key an old client does not read: it
+// sees a shorter `cards` and draws those places as the catalogue slots it already handles for the other 68 designs.
+ok('⚠️ a card with NO PICTURE never reaches a client in `cards` — the deferred designs ride in `pending`',
+  /const pending = later\.map\(\(id\) => cardOf\(id, null\)\);/.test(ctl)
+  && /return res\.json\(\{ success: true, preferred, hasResume, cards, pending, version, sample \}\);/.test(ctl)
+  && !/cards\.push\(cardOf\(id, null\)\)/.test(ctlC));
+ok('…and this client puts them back exactly where the server chose them — after the drawn ones, in order',
+  /setCards\(c\.pending && c\.pending\.length \? \[\.\.\.c\.cards, \.\.\.c\.pending\] : c\.cards\);/.test(homeC)
+  && /\.\.\.\(Array\.isArray\(j\.pending\) && j\.pending\.length \? \{ pending: j\.pending as HomeCard\[\] \} : \{\}\)/.test(svcC));
+// ⚠️ REVIEW 2026-09-20 (round 3): `shots` — the pictures the hydrator fetched — was read BEFORE the payload's own,
+// and is cleared only by a fresh-pages reload, whose single caller is the wizard hand-back. So every OTHER
+// résumé-changing path (an edit in the builder, a new photo, the pull that follows either) repainted the deck from
+// pictures of the résumé that had just been replaced. Harmless only while the payload always carried the lead five;
+// with the budget it no longer does, and it was never right for the catalogue designs. Two rules now: the picture
+// the server just rendered wins, and a `version` that changed drops everything hydrated under the old one.
+ok('⚠️ the picture the server JUST rendered wins over a hydrated one — in both branches of the deck',
+  (homeC.match(/image: c\.image \|\| shots\[c\.id\]/g) || []).length === 2
+  && !/image: shots\[c\.id\] \|\| c\.image/.test(homeC));
+ok('…and a résumé the server says is a different one drops every hydrated picture, in the SAME commit as the cards',
+  /const version = `\$\{new Date\(row\.updated_at \|\| 0\)\.getTime\(\)\}:\$\{await photoVersion\(userId\)\}:\$\{tag\}`;/.test(ctl)
+  && /if \(freshPages \|\| \(c\.version && c\.version !== cardsVer\.current\)\) \{\s*dead\.current = \{\}; misses\.current = \{\}; setShots\(\{\}\);\s*\}/.test(homeC)
+  && /if \(c\.version\) cardsVer\.current = c\.version;/.test(homeC));
+// An absent field must never read as a field that CHANGED: against a server that does not send `version` yet, that
+// would drop every hydrated picture on every load — the stampede the caps exist to prevent, once per load.
+ok('…and an older server that says neither leaves both undefined, never "changed"',
+  /\.\.\.\(typeof j\.version === 'string' && j\.version \? \{ version: j\.version \} : \{\}\)/.test(svcC)
+  && /c\.version && c\.version !== cardsVer\.current/.test(homeC));
+// ⚠️ THE BUILD WARMS THE SCREEN IT SENDS THEM TO. Every card is keyed on user_resumes.updated_at, so a saved build
+// is the instant all five go cold — and the base lane, unlike the employer-doc lane (prerenderDocPages), rendered
+// nothing, which is why "See my designs" cost the owner ~22 s of chromium on 2026-09-20.
+ok('a charged-and-saved wizard build pre-renders Home\'s cards — fire-and-forget, never in front of the answer',
+  /function prerenderBaseCards\(userId\) \{/.test(ctl)
+  && /prerenderBaseCards\(userId\);/.test(ctl) && !/await prerenderBaseCards\(/.test(ctl)
+  && /if \(wizardBuild && charged && savedRow\) \{[\s\S]{0,900}?prerenderBaseCards\(userId\);/.test(ctl));
+ok('…and one render per file however many ask, so the pre-render and the load that follows it share it',
+  /const thumbFlights = new Map\(\);/.test(ctl)
+  && /const going = thumbFlights\.get\(file\);\s*if \(going\) return going;/.test(ctl)
+  && /thumbFlights\.set\(file, flight\);/.test(ctl)
+  && /flight\.finally\(\(\) => \{ if \(thumbFlights\.get\(file\) === flight\) thumbFlights\.delete\(file\); \}\)/.test(ctl));
 ok('…and the response never names a preferred card it did not return',
   /cards\.some\(\(c\) => c\.id === pref\)/.test(ctl));
 ok('stale versions are pruned', /async function pruneThumbs/.test(ctl));
@@ -423,10 +516,10 @@ const prevC = strip(prev);
 console.log('── a brand-new account gets a SAMPLE, not an empty screen ──');
 ok('the server builds one from what registration already knows', /async function sampleResumeFor/.test(ctlC) && /SELECT full_name, email FROM users/.test(ctlC));
 ok('…and home-cards no longer dead-ends on "no resume"', !/reason: 'no_resume'/.test(ctlC.split('async function homeCards')[1] || ''));
-ok('…and says plainly that it IS a sample', /cards, sample \}\)/.test(ctlC));
+ok('…and says plainly that it IS a sample', /cards, pending, version, sample \}\)/.test(ctlC));
 ok('⚠️ the sample is never written to the user’s resume', !/sampleResumeFor[\s\S]{0,400}INSERT INTO user_resumes/.test(ctlC));
 ok('…and cannot collide with real thumbnails in the cache', /cachedThumb\(userId, row, id, tag\)/.test(ctlC) && /':' \+ tag \+ ':'/.test(ctlC));
-ok('Home labels it', /sample && mode === 'resume'/.test(homeC) && /This is a sample so you can see the designs/.test(homeC));
+ok('Home labels it', /sample && !deckStale && mode === 'resume'/.test(homeC) && /This is a sample so you can see the designs/.test(homeC));
 ok('⚠️ and a sample offers ONE honest action, not a dead-end Customize',
   /sample \? \(/.test(strip(zoomSrc)) && /Build my resume/.test(strip(zoomSrc))
   && /if \(sample\) armBuilderFor\(target\)/.test(homeC));
@@ -525,7 +618,7 @@ ok('…and it does not collapse an open library (setHistOpen(false) belongs to t
 // ⚠️ RETARGETED (2026-09-19): the focus effect now also re-reads the profile's setup outside the throttle, and forces
 // a full reload once after the Make Yours wizard built a résumé (consumeProfileChanged) — test-onboarding-wizard.js.
 ok('⚠️ every focus after the first re-reads the library for the kind on screen, beside the still-throttled load()',
-  /useFocusEffect\(useCallback\(\(\) => \{[\s\S]{0,260}?else load\(\)[\s\S]{0,160}?if \(focusCount\.current\+\+ > 0\) \{[\s\S]{0,200}refreshHistory\(modeOfKind\(kindRef\.current\)\);/.test(homeC));
+  /useFocusEffect\(useCallback\(\(\) => \{[\s\S]{0,1400}?else load\(\)[\s\S]{0,160}?if \(focusCount\.current\+\+ > 0\) \{[\s\S]{0,200}refreshHistory\(modeOfKind\(kindRef\.current\)\);/.test(homeC));
 ok('⚠️ a landed build re-reads the shelf for its kind when that kind is on screen (the other kind\'s shelf is read by the mode switch)',
   /if \(job\.kind === kindRef\.current\) refreshHistory\(modeOfKind\(job\.kind\)\);/.test(homeC) && homeC.indexOf('if (job.kind === kindRef.current) refreshHistory(') > homeC.indexOf('const onLanded = useStableFn('));
 ok('load() still throttles ITSELF to 60 s (the documents) — the library read is the one outside it', /if \(!force && Date\.now\(\) - lastLoad\.current < 60_000\) return undefined;/.test(homeC));
@@ -1696,6 +1789,49 @@ console.log('── ⚠️ A USED-UP ALLOWANCE NAMES WHICH ONE, AND NEVER A CRED
   ok('⚠️ Home\'s gate hint never says "Uses N credits"', !/credit/i.test(homeC) && !/Uses \$\{/.test(homeC));
 }
 
+// ⚠️ THE OWNER, BUILD 210 (2026-09-20): refused for the free allowance, subscribed, came back — and every screen
+// still said he had none. The server was never wrong (a plan beats a claimed device; that is pinned in
+// server/scripts/test-free-plan-entitlements.js). What was stale was what the app had already been told, so these
+// pin the two surfaces outside the wizard: the plans screen he bought from, and Home's gate hint.
+console.log('── ⚠️ A REFUSAL IS ONLY TRUE UNTIL THEY PAY (2026-09-20) ──');
+{
+  const plansC = strip(R('../app/(subscription)/plans.tsx'));
+  const subSvcC = strip(R('../services/subscriptionService.ts'));
+  ok('⚠️ plans.tsx never renders the device refusal while a plan is active (plan first, as usage.tsx already is)',
+    /\{!current && trial\?\.blocked === 'device_trial_used'/.test(plansC) && !/\{trial\?\.blocked === 'device_trial_used'/.test(plansC));
+  ok('…nor the red cross on the Free card\'s head',
+    /trialActive \? 'checkmark-circle' : !current && trial\?\.blocked \? 'close-circle-outline' : 'gift-outline'/.test(plansC));
+  ok('…and a plan this screen sees for the FIRST time is announced to the screen underneath it (the one holding the refusal)',
+    /if \(has && !sawPlan\.current\) markEntitlementsChanged\(\);/.test(plansC) && /sawPlan\.current = has;/.test(plansC));
+  ok('⚠️ the signal is fired ONLY where the SERVER confirmed an entitlement — the verify branch (a purchase AND a Restore) and an admin grant; this app grants nothing locally',
+    /export function markEntitlementsChanged\(\): void \{/.test(subSvcC) && /export function subscribeEntitlements\(/.test(subSvcC)
+    && /await rememberStoreEnv\(data\.environment\);\s*markEntitlementsChanged\(\);/.test(subSvcC)
+    && /if \(data\?\.success\) markEntitlementsChanged\(\);/.test(subSvcC));
+  ok('…and a listener that throws never takes the purchase down with it', /try \{ fn\(\); \} catch \{/.test(subSvcC));
+  ok('⚠️ Home\'s gate hint is re-asked whenever the entitlements may have moved — it is a dry run that binds and charges nothing',
+    /\}, \[lookupSig, wantsAction, loaders, entRev\]\);/.test(homeC)
+    && /useEffect\(\(\) => subscribeEntitlements\(\(\) => \{ if \(alive\.current\) setEntRev\(\(n\) => n \+ 1\); \}\), \[\]\);/.test(homeC)
+    && /setEntRev\(\(n\) => n \+ 1\);/.test(homeC));
+  ok('…it used to be cached for the life of a chip selection (Plans and back changes no chip)', !/\}, \[lookupSig, wantsAction, loaders\]\);/.test(homeC));
+  ok('…and Home\'s overlay path is left exactly as it was: it already dismisses its refusal before pushing the plans screen',
+    /K\.dismissOverlay\(\); nav\(\)\?\.push\?\.\('\/\(subscription\)\/plans'\);/.test(homeC));
+  // ⚠️ REVIEW, 2026-09-20: "everywhere it is shown" includes the two screens that READ their entitlement once, at
+  // mount — and Plans & Usage is the screen the server's own sentence sends people to ("Start a plan in Plans &
+  // Usage to keep going"), renders "Free allowance already used on this device", and pushes the plans screen
+  // itself. Read once, it kept saying NO ACTIVE PLAN after the user came back from buying one.
+  const usageC = strip(R('../app/(subscription)/usage.tsx'));
+  const rbC = strip(R('../app/(resume-builder)/index.tsx'));
+  ok('⚠️ Plans & Usage re-reads its plan on focus AND on a confirmed purchase — it no longer reads once at mount',
+    /useFocusEffect\(useCallback\(\(\) => \{ load\(\); \}, \[load\]\)\);/.test(usageC)
+    && /useEffect\(\(\) => subscribeEntitlements\(\(\) => \{ load\(\); \}\), \[load\]\);/.test(usageC)
+    && !/useEffect\(\(\) => \{ load\(\); \}, \[load\]\);/.test(usageC)
+    && /import \{ useRouter, useFocusEffect \} from 'expo-router';/.test(usageC));
+  ok('…and so does the resume builder\'s "Limit reached — see plans for more"',
+    /useFocusEffect\(useCallback\(\(\) => \{ loadResumesLeft\(\); \}, \[loadResumesLeft\]\)\);/.test(rbC)
+    && /return subscribeEntitlements\(\(\) => \{ loadResumesLeft\(\); \}\);/.test(rbC)
+    && /Limit reached — see plans for more/.test(rbC));
+}
+
 console.log('── ⚠️ THE LETTER EDITOR: the user\'s words in, only p/br/strong out (2026-09-13) ──');
 {
   const edSrc = R('../app/(cover-letter)/edit.tsx');
@@ -2541,6 +2677,102 @@ async function rosterPhase() {
     && !/\bawait\b/.test(loadBody.slice(aliveAt, loadBody.indexOf('keepRoster(acct, kept)'))), aliveAt);
   ok('the preview harness keeps its roster with the mount, in memory (its fixture list is a complete answer)',
     /\.then\(listAnswer\)/.test(homeC) && /if \(loaders\) previewRoster\.current = kept;/.test(homeC));
+
+  // ── THE DECK NEVER HOLDS THE SCREEN UP (2026-09-20) ────────────────────────────────────────────────────────
+  // /home-cards is the one call here that can take twenty seconds — every card is keyed on the résumé's
+  // updated_at, so the first load after a build is five cold chromium renders — and it used to sit inside the same
+  // Promise.all as the dashboard, the catalogue and the roster. The owner watched a skeleton chip row for all of
+  // it. Everything but the deck must be on screen before the deck is waited for.
+  const cardsAt = loadBody.indexOf('const cardsP');
+  const allAt = loadBody.indexOf('const [answer, cat, claim, remote] = await Promise.all([');
+  const rowAt = loadBody.indexOf('setTargets(t);');
+  const doneAt = loadBody.indexOf('setLoading(false);');
+  const awaitCardsAt = loadBody.indexOf('const c = await cardsP;');
+  ok('⚠️ the cards request STARTS before the others and is awaited after them — it is not in the Promise.all',
+    cardsAt > 0 && allAt > cardsAt && /const cardsP: Promise<HomeCards \| 'none' \| null> = Promise\.resolve\(\)\.then\(\(\) => loadCards\(\)\)\.catch\(\(\) => null\);/.test(loadBody)
+    && !/loadCards\(\),\n/.test(loadBody), { cardsAt, allAt });
+  ok('⚠️ the row and the chrome are committed and `loading` cleared BEFORE the deck is waited for',
+    rowAt > 0 && doneAt > rowAt && awaitCardsAt > doneAt
+    && /const c = await cardsP;\s*if \(seq !== loadSeq\.current \|\| !alive\.current\) return undefined;/.test(loadBody), { rowAt, doneAt, awaitCardsAt });
+  // ⚠️ `awaitCardsAt > 0` is load-bearing in this check (review 2026-09-20): without it the ordering half compared
+  // against -1 on a tree with no `const c = await cardsP;` at all, and passed there too.
+  ok('…and the card commit is unchanged behind it — a stale deck still clears in the SAME commit as the new cards',
+    awaitCardsAt > 0
+    && /if \(freshPages \|\| \(c\.version && c\.version !== cardsVer\.current\)\) \{\s*dead\.current = \{\}; misses\.current = \{\}; setShots\(\{\}\);\s*\}\s*if \(c\.version\) cardsVer\.current = c\.version;\s*setCards\(c\.pending/.test(loadBody)
+    && loadBody.indexOf('if (freshPages || (c.version && c.version !== cardsVer.current)) {') > awaitCardsAt);
+  ok('⚠️ `setup` is no longer read at the end of load() — the focus effect asks for it in parallel instead',
+    !/loadSetup\(\)\.then\(/.test(loadBody));
+  // ⚠️ `slots` is what makes the deck all 73 designs, and the hydrator renders whatever in the deck has no pixels
+  // near the card on screen. Committed while /home-cards was still in flight, it sent the hydrator after the first
+  // five designs of the CATALOGUE while the first five of the DECK were being rendered for that very request.
+  ok('⚠️ the catalogue is committed WITH the cards, never ahead of them (ten cold renders for five pages)',
+    awaitCardsAt > 0 && loadBody.indexOf('if (cat.length) setSlots(cat);') > awaitCardsAt
+    && loadBody.indexOf('if (cat.length) setSlots(cat);') < loadBody.indexOf('setCards(c.pending'));
+  // ⚠️ WHAT WAS ON SCREEN DURING THOSE SECONDS WAS THE OLD DOCUMENT — for a first-time account, the server's SAMPLE
+  // résumé, which carries the user's own name and email. "it didnt load the latest resume" was that.
+  ok('⚠️ a reload that asked for fresh pages marks the deck stale at once, and only a committed deck clears it',
+    /if \(freshPages\) setDeckStale\(true\);/.test(loadBody)
+    && loadBody.indexOf('if (freshPages) setDeckStale(true);') < allAt
+    && /if \(c\) setDeckStale\(false\);/.test(loadBody) && loadBody.indexOf('if (c) setDeckStale(false);') > awaitCardsAt);
+  // ⚠️ REVIEW 2026-09-20 (round 2): that clear was UNCONDITIONAL, so the honesty flag was dropped exactly where the
+  // client does not know what the new résumé looks like — a fresh-pages read that FAILED (c === null) fell back to
+  // the deck it had, which for a first build is the server's SAMPLE (his own name over invented content), under the
+  // heading of the build he had just paid for, with the sample bar and "Build your resume first" back beside it.
+  ok('⚠️ a fresh-pages reload that FAILED keeps the deck stale — it must never fall back to the résumé it replaced',
+    /else \{ setLoadFailed\(true\); \}/.test(loadBody)
+    && !/\n    setDeckStale\(false\);/.test(loadBody)
+    && loadBody.indexOf('if (c) setDeckStale(false);') > loadBody.indexOf('else { setLoadFailed(true); }'));
+  ok('…and the slot then goes to the retry tile, which `shown` would otherwise win the ternary against',
+    /else if \(deckStale && loadFailed\) shown = null;/.test(homeC)
+    && homeC.indexOf('else if (deckStale && loadFailed) shown = null;') < homeC.indexOf('else if (staleDeck) shown = { cards: staleDeck, fit: false };')
+    && /\) : loadFailed \? \(\s*<TouchableOpacity style=\{s\.paperLoading\} activeOpacity=\{0\.8\} onPress=\{\(\) => load\(true\)\}>/.test(home)
+    && /Couldn't load your designs/.test(home));
+  ok('…and a stale deck is drawn as the pages it is about to be (names and accents, no pixels), never as the old résumé',
+    /const staleDeck: PaperCard\[\] \| null = useMemo\(\s*\(\) => \(deckStale && deck\.length \? deck\.map\(\(c\) => \(\{ \.\.\.c, image: null \}\)\) : null\), \[deckStale, deck\]\);/.test(homeC)
+    && /else if \(staleDeck\) shown = \{ cards: staleDeck, fit: false \};/.test(homeC));
+  // ⚠️ REVIEW 2026-09-20: this was a bare negative, and a bare negative about `deckStale` holds on any tree where
+  // `deckStale` does not exist — it passed against HEAD. It now states the positive it implies as well.
+  ok('…applied to `shown` and NOT to `deck`, so the hydrator is not sent after every design in the catalogue',
+    /\(deckStale && deck\.length \? deck\.map\(\(c\) => \(\{ \.\.\.c, image: null \}\)\) : null\)/.test(homeC)
+    && /else if \(staleDeck\) shown = \{ cards: staleDeck, fit: false \};/.test(homeC)
+    && !/const deck: PaperCard\[\] = React\.useMemo\(\(\) => \{[\s\S]{0,600}?deckStale/.test(homeC)
+    && !/\[cards, slots, shots, deckStale\]/.test(homeC));
+  // ⚠️ …AND THE BAR UNDER IT SAID THE OPPOSITE (2026-09-20 review). `sample` is only rewritten when the cards
+  // commit, so through the whole post-build reload it was still the answer from before the build: blank skeleton
+  // pages under "This is a sample … Build yours", whose tap arms the builder for ANOTHER build.
+  ok('⚠️ the "This is a sample" bar cannot be on screen while the deck is stale — it invited a SECOND build over the one just finished',
+    /\{sample && !deckStale && mode === 'resume' && !doc && \(/.test(homeC)
+    && !/\{sample && mode === 'resume' && !doc && \(/.test(homeC)
+    && /const noResumeYet = deckStale \? false : noResume \|\| !\(hasResume \?\? !sample\);/.test(homeC));
+  ok('the empty deck slot says what it is doing (it was a bare spinner)',
+    /<View style=\{s\.paperLoading\}>\s*<ActivityIndicator color="#fff" \/>\s*<Text style=\{s\.paperFailTx\}>Getting your designs ready<\/Text>/.test(home));
+  // ⚠️ REVIEW 2026-09-20 — THE DE-SERIALIZATION DID NOT REACH THE ACCOUNT IT WAS FOR. The session-refusal pre-filter
+  // sat between the Promise.all and the row commit and read `(await cardsP) === null`, and `ranked` is empty for
+  // exactly the owner's account: no tracked employers, no saved jobs (his own app_event home_add_employer_open
+  // {"from":"empty"}). So a brand-new user still waited the full cold render for /home-cards, two lines before the
+  // commit. What "nothing came back at all" means is that neither store ANSWERED — TargetAnswer reports that.
+  const cardsAwaits = [...loadBody.matchAll(/await cardsP/g)].map((m) => m.index);
+  ok('⚠️ the deck is waited for EXACTLY ONCE in load(), and only after `loading` is cleared',
+    cardsAwaits.length === 1 && cardsAwaits[0] > doneAt, { cardsAwaits, doneAt });
+  ok('⚠️ …so the refusal pre-filter is decided from the reads that ANSWERED, never by awaiting the deck',
+    /if \(!loaders && !answer\.ranked\.length && !answer\.dashOk && !answer\.savedOk && \(await sessionRejected\(\)\)\) \{/.test(loadBody)
+    && !/!answer\.ranked\.length && \(await cardsP\)/.test(loadBody));
+  // ⚠️ …and neither may /subscription/status, which was moved in front of the deck commit by the same change: the
+  // new résumé's pages (and the skeletons over them) waited on a 20 s-timeout read that decides no card.
+  ok('⚠️ the paid flag is not awaited in front of the deck either — it lands when it lands',
+    /loadPaid\(\)\s*\.then\(\(paid\) => \{ if \(seq === loadSeq\.current && alive\.current\) \{ setIsPaid\(paid\); setPaidRead\(true\); \} \}\)\s*\.catch\(\(\) => \{\}\);/.test(loadBody)
+    && !/const paid = await loadPaid\(\);/.test(loadBody));
+  // ⚠️ THE CLIENT MUST BE ABLE TO RECOVER WHAT THE SERVER'S BUDGET DEFERS (2026-09-20 review). Two holes, both
+  // unreachable before the budget because the first payload always carried its own pixels.
+  ok('⚠️ hydrated pages apply even when the catalogue read failed — the deck is then only those five cards',
+    /if \(!slots\.length\) return cards\.map\(\(c\) => \(\{ \.\.\.c, image: c\.image \|\| shots\[c\.id\] \}\)\) as PaperCard\[\];/.test(homeC)
+    && !/if \(!slots\.length\) return cards as PaperCard\[\];/.test(homeC));
+  ok('⚠️ a design asked for and not drawn gets ONE more try before it is written off for this deck (`dead` is forever)',
+    /const misses = useRef<Record<string, number>>\(\{\}\);/.test(homeC)
+    && /const n = \(misses\.current\[id\] \|\| 0\) \+ 1;/.test(homeC)
+    && /if \(n >= 2\) dead\.current\[id\] = true;/.test(homeC)
+    && !/for \(const id of want\) if \(!add\[id\]\) dead\.current\[id\] = true;/.test(homeC)
+    && /dead\.current = \{\}; misses\.current = \{\}; setShots\(\{\}\);/.test(loadBody));
   const rmBody = (homeC.match(/const removeChip = \(i: number\) => \{[\s\S]*?\n  \};/) || [''])[0];
   const dropBody = fnBodyOf(homeC, 'dropChip');
   const restoreBody = fnBodyOf(homeC, 'restoreChip');
@@ -3442,7 +3674,7 @@ async function rosterPhase() {
     const hubRoutesSrc = R('../../server/routes/aiHub.js');
     const serverSrc = R('../../server.js');
     ok('⚠️ load() reads the server copy WITH its answer (the claim\'s session, no extra round trip) and merges into savedRowOf\'s pick',
-      /const \[answer, c, cat, claim, remote\] = await Promise\.all\(\[[\s\S]{0,300}?\n      remoteP,\n    \]\);/.test(loadBody)
+      /const \[answer, cat, claim, remote\] = await Promise\.all\(\[[\s\S]{0,300}?\n      remoteP,\n    \]\);/.test(loadBody)
       && /const remoteP: Promise<RemoteRoster \| null \| undefined> = loaders\s*\? Promise\.resolve\(undefined\)\s*: claiming\.then\(\(\{ who \}\) => fetchRemoteRoster\(who\)\)\.catch\(\(\) => undefined\);/.test(loadBody));
     // ⚠️ REVIEW 2026-09-20 (the server copy): a 409 handed this phone the other phone's row and the SCREEN stayed behind;
     // the next load then saved the chip it still showed as a brand-new pick, stamped now, and the other phone jumped to it.
@@ -3462,7 +3694,7 @@ async function rosterPhase() {
       /const other = savedRowOf\(owner, rosterCopy\(owner\) \|\| saved, remote, \{ peek: true \}\);/.test(loadBody)
       && /const untouched = \(\) => !committed && alive\.current && seq === loadSeq\.current && cacheOwner === owner\s*&& acts\.current === actsAt && !selBuildingRef\.current && !String\(pickedKey\.current \|\| ''\)\.startsWith\(PENDING\);/.test(loadBody)
       && /keepRoster\(acct, other\.row\);\s*paintSaved\(other\.row, true\);/.test(loadBody)
-      && loadBody.indexOf('const other = savedRowOf(') < loadBody.indexOf('const [answer, c, cat, claim, remote]'));
+      && loadBody.indexOf('const other = savedRowOf(') < loadBody.indexOf('const [answer, cat, claim, remote]'));
     ok('⚠️ a phone picked up again reads the server\'s row on AppState "active" (one row, never the dashboard) and follows it',
       /const resumeRow = useStableFn\(async \(\) => \{/.test(homeC)
       && /if \(next === 'active' && was === 'background'\) resumeRow\(\)\.catch\(\(\) => \{\}\);/.test(homeC)

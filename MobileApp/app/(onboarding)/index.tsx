@@ -63,12 +63,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Animated, Easing,
-  ActivityIndicator, Platform, KeyboardAvoidingView, Alert, Image, Modal, Pressable,
+  ActivityIndicator, Platform, KeyboardAvoidingView, Alert, Image, Modal, Pressable, AppState,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 // usePreventRemove is the one guard that also reaches the NATIVE dismiss — the precedent is app/(cover-letter)/edit.tsx.
 import { usePreventRemove, type NavigationAction } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -86,10 +86,11 @@ import CountrySheet from '../../components/onboarding/CountrySheet';
 import { COUNTRIES, Country, countryByName } from '../../constants/countries';
 import {
   fetchProfileSnapshot, saveDetails, uploadPhoto, uploadSignature, uploadResumeFile,
-  generateResume, joinBuild, buildOnServer, newWizardBuildId, saveOnboarding, waitForResumeParse, markProfileChanged,
-  wizardBuildText, RESUME_PICKER_TYPES, RESUME_FORMATS_LINE,
+  generateResume, joinBuild, buildOnServer, newWizardBuildId, saveOnboarding, waitForResumeParse, markProfileChanged, handOverSetup,
+  wizardBuildText, checkBuildCovered, RESUME_PICKER_TYPES, RESUME_FORMATS_LINE,
   BuildOutcome, GenStage, ProfileSnapshot, WizardCv,
 } from '../../services/profileSetupService';
+import { subscribeEntitlements } from '../../services/subscriptionService';
 import { track } from '../../services/analytics';
 
 type StepKey = 'you' | 'sign' | 'experience' | 'build';
@@ -235,6 +236,9 @@ export default function MakeYours() {
   const [done, setDone] = useState(false);
   // How the last build ended when it did not end well — it decides the step's buttons (Try again / Keep waiting / Plans).
   const [outcome, setOutcome] = useState<BuildOutcome | null>(null);
+  // What a re-check of the plan found when it did NOT clear the refusal (see retryAfterPlans). Declared with the
+  // build's own state because build() clears it; nothing is said until someone has actually asked.
+  const [recheckNote, setRecheckNote] = useState<string | null>(null);
   // A wizard build the server says is still running: rejoined on the build step, never started again.
   const [joinJob, setJoinJob] = useState<string | null>(null);
   // A résumé with content already exists: building again spends a generation, so it is asked first.
@@ -593,7 +597,18 @@ export default function MakeYours() {
       setStage({ stage: 'done', label: 'Ready', pct: 100 });
       setDone(true);
       // Home re-reads setup on focus anyway; this also makes it reload the pages — they are of this résumé now.
+      // ⚠️ THE FLAG FIRST, SYNCHRONOUSLY: "See my designs" can be tapped the very next moment, and a focus that
+      // finds no flag leaves Home's 60 s throttle in charge — the old (sample) pages would stay on screen.
       markProfileChanged();
+      // ⚠️ …AND THEN THE SERVER'S OWN ANSWER (2026-09-20). It does two things, both of which the owner needed and
+      // neither of which the flag alone could do: it hands Home the finished `setup` so the first frame after
+      // "See my designs" no longer says "Pick up where you left off", and — through fetchProfileSnapshot's own
+      // write — it corrects the CACHED setup, which is what a REMOUNTED Home (the Dashboard toggle, HomeBoundary)
+      // paints from and which still said the wizard was open. It runs while the ready screen is up, so it costs
+      // the user nothing, and a failed read simply leaves today's behaviour (Home's own read) in place.
+      // (Not guarded by `gone`: the screen closing is exactly the case this is for, and handOverSetup is a no-op
+      // once Home has consumed the flag.)
+      fetchProfileSnapshot().then((s) => { if (s) handOverSetup(s.setup); }).catch(() => {});
       try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
       return;
     }
@@ -639,6 +654,7 @@ export default function MakeYours() {
     if (stage) return;
     setGenErr(null);
     setOutcome(null);
+    setRecheckNote(null);   // whatever the last re-check said about their plan, this build is the newer answer
     setStage({ stage: 'start', label: 'Getting started', pct: 3 });
     const retry = !!(buildId.current && buildId.current.reuse);
     if (retry) {
@@ -681,6 +697,98 @@ export default function MakeYours() {
     }
     build();
   }, [stage, outcome, builtResume, done, build, follow]);
+
+  /* ── the plan refusal, re-read ───────────────────────────────────────────────────────────── */
+
+  /**
+   * ⚠️ A REFUSAL IS ONLY TRUE UNTIL THEY PAY (2026-09-20, the owner on build 210).
+   * He tapped Build, was refused with "The free plan on this device was already used by another account…", tapped
+   * See plans, got a plan — and came back to the SAME sentence with the SAME "See plans" as its only button, so he
+   * left the wizard and started the whole thing again. The server was never wrong (canConsumeMany reads the
+   * subscription first, so a plan always beats a claimed device): what was wrong is that this screen kept a
+   * server answer in React state and never asked a second time. The plans screen is PUSHED on top of this one, so
+   * this screen is alive the whole time and can simply ask again.
+   *
+   * It asks ONLY while a plan refusal is on screen, never during a build and never once one is done, and the answer
+   * comes from the gate the build itself consults — a dry run that reserves, binds and charges nothing. Anything but
+   * a clear "covered" leaves the banner exactly as it is: a user who genuinely has no plan must still be told so.
+   * The gate is asked as a plain build, which is what this build is: the wizard never sends isRegenerate, so the
+   * server's regenerate lane cannot apply to it (a 403 here is simply how generateResume labels any 403).
+   * ⚠️ IT CLEARS THE MESSAGE, IT NEVER BUILDS. The tap builds (see the header's "THE LAST STEP SPENDS MONEY").
+   */
+  const showsPlanRefusal = !stage && !done && !!outcome && outcome.kind === 'refused'
+    && (outcome.reason === 'quota_exhausted' || outcome.reason === 'regen_limit');
+  // The read that is going, not a boolean: a second caller JOINS it instead of being dropped (see retryAfterPlans —
+  // a tap that lands while the focus re-check is still in flight must answer the person who tapped).
+  const rechecking = useRef<Promise<boolean | null> | null>(null);
+  const [checking, setChecking] = useState(false);
+  /** true = covered (the banner is cleared) · false = the server still refuses · null = we could not read it. */
+  const recheck = useCallback((): Promise<boolean | null> => {
+    if (!showsPlanRefusal) return Promise.resolve(null);
+    if (rechecking.current) return rechecking.current;
+    const run = async (): Promise<boolean | null> => {
+      try {
+        const g = await checkBuildCovered();
+        if (gone.current || !g) return null;
+        if (!g.covered) return false;
+        // Back to "Build my resume", with the lane, the notes, the CV and the details all untouched.
+        setOutcome(null);
+        setGenErr(null);
+        setRecheckNote(null);
+        return true;
+      } finally { rechecking.current = null; }
+    };
+    const p = run();
+    rechecking.current = p;
+    return p;
+  }, [showsPlanRefusal]);
+
+  // Back from the plans screen — the owner's exact path.
+  useFocusEffect(useCallback(() => { recheck(); }, [recheck]));
+  // The store's own sheet backgrounds the app, and a grant can land while it is away (his arrived as an ADMIN
+  // grant, which no purchase callback in this app can ever see).
+  useEffect(() => {
+    if (!showsPlanRefusal) return;
+    const sub = AppState.addEventListener('change', (st) => { if (st === 'active') recheck(); });
+    return () => sub.remove();
+  }, [showsPlanRefusal, recheck]);
+  // A purchase or a Restore the SERVER confirmed while this screen was mounted underneath it.
+  useEffect(() => subscribeEntitlements(() => { recheck(); }), [recheck]);
+
+  /**
+   * ⚠️ …AND THE REFUSAL IS NOT A DEAD END. "instead of starting the build resume process from start i should be able
+   * to do that from here": this re-runs the build he already asked for — same lane, same notes, same CV, same
+   * details, nothing re-entered. It is safe to charge because the refusal happened BEFORE any charge (the gate runs
+   * before the first AI call), so this is a first charge, not a second; and settle() nulls buildId on a refusal, so
+   * it mints a NEW clientBuildId — sending the refused one again would only hand back that failed job for fifteen
+   * minutes (server/middleware/asyncJob.js). Still not covered → the banner stands, and the tap says what the
+   * re-check found rather than answering with nothing.
+   */
+  const retryAfterPlans = useCallback(async () => {
+    if (stage) return;
+    setChecking(true);
+    // A re-check already going is JOINED, never dropped: the focus one fires a heartbeat before this tap can land,
+    // and returning here would have given the tap no spinner and no answer at all.
+    const covered = await recheck();
+    if (gone.current) return;
+    setChecking(false);
+    // ⚠️ start(), not build(): "a second résumé is a second generation" is asked here exactly as it is on the Build
+    // button. This tap is not always the second half of one they made — a build rejoined when the wizard reopened
+    // (joinJob) can be refused with nobody having tapped Build at all, and that must not become a silent rebuild
+    // over the résumé they already have. Whatever it asks, the build itself is unchanged: same lane, same notes,
+    // same CV, same details, nothing re-entered.
+    if (covered === true) { start(); return; }
+    // ⚠️ AND A TAP IS NEVER SILENT (review, 2026-09-20). Everything that is not "covered" used to end here with the
+    // screen byte-for-byte as it was — a spinner, then nothing — which reads as a broken button to the one person
+    // this action exists for. It adds only what we now know, and never re-diagnoses: the banner above already
+    // carries the server's own sentence, and the gate answers 'quota_exhausted' both to someone with no plan AND
+    // to someone whose plan's allowance is spent, so "we see no plan" would be a lie to half of them.
+    // `false` is the server's answer (a purchase not verified yet, one made on another store account, an allowance
+    // used up); `null` is us (offline, an older server, a 500, a read that timed out) — never stated as a refusal.
+    setRecheckNote(covered === false
+      ? 'We checked again and this build is still not covered. If you have just subscribed, tap See plans and then Restore Purchases.'
+      : 'We could not check your plan just then. Please try again in a moment.');
+  }, [stage, recheck, start]);
 
   /* ── gating ──────────────────────────────────────────────────────────────────────────────── */
   const cvRead = !!cv && cv.status === 'done';
@@ -1167,6 +1275,9 @@ export default function MakeYours() {
                   onFinish={leave}
                   onFix={() => { setGenErr(null); setOutcome(null); goTo(2); }}
                   onPlans={() => router.push('/(subscription)/plans' as any)}
+                  onRetryAfterPlans={retryAfterPlans}
+                  checking={checking}
+                  retryNote={recheckNote}
                 />
               )}
             </ScrollView>
@@ -1271,10 +1382,11 @@ export default function MakeYours() {
  * and stops — it always moves, and it never claims a stage that has not started.
  */
 function BuildStep({
-  stage, error, outcome, done, onStart, onFinish, onFix, onPlans,
+  stage, error, outcome, done, onStart, onFinish, onFix, onPlans, onRetryAfterPlans, checking, retryNote,
 }: {
   stage: GenStage | null; error: string | null; outcome: BuildOutcome | null; done: boolean;
   onStart: () => void; onFinish: () => void; onFix: () => void; onPlans: () => void;
+  onRetryAfterPlans: () => void; checking: boolean; retryNote: string | null;
 }) {
   const [shown, setShown] = useState(0);
   const target = stage ? stage.pct : 0;
@@ -1344,6 +1456,35 @@ function BuildStep({
             <Ionicons name="create-outline" size={15} color="rgba(255,255,255,0.75)" />
             <Text style={b.ghostTx} numberOfLines={1}>Add more about your experience</Text>
           </TouchableOpacity>
+        )}
+        {/* ⚠️ THE WAY ON FOR SOMEONE WHO HAS JUST PAID (2026-09-20). Coming back from the plans screen clears this
+            banner by itself (the wizard re-reads the gate on focus, on foreground and on a confirmed purchase), but
+            a plan can also arrive with no signal this app ever sees — an admin grant, a store webhook, another
+            device — so the screen also says so out loud and offers the tap. It re-runs THIS build: nothing to type
+            again, and nothing was charged for the one that was refused. */}
+        {plans && (
+          <>
+            <TouchableOpacity style={b.ghost} activeOpacity={0.85} disabled={checking} onPress={onRetryAfterPlans}>
+              {checking
+                ? <ActivityIndicator size="small" color="rgba(255,255,255,0.75)" />
+                : (
+                  <>
+                    <Ionicons name="refresh-outline" size={15} color="rgba(255,255,255,0.75)" />
+                    <Text style={b.ghostTx} numberOfLines={1}>I’ve subscribed — build it now</Text>
+                  </>
+                )}
+            </TouchableOpacity>
+            {/* ⚠️ …and what the re-check FOUND when it did not clear the banner: a tap that answers with nothing
+                reads as a broken button to the one person this action is for. */}
+            {retryNote
+              ? <Text style={b.noteWarn}>{retryNote}</Text>
+              : (
+                <Text style={b.note}>
+                  Already on a plan? We check again every time you come back — you carry on from here, with everything
+                  you have entered still in place.
+                </Text>
+              )}
+          </>
         )}
       </View>
     );
@@ -1602,4 +1743,7 @@ const b = StyleSheet.create({
     justifyContent: 'center', gap: 7, backgroundColor: 'rgba(6,11,30,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
   },
   ghostTx: { fontSize: 13.5, fontWeight: '700', color: 'rgba(255,255,255,0.75)', flexShrink: 1 },
+  note: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.42)', textAlign: 'center', marginTop: 10, lineHeight: 17, flexShrink: 1 },
+  // What the re-check found: readable (this one is an answer to a tap), never the red of the refusal above it.
+  noteWarn: { fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.68)', textAlign: 'center', marginTop: 10, lineHeight: 17, flexShrink: 1 },
 });

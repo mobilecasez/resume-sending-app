@@ -147,12 +147,20 @@ async function accountAddressOf(user, provider) {
     return mail.isEmail(user.email) ? String(user.email).trim() : null;
 }
 
-/** { provider, ready, reconnect, address } — what the page's account card shows. */
+/**
+ * { provider, ready, canSend, reconnect, address } — what the page's account card shows.
+ * ⚠️ `canSend` IS A SEPARATE ANSWER FROM `ready` (2026-09-20, the owner's build-210 report). The card used to say
+ * "Gmail · you@gmail.com ✓ Connected" for any row holding a token, so an account that never granted the send
+ * permission looked identical to one that did — and the refusal could only arrive after the user had written the
+ * message and typed the recruiter's address. A grant we recorded as lacking send answers false; an account connected
+ * before Migration 050 has no recorded grant and answers true, exactly as it behaves today.
+ */
 async function accountOf(user) {
     const a = em().mailAccountOf(user);
     return {
         provider: a.provider || null,
         ready: !!a.ready,
+        canSend: a.canSend !== false,
         reconnect: !!a.reconnect,
         address: a.provider ? await accountAddressOf(user, a.provider) : null,
     };
@@ -471,7 +479,17 @@ function mailFailure(reason, provider) {
     const who = PROVIDER_NAME[provider] || 'Your mail account';
     switch (reason) {
         case 'reconnect': return { status: 409, error: `${who} needs you to sign in again. Tap Reconnect, then send. ${NOTHING}` };
-        case 'scope': return { status: 409, error: `${who} did not give CVApplyr permission to send mail. Reconnect and allow sending. ${NOTHING}` };
+        // ⚠️ NOT "Reconnect" (2026-09-20). The account IS signed in and only the send permission is missing, and this
+        // string is the one the user actually reads: the page renders the SERVER's text for a 'scope' failure (send.tsx
+        // `ours`), under a button that says "Allow sending". Telling them to reconnect here is the loop the owner
+        // reported — re-consenting with Google's "Send email on your behalf" checkbox still unticked. Kept word for
+        // word in step with reasonMessage('scope') in MobileApp/services/letterSend.ts.
+        case 'scope': return {
+            status: 409,
+            error: provider === 'microsoft'
+                ? `${who} is connected, but it did not allow CVApplyr to send mail. Tap Allow sending and accept the “Send mail as you” permission. ${NOTHING}`
+                : `${who} is connected, but you did not allow CVApplyr to send mail. Tap Allow sending and tick “Send email on your behalf”. ${NOTHING}`,
+        };
         case 'no_mail_account': return { status: 409, error: `Connect Gmail or Outlook first — your application is sent from your own mailbox. ${NOTHING}` };
         case 'bad_recipient': return { status: 400, error: `${who} refused one of the addresses. Check them and try again. ${NOTHING}` };
         case 'too_big': return { status: 413, error: `The attachments are too large for ${who}. Remove or replace a file and try again. ${NOTHING}` };
@@ -485,19 +503,32 @@ function mailFailure(reason, provider) {
 
 const redactEmails = (s) => String(s || '').replace(/[^\s@<>"',;:]+@[^\s@<>"',;:]+/g, '<email>').slice(0, 160);
 
-/** The choice objects the page sends, shape-checked. null = a shape we do not accept. */
+/**
+ * The page size on an attachment WE render — the two words every renderer takes, and nothing else. ⚠️ JUNK IS DROPPED,
+ * NOT PASSED ON ('A4', 'legal', 42, null): undefined means "no choice", which each renderer answers with its own
+ * default (the document's design.mode for a stored document), never with a string it does not know.
+ */
+const modeOf = (v) => (v === 'a4' || v === 'onepage' ? v : undefined);
+
+/**
+ * The choice objects the page sends, shape-checked. null = a shape we do not accept.
+ * ⚠️ `mode` rides on the CHOICE (2026-09-20, the Send page's per-attachment page size): the letter and the résumé can
+ * be sent in different layouts, and the phone's Send fingerprint hashes these same objects — see services/letterSend.
+ * The old top-level `b.mode` is still honoured for the letter, for a client older than this (step 4).
+ */
 function letterChoiceOf(v) {
     if (v == null) return { source: 'doc' };
     if (!isObj(v)) return null;
-    if (v.source === 'doc') return { source: 'doc' };
+    if (v.source === 'doc') return { source: 'doc', mode: modeOf(v.mode) };
     if (v.source === 'file' && typeof v.fileId === 'string' && v.fileId) return { source: 'file', fileId: v.fileId };
     return null;
 }
 function resumeChoiceOf(v) {
     if (v == null) return { source: 'none' };
     if (!isObj(v)) return null;
-    if (v.source === 'none' || v.source === 'builder' || v.source === 'uploaded') return { source: v.source };
-    if (v.source === 'tailored' && Number.isInteger(Number(v.docId)) && Number(v.docId) > 0) return { source: 'tailored', docId: Number(v.docId) };
+    if (v.source === 'none' || v.source === 'uploaded') return { source: v.source };
+    if (v.source === 'builder') return { source: 'builder', mode: modeOf(v.mode) };
+    if (v.source === 'tailored' && Number.isInteger(Number(v.docId)) && Number(v.docId) > 0) return { source: 'tailored', docId: Number(v.docId), mode: modeOf(v.mode) };
     if (v.source === 'file' && typeof v.fileId === 'string' && v.fileId) return { source: 'file', fileId: v.fileId };
     return null;
 }
@@ -538,8 +569,11 @@ async function sendLetterEmail(req, res) {
         const user = await dbConfig.get('SELECT * FROM users WHERE id = $1', [userId]);
         if (!user) return missingLetter(req, res);
         const acct = em().mailAccountOf(user);
-        if (!acct.ready) {
-            const reason = acct.provider ? 'reconnect' : 'no_mail_account';
+        // ⚠️ Refused BEFORE the letter is rendered, not after (2026-09-20). A mailbox we already know cannot send is a
+        // decided answer: rendering two PDFs first and then reporting it is what made the owner's failed sends take the
+        // whole pipeline (prod, user 618: both PDFs built, then "reconnect"). 'scope' names the fix; nothing charged.
+        if (!acct.ready || acct.canSend === false) {
+            const reason = !acct.ready ? (acct.provider ? 'reconnect' : 'no_mail_account') : 'scope';
             return res.status(409).json({ success: false, reason, provider: acct.provider || null, error: mailFailure(reason, acct.provider).error });
         }
         const sender = await cl().senderForLetter(userId, p).catch(() => ({ name: user.full_name || '' }));
@@ -549,7 +583,8 @@ async function sendLetterEmail(req, res) {
         const parts = [];
         if (letterChoice.source === 'doc') {
             const template = typeof b.template === 'string' ? b.template : undefined;
-            const mode = b.mode === 'a4' || b.mode === 'onepage' ? b.mode : undefined;
+            // The size the user chose on the Send page; the top-level `mode` is the older client's way of saying it.
+            const mode = letterChoice.mode || modeOf(b.mode);
             parts.push({
                 which: 'letter', gated: true, employer: doc.employer_name || null, kind: 'letter_doc',
                 // Each lane through ITS Download's own render: the saved letter's, or the classic picker's.
@@ -570,13 +605,18 @@ async function sendLetterEmail(req, res) {
             }
             parts.push({
                 which: 'resume', gated: true, employer: rdoc.employer_name || null, kind: 'resume_doc', rdoc,
-                render: () => rb().renderResumeDocPdf(userId, rdoc, {}),
+                // The size chosen on the Send page; undefined keeps what it always did — the document's own
+                // design.mode (resumeBuilderController renderResumeDocPdf → docModeOf).
+                render: () => rb().renderResumeDocPdf(userId, rdoc, { mode: resumeChoice.mode }),
             });
         } else if (resumeChoice.source === 'builder') {
             parts.push({
                 which: 'resume', gated: true, employer: doc.employer_name || null, kind: 'resume_builder',
-                // Emails always go out as a single page — the rule executeSendWork set for the same Builder résumé.
-                render: () => rb().buildResumePdfForRegion(userId, 'generic', 'onepage'),
+                // ⚠️ THE SEND PAGE NOW CHOOSES (owner, 2026-09-20: "In the attachment section there should be option of
+                // selecting A4 selection and One page selection too"). 'onepage' — the rule executeSendWork set for the
+                // same Builder résumé — stays as the fallback for a client that sends no choice at all.
+                mode: resumeChoice.mode || 'onepage',
+                render: () => rb().buildResumePdfForRegion(userId, 'generic', resumeChoice.mode || 'onepage'),
             });
         } else if (resumeChoice.source === 'uploaded') {
             const up = await uploadedResumeOf(user);
@@ -701,10 +741,13 @@ async function sendLetterEmail(req, res) {
                     });
                 } else if (part.kind === 'resume_doc' || part.kind === 'resume_builder') {
                     const r = part.result;
+                    // The row records the layout that was actually RENDERED: the renderer's own answer, else the size
+                    // this part was built with (the Builder lane's renderer does not report one back).
+                    const rmode = r.mode || part.mode || '';
                     await history.record(userId, {
                         kind: 'resume', employer: part.employer, templateId: r.template, templateName: r.template,
-                        format: 'pdf', mode: r.mode || (part.kind === 'resume_builder' ? 'onepage' : ''), fileName: r.fileName,
-                        payload: part.kind === 'resume_doc' ? { template: r.template, mode: r.mode, docId: Number(part.rdoc.id) } : { template: r.template, mode: 'onepage' },
+                        format: 'pdf', mode: rmode, fileName: r.fileName,
+                        payload: part.kind === 'resume_doc' ? { template: r.template, mode: r.mode, docId: Number(part.rdoc.id) } : { template: r.template, mode: rmode },
                     }, req);
                 }
             } catch { /* a history row is a convenience; the message is sent */ }

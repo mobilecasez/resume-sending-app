@@ -1316,8 +1316,19 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     rendered.pdf = 0; rendered.docx = 0; rendered.rich = 0;
     r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'ats_pro', docId: bdoc.id });
     ok('pdf docId: renderPdf gets brandColor + brandFont beside the mode', r.statusCode === 200 && rendered.pdfArgs.opts.brandColor === '#c0392b' && rendered.pdfArgs.opts.brandFont.family === 'Poppins' && rendered.pdfArgs.opts.mode === 'a4', rendered.pdfArgs && rendered.pdfArgs.opts);
-    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bdoc.id });
-    ok('pdf docId generic: the brand colour and the Google font family reach the PDFKit generator', r.statusCode === 200 && rendered.richArgs[4] === '#c0392b' && rendered.richArgs[5] === 'Poppins', rendered.richArgs && rendered.richArgs.slice(4));
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bdoc.id, mode: 'onepage' });
+    ok('pdf docId generic at One Page: the brand colour and the Google font family reach the PDFKit generator', r.statusCode === 200 && rendered.richArgs[4] === '#c0392b' && rendered.richArgs[5] === 'Poppins', rendered.richArgs && rendered.richArgs.slice(4));
+    // ⚠️ AND AT A4 THE SAME BRAND REACHES THE HTML TWIN INSTEAD (2026-09-20). The PDFKit generator can only build one
+    // page sized to the letter's content, so it cannot answer A4 at all; the twin — the markup this design's own
+    // gallery card is a picture of — is what renders the pages, in the same brand, with the same profile photo its
+    // free preview uses (renderLetterPdfFile's `genericA4`).
+    rendered.pdfArgs = null; rendered.rich = 0;
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bdoc.id, mode: 'a4' });
+    ok('⚠️ pdf docId generic at A4: the brand + the photo go to the HTML twin, and the PDFKit generator is not called at all',
+      r.statusCode === 200 && rendered.rich === 0 && rendered.pdfArgs && rendered.pdfArgs.id === 'standard'
+      && rendered.pdfArgs.opts.mode === 'a4' && rendered.pdfArgs.opts.brandColor === '#c0392b'
+      && rendered.pdfArgs.opts.brandFont.family === 'Poppins' && 'photo' in rendered.pdfArgs.opts,
+      rendered.pdfArgs && rendered.pdfArgs.opts);
     r = await call(CL.generateCoverLetterTemplateDocx, 7, { template: 'german', docId: bdoc.id });
     ok('docx docId: buildCoverLetterDocx gets opts.brand = { accent, font }', r.statusCode === 200 && rendered.docxArgs.opts.brand.accent === '#c0392b' && rendered.docxArgs.opts.brand.font.family === 'Poppins' && rendered.docxArgs.opts.template === 'german', rendered.docxArgs && rendered.docxArgs.opts);
     ok('docx history brandColor = the effective accent', hist[hist.length - 1].payload.brandColor === '#c0392b', hist[hist.length - 1].payload.brandColor);
@@ -1589,15 +1600,21 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'ats_pro', docId: bad.id });
     ok('⚠️ the PDF of the stored Airbus letter (docId) prints the repaired letter, and the history row freezes the repaired text',
       r.statusCode === 200 && rendered.pdfArgs.data.bodyHtml === DOC15_CLEAN && hist.length === 1 && hist[0].payload.coverLetterHtml === DOC15_CLEAN, { status: r.statusCode, body: r.body });
-    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bad.id });
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bad.id, mode: 'onepage' });
     ok('⚠️ …the Original (PDFKit) too', r.statusCode === 200 && rendered.rich === 1 && rendered.richArgs[1] === DOC15_CLEAN, rendered.richArgs && String(rendered.richArgs[1]).slice(-80));
+    // …and the same letter at A4, which renders through the twin, is repaired on that road too.
+    rendered.pdf = 0;
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: bad.id, mode: 'a4' });
+    ok('⚠️ …and the Original at A4 (the HTML twin) prints the repaired letter as well',
+      r.statusCode === 200 && rendered.pdf === 1 && rendered.pdfArgs.data.bodyHtml === DOC15_CLEAN, rendered.pdfArgs && String(rendered.pdfArgs.data.bodyHtml).slice(-80));
     r = await call(CL.generateCoverLetterTemplateDocx, 7, { template: 'german', docId: String(bad.id) });
     ok('⚠️ …and the Word file', r.statusCode === 200 && rendered.docx === 1 && rendered.docxArgs.data.bodyHtml === DOC15_CLEAN, r.body);
     r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', coverLetterHtml: DOC15_STORED, companyName: 'Airbus' });
     ok('⚠️ a frozen copy re-downloaded through the classic lane (download_history 13 is one) reaches the Original repaired',
       r.statusCode === 200 && rendered.rich === 2 && rendered.richArgs[1] === DOC15_CLEAN, r.body);
-    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: clean.id });
-    ok('a clean letter reaches the Original as the very same string', r.statusCode === 200 && rendered.richArgs[1] === clean.payload.coverLetterHtml);
+    rendered.rich = 0;
+    r = await call(CL.generateCoverLetterTemplatePdf, 7, { template: 'standard', docId: clean.id, mode: 'onepage' });
+    ok('a clean letter reaches the Original as the very same string', r.statusCode === 200 && rendered.rich === 1 && rendered.richArgs[1] === clean.payload.coverLetterHtml);
   }
 
   console.log('── helpers ──');

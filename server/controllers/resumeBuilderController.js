@@ -2380,6 +2380,11 @@ async function generateAI(req, res) {
         // The wizard's one end that is a build: charged AND saved (both are true on this line). Never a "ready" screen alone.
         if (wizardBuild && charged && savedRow) {
             await onboarding.finish(userId).catch((e) => console.error(`[resumeBuilder] ⚠️ user ${userId}'s wizard build is saved and paid for but not marked finished:`, e.message));
+            // ⚠️ AND THE SCREEN THEY ARE ABOUT TO OPEN IS WARMED (2026-09-20). "See my designs" goes to Home, whose
+            // five cards are all keyed on this row's updated_at — so this save is the instant every one of them
+            // went cold. Started here, they render while the "Your resume is ready" screen is up, and never twice
+            // (thumbFlights). NOT awaited: nothing may stand between a paid, saved résumé and its answer.
+            prerenderBaseCards(userId);
         }
 
         return res.json({ success: true, resumeData, cached: false, tailoredFor: passEmployer });
@@ -4719,6 +4724,11 @@ async function listTemplates(req, res) {
 // small 480-px JPEG — the big page is never shipped where a card is enough. PREVIEW_REV is in the
 // key, so a card cut from a 1x page is never served again; the old files age out through pruneThumbs.
 const THUMB_W = 480;
+// ⚠️ ONE RENDER PER FILE, HOWEVER MANY ASK (2026-09-20). This cache had no in-flight map, so the build's
+// pre-render (prerenderBaseCards) and the Home load that follows it seconds later rendered the SAME five
+// designs twice, serially, on a single-process chromium — the pre-render made the wait longer, not shorter.
+// The doc-page cache below has had one since it shipped (docThumbFlights); this is the same idea for cards.
+const thumbFlights = new Map();   // absolute path of a card → Promise<card>
 async function cachedThumb(userId, row, tplId, tag = '') {
     // ⚠️ The profile photo is rendered INTO the card but used to be absent from the key, so
     // replacing a photo never invalidated anything — Home kept serving the old face until the
@@ -4732,17 +4742,25 @@ async function cachedThumb(userId, row, tplId, tag = '') {
         const buf = await fs.readFile(file);
         return { id: tplId, image: `data:${imageMimeOf(buf)};base64,${buf.toString('base64')}`, cached: true, file: path.basename(file) };
     } catch {}
-    const { photo, photoRect } = await photosFor(userId);
-    const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === tplId));
-    const full = Buffer.from(pv.image.split(',')[1], 'base64');
-    let thumb = full;
-    try {
-        const sharp = require('sharp');
-        thumb = await sharp(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer();
-    } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
-    await fs.writeFile(file, thumb).catch(() => {});
-    return { id: tplId, image: `data:${imageMimeOf(thumb)};base64,${thumb.toString('base64')}`,
-             width: pv.width, height: pv.height, cached: false, file: path.basename(file) };
+    const going = thumbFlights.get(file);
+    if (going) return going;
+    const flight = (async () => {
+        const { photo, photoRect } = await photosFor(userId);
+        const [pv] = await renderPreviews(row.resume_data, { photo, photoRect }, TEMPLATES.filter((t) => t.id === tplId));
+        const full = Buffer.from(pv.image.split(',')[1], 'base64');
+        let thumb = full;
+        try {
+            const sharp = require('sharp');
+            thumb = await sharp(full).resize({ width: THUMB_W }).jpeg({ quality: 80 }).toBuffer();
+        } catch { /* sharp unavailable → serve full-size; heavier but correct */ }
+        await fs.writeFile(file, thumb).catch(() => {});
+        return { id: tplId, image: `data:${imageMimeOf(thumb)};base64,${thumb.toString('base64')}`,
+                 width: pv.width, height: pv.height, cached: false, file: path.basename(file) };
+    })();
+    thumbFlights.set(file, flight);
+    // A failed render is the caller's to report (homeCards logs and skips the id) — never an unhandled rejection.
+    flight.finally(() => { if (thumbFlights.get(file) === flight) thumbFlights.delete(file); }).catch(() => {});
+    return flight;
 }
 
 // Drop every cached thumb for this user that is not in `keep` — one file per template per
@@ -4881,6 +4899,84 @@ async function hasResumeToBuildFrom(userId, builderData, req) {
     }
 }
 
+// The deck Home opens on when the client names no designs: the user's own pick first (added by homeCards), then a
+// spread across visually distinct families. ⚠️ ONE LIST, so the build's pre-render warms exactly what the first load
+// asks for — two copies of it would mean rendering five designs at build time and five different ones on open.
+const HOME_CARD_IDS = ['banner', 'rightrail', 'elegant', 'mono', 'timeline'];
+// ⚠️ Capped at 5 — the renderer recycles its browser every 3 pages (single-process chromium dies after ~4-5).
+const HOME_CARD_MAX = 5;
+// How long the FIRST load (no ?ids) may spend rendering before it answers with what it has. A warm read is ~50 ms,
+// so this only ever bites a cold cache: it lets one cold render through (~4.2 s) and defers the rest.
+const CARD_RENDER_BUDGET_MS = 3500;
+// What a render that ran out of budget resolves as — never a card, never confusable with one.
+const BUDGET_OUT = Symbol('home card budget spent');
+/**
+ * A card render raced against what is LEFT of the budget: the card when it lands in time, else BUDGET_OUT. The
+ * render itself runs on into the cache (cachedThumb keeps it in thumbFlights), so the background pass and the
+ * deck's own hydrator join it rather than starting it again — nothing is thrown away by giving up on it here.
+ *
+ * ⚠️ THE BUDGET HAS TO BOUND THE REQUEST, NOT THE GAPS BETWEEN RENDERS (2026-09-20 review). Consulted only between
+ * renders, it let a whole COLD render (~4.2 s) start on the last 300 ms of the budget — and the build's own
+ * pre-render makes that the normal case rather than a rare one: the first card joins a render already going, so
+ * little of the budget has been spent when it lands, and the second design is then started in full. Measured on
+ * the owner's build (2026-09-20): a request given 3.5 s answered in ~8.4 s, i.e. slower WITH the head start than
+ * without it. A render already in flight is still joined — it is only ever waited for within the budget.
+ */
+function withinBudget(p, ms) {
+    p.catch(() => {});                       // abandoned when the budget runs out → never an unhandled rejection
+    let timer = null;
+    return Promise.race([p, new Promise((resolve) => {
+        timer = setTimeout(() => resolve(BUDGET_OUT), Math.max(0, ms));
+        if (timer.unref) timer.unref();
+    })]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+/**
+ * The designs the first load deferred, rendered after its answer went out — so the deck's own hydration (which asks
+ * for them by id, unbounded) finds them on disk, or joins the render already going (thumbFlights). Serial, because
+ * the renderer is; never throws, because nobody is waiting on it.
+ */
+function renderRestOfHomeCards(userId, row, ids, tag, keep) {
+    (async () => {
+        const files = [...(keep || [])];
+        for (const id of ids) {
+            try { files.push((await cachedThumb(userId, row, id, tag)).file); }
+            catch (e) { console.warn('[resumeBuilder] home card background render failed for', id, e.message); }
+        }
+        if (files.length) pruneThumbs(userId, files);
+    })().catch((e) => console.warn('[resumeBuilder] home card background render skipped:', e.message));
+}
+
+/**
+ * Right after a wizard build is charged and saved: render Home's default cards into the cache, so "See my designs"
+ * lands on a screen whose pages are already on disk.
+ *
+ * ⚠️ THE EMPLOYER-DOC LANE HAS DONE THIS SINCE IT SHIPPED (prerenderDocPages) AND THE BASE LANE NEVER DID — which is
+ * why the owner's wizard build (2026-09-20) was followed by ~22 s of cold renders on Home while he looked at a deck
+ * of the SAMPLE résumé. Every card is keyed on user_resumes.updated_at, so a build gives all five of them new
+ * filenames: a saved build is precisely the moment they are all cold.
+ *
+ * ⚠️ FIRE-AND-FORGET, AFTER THE ANSWER. Nothing here may delay "Your resume is ready" — the résumé is written, paid
+ * for and saved before this starts, and a failure costs a slower first open, never a charge or a lost document.
+ * The renders it starts are shared with whatever asks for them next (thumbFlights), so this can only ever be early
+ * work, never double work.
+ */
+function prerenderBaseCards(userId) {
+    (async () => {
+        await ensureResumeTable();
+        const row = await dbConfig.get('SELECT resume_data, updated_at, preferred_template FROM user_resumes WHERE user_id = $1', [userId]);
+        if (!row || !row.resume_data) return;
+        const pref = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : null;
+        const ids = [...new Set([pref, ...HOME_CARD_IDS].filter((id) => id && TEMPLATE_IDS.includes(id)))].slice(0, HOME_CARD_MAX);
+        const files = [];
+        for (const id of ids) {
+            try { files.push((await cachedThumb(userId, row, id, '')).file); }
+            catch (e) { console.warn('[resumeBuilder] home card pre-render failed for', id, e.message); }
+        }
+        if (files.length) pruneThumbs(userId, files);
+    })().catch((e) => console.warn('[resumeBuilder] home card pre-render skipped:', e.message));
+}
+
 // GET /api/resume-builder/home-cards?ids=banner,rightrail,mono
 // The employer-Home carousel: the user's REAL resume rendered in several designs. Every card is
 // disk-cached per resume version, so the first open after a (re)generate pays the renders and
@@ -4907,32 +5003,85 @@ async function homeCards(req, res) {
         }
         const asked = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
         const pref = row.preferred_template && TEMPLATE_IDS.includes(row.preferred_template) ? row.preferred_template : null;
-        // What the client ASKED for wins, then the user's own pick, then a default spread across
-        // visually distinct families — de-duped and cut to 5.
-        // ⚠️ Order is load-bearing: `pref` used to be prepended, so a full 5-id request silently
-        // lost its 5th card to the slice, and the client marks any id missing from the response as
-        // permanently dead — that slot stayed blank forever. Never push anything ahead of `asked`.
-        // On the first load `asked` is empty (no ?ids), so `pref` still leads.
-        const fallback = ['banner', 'rightrail', 'elegant', 'mono', 'timeline'];
-        const ids = [...new Set([...asked, pref, ...fallback].filter((id) => id && TEMPLATE_IDS.includes(id)))].slice(0, 5);
+        // ⚠️ AN IDS REQUEST IS ANSWERED WITH EXACTLY THOSE IDS (2026-09-20). The user's pick and the default spread
+        // used to be appended to EVERY request, so the deck's hydration — which asks for the handful of designs
+        // either side of the one on screen — rendered up to five extra designs nobody had asked for and shipped
+        // ~800 KB of base64 the client then threw away (it keeps only the ids in its own `want`). The first load
+        // (no ?ids) is unchanged: the user's own pick still leads, then a spread across visually distinct families.
+        // ⚠️ Order is load-bearing within `asked`: nothing may be pushed ahead of it, because the client marks any
+        // id it asked for and did not get back as permanently dead — that slot stays blank until the next reload.
+        const ids = asked.length
+            ? [...new Set(asked.filter((id) => TEMPLATE_IDS.includes(id)))].slice(0, HOME_CARD_MAX)
+            : [...new Set([pref, ...HOME_CARD_IDS].filter((id) => id && TEMPLATE_IDS.includes(id)))].slice(0, HOME_CARD_MAX);
+        // ⚠️ THE FIRST LOAD IS BOUNDED; AN IDS REQUEST IS NOT (2026-09-20). temp/ is wiped by every deploy, so the
+        // first Home open after a release — and the first after any build, which gives all five cards a new key —
+        // paid five COLD chromium renders, measured at ~4.2 s each: ~22 s with nothing on screen. That is the
+        // owner's "it took some time to load the resume". Past the budget the rest of the designs are named in
+        // `pending` instead of `cards` (see below); the deck draws those as skeletons and its hydrator asks for them
+        // BY ID, by which time they are on disk or already rendering (renderRestOfHomeCards below, shared through
+        // thumbFlights).
+        // ⚠️ NEVER ON AN IDS REQUEST — see above: an id asked for and answered without a picture is marked dead by
+        // the client, including by the builds already in the store.
+        const deadline = asked.length ? Infinity : Date.now() + CARD_RENDER_BUDGET_MS;
+        const cardOf = (id, image) => {
+            const meta = TEMPLATES.find((t) => t.id === id) || {};
+            return { id, name: meta.name || id, accent: meta.accent || '#4F8DFF', ats: meta.ats || null, image };
+        };
         const cards = [];
         const files = [];
+        const later = [];
+        // ⚠️ NOTHING IS DEFERRED UNTIL SOMETHING HAS ACTUALLY BEEN DRAWN (2026-09-20 review). The deadline is only
+        // looked at BETWEEN renders, so a renderer that fails SLOWLY — renderPreviews retries once with a fresh
+        // browser, which easily outlasts the budget — used to spend the whole budget on its first failure and then
+        // defer every remaining design: a 200 whose every card was image-less. The client reads that as a deck, not
+        // as a failure (no "Couldn't load your designs · Tap to retry"), draws blank pages, and its hydrator then
+        // asks for those ids and marks them dead for the session when they come back empty again. A budget may
+        // shorten a working first load; it may not dress a broken renderer up as one.
+        let drawn = false;
+        let spent = false;                                     // a render gave up on the budget: defer the rest
         for (const id of ids) {
+            if (drawn && (spent || Date.now() > deadline)) { later.push(id); continue; }
             try {
-                const c = await cachedThumb(userId, row, id, tag);
-                const meta = TEMPLATES.find((t) => t.id === id) || {};
-                cards.push({ id, name: meta.name || id, accent: meta.accent || '#4F8DFF', ats: meta.ats || null, image: c.image });
+                const p = cachedThumb(userId, row, id, tag);
+                // ⚠️ The FIRST picture is waited for however long it takes (drawn, above): a budget may shorten a
+                // working load, it may not dress a broken renderer up as one. Every one after it is bounded by
+                // what is left of the budget — withinBudget; an ids request has none (deadline Infinity).
+                const c = drawn && Number.isFinite(deadline) ? await withinBudget(p, deadline - Date.now()) : await p;
+                if (c === BUDGET_OUT) { spent = true; later.push(id); continue; }
+                cards.push(cardOf(id, c.image));
+                if (c.image) drawn = true;
                 files.push(c.file); // ⚠️ never recompute this key — pruneThumbs deletes anything not in the list
             } catch (e) { console.warn('[resumeBuilder] homeCards render failed for', id, e.message); }
         }
-        if (!cards.length) return res.status(500).json({ error: 'Could not render previews.' });
-        pruneThumbs(userId, files);
+        // Nothing drawn is a broken renderer, whatever is queued behind it — `later` is no evidence of a picture.
+        if (!cards.length || !cards.some((c) => c.image)) return res.status(500).json({ error: 'Could not render previews.' });
+        if (later.length) renderRestOfHomeCards(userId, row, later, tag, files);
+        else pruneThumbs(userId, files);
+        // ⚠️ `cards` HOLDS ONLY DESIGNS THAT WERE ACTUALLY DRAWN; THE DEFERRED ONES RIDE IN `pending` (2026-09-20
+        // review). The budget above is a protocol change, and it was being made to clients that cannot survive it:
+        // the builds ALREADY IN THE STORE mark any card they are handed without a picture as permanently dead the
+        // first time their hydrator asks for it and misses (no retry there — `misses` is this release's), and when
+        // /resume-builder/templates failed on that load they never apply a hydrated picture to a lead card at all.
+        // The first load would have handed those builds up to four such cards on every cold open — and temp/ is
+        // wiped by every deploy, so the first open after a release is exactly that. `pending` is a key an old
+        // client does not read: it simply sees a shorter `cards` and fills the rest of the deck from the catalogue
+        // slots it already draws for the other 68 designs. This release's client concatenates the two and gets the
+        // deck it would have got anyway, in the order chosen above: once a design is deferred every design after it
+        // is too (`spent`, and a deadline only moves further into the past), so the deferred ones are a SUFFIX of
+        // that list and appending them puts every design back exactly where it was chosen to go.
+        const pending = later.map((id) => cardOf(id, null));
         // `preferred` names a card in THIS response, not the stored pick: an ids-scoped request may
         // legitimately not render the stored pick (and a render can fail), so fall back to the first
         // card actually returned rather than pointing at an id the payload does not contain.
         const preferred = pref && cards.some((c) => c.id === pref) ? pref : cards[0].id;
         const hasResume = await hasResumeToBuildFrom(userId, sample ? null : row.resume_data, req);
-        return res.json({ success: true, preferred, hasResume, cards, sample });
+        // ⚠️ WHICH RÉSUMÉ THESE PAGES ARE OF (2026-09-20 review). The client keeps hydrated pictures in a store of
+        // its own (`shots`) that only a post-wizard reload clears, so every OTHER résumé-changing path — an edit in
+        // the builder, a new photo, a pull-to-refresh after either — repainted the deck from pictures of the résumé
+        // that had just been replaced. Same ingredients as the thumb cache key minus the design (cachedThumb), so a
+        // change that gives the cards new files gives this a new value: the client drops what it cached and asks again.
+        const version = `${new Date(row.updated_at || 0).getTime()}:${await photoVersion(userId)}:${tag}`;
+        return res.json({ success: true, preferred, hasResume, cards, pending, version, sample });
     } catch (e) {
         console.error('[resumeBuilder] homeCards error:', e.message);
         return res.status(500).json({ error: 'Could not render previews.' });

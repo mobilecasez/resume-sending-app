@@ -1840,6 +1840,22 @@ async function runPostgresMigrations(db) {
         }
         console.log('✅ Migration 049: users.admin_alert_token + users.push_token_moved_at done');
 
+        // ── Migration 050: WHAT A CONNECTED MAILBOX MAY ACTUALLY DO ──────────────────────────────
+        // The owner connected Gmail, wrote a whole message, tapped Send and was told to reconnect (build 210,
+        // 2026-09-20, user 618). Google's granular consent returns access AND refresh tokens even when the user leaves
+        // "Send email on your behalf" unticked, and nothing read `tokenData.scope`, so an account that could only sign
+        // in was stored as a mailbox. Three nullable columns: users.google_granted_scopes / users.microsoft_granted_scopes
+        // (what the grant actually contained) and users.google_token_client (the exact OAuth client id that minted the
+        // refresh token, so a refresh never goes to the wrong client — see server/services/mailScopes.js).
+        // ⚠️ NO BACKFILL, AND NULL MEANS "UNKNOWN, ASSUME SENDABLE". All 366 Google accounts connected before this keep
+        // sending exactly as they do now and fill the columns on their next connect. Defined ONCE in mailScopes.js,
+        // which also adds them lazily (this migration races app.listen).
+        {
+            const { COLUMNS_SQL: MAIL_SCOPE_COLUMNS_SQL } = require('./server/services/mailScopes');
+            for (const sql of MAIL_SCOPE_COLUMNS_SQL) await col(sql);
+        }
+        console.log('✅ Migration 050: users.google_granted_scopes + google_token_client + microsoft_granted_scopes done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

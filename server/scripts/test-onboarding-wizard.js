@@ -79,7 +79,7 @@ const fnBodyOf = (src, name) => {
   const mod = { exports: {} };
   const req = (id) => { if (id in MOCKS) return MOCKS[id]; throw new Error('unmocked require: ' + id); };
   const ctx = vm.createContext({ console: { log() {}, warn() {}, error() {} }, setTimeout: vTimeout, clearTimeout() {}, Date: VDate, JSON, Math, Promise,
-    String, Number, Array, Object, Error, encodeURIComponent, fetch: fakeFetch, FormData: FakeForm });
+    String, Number, Array, Object, Error, encodeURIComponent, fetch: fakeFetch, FormData: FakeForm, AbortController });
   vm.runInContext(`(function (module, exports, require) {\n${js}\n})`, ctx)(mod, mod.exports, req);
   const S = mod.exports;
   const posts = (re) => net.calls.filter((c) => c.method === 'POST' && re.test(c.url));
@@ -196,7 +196,41 @@ const fnBodyOf = (src, name) => {
   ok('⚠️ the last setup is cached PER ACCOUNT — the next account to sign in never inherits a "Pick up" button',
     mine && mine.wizard && mine.wizard.state === 'open' && theirs === null, { mine, theirs });
   S.markProfileChanged();
-  ok('markProfileChanged is consumed once (Home reloads its pages once after a build)', S.consumeProfileChanged() === true && S.consumeProfileChanged() === false);
+  ok('markProfileChanged is consumed once (Home reloads its pages once after a build)',
+    S.consumeProfileChanged().changed === true && S.consumeProfileChanged().changed === false);
+  // ⚠️ 2026-09-20: the flag alone was not enough. Home read `setup` at the very END of its load — behind
+  // /home-cards, i.e. behind the ~22 s of cold renders the build had just caused — so it went on offering
+  // "Pick up where you left off" over a résumé the server had called `finished` the moment it was saved. The
+  // wizard reads the profile while "Your resume is ready" is up and hands the answer over with the flag.
+  const FIN = { profile: true, resume: true, photo: true, signature: true, complete: true,
+    wizard: { state: 'finished', left: [], step: 3, stepKey: 'build', done: {}, lane: null, notes: '', skipped: { photo: false, signature: false }, cv: null, build: null, builtResume: true, closedBy: null } };
+  S.markProfileChanged();
+  await S.handOverSetup(FIN);
+  const handed = S.consumeProfileChanged();
+  ok('⚠️ …and it carries the server\'s own answer, so Home\'s FIRST frame after the build is already "finished"',
+    handed.changed === true && !!handed.setup && handed.setup.wizard.state === 'finished'
+    && S.makeYoursOf(handed.setup).complete === true, handed);
+  const after = S.consumeProfileChanged();
+  ok('…read exactly once: the handed-over setup goes with the flag it belongs to', after.changed === false && after.setup === null, after);
+  // ⚠️ A snapshot that lands AFTER Home has already consumed the flag must not re-arm it: that is a second full
+  // reload (pages cleared and all) for a screen that is already showing this résumé.
+  await S.handOverSetup(FIN);
+  ok('⚠️ handing over a setup NEVER re-arms a consumed flag (that would be a second reload)',
+    S.consumeProfileChanged().changed === false);
+  // ⚠️ REVIEW 2026-09-20 — KEYED BY ACCOUNT, for the reason SETUP_CACHE above is: this is module state and App.js's
+  // logout does not reload the bundle. The flag alone only ever cost a redundant reload; this carries an ANSWER, so
+  // A's finished wizard must never be painted for whoever signs in next.
+  who.account = 'u:616';
+  S.markProfileChanged();
+  await S.handOverSetup(FIN);
+  const mineHand = S.consumeProfileChanged();
+  who.account = 'u:700';
+  S.markProfileChanged();
+  await S.handOverSetup(FIN);
+  who.account = 'u:616';
+  const theirsHand = S.consumeProfileChanged();
+  ok('⚠️ the handed-over setup says WHOSE it is — the next account to sign in never inherits it',
+    mineHand.who === 'u:616' && theirsHand.who === 'u:700' && theirsHand.setup !== null, { mineHand: mineHand.who, theirsHand: theirsHand.who });
 
   console.log('\n── 4 · ⚠️ Home\'s button: "Pick up where you left off" while the wizard is open ──');
   const base = { profile: true, resume: true, photo: true, signature: true, complete: true };
@@ -253,11 +287,33 @@ const fnBodyOf = (src, name) => {
   const home = strip(R('components/employer-home/EmployerHome.tsx'));
   ok('Home draws the button from makeYoursOf(setup) — the rule above, run, not re-derived', /const \{ complete, started, left \} = makeYoursOf\(setup\);/.test(home));
   ok('"Pick up where you left off" when something is left and it was started; the wizard is the destination', /left\.length && started \? 'Pick up where you left off' : 'Make your Resume'/.test(home) && /nav\(\)\?\.push\?\.\('\/\(onboarding\)'\)/.test(home));
-  ok('⚠️ setup is re-read on EVERY focus, outside load()\'s 60 s throttle (coming back within a minute showed the old "things left")',
-    /const refreshSetup = useStableFn\(/.test(home) && /load\(\)\.then\(\(r\) => \{ if \(r === undefined && focusCount\.current > 1\) refreshSetup\(\); \}\)/.test(home));
-  ok('…back from a wizard that built the résumé, the pages are reloaded too (consumeProfileChanged → load(true, true))', /if \(!loaders && consumeProfileChanged\(\)\) load\(true, true\);/.test(home));
+  // ⚠️ RETARGETED 2026-09-20 — THIS ASSERTION PINNED THE BUG. It required the setup read to be the fallback branch
+  // of load()'s own promise (`if (r === undefined …) refreshSetup()`), so the ONLY path that could clear "Pick up
+  // where you left off" after a build ran either inside load() (last line, behind /home-cards) or not at all: the
+  // branch a post-build focus takes is the OTHER one. It is now asked for on every focus, in parallel with load().
+  // (Home has more than one focus effect; this is the one that decides what a return from the wizard does.)
+  const focusBody = (home.match(/useFocusEffect\(useCallback\(\(\) => \{\s*const built = [\s\S]*?\n  \}, \[[^\]]*\]\)\);/) || [''])[0];
+  ok('⚠️ setup is re-read on EVERY focus, IN PARALLEL with load() — never inside it, never behind the deck',
+    /const refreshSetup = useStableFn\(/.test(home) && /\n    refreshSetup\(\);/.test(focusBody)
+    && focusBody.indexOf('refreshSetup();') < focusBody.indexOf('load(')
+    && !/load\(\)\.then\(\(r\) => \{ if \(r === undefined && focusCount\.current > 1\) refreshSetup\(\); \}\)/.test(home), focusBody.slice(0, 200));
+  ok('⚠️ …and the load() that used to end by reading it does not any more (that read sat behind ~22 s of cold renders)',
+    !/loadSetup\(\)\.then\(\(st\) => \{ if \(st && alive\.current\) setSetup\(st\); \}\)/.test(home));
+  ok('…back from a wizard that built the résumé, the pages are reloaded too (consumeProfileChanged → load(true, true))',
+    /const built = loaders \? \{ changed: false, setup: null, who: null \} : consumeProfileChanged\(\);/.test(home)
+    && /if \(built\.changed\) load\(true, true\);\s*else load\(\);/.test(home));
+  ok('⚠️ …and the wizard\'s handed-over setup is applied on ARRIVAL, before anything is asked for',
+    /if \(built\.setup\) \{/.test(focusBody)
+    && focusBody.indexOf('if (built.setup) {') < focusBody.indexOf('refreshSetup();'));
+  // ⚠️ REVIEW 2026-09-20: applied ONLY to the account it was read for (module state; a sign-out does not reload the
+  // bundle), and only while no server answer has landed since — the confirming read is SecureStore, not the network.
+  ok('…to that account alone, and never over a newer answer',
+    /signedInAccount\(\)\s*\.then\(\(who\) => \{ if \(who && who === built\.who && alive\.current && setupRead\.current === at\) setSetup\(handed\); \}\)/.test(home)
+    && !/if \(built\.setup\) setSetup\(built\.setup\);/.test(home)
+    && /if \(st && alive\.current\) \{ setupRead\.current\+\+; setSetup\(st\); \}/.test(home));
   ok('⚠️ a failed read never hides the button (only an answer replaces an answer), and the cached setup paints first',
-    /loadSetup\(\)\.then\(\(st\) => \{ if \(st && alive\.current\) setSetup\(st\); \}\)/.test(home) && !/loadSetup\(\)\.then\(\(st\) => setSetup\(st\)\)/.test(home)
+    /const st = await live\.current\.loadSetup\(\)\.catch\(\(\) => null\);\s*if \(st && alive\.current\) \{ setupRead\.current\+\+; setSetup\(st\); \}/.test(home)
+    && !/loadSetup\(\)\.then\(\(st\) => setSetup\(st\)\)/.test(home)
     && /cachedSetup\(\)\.then\(\(st\) => \{ if \(st && alive\.current\) setSetup\(\(cur\) => cur \|\| st\); \}\)/.test(home));
 
   console.log('\n── 5 · the wizard: nothing it was given is asked for twice ──');
@@ -519,6 +575,15 @@ const fnBodyOf = (src, name) => {
   const settle = fnBodyOf(wiz, 'settle');
   ok('an unreadable CV sends them back to the upload with the server\'s sentence; "late" keeps the job for Keep waiting',
     /r\.reason === 'cv_unreadable'[\s\S]{0,200}goTo\(2\)/.test(settle) && /if \(r\.kind === 'late'\) \{ setJoinJob\(r\.jobId\);/.test(settle));
+  // ⚠️ THE READ THAT MAKES "YOUR RESUME IS READY" TRUE ON HOME TOO (2026-09-20). The flag has to be set
+  // synchronously — "See my designs" can be tapped in the next frame, and a focus that finds no flag leaves
+  // Home's 60 s throttle in charge, i.e. the old pages stay. The profile read that follows it hands Home the
+  // finished `setup` AND rewrites the cached copy a remounted Home paints from (writeCachedSetup, inside
+  // fetchProfileSnapshot) — which still said the wizard was open.
+  ok('⚠️ a finished build marks the change at once and then hands Home the server\'s own answer',
+    /markProfileChanged\(\);/.test(settle) && /fetchProfileSnapshot\(\)\.then\(\(s\) => \{ if \(s\) handOverSetup\(s\.setup\); \}\)\.catch\(\(\) => \{\}\);/.test(settle)
+    && settle.indexOf('markProfileChanged();') < settle.indexOf('fetchProfileSnapshot()')
+    && !/await fetchProfileSnapshot\(\)/.test(settle));
   const lateAt = settle.indexOf("if (r.kind === 'late')");
   ok('⚠️ a build that ENDED (refused / failed) is never followed again — joinJob is cleared, so "Add more" + back does not replay the old refusal',
     lateAt >= 0 && /setJoinJob\(null\);/.test(settle.slice(lateAt + 30)) && settle.slice(lateAt + 30).indexOf('setJoinJob(null);') < settle.slice(lateAt + 30).indexOf('setGenErr(r.message)'));
@@ -629,6 +694,153 @@ const fnBodyOf = (src, name) => {
     && /if \(waiting\) waiting\(result\);/.test(sigSrc), sigSrc.slice(0, 200));
   ok('…and a second commit while an export or its upload is going JOINS it (never two uploads of the same ink)',
     /if \(inflight\.current\) return inflight\.current;/.test(studio));
+
+  // ⚠️ THE OWNER ON BUILD 210 (2026-09-20): "it shows me an error message that the free plan on this device was
+  // already used by another account... and then i click on see plans and subscribe with one and then come back...
+  // it still shows me that error even though i am on a purchased plan now... and instead of starting the build
+  // resume process from start i should be able to do that from here". Production: job ab4c5fcc was refused at the
+  // gate in 25 ms (nothing charged — usage_ledger has no row for it), a plan was granted three minutes later, and
+  // the next build succeeded — but only because he walked the whole wizard again. The server was never wrong (a
+  // plan beats a claimed device; test-free-plan-entitlements.js pins that); the screen simply kept one server
+  // answer in React state and never asked again. This section pins the re-read and the way on.
+  console.log('\n── 7 · ⚠️ a plan refusal is re-read, and it is not a dead end ──');
+  net.calls.length = 0;
+  net.route = (c) => (/generation-gate/.test(c.url) ? resp(200, { covered: true, via: 'plan', credits: null, reason: null }) : null);
+  const cov = await S.checkBuildCovered();
+  const gateCall = net.calls.find((c) => /generation-gate/.test(c.url));
+  ok('checkBuildCovered asks the gate the BUILD asks (POST /resume-builder/generation-gate), as this device and this wizard',
+    JSON.stringify(cov) === JSON.stringify({ covered: true, reason: null })
+    && !!gateCall && gateCall.method === 'POST' && gateCall.headers['x-device-id'] === 'dev-616'
+    && hdr(gateCall) === 'onboarding' && gateCall.headers.Authorization === 'Bearer tok', { cov, gateCall });
+  ok('⚠️ …and it is a READ: no employer, no regenerate, and generate-ai is never touched (a re-check must not spend)',
+    JSON.stringify(gateCall && gateCall.body) === '{}' && !net.calls.some((c) => /generate-ai/.test(c.url)), net.calls.map((c) => c.url));
+  net.route = (c) => (/generation-gate/.test(c.url) ? resp(200, { covered: false, via: null, credits: null, reason: 'quota_exhausted' }) : null);
+  ok('a refusal comes back as covered:false with its reason — the banner must stand',
+    JSON.stringify(await S.checkBuildCovered()) === JSON.stringify({ covered: false, reason: 'quota_exhausted' }));
+  net.route = () => resp(500, { error: 'Could not check your plan.' });
+  const unread = await S.checkBuildCovered();
+  net.route = () => resp(200, { ok: true });
+  const shapeless = await S.checkBuildCovered();
+  net.route = () => new Error('offline');
+  const offline = await S.checkBuildCovered();
+  ok('⚠️ anything we could not read is null, NEVER "covered" — a 500, an older server and no network all leave the screen exactly as it was',
+    unread === null && shapeless === null && offline === null, { unread, shapeless, offline });
+
+  // The wizard's own two functions, cut out and run: the re-check, and the tap that carries on from the refusal.
+  const rechBody = fnBodyOf(wiz, 'recheck');
+  const retryBody = fnBodyOf(wiz, 'retryAfterPlans');
+  ok('the build step has a re-check (recheck) and a continue action (retryAfterPlans)', !!rechBody && !!retryBody);
+  const gateBox = (opts = {}) => {
+    const spy = { outcome: [], genErr: [], note: [], checking: [], builds: 0, starts: 0, asked: 0 };
+    const c = vm.createContext({
+      showsPlanRefusal: opts.showing !== false,
+      stage: opts.stage || null,
+      rechecking: { current: null },
+      gone: { current: !!opts.gone },
+      checkBuildCovered: async () => { spy.asked++; if (opts.hold) await opts.hold; return 'gate' in opts ? opts.gate : { covered: true, reason: null }; },
+      setOutcome: (v) => spy.outcome.push(v), setGenErr: (v) => spy.genErr.push(v), setChecking: (v) => spy.checking.push(v),
+      setRecheckNote: (v) => spy.note.push(v),
+      build: () => { spy.builds++; }, start: () => { spy.starts++; },
+      Promise, JSON, console: { log() {}, warn() {} },
+    });
+    if (rechBody) c.recheck = vm.runInContext(tsFn('', rechBody, true), c);
+    if (retryBody) c.retryAfterPlans = vm.runInContext(tsFn('', retryBody, true), c);
+    return { ctx: c, spy };
+  };
+  if (rechBody && retryBody) {
+    const a = gateBox();
+    const aOk = await a.ctx.recheck();
+    ok('⚠️ covered → the refusal is CLEARED (outcome and the banner), with the lane, the notes, the CV and the details untouched',
+      aOk === true && a.spy.asked === 1 && JSON.stringify(a.spy.outcome) === '[null]' && JSON.stringify(a.spy.genErr) === '[null]', a.spy);
+    const b = gateBox({ gate: { covered: false, reason: 'quota_exhausted' } });
+    const c2 = gateBox({ gate: null });
+    // ⚠️ THE TWO NOs ARE NOT THE SAME NO (review, 2026-09-20): false is the SERVER's answer, null is "we could not
+    // ask it" (a 500, an older server, no network, a read that timed out). Both leave the banner alone, but the tap
+    // below has to say different things about them, so the re-check has to hand back which one it was.
+    ok('…still refused (false) or unreadable (null) → nothing is cleared, and the two are told apart',
+      (await b.ctx.recheck()) === false && !b.spy.outcome.length && !b.spy.genErr.length
+      && (await c2.ctx.recheck()) === null && !c2.spy.outcome.length, { b: b.spy, c: c2.spy });
+    const d = gateBox({ showing: false });
+    ok('⚠️ …and it is not asked at all unless a PLAN refusal is on screen (never during a build, never over "done")',
+      (await d.ctx.recheck()) === null && d.spy.asked === 0, d.spy);
+    const e = gateBox({ gone: true });
+    ok('…a screen that has been left sets no state on its way out', (await e.ctx.recheck()) === null && !e.spy.outcome.length, e.spy);
+    const r1 = gateBox();
+    await r1.ctx.retryAfterPlans();
+    ok('⚠️ THE WAY ON: the tap re-checks and, once covered, re-runs THE SAME build — nothing re-entered',
+      r1.spy.starts === 1 && JSON.stringify(r1.spy.outcome) === '[null]' && JSON.stringify(r1.spy.checking) === '[true,false]', r1.spy);
+    // ⚠️ …THROUGH start(), the one place that asks "you already have a resume — this uses 1 resume from your plan".
+    // A build rejoined when the wizard reopened (joinJob) can be refused with nobody having tapped Build, so this
+    // tap is not always the second half of a question already answered.
+    ok('…through start(), so the second-résumé question is asked here exactly as it is on the Build button',
+      r1.spy.builds === 0 && /if \(covered === true\) \{ start\(\); return; \}/.test(retryBody)
+      && /'Rebuild — uses 1 resume'/.test(fnBodyOf(wiz, 'start')), r1.spy);
+    const r2 = gateBox({ gate: { covered: false, reason: 'quota_exhausted' } });
+    await r2.ctx.retryAfterPlans();
+    ok('…and it builds NOTHING while the server still says no (the banner and "See plans" stand)',
+      r2.spy.starts === 0 && r2.spy.builds === 0 && !r2.spy.outcome.length && JSON.stringify(r2.spy.checking) === '[true,false]', r2.spy);
+    // ⚠️ REVIEW, 2026-09-20: everything that is not "covered" used to end with the screen byte-for-byte unchanged —
+    // a spinner, then nothing — which reads as a broken button to the one person this action exists for.
+    ok('⚠️ …it SAYS so: still refused → where to look (Restore Purchases); could not read it → try again in a moment',
+      r2.spy.note.length === 1 && /still not covered/.test(r2.spy.note[0]) && /Restore Purchases/.test(r2.spy.note[0]), r2.spy.note);
+    // ⚠️ …WITHOUT RE-DIAGNOSING: the gate answers 'quota_exhausted' both to someone with no plan and to a
+    // subscriber whose month is spent, so a note claiming "no plan" would be a lie to half the people who see it.
+    ok('…and it never contradicts the server\'s own sentence above it (no claim about whether a plan exists)',
+      !/no active plan|do not see a plan|not subscribed/i.test(r2.spy.note[0]), r2.spy.note);
+    const r4 = gateBox({ gate: null });
+    await r4.ctx.retryAfterPlans();
+    ok('…and a check we could not make never claims they have no plan', r4.spy.starts === 0
+      && r4.spy.note.length === 1 && /could not check your plan/.test(r4.spy.note[0]) && !/no active plan/i.test(r4.spy.note[0]), r4.spy.note);
+    const r3 = gateBox({ stage: { stage: 'start', label: 'Getting started', pct: 3 } });
+    await r3.ctx.retryAfterPlans();
+    ok('…and never on top of a build that is already running', r3.spy.starts === 0 && r3.spy.builds === 0 && r3.spy.asked === 0, r3.spy);
+    // ⚠️ A TAP IS NEVER DROPPED (review, 2026-09-20). The focus re-check fires a heartbeat before the tap can land,
+    // and while it was held in a boolean ref the tap returned before even showing its spinner — for as long as that
+    // read took (up to iOS's own minute on a stalled socket) the button did nothing at all.
+    let release;
+    const hold = new Promise((res) => { release = res; });
+    const j = gateBox({ hold });
+    const auto = j.ctx.recheck();          // the focus / foreground / purchase re-check, still in flight
+    const tap = j.ctx.retryAfterPlans();   // …and the tap that lands while it is going
+    release();
+    await Promise.all([auto, tap]);
+    ok('⚠️ a tap during an automatic re-check JOINS it (one read, one answer) instead of being dropped',
+      j.spy.asked === 1 && j.spy.starts === 1 && JSON.stringify(j.spy.checking) === '[true,false]', j.spy);
+    ok('…the guard that dropped it is gone, and the read that is going is what the ref holds',
+      !/if \(stage \|\| rechecking\.current\) return;/.test(retryBody)
+      && /const rechecking = useRef<Promise<boolean \| null> \| null>\(null\);/.test(wiz)
+      && /if \(rechecking\.current\) return rechecking\.current;/.test(rechBody), retryBody.slice(0, 120));
+    // (fnBodyOf cannot cut this one out: its return type is an object literal, so the first `{` is not the body.)
+    const svc = R('services/profileSetupService.ts');
+    const gateSrc = svc.slice(svc.indexOf('export async function checkBuildCovered'), svc.indexOf('export async function checkBuildCovered') + 1400);
+    ok('⚠️ …and the gate read cannot hang forever: it gives up after 15 s, which lands as "could not read it"',
+      /const ctl = new AbortController\(\);\s*const timer = setTimeout\(\(\) => ctl\.abort\(\), 15000\);/.test(gateSrc)
+      && /signal: ctl\.signal/.test(gateSrc) && /finally \{ clearTimeout\(timer\); \}/.test(gateSrc), gateSrc.slice(0, 200));
+  }
+  ok('⚠️ it is asked on every way a plan can appear: back from the plans screen (focus), the app returning to the foreground, and a purchase or Restore the SERVER confirmed',
+    /useFocusEffect\(useCallback\(\(\) => \{ recheck\(\); \}, \[recheck\]\)\);/.test(wiz)
+    && /AppState\.addEventListener\('change', \(st\) => \{ if \(st === 'active'\) recheck\(\); \}\)/.test(wiz)
+    && /useEffect\(\(\) => subscribeEntitlements\(\(\) => \{ recheck\(\); \}\), \[recheck\]\);/.test(wiz));
+  ok('…the three of them, because the owner\'s own plan was an ADMIN grant — no purchase this app could ever observe',
+    /import \{ subscribeEntitlements \} from '\.\.\/\.\.\/services\/subscriptionService';/.test(wiz));
+  ok('the condition is the plan refusals only, and only while the step is idle',
+    /const showsPlanRefusal = !stage && !done && !!outcome && outcome\.kind === 'refused'/.test(wiz)
+    && /\(outcome\.reason === 'quota_exhausted' \|\| outcome\.reason === 'regen_limit'\)/.test(wiz));
+  ok('⚠️ NOTHING re-checked ever starts a build by itself — the re-check only clears the message, and the continue builds only on "covered"',
+    !/build\(/.test(rechBody) && !/start\(\)/.test(rechBody) && !/generateResume/.test(rechBody)
+    && /if \(covered === true\) \{ start\(\); return; \}/.test(retryBody), { rechBody: rechBody.slice(0, 200) });
+  ok('⚠️ …and it builds with a NEW clientBuildId: settle still nulls buildId on a refusal, so the continue cannot replay the refused job (asJob hands the same job back for 15 minutes)',
+    /buildId\.current = r\.kind === 'failed' && r\.retrySame && buildId\.current \? \{ id: buildId\.current\.id, reuse: true \} : null;/.test(settle));
+  ok('the refusal offers the way on beside "See plans", and says the screen re-checks by itself',
+    /I’ve subscribed — build it now/.test(wiz) && /onRetryAfterPlans=\{retryAfterPlans\}/.test(wiz)
+    && /Already on a plan\? We check again every time you come back/.test(wiz));
+  ok('…and what the re-check found is SHOWN (it takes the place of that line, and a build clears it)',
+    /retryNote=\{recheckNote\}/.test(wiz) && /onRetryAfterPlans: \(\) => void; checking: boolean; retryNote: string \| null;/.test(wiz)
+    && /retryNote\s*\?\s*<Text style=\{b\.noteWarn\}>\{retryNote\}<\/Text>/.test(wiz)
+    && /setRecheckNote\(null\);\s*\/\/ whatever the last re-check said/.test(fnBodyOf(wiz, 'build')));
+  ok('…and once it is covered the CTA is "Build my resume" again — the label reads the outcome and the banner, both cleared',
+    /const plans = reason === 'quota_exhausted' \|\| reason === 'regen_limit';/.test(wiz)
+    && /const label = late \? 'Keep waiting' : plans \? 'See plans' : error \? 'Try again' : 'Build my resume';/.test(wiz));
 
   console.log(`\nonboarding wizard (client): ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

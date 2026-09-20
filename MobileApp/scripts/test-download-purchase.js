@@ -174,6 +174,10 @@ console.log('── ⚠️ A DOWNLOAD OF AN EMPLOYER\'S OWN VERSION BILLS THAT E
 // read as "gone", never as a paid failure or a prompt to generate again.
 ok('the resume gallery sends the docId with the download', /init\.body = JSON\.stringify\(\{ template: selectedId, mode, employer, docId \}\)/.test(gal));
 ok('…and treats a 410 as "this version is gone"', /if \(docId && res\.status === 410\)/.test(gal));
+// ⚠️ `mode` is the picker's own state again (2026-09-20): every design can print in either layout, so nothing
+// overrides it here (test-letter-gallery.js pins the sheet). What THIS assertion guards is the money: whatever the
+// size turns out to be, template/employer/docId must still travel with the download, or the server renders one
+// employer's saved letter and bills another's.
 ok('the letter gallery sends the docId in doc mode (and exactly the classic body otherwise)',
   /body: JSON\.stringify\(docId\s*\? \{ template: selected\.id, mode, [^}]*employer: passEmployer, docId \}\s*: \{ template: selected\.id, mode, [^}]*employer: passEmployer \}\)/.test(let_));
 ok('…a 410 in doc mode is "no longer saved"', /if \(docId && res\.status === 410\)/.test(let_) && /no longer saved/.test(letSrc));

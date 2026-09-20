@@ -544,6 +544,12 @@ export default function CoverLetterTemplates() {
   const reasonSlotH = REASON_LINE_H * 2 * Math.min(Math.max(fontScale || 1, 1), REASON_MAX_SCALE);
   const hasReasons = !!docId && docSlots.some((sl) => !!sl.reason);
   const sheetName = (docId ? selectedDoc?.name : selected?.name) || 'Cover Letter';
+  // ⚠️ EVERY DESIGN CHOOSES ITS LAYOUT, "Original (Branded)" INCLUDED (2026-09-20 — services/letterSend has the story).
+  // The branded design is printed by the PDFKit generator, which only builds a single page sized to the letter's
+  // content, so this sheet used to offer "A4 Pages" and silently hand back one page anyway; the server now renders that
+  // design's A4 from its own HTML twin (coverLetterController renderLetterPdfFile), so what the sheet says is what
+  // arrives — the toggle below is the picker's own `mode` again, with nothing overriding it. Word (.docx) paginates
+  // itself — no design has ever sent a mode into that path.
   const leadEmployer = docEmployer || passEmployer || 'this employer';
 
   return (
@@ -870,7 +876,8 @@ export default function CoverLetterTemplates() {
 
 function SegBtn({ icon, label, active, onPress }: { icon: any; label: string; active: boolean; onPress: () => void }) {
   return (
-    <TouchableOpacity style={[s.segBtn, active && s.segBtnActive]} onPress={onPress} activeOpacity={0.85}>
+    <TouchableOpacity style={[s.segBtn, active && s.segBtnActive]} onPress={onPress}
+      accessibilityState={{ selected: active }} activeOpacity={0.85}>
       <Ionicons name={icon} size={14} color={active ? '#fff' : T.muted} />
       <Text style={[s.segTxt, active && s.segTxtActive]}>{label}</Text>
     </TouchableOpacity>

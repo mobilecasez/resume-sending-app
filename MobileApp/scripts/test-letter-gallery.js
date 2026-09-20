@@ -153,6 +153,9 @@ let ctxStash, doc, locked, calls, alerts;
 let pushes = [];
 let stashWrites = [];
 const CLASSIC_SEND_KEY = (fs.readFileSync(path.join(APP, 'services/letterSend.ts'), 'utf8').match(/export const CLASSIC_SEND_KEY = '([^']+)'/) || [])[1];
+// ⚠️ THE REAL SERVICE, NOT A STUB OF IT (2026-09-20). This screen hands the Send page its letter through letterSend's
+// own keys and shapes, so the suite loads the service itself rather than a copy that could drift from it.
+const LETTER_SEND = transpile(path.join(APP, 'services/letterSend.ts'), 'letterSend.ts');
 const jsonRes = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 const OPEN = { metered: false, paid: true, unlimited: true, remaining: null, passes: 0, ownsEmployer: false, employer: null };
 const SHUT = { metered: false, paid: false, unlimited: false, remaining: null, passes: 0, ownsEmployer: false, employer: null };
@@ -189,11 +192,13 @@ Module._load = function (request) {
     setItem: async (k, v) => { stashWrites.push({ k, v }); },
   } };
   // The ONE key the Send page reads, taken from letterSend.ts itself — a pill writing any other key is a failure here.
-  if (request === '../../services/letterSend') return { CLASSIC_SEND_KEY };
+  if (request === '../../services/letterSend') return require(LETTER_SEND);
   if (request === 'expo-secure-store') return { getItemAsync: async () => JSON.stringify({ token: 'tok' }) };
   if (request === 'expo-file-system/legacy') return { downloadAsync: async () => ({ status: 200, uri: 'file://c.pdf' }), cacheDirectory: 'file:///c/' };
   if (request === 'expo-sharing') return { isAvailableAsync: async () => false, shareAsync: async () => {} };
-  if (request === '../../config') return { API_BASE: 'https://api.test' };
+  if (request === '../../config' || request === '../config') return { API_BASE: 'https://api.test' };
+  // …the real letterSend's own two imports (see LETTER_SEND above).
+  if (request === './storeEnv') return { storeEnvHeader: async () => ({}) };
   if (request === '../../components/downloads/DownloadPaywallSheet') return { __esModule: true, default: 'DownloadPaywallSheet' };
   if (request === '../../components/RatingPromptModal') return { __esModule: true, default: 'RatingPromptModal', useRatingPrompt: () => ({ trigger: null, ask: async () => false, close() {} }) };
   if (request === '../../hooks/useEventCosts') return { useEventCosts: () => ({ costs: {} }) };
@@ -293,8 +298,15 @@ async function openLetters(o = {}) {
     ok('…and names the design on screen', /Download “Original \(Branded\)”/.test(inSheet), inSheet);
     ok('nothing was downloaded just by opening it', h.gens().length === 0);
 
+    // ⚠️ THE DESIGN ON SCREEN IS "Original (Branded)", AND ITS TWO LAYOUTS COME FROM TWO GENERATORS (2026-09-20). One
+    // Page is the PDFKit generator's single content-sized page (emailController); A4 is the design's own HTML twin,
+    // which honours mode (coverLetterController renderLetterPdfFile's `genericA4`). The sheet used to offer A4 and hand
+    // back one page regardless, and was then briefly greyed out instead — both read as the feature being broken.
     await h.press(h.row(/^A4 Pages/));
-    ok('the page layout still toggles, from inside the sheet', /Included · A4, splits into pages/.test(textOf(h.sheet())));
+    ok('⚠️ every design can be toggled between the two layouts, the branded one included — and the sheet follows',
+      /Included · A4, splits into pages/.test(textOf(h.sheet())) && !/always prints as one continuous page/.test(textOf(h.sheet())), textOf(h.sheet()));
+    await h.press(h.row(/^One Page/));
+    ok('…and back again', /Included · one continuous page/.test(textOf(h.sheet())), textOf(h.sheet()));
 
     await h.press(h.row(/^PDF/));
     ok('a format tap closes the sheet', !h.sheetOpen());
@@ -302,8 +314,8 @@ async function openLetters(o = {}) {
     await h.dismissed();
     const g = h.gens();
     ok('once the sheet is gone, the PDF is generated — once', g.length === 1 && /generate-template-pdf$/.test(g[0].url), g.map((x) => x.url));
-    ok('⚠️ …with exactly the body it always sent: the design, the layout picked IN the sheet, both spellings of the company',
-      g[0] && g[0].body.template === 'standard' && g[0].body.mode === 'a4' && g[0].body.employer === 'Nordex'
+    ok('⚠️ …with exactly the body it always sent: the design, the layout it really prints in, both spellings of the company',
+      g[0] && g[0].body.template === 'standard' && g[0].body.mode === 'onepage' && g[0].body.employer === 'Nordex'
       && g[0].body.companyName === 'Nordex SE' && g[0].body.companyAddress === 'Hamburg' && !('docId' in g[0].body), g[0] && g[0].body);
     await advance(2000);
     await h.dismissed();
@@ -406,10 +418,16 @@ async function openLetters(o = {}) {
       !!reason && Array.isArray(reason.props.style) && reason.props.style.some((x) => x && x.minHeight > 0), reason && reason.props);
     await h.press(h.dlButton());
     ok('the sheet names the ranked design on screen', /Download “Executive Leadership”/.test(textOf(h.sheet())));
+    // ⚠️ …and a design whose layout is REAL still chooses (the fixed one above is the exception, not the rule).
+    ok('a design rendered from HTML offers both layouts, and says nothing about a fixed one',
+      !!h.row(/^A4 Pages/) && !/always prints as one continuous page/.test(textOf(h.sheet())));
+    await h.press(h.row(/^A4 Pages/));
+    ok('…and it toggles', /Included · A4, splits into pages/.test(textOf(h.sheet())));
     await h.press(h.row(/^PDF/));
     await h.dismissed();
     const g = h.gens();
     ok('⚠️ the download still carries the docId, so the server bills THAT document', g.length === 1 && g[0].body.docId === 42 && g[0].body.template === 'exec_leader', g[0] && g[0].body);
+    ok('…and the layout picked in the sheet is what it asks for', g[0] && g[0].body.mode === 'a4', g[0] && g[0].body.mode);
     h.c.unmount();
   }
 

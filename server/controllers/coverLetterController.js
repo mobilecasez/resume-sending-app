@@ -2421,7 +2421,20 @@ async function renderLetterPdfFile(userId, doc, { tplId, mode, coverLetterHtml, 
 
     let fileName;
     let filePath;
-    if (tplMeta && tplMeta.generic) {
+    // ⚠️ THE BRANDED DESIGN HAS TWO LAYOUTS, AND THEY COME FROM TWO GENERATORS (2026-09-20). "Original (Branded)"
+    // (tplMeta.generic) is printed by the original PDFKit generator, which can only build ONE page sized to the
+    // letter's content (emailController createCoverLetterPDFFromHTML: `size: [pageWidth, pageHeight]`) — that IS One
+    // Page, and it stays byte-for-byte the user's previous letter. It cannot do A4, so a user who asks for A4 pages on
+    // this design used to be handed one continuous page regardless, which is why both screens greyed the choice out.
+    // A4 is rendered from the design's own HTML twin instead (coverLetterTemplates standardLetter — the very markup
+    // the gallery card for this design is a picture of), which honours `mode` like every other design.
+    // ⚠️ SO THE BRANDED FILE NOW FOLLOWS WHAT THE SCREEN SAYS, INCLUDING WHEN NOBODY TAPPED. The Send page defaults the
+    // letter to One Page (letterSend DEFAULT_SIZES), so an attachment is the PDFKit original unless A4 is picked; the
+    // download sheet, though, seeds its toggle from the document's stored design.mode — 'a4' on every letter document
+    // there is (checked 2026-09-20) — so a Download of this design that used to show "A4 Pages" and hand back one
+    // continuous page now really does hand back A4 pages, of the same design, from the twin its card is a picture of.
+    const genericA4 = !!(tplMeta && tplMeta.generic) && mode === 'a4';
+    if (tplMeta && tplMeta.generic && !genericA4) {
         // Exact original branded letter — produced by the original PDFKit generator.
         const user  = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
         const brand = brandColor || await lookupBrandColor(companyName, websiteUrl);
@@ -2441,7 +2454,15 @@ async function renderLetterPdfFile(userId, doc, { tplId, mode, coverLetterHtml, 
         const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml, ...(doc ? letterLinesOf(doc.payload) : {}) };
         // Doc mode renders the saved letter in its employer's brand (the same opts the cards used); the
         // classic lane's body carries no brand and renders exactly as it always has.
-        const pdf = await clRenderer.renderPdf(tplId, data, doc ? { mode, brandColor, brandFont } : { mode });
+        const opts = doc ? { mode, brandColor, brandFont } : { mode };
+        // The branded design at A4 needs the two things only IT reads — the profile photo in the sidebar and a brand
+        // colour for the label bars — resolved exactly as the free preview of this design resolves them
+        // (previewCoverLetterTemplates), so the file matches the card the user was looking at.
+        if (genericA4) {
+            opts.photo = await loadCLPhotoDataUri(userId);
+            opts.brandColor = brandColor || await lookupBrandColor(companyName, websiteUrl);
+        }
+        const pdf = await clRenderer.renderPdf(tplId, data, opts);
         const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
         fileName = `Cover_Letter_${safeCo}_${Date.now()}.pdf`;
         await fs.mkdir(tempDir, { recursive: true });

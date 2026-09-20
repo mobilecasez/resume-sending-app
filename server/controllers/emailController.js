@@ -12,6 +12,8 @@ const { resumeAttachmentOf } = require('../utils/resumeFile');   // a Word résu
 const { notifyEmailSent, notifyError, notifyEmailReply } = require('./notificationsController');
 const CryptoJS = require('crypto-js');
 const jobService = require('../services/jobService');
+// What a connected mailbox is actually allowed to do, and which OAuth client owns its refresh token (2026-09-20).
+const mailScopes = require('../services/mailScopes');
 
 // SECURITY: Get encryption key (same as server.js)
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
@@ -184,40 +186,15 @@ async function refreshGoogleToken(user) {
     console.log('\n🔄 Refreshing Google OAuth token for user', user.id);
     
     const refreshToken = decryptOAuthToken(user.google_refresh_token);
-    
+
     // Build list of client configs to try — the refresh token is bound to whichever
-    // client ID was used during the original auth (web, iOS, or Android)
-    const clientConfigs = [];
-    
-    // iOS client (native — no secret needed)
-    if (process.env.GOOGLE_IOS_CLIENT_ID) {
-        clientConfigs.push({
-            clientId: process.env.GOOGLE_IOS_CLIENT_ID,
-            clientSecret: undefined,
-            label: 'iOS'
-        });
-    }
-    
-    // Web client (needs secret)
-    const webClientId = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
-    const webClientSecret = process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
-    if (webClientId && webClientSecret) {
-        clientConfigs.push({
-            clientId: webClientId,
-            clientSecret: webClientSecret,
-            label: 'Web'
-        });
-    }
-    
-    // Android client (native — no secret needed)
-    if (process.env.GOOGLE_ANDROID_CLIENT_ID) {
-        clientConfigs.push({
-            clientId: process.env.GOOGLE_ANDROID_CLIENT_ID,
-            clientSecret: undefined,
-            label: 'Android'
-        });
-    }
-    
+    // client ID was used during the original auth (web, iOS, or Android).
+    // ⚠️ THE CLIENT RECORDED ON THE ROW GOES FIRST (2026-09-20, Migration 050). users.google_token_client holds the
+    // exact client id the token exchange used, so the right client is tried first — and an Android build whose client
+    // id has no environment variable of its own (GOOGLE_ANDROID_CLIENT_ID is not set in production) is reachable at
+    // all, which it was not before. The rest of the order is unchanged, so an unknown row behaves exactly as before.
+    const clientConfigs = mailScopes.refreshOrder(user);
+
     let lastError;
     for (const config of clientConfigs) {
         try {
@@ -242,10 +219,17 @@ async function refreshGoogleToken(user) {
                 [encryptOAuthToken(newAccessToken), issuedAt.toISOString(), expiresAt.toISOString(), user.id]
             );
             
+            // Remember which client actually owns this refresh token, so the next refresh and every send build the
+            // OAuth2 client with it (createOAuth2Client) instead of guessing the web pair. Best-effort by design.
+            if (user.google_token_client !== config.clientId) {
+                await mailScopes.recordGrant(dbConfig, user.id, { googleClient: config.clientId });
+            }
+
             console.log(`✅ Token refreshed via ${config.label} client, expires at:`, expiresAt.toISOString());
-            
+
             return {
                 ...user,
+                google_token_client: config.clientId,
                 google_access_token: encryptOAuthToken(newAccessToken),
                 google_token_issued_at: issuedAt.toISOString(),
                 google_token_expires_at: expiresAt.toISOString()
@@ -260,50 +244,100 @@ async function refreshGoogleToken(user) {
     throw new Error('Token refresh failed with all clients: ' + (lastError?.message || 'unknown'));
 }
 
+/**
+ * The user ROW whose Google access token is certainly current — refreshed if the one we stored had expired.
+ * ⚠️ THE ROW, NOT THE TOKEN (2026-09-20). refreshGoogleToken returns a COPY and never mutates its argument, so a
+ * caller that refreshes and then keeps reading the row it was handed is reading the PRE-refresh client id and the
+ * PRE-refresh expiry. That is how createOAuth2Client came to hand google-auth-library a token minted a millisecond
+ * earlier alongside an expiry an hour in the past — see the block below it.
+ */
+async function freshGoogleUser(user) {
+    if (!isTokenExpired(user.google_token_expires_at)) return user;
+    console.log('⏰ Token expired, refreshing...');
+    return refreshGoogleToken(user);
+}
+
 // Get valid Google access token (auto-refreshes if expired)
 async function getValidGoogleAccessToken(user) {
-    if (isTokenExpired(user.google_token_expires_at)) {
-        console.log('⏰ Token expired, refreshing...');
-        const updatedUser = await refreshGoogleToken(user);
-        return decryptOAuthToken(updatedUser.google_access_token);
-    }
-    return decryptOAuthToken(user.google_access_token);
+    return decryptOAuthToken((await freshGoogleUser(user)).google_access_token);
 }
 
 const templateGenerator = new TemplateCoverLetterGenerator();
 const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-key';
 
 // Helper function: Create OAuth2 Client with auto-refresh
-async function createOAuth2Client(user) {
-    // Support both PKCE (mobile) and standard OAuth (web) flows
-    // PKCE: No client secret, uses iOS OAuth client
-    // Always use web client ID + secret for API calls and token refresh
-    // PKCE only applies to initial auth code exchange, not subsequent API usage
-    const clientId = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
-    
+//
+// ⚠️ THE CLIENT MUST BE THE ONE THAT MINTED THE REFRESH TOKEN (2026-09-20, build 210 — the owner's "it told me to
+// reconnect a Gmail I had just connected"). This used to hard-code the WEB client id + secret and call setCredentials
+// with NO expiry_date. google-auth-library 9.15.1 reads "access_token + refresh_token + no expiry_date" as
+// `mayRequireRefresh` (node_modules/google-auth-library/build/src/auth/oauth2client.js:456-472), so ANY 401/403 answer
+// from Gmail was silently retried through refreshAccessTokenAsync() — POSTing an iOS-minted refresh token with the WEB
+// client. Google answers 401 `unauthorized_client`, that error REPLACED the real Gmail one, and classifyMailError read
+// 401 → 'reconnect'. Prod, user 618, 2026-09-20 10:53:48 UTC: "google refused (reconnect 401): unauthorized_client",
+// on a token that had not expired. Two changes stop that for good:
+//   • the client comes from users.google_token_client (Migration 050) — the exact client id the exchange used;
+//   • an explicit expiry_date is always set, so the library never retries blindly and the ORIGINAL Gmail error reaches
+//     classifyMailError (sendViaConnectedGmail does one deliberate refresh + retry of its own instead).
+//
+// ⚠️ AND IT IS ALL READ FROM THE ROW THE REFRESH RETURNS, NOT THE CALLER'S (2026-09-20, second pass). Refreshing first
+// and then reading the caller's row states a client we only GUESSED (google_token_client is null on every account
+// connected before Migration 050 — 366 of them, user 618 among them) beside an expiry that has ALREADY PASSED (364 of
+// those 366 today). google-auth-library calls that expiry stale (isTokenExpiring, oauth2client.js:775, eager window
+// 5 min), throws away the token we just minted and refreshes AGAIN with the guessed client BEFORE the request is
+// issued — the very `unauthorized_client` 401 this change exists to remove, re-created by the change itself.
+//
+// `opts.forceRefreshOnFailure` puts the library's own "401/403 → refresh once and retry" back, for the read-only
+// callers that relied on it and cannot use withGmailClient's explicit recovery (the reply poller). It is deliberately
+// OFF for every send: a refresh that fails there would replace the provider's real answer with its own.
+async function createOAuth2Client(user, opts = {}) {
+    // The refresh comes FIRST; everything below is read from the row it hands back.
+    const fresh = await freshGoogleUser(user);
+    const cfg = mailScopes.clientForRefresh(fresh) || {};
+    const clientId = cfg.clientId;
+    const clientSecret = cfg.clientSecret;
+
     console.log('🔧 Creating OAuth2 client');
-    console.log('   - Client ID:', clientId);
+    console.log('   - Client:', cfg.label || 'unknown', `${String(clientId || '').substring(0, 20)}...`);
     console.log('   - Has client secret:', !!clientSecret);
-    console.log('   - User ID:', user.id);
-    console.log('   - Has access token:', !!user.google_access_token);
-    console.log('   - Has refresh token:', !!user.google_refresh_token);
-    console.log('   - Token expires at:', user.google_token_expires_at);
-    
+    console.log('   - User ID:', fresh.id);
+    console.log('   - Has access token:', !!fresh.google_access_token);
+    console.log('   - Has refresh token:', !!fresh.google_refresh_token);
+    console.log('   - Token expires at:', fresh.google_token_expires_at);
+
     const oauth2Client = new google.auth.OAuth2(
         clientId,
         clientSecret,
-        process.env.NODE_ENV === 'production' 
+        process.env.NODE_ENV === 'production'
             ? 'https://cvapplyr.com/auth/google/callback'
             : 'http://localhost:3000/auth/google/callback'
     );
+    if (opts.forceRefreshOnFailure) oauth2Client.forceRefreshOnFailure = true;
 
-    // SECURITY: Get valid access token (auto-refreshes if expired) and decrypt
-    const accessToken = await getValidGoogleAccessToken(user);
-    
+    // SECURITY: the access token of the refreshed row, decrypted here and nowhere else.
+    const accessToken = decryptOAuthToken(fresh.google_access_token);
+
+    // The expiry we already track — but never one the library would call stale. Inside its 5-minute eager window (or
+    // unknown) we state an hour from now instead: the token above was either still good by our own reckoning or minted
+    // moments ago, and a stated expiry is what keeps the library from treating every auth error as "the token must be
+    // stale, refresh it and report THAT instead".
+    const EAGER_MS = 5 * 60 * 1000;   // google-auth-library's eagerRefreshThresholdMillis
+    const expiresAt = fresh.google_token_expires_at ? new Date(fresh.google_token_expires_at).getTime() : NaN;
     oauth2Client.setCredentials({
         access_token: accessToken,
-        refresh_token: decryptOAuthToken(user.google_refresh_token)
+        refresh_token: decryptOAuthToken(fresh.google_refresh_token),
+        expiry_date: Number.isFinite(expiresAt) && expiresAt > Date.now() + EAGER_MS ? expiresAt : Date.now() + 3600 * 1000,
+    });
+
+    // If the library does mint a token of its own (a proactive refresh on a stale expiry_date), keep it — until now a
+    // library-side refresh was never written back and the next request started from the same expired token.
+    oauth2Client.on('tokens', (t) => {
+        if (!t || !t.access_token) return;
+        const issuedAt = new Date();
+        const exp = new Date(t.expiry_date || issuedAt.getTime() + 3600 * 1000);
+        dbConfig.run(
+            `UPDATE users SET google_access_token = ?, google_token_issued_at = ?, google_token_expires_at = ? WHERE id = ?`,
+            [encryptOAuthToken(t.access_token), issuedAt.toISOString(), exp.toISOString(), fresh.id]
+        ).catch((e) => console.warn('   ⚠️ could not store a library-refreshed token:', e && e.message));
     });
 
     return oauth2Client;
@@ -390,11 +424,12 @@ function textToHtml(text) {
 }
 
 // Helper function: Send email via Gmail API
+// ⚠️ THE ONE REFRESH + RETRY IS EXPLICIT HERE TOO (2026-09-20, second pass). createOAuth2Client now states an
+// expiry_date, which turns OFF google-auth-library's own "401/403 → refresh once and retry"; this lane relied on it,
+// and without a replacement a Gmail 401 on a token our row still called valid would drop the application email into
+// the SMTP fallback — sent from cv@cvapplyr.com instead of the user's own mailbox, with nothing in their Sent folder.
 async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resumePath, coverLetterPdfBuffer) {
     try {
-        const oauth2Client = await createOAuth2Client(user);
-        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-        
         // Create email message with attachments
         const boundary = 'boundary_' + Date.now();
         const nl = '\r\n';
@@ -457,13 +492,15 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
             .replace(/=+$/, '');
         
         // Send email
-        const result = await gmail.users.messages.send({
-            userId: 'me',
-            requestBody: {
-                raw: encodedMessage
-            }
-        });
-        
+        const result = await withGmailClient(user, (oauth2Client) =>
+            google.gmail({ version: 'v1', auth: oauth2Client }).users.messages.send({
+                userId: 'me',
+                requestBody: {
+                    raw: encodedMessage
+                }
+            })
+        );
+
         console.log('Email sent via Gmail API:', result.data);
         return { success: true, messageId: result.data.id };
         
@@ -606,22 +643,34 @@ async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, r
 // an account the Account settings screen still shows as connected.
 
 /**
- * Which mailbox this user can send from: { provider: 'google' | 'microsoft' | null, ready, reconnect? }.
+ * Which mailbox this user can send from: { provider: 'google' | 'microsoft' | null, ready, canSend?, reconnect? }.
  * Decided from the TOKENS, not users.oauth_provider alone — a failed refresh elsewhere nulls the tokens and leaves
  * the provider, so the provider by itself says "connected" about an account that can no longer send. When both
  * accounts hold tokens, oauth_provider (the most recent sign-in or link) picks.
+ *
+ * ⚠️ `ready` AND `canSend` ARE DIFFERENT QUESTIONS (2026-09-20). `ready` is "is there a token?"; `canSend` is "did the
+ * user actually allow us to send with it?" — Google's granular consent hands back an access token AND a refresh token
+ * with "Send email on your behalf" left unticked, which is how the owner came to write a whole message and only then
+ * be told to reconnect (build 210, user 618). canSend reads the grant recorded at connect time (Migration 050); a row
+ * with no recorded grant — every account connected before this shipped — answers TRUE, so nobody is disconnected by
+ * the change and the send path still reports a real refusal honestly.
  */
 function mailAccountOf(user) {
-    if (!user) return { provider: null, ready: false };
+    if (!user) return { provider: null, ready: false, canSend: false };
     const g = !!(user.google_refresh_token || user.google_access_token);
     const m = !!(user.microsoft_refresh_token || user.microsoft_access_token);
     const pref = user.oauth_provider;
-    if (pref === 'microsoft' && m) return { provider: 'microsoft', ready: true };
-    if (pref === 'google' && g) return { provider: 'google', ready: true };
-    if (g) return { provider: 'google', ready: true };
-    if (m) return { provider: 'microsoft', ready: true };
-    if (pref === 'google' || pref === 'microsoft') return { provider: pref, ready: false, reconnect: true };
-    return { provider: null, ready: false };
+    const connected = (provider) => ({
+        provider,
+        ready: true,
+        canSend: mailScopes.canSendWith(provider, provider === 'microsoft' ? user.microsoft_granted_scopes : user.google_granted_scopes),
+    });
+    if (pref === 'microsoft' && m) return connected('microsoft');
+    if (pref === 'google' && g) return connected('google');
+    if (g) return connected('google');
+    if (m) return connected('microsoft');
+    if (pref === 'google' || pref === 'microsoft') return { provider: pref, ready: false, canSend: false, reconnect: true };
+    return { provider: null, ready: false, canSend: false };
 }
 
 /**
@@ -657,21 +706,93 @@ function markSendIssued(e) {
     return e;
 }
 
-/** Gmail: the whole message through the media-upload endpoint (35 MB) — never the ~5 MB `raw` JSON field. */
-async function sendViaConnectedGmail(user, msg) {
-    const oauth2Client = await createOAuth2Client(user);   // refreshes an expired access token first
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-    const mime = await buildMimeMessage(msg);
-    let r;
+/** The HTTP status an error from either provider carries, whichever shape it arrived in. */
+function statusOf(e) {
+    const resp = (e && e.response) || {};
+    return Number((e && e.status) || resp.status || (typeof (e && e.code) === 'number' ? e.code : 0)) || 0;
+}
+
+/**
+ * ⚠️ THE FIRST ERROR IS THE TRUE ONE (2026-09-20). When a recovery attempt fails too, what the user is told must come
+ * from what the PROVIDER said about the message — not from what the recovery said about the token. Gmail's
+ * "ACCESS_TOKEN_SCOPE_INSUFFICIENT" means "allow sending"; a refresh's "unauthorized_client" means "sign in again",
+ * and telling the second story about the first problem is exactly the loop the owner was sent round.
+ */
+function keepFirstReason(first, thrown) {
+    const e = thrown instanceof Error ? thrown : new Error(String(thrown || 'send failed'));
+    const reason = classifyMailError(first);
+    // ⚠️ …UNLESS THE RETRY ANSWERED SOMETHING MORE SPECIFIC (2026-09-20, second pass). "The first error is the true
+    // one" is about token stories beating message stories, not about order. A first attempt that failed on a STALE
+    // TOKEN (401 → 'reconnect') tells us nothing about the message; if the refreshed retry then reaches Gmail and is
+    // told ACCESS_TOKEN_SCOPE_INSUFFICIENT, 'scope' is the true answer and "Reconnect" would send the user round the
+    // very loop this file exists to close — re-consenting with the send checkbox still unticked.
+    const specific = classifyMailError(e);
+    // ⚠️ …AND A RETRY THAT REACHED THE PROVIDER OUTRANKS A TOKEN STORY (2026-09-20, third pass). 'unknown_outcome'
+    // means the message may already be in the user's Sent folder: saying "reconnect — nothing was sent" over it is how
+    // a recruiter gets the same application twice, and the second send is the one that charges. So the retry's own
+    // answer stands whenever it is about the MESSAGE or about its OUTCOME…
+    if (MESSAGE_LEVEL_REASONS.has(specific) || specific === 'unknown_outcome') return e;
+    // …and the first answer is only kept when it was itself about the message (a 403 the refresh's 401 must not
+    // replace — the owner's loop), or when the retry said nothing more useful than 'send_failed'. A first-attempt 401
+    // is a stale access token and nothing else: it must never mask the refreshed attempt's 429 / 5xx.
+    if (!MESSAGE_LEVEL_REASONS.has(reason) && specific !== 'send_failed') return e;
+    if (reason && reason !== 'send_failed') e.originalMailReason = reason;
+    // Provenance, not classification (originalMailReason already decided that): a message really was handed over on
+    // the first attempt, so anything reading err.sendIssued later still sees the truth.
+    if (first && first.sendIssued) e.sendIssued = true;
+    return e;
+}
+
+/** What the PROVIDER said about this MESSAGE — an answer no token refresh can produce, so it outranks one. */
+const MESSAGE_LEVEL_REASONS = new Set(['scope', 'too_big', 'bad_recipient']);
+
+/**
+ * Every Gmail request in this file, with the ONE deliberate recovery that replaced the library's own.
+ * ⚠️ OURS, NOT THE LIBRARY'S (see createOAuth2Client). Stating an expiry_date turns off google-auth-library's
+ * "401/403 → refresh once and retry", which four call sites here used to rely on; this is what puts it back, with the
+ * client that actually minted the refresh token and with the FIRST error reported when the retry fails too. A token
+ * that expired earlier than our record said (clock skew, a revoked-then-re-granted session) therefore stays invisible
+ * to the user, which is the whole point.
+ */
+async function withGmailClient(user, work) {
+    const attempt = async (u) => work(await createOAuth2Client(u));   // refreshes an expired access token first
     try {
-        r = await gmail.users.messages.send({ userId: 'me', media: { mimeType: 'message/rfc822', body: mime } });
-    } catch (e) { throw markSendIssued(e); }
+        return await attempt(user);
+    } catch (first) {
+        const status = statusOf(first);
+        // Only an AUTH refusal is worth one recovery. A 403 that is really a rate limit (userRateLimitExceeded) is the
+        // provider saying "not now", and refreshing a perfectly good token cannot help it.
+        if ((status !== 401 && status !== 403) || !user.google_refresh_token || classifyMailError(first) === 'provider_busy') throw first;
+        console.log(`   ↻ Gmail answered ${status} for user ${user.id} — one refresh + retry before reporting it`);
+        let refreshed;
+        try { refreshed = await refreshGoogleToken(user); } catch (e) { throw keepFirstReason(first, e); }
+        try { return await attempt(refreshed); } catch (again) { throw keepFirstReason(first, again); }
+    }
+}
+
+/**
+ * Gmail: the whole message through the media-upload endpoint (35 MB) — never the ~5 MB `raw` JSON field.
+ */
+async function sendViaConnectedGmail(user, msg) {
+    const mime = await buildMimeMessage(msg);
+    const r = await withGmailClient(user, async (oauth2Client) => {
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+        try {
+            return await gmail.users.messages.send({ userId: 'me', media: { mimeType: 'message/rfc822', body: mime } });
+        } catch (e) { throw markSendIssued(e); }
+    });
     return { provider: 'google', id: (r && r.data && r.data.id) || null };
 }
 
-/** Outlook: Graph /me/sendMail — every recipient, every file with its REAL content type, kept in Sent Items. */
+/**
+ * Outlook: Graph /me/sendMail — every recipient, every file with its REAL content type, kept in Sent Items.
+ * ⚠️ THE OPPOSITE HOLE TO GMAIL'S, CLOSED THE SAME WAY (2026-09-20). Gmail's client library retried too eagerly and
+ * with the wrong client; Graph was never retried at all, so a token that our own stored expiry still called valid
+ * (a rotated refresh token, a clock that drifted) was reported to the user as "sign in again" when one refresh would
+ * have sent the message. One explicit refresh + retry on a 401, and only then the honest report.
+ */
 async function sendViaConnectedOutlook(user, msg) {
-    const accessToken = await getValidMicrosoftAccessToken(user);
+    let accessToken = await getValidMicrosoftAccessToken(user);
     if (!accessToken) { const e = new Error('No Microsoft access token available'); e.mailReason = 'reconnect'; throw e; }
     const payload = JSON.stringify({
         message: {
@@ -685,14 +806,24 @@ async function sendViaConnectedOutlook(user, msg) {
         },
         saveToSentItems: true,
     });
-    let response;
-    try {
-        response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-            body: payload,
-        });
-    } catch (e) { throw markSendIssued(e); }
+    const post = async (tok) => {
+        try {
+            return await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+                body: payload,
+            });
+        } catch (e) { throw markSendIssued(e); }
+    };
+    let response = await post(accessToken);
+    if (response.status === 401 && user.microsoft_refresh_token) {
+        console.log(`   ↻ Graph answered 401 for user ${user.id} — one refresh + retry before reporting it`);
+        const refreshed = await refreshMicrosoftToken(user).catch(() => null);
+        if (refreshed) {
+            accessToken = decryptOAuthToken(refreshed.microsoft_access_token);
+            if (accessToken) response = await post(accessToken);
+        }
+    }
     if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         const code = data && data.error && typeof data.error.code === 'string' ? data.error.code : '';
@@ -721,6 +852,10 @@ async function sendViaConnectedOutlook(user, msg) {
 function classifyMailError(err) {
     if (!err) return 'send_failed';
     if (typeof err.mailReason === 'string') return err.mailReason;
+    // ⚠️ The provider's own answer about the MESSAGE, kept across our one recovery attempt (keepFirstReason). Without
+    // it a Gmail 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT reaches the user as the refresh's 401 "sign in again" — the loop
+    // the owner hit on build 210 — and the 'scope' branch below is unreachable on the Google lane.
+    if (typeof err.originalMailReason === 'string') return err.originalMailReason;
     const resp = err.response || {};
     const status = Number(err.status || resp.status || (typeof err.code === 'number' ? err.code : 0)) || 0;
     const data = resp.data && typeof resp.data === 'object' ? resp.data : {};
@@ -751,6 +886,13 @@ async function sendWithConnectedAccount(user, msg) {
     if (!acct.ready) {
         const e = new Error('No connected mail account');
         e.mailReason = acct.provider ? 'reconnect' : 'no_mail_account';
+        throw e;
+    }
+    // A grant we RECORDED as not covering send never reaches the provider: the answer is already known, and the user
+    // hears the one thing that fixes it ('scope' → "allow sending") instead of a round trip that can only refuse.
+    if (acct.canSend === false) {
+        const e = new Error(`${acct.provider === 'microsoft' ? 'Outlook' : 'Gmail'} was not granted permission to send`);
+        e.mailReason = 'scope';
         throw e;
     }
     return acct.provider === 'microsoft' ? sendViaConnectedOutlook(user, msg) : sendViaConnectedGmail(user, msg);
@@ -2734,7 +2876,12 @@ const checkEmailReplies = async (req, res) => {
             
             try {
                 console.log('📬 [CHECK] Creating OAuth2 client...');
-                const oauth2Client = await createOAuth2Client(user);
+                // ⚠️ THE ONE READ-ONLY LANE THAT KEEPS THE LIBRARY'S OWN RECOVERY (2026-09-20, second pass). This
+                // poller makes many Gmail calls across a long loop, so the explicit withGmailClient retry does not fit
+                // it — and nothing here is reported to the user, so a refresh error replacing a Gmail one (the reason
+                // every SEND turns this off) costs nothing but a log line. Without it, stating an expiry_date would
+                // simply stop reply detection for anyone whose access token dies before our stored expiry says so.
+                const oauth2Client = await createOAuth2Client(user, { forceRefreshOnFailure: true });
                 const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
                 console.log('📬 [CHECK] Fetching Gmail messages...');
@@ -3000,9 +3147,6 @@ const sendReply = async (req, res) => {
 
         } else if (provider === 'google') {
             // Send via Gmail API
-            const oauth2Client = await createOAuth2Client(user);
-            const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-
             const nl = '\r\n';
             const rawMessage = [
                 `To: ${to}`,
@@ -3017,10 +3161,13 @@ const sendReply = async (req, res) => {
             const encoded = Buffer.from(rawMessage).toString('base64')
                 .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-            await gmail.users.messages.send({
-                userId: 'me',
-                requestBody: { raw: encoded }
-            });
+            // The same one explicit refresh + retry as every other send here (see withGmailClient).
+            await withGmailClient(user, (oauth2Client) =>
+                google.gmail({ version: 'v1', auth: oauth2Client }).users.messages.send({
+                    userId: 'me',
+                    requestBody: { raw: encoded }
+                })
+            );
 
         } else {
             return res.status(400).json({ error: 'Reply sending requires a Microsoft or Google connected account' });
@@ -3051,4 +3198,11 @@ module.exports = {
     buildMimeMessage,
     sendWithConnectedAccount,
     classifyMailError,
+    // The two provider lanes themselves, so test-gmail-connect.js can pin the one refresh + retry and the fact that
+    // the FIRST error is what the user hears about (2026-09-20).
+    sendViaConnectedGmail,
+    sendViaConnectedOutlook,
+    // …and the OLDER application-send lane, which relied on google-auth-library's implicit recovery until this file
+    // stated an expiry_date. Exported only so the same suite can prove it recovers explicitly now (2026-09-20).
+    sendEmailViaGmail,
 };

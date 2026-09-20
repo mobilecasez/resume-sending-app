@@ -14,9 +14,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import {
-  fetchSubscriptionStatus, fetchUsage, type SubscriptionStatus, type UsageItem,
+  fetchSubscriptionStatus, fetchUsage, subscribeEntitlements, type SubscriptionStatus, type UsageItem,
 } from '../../services/subscriptionService';
 
 const T = {
@@ -113,7 +113,18 @@ export default function UsageScreen() {
       setError(e?.message || 'Could not load your plan');
     } finally { setLoading(false); setRefreshing(false); }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  /**
+   * ⚠️ IT IS RE-READ, NOT READ ONCE (review, 2026-09-20). This screen is where the refusals send people ("Start a
+   * plan in Plans & Usage to keep going") and it is the screen that says "Free allowance already used on this
+   * device" — and it pushes the plans screen itself. Read only at mount, it kept showing NO ACTIVE PLAN, no quota
+   * bars and "See plans" after the user came back from buying one, which is the owner's original complaint on the
+   * screen his error message points him at. Focus covers the buy-and-come-back path AND a plan that arrived with no
+   * purchase event this app could see (his was an admin grant); the signal covers a purchase or a Restore the
+   * SERVER confirmed while this screen sat mounted underneath the plans screen. Neither shows the full-screen
+   * spinner again — load() only ever clears `loading`.
+   */
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useEffect(() => subscribeEntitlements(() => { load(); }), [load]);
 
   if (loading) return <View style={s.center}><ActivityIndicator size="large" color={T.blue} /></View>;
 

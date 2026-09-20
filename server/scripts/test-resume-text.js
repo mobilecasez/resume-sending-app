@@ -447,10 +447,14 @@ function docRenamed(to) {
   const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
   const emailC = strip(fs.readFileSync(path.join(ROOT, 'server', 'controllers', 'emailController.js'), 'utf8'));
   const serverC = strip(fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8'));
-  ok('⚠️ no send path names the STORED résumé "_Resume.pdf" any more (emailController ×5, server.js ×1)',
+  // ⚠️ server.js's own ×1 is gone (2026-09-20): it lived in a sendEmailViaGmail nobody called, a stale twin of
+  // emailController's that still built its OAuth2 client the wrong-client way (the false "Reconnect Gmail"). Deleted
+  // with its two private helpers, so the guarantee here is now "emailController names every stored résumé from its
+  // path, and server.js has no Gmail sender left to get it wrong" — the second clause is what keeps a third copy out.
+  ok('⚠️ no send path names the STORED résumé "_Resume.pdf" any more (emailController ×5; server.js has no sender)',
     !/_Resume\.pdf`/.test(emailC) && !/_Resume\.pdf`/.test(serverC)
     && (emailC.match(/resumeAttachmentOf\(resumePath, sanitizeName\(user\.full_name\)\)/g) || []).length >= 5
-    && /resumeAttachmentOf\(resumePath, sanitizeName\(user\.full_name\)\)/.test(serverC));
+    && !/gmail\.users\.messages\.send\(/.test(serverC));
 
   // ── 7 · ⚠️ NOTHING A FILE CAN SAY MAY HANG OR CRASH THE SERVER (review, 2026-09-20) ──
   // Every reader here runs SYNCHRONOUSLY on the one event loop — inside the upload request (profileController line

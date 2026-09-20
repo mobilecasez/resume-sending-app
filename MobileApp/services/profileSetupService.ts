@@ -176,10 +176,40 @@ export function makeYoursOf(setup: ProfileSetup): { complete: boolean; started: 
 /**
  * Home re-reads `setup` on every focus; this makes the NEXT focus also reload the pages (a résumé was just built,
  * so the designs on Home are now of it). Set by the wizard, read once by Home.
+ *
+ * ⚠️ …AND IT CARRIES THE ANSWER, NOT JUST THE FLAG (2026-09-20). The owner built his résumé, tapped "See my
+ * designs", and Home still offered "Pick up where you left off" — the server had said `finished` since the instant
+ * the build was saved, but Home only ASKED for the profile at the very end of its load, behind the ~22 s of cold
+ * renders that build had just caused. The wizard already knows the answer by then, so it hands it over and Home
+ * paints the finished state on its first frame. The network read still runs (in parallel) and still wins.
  */
 let profileChanged = false;
+let changedSetup: { who: string; setup: ProfileSetup } | null = null;
 export function markProfileChanged() { profileChanged = true; }
-export function consumeProfileChanged(): boolean { const v = profileChanged; profileChanged = false; return v; }
+/**
+ * A fresher `setup` for a change ALREADY marked — what the wizard read after the build landed.
+ * ⚠️ It never re-arms a flag Home has consumed: that would cost a second full reload (with the pages cleared)
+ * on the next focus, for a screen that is already showing this résumé.
+ *
+ * ⚠️ AND IT IS KEYED BY ACCOUNT (2026-09-20 review), for the reason SETUP_CACHE above is: this is module state and
+ * App.js's logout does not reload the bundle, so a hand-over armed by A and never consumed — A built a résumé and
+ * walked to Settings rather than Home — would otherwise paint A's finished wizard for whoever signs in next. The
+ * flag alone only ever cost a redundant reload; this carries an answer, so it says whose. Awaits the session read,
+ * so a Home that consumes first simply gets no hand-over and falls back to its own read (see consumeProfileChanged).
+ */
+export async function handOverSetup(setup: ProfileSetup): Promise<void> {
+  if (!profileChanged) return;
+  const who = await signedInAccount().catch(() => null);
+  if (!who || !profileChanged) return;
+  changedSetup = { who, setup };
+}
+/** `who` = the account the setup was READ for; the caller applies it only to that account. */
+export function consumeProfileChanged(): { changed: boolean; setup: ProfileSetup | null; who: string | null } {
+  const v = { changed: profileChanged, setup: changedSetup ? changedSetup.setup : null, who: changedSetup ? changedSetup.who : null };
+  profileChanged = false;
+  changedSetup = null;
+  return v;
+}
 
 /**
  * What the wizard knows that no profile column holds: the typed notes, the lane, the skips — and `readCv` asks the
@@ -454,6 +484,47 @@ export async function buildOnServer(): Promise<{ done: true } | { jobId: string 
   if (w.state === 'finished') return { done: true };
   if (w.build && w.build.status === 'running') return { jobId: w.build.jobId };
   return null;
+}
+
+/**
+ * ⚠️ "WOULD A BUILD BE PAID FOR RIGHT NOW?" — A READ. NOTHING IS SPENT, BOUND OR STARTED (2026-09-20).
+ *
+ * The owner's report: the wizard refused his build with "The free plan on this device was already used by another
+ * account…", he subscribed, came back — and the same refusal was still on the screen, with "See plans" as its only
+ * button. The refusal was correct WHEN IT WAS MADE and the server was right all along (entitlements.canConsumeMany
+ * reads the subscription FIRST, so a plan always beats a claimed device); what was stale was the sentence in the
+ * screen, which nothing ever re-read.
+ *
+ * This asks the server the same question the build asks, so the wizard can clear that sentence the moment it stops
+ * being true. POST /resume-builder/generation-gate with no employer and no regenerate is generateAI's own decision
+ * order (cache → regen → canConsumeMany → pass) run as a DRY RUN: it reserves nothing, binds no pass and charges
+ * nothing (see resumeBuilderController.generationGate). It is asked rather than /subscription/status because
+ * `remaining` is not the whole answer — a one-time pass or an admin grant covers a build that no count describes,
+ * and the app must never promise something the build would then refuse.
+ *
+ * x-device-id rides along exactly as generateResume sends it: the free allowance is one per DEVICE, and an answer
+ * computed against a different device would be a different answer. `null` = we could not read it (offline, an older
+ * server): the caller must then leave whatever it was showing alone.
+ */
+export async function checkBuildCovered(): Promise<{ covered: boolean; reason: string | null } | null> {
+  const t = await token();
+  if (!t) return null;
+  const headers = { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json', ...WIZARD_HEADER, ...(await deviceHeaders()) };
+  // ⚠️ IT GIVES UP AFTER 15 s (review, 2026-09-20), the same budget as every other read here
+  // (employerHomeService.getJson). A caller holds "a re-check is going" for the life of this request and skips
+  // every other trigger while it is held, so a socket iOS would leave open for a minute (NSURLSession's default)
+  // would keep the stale refusal on screen for that whole minute with no way forward — the very bug this
+  // function exists to fix. An abort lands in the catch below as `null`: "we could not read it", nothing cleared.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const r = await fetch(`${API_BASE}/resume-builder/generation-gate`, { method: 'POST', headers, body: JSON.stringify({}), signal: ctl.signal });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    if (!j || typeof j.covered !== 'boolean') return null;
+    return { covered: j.covered === true, reason: typeof j.reason === 'string' ? j.reason : null };
+  } catch { return null; }
+  finally { clearTimeout(timer); }
 }
 
 export async function generateResume(

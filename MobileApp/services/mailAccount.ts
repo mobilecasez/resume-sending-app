@@ -12,6 +12,17 @@
 // the Google.useAuthRequest scopes and the Microsoft scope string). A client id that differs here links an account
 // whose refresh token the server's refresh path (emailController.refreshGoogleToken) was never configured for.
 // ⚠️ gmail.send ONLY, like App.js: gmail.readonly stays off until the CASA assessment (see App.js).
+//
+// ⚠️ ASKING FOR gmail.send IS NOT THE SAME AS GETTING IT (2026-09-20, the owner on build 210: "I logged in with gmail
+// account successfully and then when i clicked send then it showed me an error.. that reconnect gmail"). Google's
+// granular-consent screen shows "Send email on your behalf" as a checkbox that is UNTICKED by default and still
+// returns an access token AND a refresh token when it is left that way. So a link that came back `ok` said nothing
+// about whether this mailbox can send. The server now reads the token response's `scope` and answers `canSend` here
+// (see server/services/mailScopes.js); the Send page shows that on the mailbox card BEFORE a message is written.
+// ⚠️ ANDROID STILL MINTS ITS CODE WITH THE ANDROID CLIENT (below), which has no environment variable of its own on the
+// server. That used to mean a refresh no configured client could perform — fixed SERVER-side instead of here, by
+// recording the exact client id that did the exchange (users.google_token_client, Migration 050) and refreshing with
+// it, so this file stays step-for-step identical to App.js's own linking flow.
 import { useCallback } from 'react';
 import { Platform } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
@@ -29,8 +40,15 @@ const MICROSOFT_SCOPE = 'user.read Mail.Read Mail.Send offline_access';
 
 WebBrowser.maybeCompleteAuthSession();
 
+/**
+ * `ok` is about the SIGN-IN; `canSend` is about the PERMISSION. A consent that signed in without allowing us to send
+ * is a success (the tokens are real and stored) that the page must still act on — `reason` names the one fix:
+ *   'scope'      the user did not allow sending (Gmail's unticked "Send email on your behalf")
+ *   'no_refresh' the connection would stop working within the hour (Outlook linked without offline access)
+ * ⚠️ An older server answers neither field; `canSend !== false` then, which is exactly how the page behaved before.
+ */
 export type LinkResult =
-  | { ok: true; address: string | null; message: string }
+  | { ok: true; address: string | null; message: string; canSend: boolean; reason?: 'scope' | 'no_refresh' }
   | { ok: false; cancelled?: boolean; message: string };
 
 async function token(): Promise<string | undefined> {
@@ -64,7 +82,16 @@ async function postLink(path: string, body: any): Promise<LinkResult> {
       body: JSON.stringify(body),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok && !j.error) return { ok: true, address: typeof j.linkedEmail === 'string' ? j.linkedEmail : null, message: j.message || 'Connected.' };
+    if (r.ok && !j.error) {
+      const reason = j.reason === 'scope' || j.reason === 'no_refresh' ? j.reason : undefined;
+      return {
+        ok: true,
+        address: typeof j.linkedEmail === 'string' ? j.linkedEmail : null,
+        message: j.message || 'Connected.',
+        canSend: j.canSend !== false,   // an older server says nothing → it behaves exactly as it did before
+        ...(reason ? { reason } : {}),
+      };
+    }
     return { ok: false, message: (typeof j.error === 'string' && j.error) || 'That account could not be connected. Please try again.' };
   } catch {
     return { ok: false, message: 'We could not reach the server. Check your connection and try again.' };

@@ -86,6 +86,9 @@ const FakeReact = {
     if (props && props.children !== undefined && !children.length) push(props.children);
     // Section's header buttons arrive as a prop (`actions`) — walk them like children so a test can press them.
     if (props && props.actions && props.actions.$el) kids.push(props.actions);
+    // A function component below the screen is EXPANDED, so every button the user can reach is in the tree (the letter
+    // editor's suite does the same). ⚠️ None of them may use hooks — the screen owns the hook order.
+    if (typeof type === 'function') return type({ ...(props || {}), children: kids.length === 1 ? kids[0] : kids });
     return { $el: true, type, props: props || {}, children: kids };
   },
   Fragment: 'Fragment',
@@ -136,8 +139,14 @@ function textOf(node) {
   return out.join('');
 }
 
+/** A style prop (an object, or an array with falsy holes) → one flat object, the way RN resolves it. */
+function flat(st) {
+  if (Array.isArray(st)) return st.reduce((a, x) => Object.assign(a, flat(x)), {});
+  return st && typeof st === 'object' ? { ...st } : {};
+}
+
 /* ── mocks ── */
-let params, alerts, calls, store, pushes, applied, mail, dlLocked, api;
+let params, alerts, calls, store, pushes, applied, mail, dlLocked, api, docCards;
 const jsonRes = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 const SHUT = { metered: false, paid: false, unlimited: false, remaining: null, passes: 0, ownsEmployer: false, employer: null };
 const OPEN = { ...SHUT, paid: true, unlimited: true };
@@ -181,8 +190,18 @@ Module._load = function (request) {
   if (request === '../../services/downloadPassService') return {
     downloadButtonLabel: (st) => ({ label: 'Download', locked: !(st.ownsEmployer || st.passes > 0 || st.unlimited || (st.paid && st.metered && (st.remaining || 0) > 0)) }),
   };
-  if (request === '../../services/employerDocs') return { fetchDocCards: async (_k, _d, ids) => ({ cards: ids.map((id) => ({ id, image: 'data:image/jpeg;base64,' + id })) }) };
-  if (request === '../../services/employerHomeService') return { LETTER_DESIGNS: [{ id: 'exec_leader', name: 'Executive Leadership', accent: '#b8995a' }] };
+  // Every card request is recorded (kind / doc / ids / size): the letter row and the tailored résumé row each fetch
+  // ONE card, lazily, and a classic letter fetches none. `api.cards` lets a scenario answer with nothing (the icon
+  // fallback) instead of a page.
+  if (request === '../../services/employerDocs') return { fetchDocCards: async (kind, docId, ids, opts) => {
+    docCards.push({ kind, docId, ids, size: opts && opts.size });
+    if (api.cards) return api.cards(kind, docId, ids);
+    return { cards: ids.map((id) => ({ id, image: 'data:image/jpeg;base64,' + id })) };
+  } };
+  if (request === '../../services/employerHomeService') return { LETTER_DESIGNS: [
+    { id: 'standard', name: 'Original (Branded)', accent: '#3a6cb5' },
+    { id: 'exec_leader', name: 'Executive Leadership', accent: '#b8995a' },
+  ] };
   if (request === '../../services/aiHubService') return { markAppliedByUrl: async (urls) => { applied.push(urls); return true; } };
   if (request === '../../services/mailAccount') return { useMailLink: () => mail };
   return origLoad.apply(this, arguments);
@@ -199,7 +218,8 @@ const DRAFT = () => ({
   },
   sender: { name: 'Rishi Samadhiya', email: 'rishi@example.com' },
   recipients: { prefill: [{ email: 'tom@nordex.com', name: 'Tom', role: 'Recruiter' }], suggestions: [{ email: 'anna@nordex.com', name: 'Anna', role: 'Manager' }] },
-  resume: { options: [{ id: 'tailored', docId: 30, label: 'Tailored for Nordex', detail: 'Azure · PDF', gated: true }, { id: 'builder', label: 'Your résumé', detail: 'Builder', gated: true }], default: 'tailored' },
+  // `template` is what the server really sends for a tailored résumé (resumeOptionsFor) — the row's page thumbnail.
+  resume: { options: [{ id: 'tailored', docId: 30, template: 'azure', label: 'Tailored for Nordex', detail: 'Azure · PDF', gated: true }, { id: 'builder', label: 'Your résumé', detail: 'Builder', gated: true }], default: 'tailored' },
   account: { provider: 'google', ready: true, reconnect: false, address: 'rishi.work@gmail.com' },
 });
 
@@ -226,11 +246,13 @@ async function openSend(o = {}) {
   delete require.cache[SCREEN];
   for (const id of timers.keys()) timers.delete(id);
   params = o.params || { docId: '12', template: 'exec_leader', mode: 'onepage' };
-  alerts = []; calls = []; pushes = []; applied = [];
+  alerts = []; calls = []; pushes = []; applied = []; docCards = [];
   store = o.store || {};
   dlLocked = !!o.locked;
   api = o.api || {};
-  mail = { linkGoogle: async () => ({ ok: true, address: 'new@gmail.com', message: 'ok' }), linkMicrosoft: async () => ({ ok: false, cancelled: true, message: 'Cancelled.' }), googleReady: true };
+  // ⚠️ `o.mail` OVERRIDES MUST BE IN PLACE BEFORE THE MOUNT (2026-09-20): the screen destructures useMailLink() on
+  // every render, so a link mock swapped in after mounting is only picked up by whatever re-render happens to follow.
+  mail = { linkGoogle: async () => ({ ok: true, address: 'new@gmail.com', message: 'ok' }), linkMicrosoft: async () => ({ ok: false, cancelled: true, message: 'Cancelled.' }), googleReady: true, ...(o.mail || {}) };
   const Screen = require(SCREEN).default;
   const c = mount(() => Screen());
   await advance(10);
@@ -242,6 +264,12 @@ async function openSend(o = {}) {
     btn: (re) => findOne(c.tree, (n) => n.type === 'TouchableOpacity' && re.test(textOf(n))),
     input: () => findOne(c.tree, (n) => n.type === 'TextInput' && n.props.keyboardType === 'email-address'),
     paywall: () => findOne(c.tree, (n) => n.type === 'DownloadPaywallSheet'),
+    // One page-size button, by the row it belongs to: "Cover letter · A4 Pages", "Résumé · One Page".
+    seg: (label) => findOne(c.tree, (n) => n.type === 'TouchableOpacity' && n.props.accessibilityLabel === label),
+    segOn: (label) => {
+      const n = findOne(c.tree, (x) => x.type === 'TouchableOpacity' && x.props.accessibilityLabel === label);
+      return !!(n && n.props.accessibilityState && n.props.accessibilityState.selected);
+    },
     sends: () => calls.filter((x) => /\/send$/.test(x.url)),
     // Not awaited: a Send polls on the FAKE clock, so its promise only settles while advance() runs timers.
     // A missing button is the failed assertion next to it, not a crash of the whole suite.
@@ -310,7 +338,8 @@ async function openSend(o = {}) {
     ok('…and the others are offered as chips', /Contacts we know at Nordex/.test(t) && /Anna · Manager/.test(t));
     ok('the subject is the letter\'s own', /Application for Quality Inspector — Rishi Samadhiya/.test(t));
     ok('the message is the note written from the letter', /AI NOTE from the letter/.test(t) && /Written from your letter — free/.test(t));
-    ok('the attachments: the letter in the design on screen, and the tailored résumé', /Executive Leadership · One page · PDF/.test(t) && /Tailored for Nordex/.test(t));
+    ok('the attachments: the letter in the design on screen, and the tailored résumé — each row saying what the FILE is',
+      /Cover letterExecutive Leadership · One Page · PDF/.test(t) && /Tailored for Nordex/.test(t) && /Résumé · Azure · A4 Pages · PDF/.test(t), t.slice(0, 600));
     ok('a Send button that names the count', h.sendBtn() && h.sendBtn().props.accessibilityLabel === 'Send to 1 recipient' && !h.sendBtn().props.disabled);
     ok('the top bar says whose application this is', /SEND COVER LETTER/.test(t) && /Nordex application/.test(t));
     await advance(1000);
@@ -336,6 +365,96 @@ async function openSend(o = {}) {
     const d = DRAFT(); d.account = { provider: 'google', ready: false, reconnect: true, address: null };
     const h = await openSend({ api: { draft: () => jsonRes(200, d) } });
     ok('an expired Gmail says Reconnect Gmail', !!h.btn(/^Reconnect Gmail$/) && /needs you to sign in again/.test(h.text()));
+    h.c.unmount();
+  }
+
+  // ⚠️ THE OWNER'S ISSUE, build 210 (2026-09-20): "I logged in with gmail account successfully and then when i clicked
+  // send then it showed me an error.. that reconnect gmail which looks incorrect to me." Google's granular consent
+  // returns an access token AND a refresh token with "Send email on your behalf" left unticked, so the card used to
+  // show a green Connected over a mailbox that would refuse the message he was about to write.
+  console.log('── 3b. ⚠️ connected, but never allowed to send ──');
+  {
+    const d = DRAFT(); d.account = { provider: 'google', ready: true, canSend: false, reconnect: false, address: 'rishi.work@gmail.com' };
+    const h = await openSend({ api: { draft: () => jsonRes(200, d) } });
+    const t = h.text();
+    const card = findOne(h.c.tree, (n) => n.type === 'LinearGradient' && /SEND/.test(textOf(n)));
+    ok('⚠️ the card says the permission is missing — BEFORE the message is written — and never "Connected"',
+      /SENDING NOT ALLOWED YET/.test(t) && /Not allowed/.test(textOf(card)) && !/Connected/.test(textOf(card)), textOf(card).slice(0, 160));
+    ok('…it still shows WHICH account is signed in (it is signed in; only the permission is missing)', /rishi\.work@gmail\.com/.test(t));
+    ok('⚠️ the one button is "Allow Gmail to send", not "Reconnect Gmail"', !!h.btn(/^Allow Gmail to send$/) && !h.btn(/^Reconnect Gmail$/));
+    ok('…and it names the checkbox on Google\'s own screen', /Send email on your behalf/.test(t));
+    ok('Send is disabled and says why', h.sendBtn().props.disabled === true && /not been allowed to send mail/.test(t));
+    ok('⚠️ nothing was sent, and no message was ever handed over', h.sends().length === 0);
+    // Allowing it — the same OAuth screen, with the box ticked this time.
+    mail.linkGoogle = async () => ({ ok: true, address: 'rishi.work@gmail.com', message: 'ok', canSend: true });
+    d.account = { provider: 'google', ready: true, canSend: true, reconnect: false, address: 'rishi.work@gmail.com' };
+    await h.press(h.btn(/^Allow Gmail to send$/));
+    await advance(100);
+    const t2 = h.text();
+    ok('⚠️ allowing it arms Send in place — no rebuild, no reopening the page, nothing to start over',
+      h.sendBtn().props.disabled === false && !/not been allowed to send mail/.test(t2) && pushes.length === 0, { pushes });
+    ok('…and the card goes back to Connected', /SENDING FROM/.test(t2) && !/SENDING NOT ALLOWED YET/.test(t2));
+    h.c.unmount();
+  }
+  {
+    // A consent the user pushed through again WITHOUT ticking the box: said out loud, and the card keeps telling the truth.
+    const d = DRAFT(); d.account = { provider: 'google', ready: true, canSend: false, reconnect: false, address: 'rishi.work@gmail.com' };
+    const h = await openSend({ api: { draft: () => jsonRes(200, d) } });
+    mail.linkGoogle = async () => ({ ok: true, address: 'rishi.work@gmail.com', message: 'Gmail is connected, but you did not allow CVApplyr to send mail.', canSend: false, reason: 'scope' });
+    await h.press(h.btn(/^Allow Gmail to send$/));
+    await advance(100);
+    ok('⚠️ a second consent that still withholds the permission is reported, not silently called success',
+      alerts.some((a) => /Allow sending/.test(a.title || '')) , alerts.map((a) => a.title));
+    ok('…and the card still asks for the permission', /SENDING NOT ALLOWED YET/.test(h.text()) && !!h.btn(/^Allow Gmail to send$/));
+    h.c.unmount();
+  }
+  {
+    // ⚠️ AN OUTLOOK LINK THAT BROUGHT NO LASTING PERMISSION (2026-09-20, second pass). The draft's account is built
+    // from the stored TOKENS, and a row holding only an access token still reads ready:true / canSend:true — so if the
+    // read-back were allowed to overwrite what the link itself answered, the card would show a green "Connected" over
+    // a mailbox that stops working within the hour, and the user would meet the reconnect loop later with no warning
+    // at connect time. The link's own "no" wins.
+    const d = DRAFT(); d.account = { provider: null, ready: false, canSend: false, reconnect: false, address: null };
+    const h = await openSend({
+      api: { draft: () => jsonRes(200, d) },
+      mail: {
+        linkMicrosoft: async () => ({
+          ok: true, address: 'owner@outlook.com', canSend: false, reason: 'no_refresh',
+          message: 'Outlook (owner@outlook.com) is connected, but it did not give us a lasting permission — sending would stop working within the hour. Connect again and stay signed in.',
+        }),
+      },
+    });
+    d.account = { provider: 'microsoft', ready: true, canSend: true, reconnect: false, address: 'owner@outlook.com' };   // what the tokens alone say
+    const before = alerts.length;
+    await h.press(h.btn(/^Connect Outlook$/));
+    await advance(100);
+    const card = findOne(h.c.tree, (n) => n.type === 'LinearGradient' && /SEND/.test(textOf(n)));
+    ok('⚠️ the link\'s own "this cannot keep sending" survives a read-back that says otherwise — no green Connected',
+      /SENDING NOT ALLOWED YET/.test(h.text()) && !/Connected/.test(textOf(card)), textOf(card).slice(0, 160));
+    ok('…and it is titled Reconnect, not "Allow sending": nothing was withheld, the sign-in simply will not last',
+      alerts.length > before && alerts[alerts.length - 1].title === 'Reconnect Outlook', alerts.slice(before).map((a) => a.title));
+    ok('…and Send stays disabled until the mailbox can really send', h.sendBtn().props.disabled === true);
+    h.c.unmount();
+  }
+  {
+    // The server refusing at Send time (an account connected before the grant was recorded): the SAME one button.
+    // ⚠️ THE SERVER'S OWN SENTENCE, WORD FOR WORD (letterSendController mailFailure('scope'), 2026-09-20). The page
+    // renders the server's text for this reason rather than its own, so a "Reconnect" left in that string reaches the
+    // user under a button that says "Allow Gmail to send" — the owner's loop, rebuilt out of the two halves.
+    const h = await openSend({ api: { status: () => jsonRes(200, { status: 'failed', reason: 'scope', error: 'Gmail is connected, but you did not allow CVApplyr to send mail. Tap Allow sending and tick “Send email on your behalf”. Nothing was sent and nothing was charged.' }) } });
+    await h.press(h.sendBtn());
+    await advance(3000);
+    ok('⚠️ a \'scope\' failure offers "Allow Gmail to send" — never a blind Try again, and never "Reconnect"',
+      !!h.btn(/^Allow Gmail to send$/) && !h.btn(/^Try again$/) && !h.btn(/^Reconnect Gmail$/));
+    ok('⚠️ …and the words on screen ask for the permission, with no "Reconnect" anywhere in the server\'s own sentence',
+      /Send email on your behalf/.test(h.text()) && !/Reconnect|sign in again/i.test(h.text()), h.text().slice(0, 300));
+    ok('…and the card reports the account as connected-but-not-allowed, not as disconnected',
+      /SENDING NOT ALLOWED YET/.test(h.text()) && !/No mailbox connected yet/.test(h.text()));
+    const before = h.sends().length;
+    mail.linkGoogle = async () => ({ ok: true, address: 'rishi.work@gmail.com', message: 'ok', canSend: true });
+    await h.press(h.btn(/^Allow Gmail to send$/));
+    await advance(100);
+    ok('⚠️ …and pressing it re-consents instead of re-sending the same refused message', h.sends().length === before);
     h.c.unmount();
   }
 
@@ -391,7 +510,8 @@ async function openSend(o = {}) {
     ok('one POST /send', h.sends().length === 1);
     ok('…carrying the message, the design on screen and the page layout', s && s.body.to.join() === 'tom@nordex.com' && /Quality Inspector/.test(s.body.subject)
       && /AI NOTE/.test(s.body.body) && s.body.template === 'exec_leader' && s.body.mode === 'onepage', s && s.body);
-    ok('…the attachments as the server reads them', s && JSON.stringify(s.body.letter) === '{"source":"doc"}' && JSON.stringify(s.body.resume) === '{"source":"tailored","docId":30}');
+    ok('…the attachments as the server reads them, each with the page size it is rendered in',
+      s && JSON.stringify(s.body.letter) === '{"source":"doc","mode":"onepage"}' && JSON.stringify(s.body.resume) === '{"source":"tailored","docId":30,"mode":"a4"}', s && s.body);
     ok('⚠️ …as a server job with an idempotency key', s && s.body.__async === true && /^ls-/.test(s.body.clientBuildId));
     ok('while it runs the button says Sending…', h.sendBtn().props.accessibilityLabel === 'Sending…');
     await advance(3000);
@@ -508,7 +628,7 @@ async function openSend(o = {}) {
     await advance(10);
     ok('picking the usual résumé attaches it', /Your résumé/.test(h.text()) && !findOne(h.c.tree, (n) => n.type === 'SmartAttachSheet').props.visible);
     await h.press(h.sendBtn());
-    ok('…and that is what is sent', h.sends()[0] && JSON.stringify(h.sends()[0].body.resume) === '{"source":"builder"}');
+    ok('…and that is what is sent, in the page size that row shows', h.sends()[0] && JSON.stringify(h.sends()[0].body.resume) === '{"source":"builder","mode":"a4"}', h.sends()[0] && h.sends()[0].body.resume);
     h.c.unmount();
   }
 
@@ -614,22 +734,78 @@ async function openSend(o = {}) {
     h.c.unmount();
   }
 
-  console.log('── 15. ⚠️ the AI note still being written: Send asks, and a late note never replaces what was sent ──');
+  console.log('── 15. ⚠️ the AI note still being written: the button is unavailable, and a late note never replaces what was sent ──');
   {
+    // ⚠️ CHANGED 2026-09-20 (owner: "if the message is loading then please show loader"). The Send button used to be
+    // ENABLED while the note was written and answered the tap with a modal about a message the user had not seen.
+    // Now the rule is in canSend (`writing`): the button is disabled, the bar says why, and the modal below is only
+    // reachable from the taps that do not come from the button.
     let release;
     const late = new Promise((r) => { release = r; });
-    const h = await openSend({ api: { body: () => late.then(() => jsonRes(200, { success: true, body: 'LATE AI NOTE that was never sent, long enough to pass.', source: 'ai' })) } });
+    const h = await openSend({ api: { body: () => late.then(() => jsonRes(200, { success: true, body: 'LATE AI NOTE, written at last and long enough to pass.', source: 'ai' })) } });
     ok('while it is written, the bar says so', /Still writing your message from the letter/.test(h.text()));
-    await h.press(h.sendBtn());
-    const ask = alerts.find((x) => x.title === 'Your message is still being written');
-    ok('⚠️ Send asks before sending the standard note the user has not seen — nothing sent yet', !!ask && h.sends().length === 0);
-    tapAlert(ask, 'Send the standard note');
-    await advance(10);
-    ok('"Send the standard note" sends exactly that', h.sends().length === 1 && h.sends()[0].body.body === DRAFT().bodies.withResume, h.sends()[0] && h.sends()[0].body.body);
+    ok('⚠️ …and the Send button is DISABLED — no tap can send a note the user has not seen', h.sendBtn().props.disabled === true);
+    const msg = h.section('MESSAGE');
+    ok('…a real loader stands in the message\'s place (a spinner, not just a grey bar the same colour as the card)',
+      !!findOne(msg, (n) => n.type === 'ActivityIndicator') && /Writing a short note from your letter…/.test(textOf(msg)));
+    ok('…and the standard note is NOT shown underneath as though it were the answer', !/My cover letter and résumé are attached/.test(textOf(msg)));
     release();
-    await advance(3000);
-    ok('⚠️ the late AI note is dropped — the page shows the message that went out', /Application sent/.test(h.text()) && !/LATE AI NOTE/.test(h.text()) && /My cover letter and résumé are attached/.test(h.text()));
+    await advance(10);
+    ok('when the note lands the button is enabled again and the bar goes quiet', h.sendBtn().props.disabled === false && !/Still writing your message/.test(h.text()));
+    ok('…and the note is what is on the page', /LATE AI NOTE/.test(h.text()));
     h.c.unmount();
+  }
+  {
+    // ⚠️ AND THE WAIT IS NEVER A DEAD END (review, 2026-09-20). Send, Edit and Rewrite are ALL unavailable while the
+    // first note is written, and /email-body can run 30 s (fetchEmailBody's abort) and then fail — so the loader
+    // carries the standard note, which is already on file, one tap away.
+    let release;
+    const late = new Promise((r) => { release = r; });
+    const h = await openSend({ api: { body: () => late.then(() => jsonRes(200, { success: true, body: 'LATE AI NOTE, written at last and long enough to pass.', source: 'ai' })) } });
+    const out = findOne(h.section('MESSAGE'), (n) => n.type === 'TouchableOpacity' && n.props.accessibilityLabel === 'Use the standard note');
+    ok('the loader offers the standard note instead of a wait with no exit', !!out && h.sendBtn().props.disabled === true);
+    await h.press(out);
+    ok('⚠️ …one tap and the page is sendable again, with the standard note on it',
+      h.sendBtn().props.disabled === false && /My cover letter and résumé are attached/.test(h.text()));
+    release();
+    await advance(10);
+    ok('…and the AI answer still on its way is dropped — it is not what the user chose', !/LATE AI NOTE/.test(h.text()));
+    h.c.unmount();
+  }
+  {
+    // ⚠️ A REWRITE IS NOT THE FIRST NOTE (review, 2026-09-20). It replaces a message the user has READ: that message
+    // stays on screen under the spinner and stays sendable. Taking the button away here held a perfectly good page
+    // hostage to an AI call that can run 30 s and then fail silently — worse than build 210.
+    let n = 0;
+    let release;
+    const late = new Promise((r) => { release = r; });
+    const h = await openSend({ api: { body: () => (++n === 1
+      ? jsonRes(200, { success: true, body: 'Dear Tom,\n\nAI NOTE from the letter.\n\nBest regards,\nRishi', source: 'ai' })
+      : late.then(() => jsonRes(200, { success: true, body: 'LATE AI NOTE that was never sent, long enough to pass.', source: 'ai' }))) } });
+    ok('the first note lands and the page is live', /AI NOTE from the letter/.test(h.text()) && h.sendBtn().props.disabled === false);
+    await h.press(findOne(h.section('MESSAGE').props.actions, (x) => x.props && x.props.accessibilityLabel === 'Rewrite the message'));
+    const msg = h.section('MESSAGE');
+    ok('⚠️ a Rewrite keeps the message it is replacing on screen, under the spinner — and the button with it',
+      !!findOne(msg, (x) => x.type === 'ActivityIndicator') && /AI NOTE from the letter/.test(textOf(msg)) && h.sendBtn().props.disabled === false);
+    await h.press(findOne(msg, (x) => x.type === 'TouchableOpacity' && x.props.accessibilityLabel === 'Keep this message'));
+    ok('…and one tap keeps it, ending the wait at once',
+      !findOne(h.section('MESSAGE'), (x) => x.type === 'ActivityIndicator') && /AI NOTE from the letter/.test(h.text()));
+    release();
+    await advance(10);
+    ok('⚠️ the rewrite still on its way is dropped — the user kept what they had', !/LATE AI NOTE/.test(h.text()));
+    h.c.unmount();
+  }
+  {
+    // ⚠️ THE GUARD ITSELF STAYS as the backstop for a doSend that does NOT come from the Send button (the failure
+    // card's Try again / Send again, the paywall's onUnlocked). Every one of those paths needs a message to have been
+    // on screen first, so the question is no longer reachable by tapping — it is pinned at the source instead, and it
+    // asks about the FIRST note only: what is on file then is a standard note the user has never read.
+    const src = fs.readFileSync(SEND_SRC, 'utf8');
+    ok('⚠️ a Send while the FIRST note is being written still asks before sending the standard note',
+      /if \(bodyLoading && !bodySeen && !opts\.standardNote\) \{/.test(src)
+      && /Your message is still being written/.test(src) && /Send the standard note/.test(src));
+    ok('…and a Send started mid-write still drops the answer on its way (it was never what went out)',
+      /if \(bodyLoading\) \{ bodyGen\.current\+\+; setBodyLoading\(false\); \}/.test(src));
   }
 
   console.log('── 16. ⚠️ the message says what is attached ──');
@@ -820,14 +996,17 @@ async function openSend(o = {}) {
     ok('…each carrying the letter as the server reads it — never the design name', !!wire && wire.coverLetterHtml === C.coverLetterHtml && wire.employer === 'Nordex'
       && wire.jobUrl === C.jobUrl && wire.position === 'Service Technician' && !('designName' in wire) && !!bodyWire && bodyWire.coverLetterHtml === C.coverLetterHtml, calls[0] && calls[0].body);
     const t = h.text();
-    ok('the letter row names the design the preview showed, and the layout picked there', /Modern Minimal · A4 pages · PDF/.test(t), t.slice(0, 400));
-    ok('…with no saved-card thumbnail (a classic letter\'s pages were never stored)', !findOne(h.c.tree, (n) => n.type === 'Image'));
+    // ⚠️ THE ROUTE'S `mode` IS NO LONGER THE DEFAULT (2026-09-20): the preview handed over mode:'a4' and this page
+    // still opens on One Page — the owner's rule for the letter (services/letterSend DEFAULT_SIZES).
+    ok('the letter row names the design the preview showed, and opens on the letter\'s own default layout', /Cover letterModern Minimal · One Page · PDF/.test(t), t.slice(0, 400));
+    ok('…with no saved-card thumbnail for the LETTER (a classic letter\'s pages were never stored)', !docCards.some((x) => x.kind === 'cover_letter'), docCards);
     await advance(1000);
     ok('the draft is kept on the phone under the letter\'s content key', typeof store[`letterSendDraft:v1:${k1}:`] === 'string', Object.keys(store));
     await h.press(h.sendBtn());
     const s = h.sends()[0];
     ok('⚠️ Send → POST /employer-docs/classic/send with the letter, the design and the layout', !!s && s.url === '/employer-docs/classic/send' && s.body.classic
-      && s.body.classic.coverLetterHtml === C.coverLetterHtml && s.body.template === 'ats_pro' && s.body.mode === 'a4' && JSON.stringify(s.body.letter) === '{"source":"doc"}', s && s.body);
+      && s.body.classic.coverLetterHtml === C.coverLetterHtml && s.body.template === 'ats_pro' && s.body.mode === 'onepage'
+      && JSON.stringify(s.body.letter) === '{"source":"doc","mode":"onepage"}', s && s.body);
     ok('⚠️ …as a job with an idempotency key, kept on the phone under the letter\'s POSTING until the answer', s && s.body.__async === true && typeof store[`letterSendPending:v1:${idA}`] === 'string');
     await advance(3000);
     ok('then: Application sent', /Application sent/.test(h.text()));
@@ -880,6 +1059,259 @@ async function openSend(o = {}) {
   {
     const h = await openSend({ params: { classic: '1' }, store: { [L.CLASSIC_SEND_KEY]: JSON.stringify({ coverLetterHtml: '<p>x</p>' }) }, api: { draft: () => jsonRes(404, {}) } });
     ok('⚠️ a server without the classic routes (an HTML 404) → "not available yet" with the Download way out', /Sending is not available yet/.test(h.text()) && !!h.btn(/^Back to Download$/));
+    h.c.unmount();
+  }
+
+  // ── The owner's 2026-09-20 report: the Send page's layout, its loader and the page size of each attachment ────────
+  console.log('── 23. ⚠️ the page size of each attachment: the owner\'s defaults, his choice, and what is rendered ──');
+  {
+    ok('the pure rule: One Page for the letter, A4 for the résumé', L.DEFAULT_SIZES.letter === 'onepage' && L.DEFAULT_SIZES.resume === 'a4');
+    ok('sizeText is the gallery\'s own wording', L.sizeText('onepage') === 'One Page' && L.sizeText('a4') === 'A4 Pages');
+    ok('parseSizes: nothing, junk or half a pair → the defaults, never undefined',
+      JSON.stringify(L.parseSizes(null)) === JSON.stringify(L.DEFAULT_SIZES)
+      && JSON.stringify(L.parseSizes('{')) === JSON.stringify(L.DEFAULT_SIZES)
+      && JSON.stringify(L.parseSizes('[1,2]')) === JSON.stringify(L.DEFAULT_SIZES)
+      && JSON.stringify(L.parseSizes({ letter: 'legal', resume: 'onepage' })) === JSON.stringify({ letter: 'onepage', resume: 'onepage' }));
+    ok('the size travels INSIDE the wire objects (so a changed size moves the Send fingerprint)',
+      JSON.stringify(L.letterWire({ source: 'doc', size: 'a4' })) === '{"source":"doc","mode":"a4"}'
+      && JSON.stringify(L.resumeWire({ source: 'tailored', option: { docId: 7 }, size: 'onepage' })) === '{"source":"tailored","docId":7,"mode":"onepage"}'
+      && JSON.stringify(L.resumeWire({ source: 'builder', option: {}, size: 'a4' })) === '{"source":"builder","mode":"a4"}');
+    ok('⚠️ …and the files the user BROUGHT carry none (their own bytes, attached unchanged)',
+      JSON.stringify(L.letterWire({ source: 'file', file: { fileId: 'f' } })) === '{"source":"file","fileId":"f"}'
+      && JSON.stringify(L.resumeWire({ source: 'uploaded', option: {}, size: 'a4' })) === '{"source":"uploaded"}');
+    const base = { to: ['a@b.co'], subject: 's', body: 'b', template: 't', letter: { source: 'doc', size: 'onepage' }, resume: { source: 'none' } };
+    ok('⚠️ a changed page size is a DIFFERENT message (it can never join the job that mailed the old layout)',
+      L.sendFingerprint(base) !== L.sendFingerprint({ ...base, letter: { source: 'doc', size: 'a4' } }));
+    // ⚠️ NO DESIGN IS EXEMPT ANY MORE (2026-09-20). The branded design's PDF comes from the PDFKit generator, which
+    // only builds ONE page sized to the letter's content, so this screen used to grey A4 out for it (fixedLetterSize)
+    // — on the very design the owner's own letter ranks first, i.e. "and that user can change it" unmet for him.
+    ok('the rule is gone from the client: nothing here answers "this design cannot change its layout"',
+      typeof L.fixedLetterSize === 'undefined');
+    // …because the SERVER grew the second layout: the design the catalogue flags `generic` renders its A4 from the
+    // HTML twin (which honours mode) and keeps the PDFKit generator — byte-for-byte the old file — for One Page.
+    const tplSrc = fs.readFileSync(path.join(APP, '..', 'server/utils/coverLetterTemplates.js'), 'utf8');
+    const generics = [...tplSrc.matchAll(/\{\s*id:\s*'([a-z_]+)',[^\n]*generic:\s*true/g)].map((m) => m[1]);
+    const firstId = (/const TEMPLATES = \[\s*\n\s*\{\s*id:\s*'([a-z_]+)'/.exec(tplSrc) || [])[1];
+    ok('⚠️ …the catalogue still flags exactly one design generic, and it is the fallback design',
+      generics.length === 1 && generics[0] === 'standard' && firstId === 'standard', { generics, firstId });
+    const clSrc = fs.readFileSync(path.join(APP, '..', 'server/controllers/coverLetterController.js'), 'utf8');
+    ok('⚠️ …and the renderer sends the branded design to the PDFKit generator ONLY when A4 was not asked for',
+      /const genericA4 = !!\(tplMeta && tplMeta\.generic\) && mode === 'a4';/.test(clSrc)
+      && /if \(tplMeta && tplMeta\.generic && !genericA4\) \{/.test(clSrc));
+    // ⚠️ …and the branded design's own HTML really does answer A4 with real A4 pages (that is what the toggle promises).
+    ok('⚠️ …whose HTML twin prints real A4 pages, with its padding repeated on every one of them',
+      /@page\{size:A4;margin:0\}\.sheet\{min-height:0\}/.test(tplSrc)
+      && /\.main,\.side\{-webkit-box-decoration-break:clone;box-decoration-break:clone\}/.test(tplSrc));
+    // ⚠️ …and One Page still means what it always did: the PDFKit generator's single content-sized page.
+    const genSrc = fs.readFileSync(path.join(APP, '..', 'server/controllers/emailController.js'), 'utf8');
+    ok('⚠️ …and the branded generator really does build ONE page sized to the letter (that is what One Page means)',
+      /const pageHeight = Math\.max\(minHeight, estimatedContentHeight\);/.test(genSrc)
+      && /new PDFKit\(\{\s*\n\s*size: \[pageWidth, pageHeight\]/.test(genSrc));
+  }
+  {
+    // The route still says mode:'a4' (the preview seeds itself from the document's stored design.mode — the owner's
+    // own letter, doc 17, is 'a4'); the page must open on HIS defaults anyway.
+    const h = await openSend({ params: { docId: '12', template: 'exec_leader', mode: 'a4' } });
+    ok('both rows carry a page-size control', !!h.seg('Cover letter · One Page') && !!h.seg('Cover letter · A4 Pages')
+      && !!h.seg('Résumé · One Page') && !!h.seg('Résumé · A4 Pages'));
+    ok('⚠️ a fresh page: the letter on One Page and the résumé on A4 — never the route\'s mode',
+      h.segOn('Cover letter · One Page') && !h.segOn('Cover letter · A4 Pages') && h.segOn('Résumé · A4 Pages') && !h.segOn('Résumé · One Page'));
+    await h.press(h.seg('Cover letter · A4 Pages'));
+    ok('tapping A4 Pages on the letter row changes that row and nothing else',
+      h.segOn('Cover letter · A4 Pages') && !h.segOn('Cover letter · One Page') && h.segOn('Résumé · A4 Pages')
+      && /Cover letterExecutive Leadership · A4 Pages · PDF/.test(h.text()), h.text().slice(0, 400));
+    ok('…and it is kept for the NEXT letter', store['letterSendSizes:v1'] && JSON.parse(store['letterSendSizes:v1']).letter === 'a4', store['letterSendSizes:v1']);
+    await h.press(h.seg('Résumé · One Page'));
+    await h.press(h.sendBtn());
+    const s = h.sends()[0];
+    ok('⚠️ the next Send carries both choices where the server reads them',
+      s && JSON.stringify(s.body.letter) === '{"source":"doc","mode":"a4"}' && JSON.stringify(s.body.resume) === '{"source":"tailored","docId":30,"mode":"onepage"}', s && s.body);
+    ok('…and the top-level mode (an older server\'s only way of hearing it) is the letter\'s', s && s.body.mode === 'a4');
+    await advance(1000);
+    h.c.unmount();
+  }
+  {
+    const h = await openSend({ store: { 'letterSendSizes:v1': JSON.stringify({ letter: 'a4', resume: 'onepage' }) } });
+    ok('a later Send starts from what was chosen last', h.segOn('Cover letter · A4 Pages') && h.segOn('Résumé · One Page'));
+    h.c.unmount();
+  }
+  {
+    // ⚠️ THE TRAP THE SIZE WIRING HAD TO AVOID: a Send whose outcome is unknown, then a changed SIZE. Re-using the kept
+    // id would hand back the job that already rendered and mailed the OLD layout and report it as the new one.
+    const h = await openSend({ api: { throwOn: /\/send$/ } });
+    await h.press(h.sendBtn());
+    await advance(10);
+    const first = h.sends()[0].body.clientBuildId;
+    ok('a lost connection leaves a pending Send', /No connection/.test(h.text()) && !!first);
+    api.throwOn = null;
+    alerts = [];
+    await h.press(h.seg('Cover letter · A4 Pages'));
+    await h.press(h.sendBtn());
+    const ask = alerts.find((x) => x.title === 'Your last Send may have gone out');
+    ok('⚠️ a changed page size asks first — it is a different message', !!ask && h.sends().length === 1);
+    tapAlert(ask, 'Send this one');
+    await advance(3000);
+    const second = h.sends()[1] && h.sends()[1].body;
+    ok('⚠️ …and goes out under a NEW id, in the layout on screen', !!second && second.clientBuildId !== first
+      && JSON.stringify(second.letter) === '{"source":"doc","mode":"a4"}', second);
+    h.c.unmount();
+  }
+  {
+    // A file from the phone: nothing of ours is rendered, so there is nothing to choose.
+    const h = await openSend();
+    await h.press(findAll(h.c.tree, (n) => n.type === 'TouchableOpacity' && /^Change/.test(textOf(n)))[1]);   // the résumé's
+    findOne(h.c.tree, (n) => n.type === 'SmartAttachSheet').props.onDevice({ uri: 'file:///x/Mine.pdf', name: 'Mine.pdf', mimeType: 'application/pdf' });
+    await advance(10);
+    ok('a file from the phone gets NO page-size control (and says what it is)', !h.seg('Résumé · One Page') && !h.seg('Résumé · A4 Pages')
+      && /Résumé · your file · 2 KB/.test(h.text()), h.text().slice(0, 500));
+    ok('…while the letter, which we DO render, keeps its own', !!h.seg('Cover letter · One Page'));
+    h.c.unmount();
+  }
+  {
+    const d = DRAFT();
+    d.resume = { options: [{ id: 'uploaded', label: 'Your uploaded CV', detail: 'PDF · 148 KB', gated: false }], default: 'uploaded' };
+    const h = await openSend({ api: { draft: () => jsonRes(200, d) } });
+    ok('the uploaded CV gets no page-size control either — it is attached exactly as it is',
+      !h.seg('Résumé · One Page') && !h.seg('Résumé · A4 Pages') && /Résumé · PDF · 148 KB/.test(h.text()), h.text().slice(0, 500));
+    await h.press(h.sendBtn());
+    ok('…and its wire carries no mode', JSON.stringify(h.sends()[0].body.resume) === '{"source":"uploaded"}', h.sends()[0] && h.sends()[0].body.resume);
+    h.c.unmount();
+  }
+  {
+    // ⚠️ THE DESIGN THE OWNER'S OWN LETTER RANKS FIRST (doc 17, 'standard' = "Original (Branded)"). Its One Page PDF is
+    // the PDFKit generator's single content-sized page and its A4 is the HTML twin's real A4 pages, so BOTH halves of
+    // his sentence hold on the one letter he has: One Page by default, and he can change it (review round 2,
+    // 2026-09-20 — this row was briefly greyed out, which is the bug he reported, not a fix for it).
+    const h = await openSend({ params: { docId: '12', template: 'standard', mode: 'a4' } });
+    ok('⚠️ the branded design opens on One Page like every other letter — his default, not the route\'s a4',
+      h.segOn('Cover letter · One Page') && !h.segOn('Cover letter · A4 Pages'));
+    ok('…and BOTH of its layouts are live — no design has a dead control any more',
+      h.seg('Cover letter · One Page').props.disabled !== true && h.seg('Cover letter · A4 Pages').props.disabled !== true
+      && !/always prints as one continuous page/.test(h.text()));
+    ok('…and its row says the size it is really rendered in', /Cover letterOriginal \(Branded\) · One Page · PDF/.test(h.text()), h.text().slice(0, 400));
+    await h.press(h.seg('Cover letter · A4 Pages'));
+    ok('⚠️ tapping A4 on the branded design really changes it (the half of his sentence that was unmet)',
+      h.segOn('Cover letter · A4 Pages') && !h.segOn('Cover letter · One Page')
+      && /Cover letterOriginal \(Branded\) · A4 Pages · PDF/.test(h.text()), h.text().slice(0, 400));
+    await h.press(h.sendBtn());
+    const s0 = h.sends()[0];
+    ok('⚠️ …and the Send carries A4 to the server, which renders the branded design\'s HTML twin for it',
+      s0 && JSON.stringify(s0.body.letter) === '{"source":"doc","mode":"a4"}' && s0.body.mode === 'a4', s0 && s0.body);
+    await advance(3000);
+    h.c.unmount();
+  }
+  {
+    // The phone remembers the last choice for the branded design too — and the row shows what will be RENDERED.
+    const h = await openSend({ params: { docId: '12', template: 'standard' }, store: { 'letterSendSizes:v1': JSON.stringify({ letter: 'a4', resume: 'a4' }) } });
+    ok('a later letter on the branded design starts from the A4 he chose last',
+      h.segOn('Cover letter · A4 Pages') && /Cover letterOriginal \(Branded\) · A4 Pages · PDF/.test(h.text()));
+    h.c.unmount();
+  }
+
+  console.log('── 24. ⚠️ the attachment rows: document iconography, a real page, and what each file IS ──');
+  // Each row's 40×52 page frame — the thing the owner saw a lone green star floating in.
+  const framesOf = (node) => findAll(node, (n) => n.type === 'View' && flat(n.props.style).flexDirection === 'row' && flat(n.props.style).alignItems === 'flex-start')
+    .map((head) => head.children[0]).map((frame) => (frame && frame.children[0]) || null);
+  const pageish = (k) => !!k && (k.type === 'Image' || (k.type === 'Ionicons' && /^document-/.test(k.props.name)));
+  {
+    const h = await openSend();
+    const att = h.section('ATTACHMENTS');
+    const frames = framesOf(att);
+    ok('⚠️ every row\'s page frame holds a PAGE or a document icon — never a glyph that says nothing about the file',
+      frames.length === 2 && frames.every(pageish), frames.map((k) => k && (k.type === 'Image' ? 'Image' : k.props.name)));
+    // ⚠️ STRUCTURAL, NOT BY TEXT (review, 2026-09-20): "Tailored for Nordex" is the option's own label, which the OLD
+    // row printed too — so a text match passed against the code this section exists to replace.
+    ok('…the tailored résumé is marked by a badge beside its title, never by the icon in its page frame',
+      findAll(att, (n) => n.type === 'Text' && textOf(n) === 'Tailored').length === 1
+      && !frames.some((k) => k && k.type === 'Ionicons' && k.props.name === 'sparkles'), frames.map((k) => k && (k.type === 'Image' ? 'Image' : k.props.name)));
+    ok('⚠️ the tailored résumé fetches its REAL page, one card, exactly as the letter\'s row does',
+      docCards.filter((x) => x.kind === 'resume').length === 1
+      && JSON.stringify(docCards.find((x) => x.kind === 'resume')) === JSON.stringify({ kind: 'resume', docId: 30, ids: ['azure'], size: 'card' }), docCards);
+    ok('…and both rows show that rendered page, not a glyph', frames.every((k) => k && k.type === 'Image'));
+    ok('every row says what the FILE is', /Cover letterExecutive Leadership · One Page · PDF/.test(textOf(att)) && /Résumé · Azure · A4 Pages · PDF/.test(textOf(att)));
+    // The sheet behind Change follows the same iconography.
+    await h.press(findAll(h.c.tree, (n) => n.type === 'TouchableOpacity' && /^Change/.test(textOf(n)))[1]);
+    const sheet = findOne(h.c.tree, (n) => n.type === 'SmartAttachSheet');
+    ok('…and so does the sheet behind Change', sheet.props.options.filter((o) => o.key !== 'none').every((o) => /^document-/.test(o.icon)), sheet.props.options.map((o) => o.icon));
+    h.c.unmount();
+
+    // No page came back (a render that failed, an older server): every frame falls back to a DOCUMENT icon.
+    const h2 = await openSend({ api: { cards: async () => null } });
+    const f2 = framesOf(h2.section('ATTACHMENTS'));
+    ok('⚠️ with no page to show, every frame falls back to the document icon — not a star, not a person',
+      f2.length === 2 && f2.every((k) => k && k.type === 'Ionicons' && k.props.name === 'document-text'),
+      f2.map((k) => k && (k.type === 'Image' ? 'Image' : k.props.name)));
+    h2.c.unmount();
+  }
+  {
+    // ⚠️ THE PAGE IS RENDERED BY CHROMIUM, SO IT TAKES SECONDS — and the control that renders it sits in the SAME row
+    // (review, 2026-09-20). Hanging the fetch on the whole attachment re-ran it on every tap of the page-size
+    // segments, cancelling the card in flight and then bailing on the "already asked" marker: the row fell back to the
+    // icon for the rest of the screen's life, i.e. the very symptom the fetch exists to fix, through its own control.
+    let release;
+    const late = new Promise((r) => { release = r; });
+    const h = await openSend({ api: { cards: (kind, docId, ids) => (kind === 'resume'
+      ? late.then(() => ({ cards: ids.map((id) => ({ id, image: 'data:image/jpeg;base64,' + id })) }))
+      : { cards: ids.map((id) => ({ id, image: 'data:image/jpeg;base64,' + id })) }) } });
+    await h.press(h.seg('Résumé · One Page'));
+    await h.press(h.seg('Résumé · A4 Pages'));
+    release();
+    await advance(10);
+    const frames = framesOf(h.section('ATTACHMENTS'));
+    ok('⚠️ a page size changed while the page was still rendering still gets its page',
+      frames.length === 2 && frames[1] && frames[1].type === 'Image', frames.map((k) => k && (k.type === 'Image' ? 'Image' : k.props.name)));
+    ok('…and the card was asked for exactly once, however many times the size was tapped',
+      docCards.filter((x) => x.kind === 'resume').length === 1, docCards);
+    h.c.unmount();
+  }
+  {
+    // The Builder résumé and the uploaded CV used to be drawn with 'person-outline' — a person, for a document.
+    for (const id of ['builder', 'uploaded']) {
+      const d = DRAFT();
+      d.resume = { options: [{ id, label: id === 'builder' ? 'Your résumé' : 'Your uploaded CV', detail: 'PDF · 148 KB', gated: id === 'builder' }], default: id };
+      const h3 = await openSend({ api: { draft: () => jsonRes(200, d), cards: async () => null } });
+      const f3 = framesOf(h3.section('ATTACHMENTS'));
+      ok(`the ${id} résumé is a document too, not a person`, f3.length === 2 && f3.every((k) => k && k.type === 'Ionicons' && k.props.name === 'document-text'),
+        f3.map((k) => k && (k.type === 'Image' ? 'Image' : k.props.name)));
+      h3.c.unmount();
+    }
+  }
+
+  console.log('── 25. ⚠️ one grid: the same inset read and edited, 44 pt touch targets, nothing clamped to one line ──');
+  {
+    const h = await openSend();
+    /** The style a node resolves to — a missing node resolves to {}, so a broken layout FAILS instead of throwing. */
+    const st = (n) => (n && n.props ? flat(n.props.style) : {});
+    const boxOf = (title) => findOne(h.section(title), (n) => n.type === 'View' && flat(n.props.style).paddingHorizontal !== undefined);
+    const subjRead = boxOf('SUBJECT');
+    ok('the read value of every field sits in a box with the field inset',
+      st(subjRead).paddingHorizontal === 12 && st(boxOf('MESSAGE')).paddingHorizontal === 12 && st(boxOf('TO')).paddingHorizontal === 12,
+      { subject: st(subjRead), message: st(boxOf('MESSAGE')), to: st(boxOf('TO')) });
+    h.section('SUBJECT').props.onEdit();
+    await advance(10);
+    const subjEdit = findOne(h.section('SUBJECT'), (n) => n.type === 'TextInput');
+    ok('⚠️ …and the editor resolves to the SAME inset, so the sentence does not jump sideways when Edit is tapped',
+      !!subjEdit && !!subjRead && st(subjEdit).paddingHorizontal === st(subjRead).paddingHorizontal
+      && st(subjEdit).paddingVertical === st(subjRead).paddingVertical, { read: st(subjRead), edit: st(subjEdit) });
+    ok('…and nothing is left to a phone in dark mode (an explicit keyboard and selection colour on every field)',
+      findAll(h.c.tree, (n) => n.type === 'TextInput').every((n) => n.props.keyboardAppearance === 'light' && !!n.props.selectionColor && !!n.props.placeholderTextColor));
+    h.section('SUBJECT').props.onCancel();
+    await advance(10);
+    // The To field and its Add button: one minimum height, stretched — they used to be 38 pt and 35 pt in a centred row.
+    const addRow = findOne(h.section('TO'), (n) => n.type === 'View' && flat(n.props.style).alignItems === 'stretch' && flat(n.props.style).flexDirection === 'row');
+    ok('⚠️ the To field and its Add button are STRETCHED onto one shared height (they were 38 pt and 35 pt, centred)', !!addRow);
+    ok('…both at least 44 pt', st(h.input()).minHeight === 44 && st(findOne(addRow, (n) => n.type === 'TouchableOpacity')).minHeight === 44,
+      { field: st(h.input()).minHeight, add: st(findOne(addRow, (n) => n.type === 'TouchableOpacity')).minHeight });
+    const small = findAll(h.c.tree, (n) => n.type === 'TouchableOpacity')
+      .filter((n) => { const f = flat(n.props.style); return !(f.minHeight >= 44 || f.height >= 44 || n.props.hitSlop != null); })
+      .map((n) => n.props.accessibilityLabel || textOf(n) || '(no label)');
+    ok('⚠️ every control this page owns is a 44 pt target, or carries a hitSlop', small.length === 0, small);
+    const clamped = findAll(h.section('ATTACHMENTS'), (n) => n.type === 'Text' && n.props.numberOfLines === 1).map(textOf);
+    ok('⚠️ nothing in the attachment rows is clamped to one line (at 320 pt they had ~62 pt to say it in)', clamped.length === 0, clamped);
+    const bar = findOne(h.c.tree, (n) => n.type === 'KeyboardAvoidingView' && !!findOne(n, (x) => x.type === 'TouchableOpacity' && /^Send to/.test(String(x.props.accessibilityLabel || ''))));
+    ok('⚠️ the Send bar is inside the keyboard avoider (the keyboard used to cover it while an address was typed)', !!bar);
+    const header = findOne(h.c.tree, (n) => n.type === 'View' && flat(n.props.style).position === 'absolute' && flat(n.props.style).left === 96);
+    ok('…and the header is a flex row, not an absolute strip 96 pt in from each side', !header && /Nordex application/.test(h.text()));
     h.c.unmount();
   }
 

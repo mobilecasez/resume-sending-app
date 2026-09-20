@@ -235,8 +235,11 @@ const STYLES = {
 
 // ── Generic / Original — preview that mirrors the original branded letter
 //    (dark sidebar with photo + TO/FROM/DATE, body with name header + "Cover Letter").
-//    The DOWNLOAD for this template is produced by the original PDFKit generator
-//    (generateRichCoverLetterPDF) so it is byte-for-byte the user's previous letter.
+//    The One Page DOWNLOAD for this template is produced by the original PDFKit generator
+//    (generateRichCoverLetterPDF) so it is byte-for-byte the user's previous letter; A4 — the
+//    layout the Send page and the download sheet let the user pick — is rendered from THIS HTML
+//    (coverLetterController.renderLetterPdfFile), because the PDFKit generator only knows how to
+//    build one page sized to the letter's content.
 function standardLetter(data, opts = {}) {
   const { s, c, date, body, salutation, closing } = prep(data);
   const hex6 = String(opts.brandColor || '').replace('#', '');
@@ -247,7 +250,16 @@ function standardLetter(data, opts = {}) {
   try { dateShort = new Date().toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' }); } catch {}
   const footRows = [raw(s.email), raw(s.location)].filter(Boolean).map(x => `<div>${esc(x)}</div>`).join('');
   const topRight = [raw(s.location), raw(s.email)].filter(Boolean).map(x => `<div>${esc(x)}</div>`).join('');
-  const pageRule = opts.mode === 'a4' ? '@page{size:A4;margin:0}.sheet{min-height:0}' : '@page{margin:0}.sheet{min-height:297mm}';
+  // ⚠️ A4 IS A REAL LAYOUT FOR THIS DESIGN TOO (2026-09-20 — the owner: "for cover letter keep One page as default …
+  // and that user can change it"). The page margin stays 0, unlike clPageRule: the dark column has to bleed to every
+  // edge of every page. What keeps the letter off those edges is box-decoration-break:clone, which repeats .main's and
+  // .side's OWN padding on each page fragment instead of only the first and the last. Measured on chromium 1223 with a
+  // 760-word letter (3 pages): without it pages 2-3 start at y=0 and run into the bottom edge; with it they start at
+  // the same 24mm as page one. Previews always render 'onepage' (coverLetterRenderer.renderPreviews), so no cached
+  // card changes and PREVIEW_REV stays where it is.
+  const pageRule = opts.mode === 'a4'
+    ? '@page{size:A4;margin:0}.sheet{min-height:0}\n  .main,.side{-webkit-box-decoration-break:clone;box-decoration-break:clone}'
+    : '@page{margin:0}.sheet{min-height:297mm}';
   // The brand colour paints the label bars outright (this design IS the branded one — no re-hue);
   // the brand font, when a verified Google font, leads the stacks like everywhere else.
   return brandFontHtml(`<!DOCTYPE html><html lang="en"><head>${fontsHead('Cover Letter')}<style>

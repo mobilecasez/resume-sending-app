@@ -285,6 +285,47 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     ok('an EXISTING second account on the claimed device keeps its fresh 3 (only row creation is gated)', g.allowed && g.via === 'free' && g.remaining === 3, g);
   }
 
+  // ⚠️ A PLAN BEATS A CLAIMED DEVICE (2026-09-20, the owner's own report on build 210).
+  // He tapped Build on his new account (user 618) on a phone whose free allowance belonged to his older account,
+  // was refused with the device sentence, subscribed — and the app went on showing that refusal. The server was
+  // never the problem and this block is what says so out loud: canConsumeMany reads the subscription FIRST, so the
+  // device branch is unreachable for a subscriber, and no free row is created for them either. The clients must
+  // therefore read the answer PLAN-FIRST, which is exactly what getStatus below makes easy to get wrong — it
+  // reports the plan and the blocked free allowance side by side, both true.
+  console.log('── a plan beats a claimed device ──');
+  {
+    // user 1 claimed dev-AAAAAAAA at the top of this file; 55 is a brand-new account on that same phone.
+    seedSub(55, 'plus', '2026-09-14T00:00:00Z');
+    const r = await ent.canConsumeMany(55, 'resume', 1, req('dev-AAAAAAAA'));
+    const l = await ent.canConsumeMany(55, 'cover_letter', 1, req('dev-AAAAAAAA'));
+    ok('a subscriber on a claimed device may build a resume (via plan, never device_trial_used)',
+      r.allowed && r.via === 'plan' && r.remaining === 15 && r.blocked === undefined, r);
+    ok('…and write a cover letter', l.allowed && l.via === 'plan' && l.remaining === 25 && l.blocked === undefined, l);
+    ok('…and no free row was created for them (the free lane is never even asked)', !db.trials.has(55));
+    const c = await ent.consumeOnSuccess(55, 'resume', {}, req('dev-AAAAAAAA'));
+    ok("…and the charge is the PLAN's", c.via === 'plan' && db.ledger.some((x) => x.user_id === 55 && x.source === 'plan'), c);
+    const st = await ent.getStatus(55, req('dev-AAAAAAAA'));
+    // ⚠️ A KNOWN plan short-circuits getStatus before the free lane is read at all, so trialState is ABSENT rather
+    // than blocked. The clients still have to be plan-first, because a subscription whose plan_key this build does
+    // not know falls past that return and then reports both — and because `blocked` is a fact about the free
+    // allowance, never about whether this user may generate.
+    ok('getStatus for a subscriber reports the plan and no free-allowance state at all (the early return)',
+      !!st.subscription && st.subscription.planKey === 'plus' && st.via === 'plan' && st.trialState === undefined,
+      { sub: st.subscription, via: st.via, trialState: st.trialState });
+    ok('…and the numbers on that answer are the plan\'s, not the free allowance\'s', st.remaining.resumes === 14 && st.remaining.letters === 25, st.remaining);
+    // The same account once the plan is gone: the refusal it started with, unchanged.
+    db.subs = db.subs.filter((s) => s.user_id !== 55);
+    const gone = await ent.getStatus(55, req('dev-AAAAAAAA'));
+    ok('…with no plan, THAT is when the device block is reported (and it is the only thing that changed)',
+      !gone.subscription && gone.via === null
+      && JSON.stringify(gone.trialState) === JSON.stringify({ active: false, blocked: 'device_trial_used' }), gone.trialState);
+    const after = await ent.canConsumeMany(55, 'resume', 1, req('dev-AAAAAAAA'));
+    ok('…and with the plan gone the device refusal is back, word for word (the message is still right for '
+      + 'someone who genuinely has no plan)',
+      !after.allowed && after.blocked === 'device_trial_used'
+      && after.message === 'The free plan on this device was already used by another account. Start a plan in Plans & Usage to keep going.', after);
+  }
+
   console.log('── quotaGrants.ensureCountableWindow ──');
   {
     ok('a free user with a row → trial (no "expired" case any more)', (await quotaGrants.ensureCountableWindow(20, 'k')).via === 'trial');

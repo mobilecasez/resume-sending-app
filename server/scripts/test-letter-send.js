@@ -137,6 +137,10 @@ const writeTemp = (name, buf) => { const p = path.join(TMP, name); fs.writeFileS
 const letterRecords = [];
 const senderPayloads = [];    // every payload senderForLetter was handed (a classic letter must never name a sender)
 const classicRenders = [];    // what the classic lane asked the classic Download's render for
+// The page SIZE each render was actually asked for (the Send page's per-attachment choice, 2026-09-20).
+const letterRenders = [];
+const resumeRenders = [];
+const builderRenders = [];
 stub('server/controllers/coverLetterController.js', {
   withSharedLetterBrand: async (doc) => doc,
   senderForLetter: async (userId, payload) => { senderPayloads.push(payload); return { name: 'Rishi Samadhiya', title: 'Engineer', email: 'rishi@example.com', phone: '+91 99', location: 'Pune, India' }; },
@@ -148,8 +152,9 @@ stub('server/controllers/coverLetterController.js', {
     const filePath = writeTemp(fileName, PDF('classic letter', render.bigBytes));
     return { fileName, filePath, tplId: input.template || 'standard', mode: input.mode, input: { coverLetterHtml: input.coverLetterHtml, companyName: input.companyName, companyAddress: input.companyAddress, brandColor: null } };
   },
-  renderSavedLetterPdf: async (userId, doc, { template, mode }) => {
+  renderSavedLetterPdf: async (userId, doc, { template, mode } = {}) => {
     events.push('render:letter');
+    letterRenders.push({ id: doc.id, template, mode });
     if (render.letterFails) throw new Error('chromium died');
     const fileName = `Cover_Letter_${doc.id}_${Date.now()}.pdf`;
     const filePath = writeTemp(fileName, PDF('letter', render.bigBytes));
@@ -162,13 +167,18 @@ stub('server/controllers/resumeBuilderController.js', {
     const d = DOCS.find((x) => x.id === Number(id) && x.user_id === userId && x.environment === envOfReq(reqOrEnv) && x.kind === 'resume');
     return d || null;
   },
-  renderResumeDocPdf: async (userId, doc) => {
+  // ⚠️ The real one's rule: `mode` when it is one of the two, else the DOCUMENT's own design.mode (docModeOf) — so a
+  // junk mode must never reach here, and an absent one must not become a hard-coded page size.
+  renderResumeDocPdf: async (userId, doc, opts = {}) => {
     events.push('render:resume');
+    resumeRenders.push({ id: doc.id, mode: opts.mode });
     const fileName = `Resume_${doc.id}_${Date.now()}.pdf`;
-    return { fileName, filePath: writeTemp(fileName, PDF('resume', render.bigBytes)), template: 'azure', mode: 'onepage' };
+    const useMode = opts.mode === 'a4' || opts.mode === 'onepage' ? opts.mode : 'onepage';   // 'onepage' = this doc's design
+    return { fileName, filePath: writeTemp(fileName, PDF('resume', render.bigBytes)), template: 'azure', mode: useMode };
   },
-  buildResumePdfForRegion: async () => {
+  buildResumePdfForRegion: async (userId, region, mode) => {
     events.push('render:builder');
+    builderRenders.push(mode);
     if (render.builderNone) return null;
     const fileName = `Builder_${Date.now()}.pdf`;
     return { fileName, filePath: writeTemp(fileName, PDF('builder')), template: 'minimal' };
@@ -209,6 +219,7 @@ function resetWorld() {
   provider.throws = null; ai.calls = 0; ai.answer = null; ai.throws = null; ent.many = { allowed: true };
   dls.METERED = false; passes.unbound = 0; passes.ownedSpelling = null; resolves.length = 0;
   senderPayloads.length = 0; classicRenders.length = 0;
+  letterRenders.length = 0; resumeRenders.length = 0; builderRenders.length = 0;
   C._internals.sendCalls.clear(); C._internals.bodyCalls.clear();
   db.builder = true; db.contacts = [];
   db.users = {
@@ -361,6 +372,28 @@ async function settleJob(ms = 10000) {
     const r4 = await send(4, 41, BASE);
     ok('a Google account whose tokens were cleared → 409 reconnect (not "connected")', r4.res.statusCode === 409 && r4.res.body.reason === 'reconnect' && r4.res.body.provider === 'google', r4.res.body);
     ok('⚠️ the controller has no SMTP / ZeptoMail fallback', !/sendEmailViaZeptoMail|createTransporter|smtp_/i.test(strip(R('server/controllers/letterSendController.js'))));
+    // ⚠️ THE OWNER'S ISSUE, build 210 (2026-09-20). Google hands back both tokens with "Send email on your behalf"
+    // unticked, so this account LOOKS connected. Before the fix the refusal arrived only after both PDFs had been
+    // rendered — and arrived as "sign in again", which is not what fixes it.
+    resetWorld();
+    db.users[1].google_granted_scopes = 'openid email profile';
+    const r5 = await send(1, 12, BASE);
+    ok('⚠️ a Gmail that was never allowed to send → 409 \'scope\', not \'reconnect\'', r5.res.statusCode === 409 && r5.res.body.reason === 'scope' && r5.res.body.provider === 'google', r5.res.body);
+    // ⚠️ THE SENTENCE, NOT ONLY THE REASON CODE (2026-09-20). This server string is what the page actually renders for
+    // a 'scope' failure (send.tsx keeps its own wording only for the handful of reasons it decides itself), under a
+    // button that says "Allow sending". While it read "Reconnect and allow sending" the owner was still being sent
+    // round the loop he reported — with the fixed page on top of it.
+    ok('…the message asks for the permission, not for another sign-in or another connect',
+      /Tap Allow sending/.test(r5.res.body.error) && /Send email on your behalf/.test(r5.res.body.error)
+      && !/sign in again/i.test(r5.res.body.error) && !/Reconnect|Connect again/i.test(r5.res.body.error), r5.res.body.error);
+    ok('⚠️ …refused BEFORE any render, send or claim — no PDF is built for a message that cannot leave', events.length === 0 && claims.length === 0 && sends.length === 0, events);
+    resetWorld();
+    db.users[3].microsoft_granted_scopes = 'User.Read offline_access';
+    const r6 = await send(3, 40, BASE);
+    ok('…and an Outlook that was never allowed to send names ITS own permission, not Gmail\'s checkbox',
+      r6.res.statusCode === 409 && r6.res.body.reason === 'scope' && /Send mail as you/.test(r6.res.body.error)
+      && !/Reconnect/i.test(r6.res.body.error), r6.res.body);
+    resetWorld();
   }
 
   console.log('── 5. ⚠️ the Download rule: gated BEFORE rendering, refused → nothing happens ──');
@@ -536,6 +569,7 @@ async function settleJob(ms = 10000) {
     ok('the résumé order: tailored > Builder > uploaded, tailored first by default', JSON.stringify(b.resume.options.map((o) => o.id)) === JSON.stringify(['tailored', 'builder', 'uploaded'])
       && b.resume.default === 'tailored' && b.resume.options[0].docId === 30, b.resume);
     ok('the account: google, ready, the LINKED address', b.account.provider === 'google' && b.account.ready === true && b.account.address === 'rishi.work@gmail.com', b.account);
+    ok('…and whether that mailbox may actually send (canSend), so the card can say so before a message is written', b.account.canSend === true, b.account);
     ok('a deterministic body that names the role and the attachments', /Inspecteur Qualité A350/.test(b.body) && /cover letter and résumé are attached/.test(b.body) && /Best regards,\nRishi Samadhiya/.test(b.body));
     ok('⚠️ opening the page: no AI, no render, no gate, no claim, no write', ai.calls === 0 && events.length === 0 && !db.log.some((x) => x.verb === 'run'), { ai: ai.calls, events });
     db.users[1].resume_path = null;
@@ -589,7 +623,7 @@ async function settleJob(ms = 10000) {
       && mail.sniffKind(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) === 'ole' && mail.sniffKind(Buffer.from('hello')) === null);
     ok('attachment names keep any script (José Müller → José_Müller)', mail.attachmentName('letter', 'José Müller', 'pdf') === 'José_Müller_Cover_Letter.pdf');
     const acct = realEmail.mailAccountOf;
-    ok('mailAccountOf: google tokens → google ready', JSON.stringify(acct({ oauth_provider: 'google', google_refresh_token: 'x' })) === JSON.stringify({ provider: 'google', ready: true }));
+    ok('mailAccountOf: google tokens → google ready', JSON.stringify(acct({ oauth_provider: 'google', google_refresh_token: 'x' })) === JSON.stringify({ provider: 'google', ready: true, canSend: true }));
     ok('mailAccountOf: prefers oauth_provider when both are linked', acct({ oauth_provider: 'microsoft', google_refresh_token: 'x', microsoft_refresh_token: 'y' }).provider === 'microsoft');
     ok('mailAccountOf: an Apple user with a linked Gmail sends from Gmail', acct({ oauth_provider: 'apple', google_access_token: 'x' }).provider === 'google');
     ok('⚠️ mailAccountOf: a provider with its tokens cleared is NOT ready', acct({ oauth_provider: 'google' }).ready === false && acct({ oauth_provider: 'google' }).reconnect === true);
@@ -599,6 +633,19 @@ async function settleJob(ms = 10000) {
     ok('classifyMailError: Graph ErrorAccessDenied → scope', cls(Object.assign(new Error('Microsoft Graph 403 ErrorAccessDenied'), { status: 403, graphCode: 'ErrorAccessDenied' })) === 'scope');
     ok('classifyMailError: a refresh that failed on every client → reconnect', cls(new Error('Token refresh failed with all clients: invalid_grant')) === 'reconnect');
     ok('classifyMailError: ECONNRESET → provider_busy', cls(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })) === 'provider_busy');
+    // ⚠️ "IS THERE A TOKEN?" AND "MAY IT SEND?" ARE DIFFERENT QUESTIONS (2026-09-20, the owner on build 210: "it showed
+    // me an error.. that reconnect gmail which looks incorrect to me"). Google returns an access token AND a refresh
+    // token with "Send email on your behalf" left unticked, so a sign-in was stored as a mailbox.
+    const SIGN_IN_ONLY = 'openid email profile';
+    ok('⚠️ mailAccountOf: a recorded grant WITHOUT gmail.send is ready but NOT send-capable',
+      acct({ oauth_provider: 'google', google_refresh_token: 'x', google_granted_scopes: SIGN_IN_ONLY }).ready === true
+      && acct({ oauth_provider: 'google', google_refresh_token: 'x', google_granted_scopes: SIGN_IN_ONLY }).canSend === false);
+    ok('…a grant WITH it can send', acct({ oauth_provider: 'google', google_refresh_token: 'x', google_granted_scopes: `${SIGN_IN_ONLY} https://www.googleapis.com/auth/gmail.send` }).canSend === true);
+    ok('⚠️ …and NO recorded grant means unknown, not refused — every account connected before Migration 050 keeps sending',
+      acct({ oauth_provider: 'google', google_refresh_token: 'x' }).canSend === true
+      && acct({ oauth_provider: 'microsoft', microsoft_refresh_token: 'y' }).canSend === true);
+    ok('classifyMailError: the FIRST error\'s reason survives our one recovery attempt (a Gmail 403 scope + a refresh 401 → \'scope\')',
+      cls(Object.assign(new Error('unauthorized_client'), { status: 401, originalMailReason: 'scope' })) === 'scope');
   }
 
   console.log('── 14. hardening that rode along ──');
@@ -1012,6 +1059,135 @@ async function settleJob(ms = 10000) {
     ok('…because the slot is taken before the first await and given back on a refusal', /slot = reserveSend\(userId\)/.test(ctrl)
       && /if \(slot !== null && !slotSpent\) releaseSend\(userId, slot\);/.test(ctrl) && !/noteSend/.test(ctrl));
     await settle();
+  }
+
+  // ── The owner's 2026-09-20 ask: a page size per attachment, chosen on the Send page ──────────────────────────────
+  console.log('── 22. ⚠️ the page size the user picked is what gets rendered ──');
+  {
+    resetWorld();
+    const r = await send(1, 12, { ...BASE, mode: undefined, letter: { source: 'doc', mode: 'a4' }, resume: { source: 'tailored', docId: 30, mode: 'onepage' } });
+    ok('the letter is rendered in the size the letter row chose', r.res.statusCode === 200 && letterRenders.length === 1 && letterRenders[0].mode === 'a4', letterRenders);
+    ok('⚠️ …and the résumé in its OWN, which is a different one', resumeRenders.length === 1 && resumeRenders[0].mode === 'onepage', resumeRenders);
+    ok('the money order is untouched: gate → render → send → claim, once per gated file',
+      JSON.stringify(events) === JSON.stringify(['gate:Nordex', 'gate:Nordex', 'render:letter', 'render:resume', 'send', 'claim:Nordex', 'claim:Nordex']), events);
+    ok('…and the history row records the layout that was actually rendered', letterRecords[0] && letterRecords[0].mode === 'a4'
+      && histories[0] && histories[0].mode === 'onepage' && histories[0].payload.mode === 'onepage', { letterRecords, histories });
+  }
+  {
+    resetWorld();
+    await send(1, 12, { ...BASE, mode: undefined, resume: { source: 'builder', mode: 'a4' } });
+    ok('⚠️ the Builder résumé too — the Send page now chooses, "onepage" is only the no-choice fallback', builderRenders.join() === 'a4', builderRenders);
+    ok('…and its history row says a4, not the old hard-coded onepage', histories[0] && histories[0].mode === 'a4' && histories[0].payload.mode === 'a4', histories);
+    resetWorld();
+    await send(1, 12, { ...BASE, mode: undefined, resume: { source: 'builder' } });
+    ok('…a client that names no size still gets the single page every other send path uses', builderRenders.join() === 'onepage', builderRenders);
+  }
+  {
+    // ⚠️ JUNK NEVER REACHES A RENDERER. undefined means "no choice", which each renderer answers with its own default
+    // (a stored document's design.mode) — never a string it does not understand.
+    for (const junk of ['legal', 'A4', 'ONEPAGE', 42, null, {}, []]) {
+      resetWorld();
+      const r = await send(1, 12, { ...BASE, mode: undefined, letter: { source: 'doc', mode: junk }, resume: { source: 'tailored', docId: 30, mode: junk } });
+      if (!(r.res.statusCode === 200 && letterRenders[0] && letterRenders[0].mode === undefined && resumeRenders[0] && resumeRenders[0].mode === undefined)) {
+        ok(`a junk page size (${JSON.stringify(junk)}) is dropped, never passed to a renderer`, false, { status: r.res.statusCode, letterRenders, resumeRenders });
+      }
+    }
+    ok('⚠️ every junk page size is dropped, never passed to a renderer (the document\'s own design decides)', true);
+    resetWorld();
+    const bad = await send(1, 12, { ...BASE, resume: { source: 'tailored', docId: 30, mode: 'legal' } });
+    ok('…and a junk size is not a bad REQUEST either: the message still goes, in the document\'s own layout', bad.res.statusCode === 200 && sends.length === 1);
+  }
+  {
+    // An app older than the per-attachment size says it once, at the top level — the letter must still honour it.
+    resetWorld();
+    await send(1, 12, { ...BASE, mode: 'a4', letter: { source: 'doc' }, resume: { source: 'none' } });
+    ok('⚠️ an older client (a top-level mode only) still renders its letter in it', letterRenders[0] && letterRenders[0].mode === 'a4', letterRenders);
+    resetWorld();
+    await send(1, 12, { ...BASE, mode: 'onepage', letter: { source: 'doc', mode: 'a4' }, resume: { source: 'none' } });
+    ok('…and the letter row wins over it when both are there', letterRenders[0] && letterRenders[0].mode === 'a4', letterRenders);
+  }
+  {
+    // The classic lane (the Job Hub / Review / old Home letter) carries it the same way.
+    resetWorld();
+    C._internals.sendCalls.clear();
+    await runSend(1, { ...BASE, mode: undefined, letter: { source: 'doc', mode: 'a4' }, resume: { source: 'none' }, classic: { ...CLASSIC } });
+    ok('⚠️ the classic lane carries the size too', classicRenders.length === 1 && classicRenders[0].mode === 'a4', classicRenders);
+  }
+  {
+    // A render that fails after a size was chosen is still a failure BEFORE any money moves.
+    resetWorld();
+    render.letterFails = true;
+    const r = await send(1, 12, { ...BASE, letter: { source: 'doc', mode: 'a4' } });
+    ok('a render that fails charges nothing and sends nothing, whatever size was asked for',
+      r.res.statusCode === 502 && r.res.body.reason === 'render_failed' && claims.length === 0 && sends.length === 0, r.res.body);
+  }
+  {
+    const src = strip(R('server/controllers/letterSendController.js'));
+    ok('⚠️ the tailored résumé is no longer rendered with an empty options object', !/renderResumeDocPdf\(userId, rdoc, \{\}\)/.test(src)
+      && /renderResumeDocPdf\(userId, rdoc, \{ mode: resumeChoice\.mode \}\)/.test(src));
+    ok('⚠️ …and the Builder résumé no longer hard-codes its page size', !/buildResumePdfForRegion\(userId, 'generic', 'onepage'\)/.test(src)
+      && /buildResumePdfForRegion\(userId, 'generic', resumeChoice\.mode \|\| 'onepage'\)/.test(src));
+    ok('the two words are normalised in ONE place, and both choices go through it',
+      (src.match(/const modeOf = /g) || []).length === 1 && (src.match(/modeOf\(v\.mode\)/g) || []).length === 3);
+    // The renderers the two sizes end in, so a rename on either side is caught here rather than in production.
+    const clr = strip(R('server/utils/coverLetterRenderer.js'));
+    ok('the letter renderer still knows exactly these two words', /const normMode = \(m\) => \(m === 'a4' \? 'a4' : 'onepage'\)/.test(clr));
+    const rbSrc = strip(R('server/controllers/resumeBuilderController.js'));
+    ok('…and the résumé renderer falls back to the document\'s own design when it is given none',
+      /const useMode = mode === 'a4' \|\| mode === 'onepage' \? mode : defaults\.mode;/.test(rbSrc));
+  }
+  resetWorld();
+
+  console.log('── 23. ⚠️ "Original (Branded)" at A4: the size the user picks is the size that comes out of the renderer ──');
+  {
+    // ⚠️ THE ONE DESIGN THAT USED TO IGNORE THE CHOICE (2026-09-20). Its PDF comes from the PDFKit generator, which can
+    // only build a single page sized to the letter's content, so a user who asked for A4 was handed one continuous page
+    // anyway — and both screens ended up greying the choice out, on the very design the owner's own letter ranks first.
+    // renderLetterPdfFile now sends THIS design to the HTML twin when, and only when, A4 was asked for.
+    const cl = strip(R('server/controllers/coverLetterController.js'));
+    ok('⚠️ the branded design goes to the PDFKit generator only when A4 was NOT asked for',
+      /const genericA4 = !!\(tplMeta && tplMeta\.generic\) && mode === 'a4';/.test(cl)
+      && /if \(tplMeta && tplMeta\.generic && !genericA4\) \{/.test(cl));
+    ok('…and its A4 carries the two things only that design reads — the photo and a brand colour — resolved as its free preview resolves them',
+      /if \(genericA4\) \{\s*\n\s*opts\.photo = await loadCLPhotoDataUri\(userId\);\s*\n\s*opts\.brandColor = brandColor \|\| await lookupBrandColor\(companyName, websiteUrl\);/.test(cl));
+    // …and the file itself. The renderer is the real one (it is not stubbed by this suite): chromium renders the
+    // design's own HTML and pdf-lib reads back the page boxes, so "A4" is measured, not asserted about a comment.
+    let renderer = null;
+    try { renderer = require(path.join(ROOT, 'server/utils/coverLetterRenderer.js')); } catch { renderer = null; }
+    // Each paragraph needs its own vocabulary: letterText.repairLetterHtml drops near-duplicates, so a letter padded
+    // with a repeated paragraph would render exactly as long as a short one.
+    let seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const word = () => Array.from({ length: 3 + Math.floor(rnd() * 7) }, () => 'abcdefghijklmnopqrstuvwxyz'[Math.floor(rnd() * 26)]).join('');
+    const para = () => `<p>${Array.from({ length: 95 }, word).join(' ')}.</p>`;
+    const letterData = (bodyHtml) => ({ sender: { name: 'Test User', title: 'Engineer', email: 't@u.co', location: 'Pune' }, company: { name: 'Nordex SE', address: 'Hamburg' }, bodyHtml });
+    const boxesOf = async (buf) => {
+      const { PDFDocument } = require('pdf-lib');
+      const pdf = await PDFDocument.load(buf);
+      return pdf.getPages().map((p) => [Math.round(p.getWidth()), Math.round(p.getHeight())]);
+    };
+    let pages = null;
+    try {
+      const short = letterData(para() + para());
+      const long = letterData(Array.from({ length: 8 }, para).join(''));
+      pages = {
+        shortA4: await boxesOf(await renderer.renderPdf('standard', short, { mode: 'a4', brandColor: '#3a6cb5' })),
+        longA4: await boxesOf(await renderer.renderPdf('standard', long, { mode: 'a4', brandColor: '#3a6cb5' })),
+        longOne: await boxesOf(await renderer.renderPdf('standard', long, { mode: 'onepage', brandColor: '#3a6cb5' })),
+      };
+    } catch (e) {
+      // No chromium on this machine (playwright browsers are not installed everywhere): say so rather than fail a
+      // rule this suite cannot measure here. The source assertions above still hold the wiring.
+      console.log(`  ⓘ skipped the real render — ${String((e && e.message) || e).split('\n')[0]}`);
+    }
+    if (pages) {
+      const isA4 = ([w, h]) => Math.abs(w - 595) <= 2 && Math.abs(h - 842) <= 2;
+      ok('⚠️ A4 on the branded design really is A4 — a short letter on one 595×842 page', pages.shortA4.length === 1 && pages.shortA4.every(isA4), pages.shortA4);
+      ok('⚠️ …and a long one SPLITS INTO A4 PAGES (which is the whole difference the user is choosing)',
+        pages.longA4.length > 1 && pages.longA4.every(isA4), pages.longA4);
+      ok('⚠️ …while One Page is still one continuous page, taller than A4 — the same letter, the other layout',
+        pages.longOne.length === 1 && pages.longOne[0][1] > 900, pages.longOne);
+    }
   }
 
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* the OS cleans tmp */ }

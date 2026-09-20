@@ -148,26 +148,19 @@ function decryptOAuthToken(encryptedToken) {
     }
 }
 
-// Gmail API Helper Functions
-function createOAuth2Client(user) {
-    const callbackUrl = process.env.NODE_ENV === 'production' 
-        ? 'https://cvapplyr.com/auth/google/callback'
-        : 'http://localhost:3000/auth/google/callback';
-    
-    const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        callbackUrl
-    );
-    
-    // Set credentials (decrypt tokens from database)
-    oauth2Client.setCredentials({
-        access_token: decryptOAuthToken(user.google_access_token),
-        refresh_token: decryptOAuthToken(user.google_refresh_token)
-    });
-    
-    return oauth2Client;
-}
+// ⚠️ THE GMAIL HELPERS THAT USED TO LIVE HERE ARE GONE (2026-09-20). This file carried its own createOAuth2Client
+// and sendEmailViaGmail — a stale twin of server/controllers/emailController.js. The twin hard-coded
+// GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET and called setCredentials with no expiry_date, which is root cause A of the
+// false "Reconnect Gmail" the owner hit (user 618, 2026-09-20): google-auth-library refreshes against the wrong
+// client and its own `unauthorized_client` 401 replaces the real Gmail error. Nothing called the twin — grep showed
+// sendEmailViaGmail defined and never invoked — so it was a loaded gun rather than a live bug, and a future caller
+// would have re-created the outage in full.
+// The ONE Gmail lane is emailController.createOAuth2Client: it refreshes first, then builds the client from the row
+// the refresh returned, taking the client id from server/services/mailScopes.js (clientForRefresh) and always
+// stating an expiry_date. Use it (or emailController.sendEmailViaGmail); do not write a third copy here.
+// ⚠️ refreshGoogleToken / getValidGoogleAccessToken just below are the same story — dead here (nothing calls
+// getValidGoogleAccessToken, and refreshGoogleToken only reaches Google through it) and still built on the
+// hard-coded web client. Left in place for now because they are unreachable; call emailController's, never these.
 
 // SECURITY: Security audit logging function
 async function logSecurityEvent(userId, eventType, eventCategory, details = {}, req = null, success = true, errorMessage = null) {
@@ -341,109 +334,10 @@ Best regards,
 ${userFullName}`;
 }
 
-// Helper function: Sanitize name for PDF attachment filenames
-function sanitizeName(name) {
-    return (name || 'Applicant').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_');
-}
-
-// Helper: Convert plain text email body to simple HTML
-function textToHtml(text) {
-    const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return escaped
-        .split(/\n\n+/)
-        .map(para => `<p style="margin: 0 0 12px 0; line-height: 1.6;">${para.replace(/\n/g, '<br>')}</p>`)
-        .join('\n');
-}
-
-// Function to send email via Gmail API
-async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resumePath, coverLetterPdfBuffer) {
-    try {
-        const oauth2Client = createOAuth2Client(user);
-        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-        
-        // Create email message with attachments
-        const boundary = 'boundary_' + Date.now();
-        const nl = '\r\n';
-        
-        let message = [
-            `To: ${recipientEmail}`,
-            `From: ${user.email}`,
-            `Subject: ${subject}`,
-            'MIME-Version: 1.0',
-            `Content-Type: multipart/mixed; boundary="${boundary}"`,
-            '',
-            `--${boundary}`,
-            'Content-Type: text/html; charset="UTF-8"',
-            'Content-Transfer-Encoding: 7bit',
-            '',
-            textToHtml(emailBody),
-            ''
-        ].join(nl);
-        
-        // Attach resume if exists
-        if (resumePath && fsSync.existsSync(resumePath)) {
-            const resumeBuffer = await fs.readFile(resumePath);
-            const resumeBase64 = resumeBuffer.toString('base64');
-            // Named and typed from the stored file — a Word résumé is not a ".pdf" (server/utils/resumeFile.js).
-            const { filename: resumeFilename, contentType: resumeType } = require('./server/utils/resumeFile').resumeAttachmentOf(resumePath, sanitizeName(user.full_name));
-
-            message += [
-        `--${boundary}`,
-        `Content-Type: ${resumeType}`,
-        'Content-Transfer-Encoding: base64',
-        `Content-Disposition: attachment; filename="${resumeFilename}"`,
-        '',
-        resumeBase64,
-        ''
-            ].join(nl);
-        }
-        
-        // Attach cover letter PDF
-        if (coverLetterPdfBuffer) {
-            const coverLetterBase64 = coverLetterPdfBuffer.toString('base64');
-            
-            message += [
-        `--${boundary}`,
-        'Content-Type: application/pdf',
-        'Content-Transfer-Encoding: base64',
-        'Content-Disposition: attachment; filename="' + sanitizeName(user.full_name) + '_Cover_Letter.pdf"',
-        '',
-        coverLetterBase64,
-        ''
-            ].join(nl);
-        }
-        
-        message += `--${boundary}--`;
-        
-        // Encode message to base64url
-        const encodedMessage = Buffer.from(message)
-            .toString('base64')
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
-        
-        // Send email
-        const result = await gmail.users.messages.send({
-            userId: 'me',
-            requestBody: {
-        raw: encodedMessage
-            }
-        });
-        
-        console.log('Email sent via Gmail API:', result.data);
-        return { success: true, messageId: result.data.id };
-        
-    } catch (error) {
-        console.error('Error sending email via Gmail API:', error);
-        
-        // If access token expired, try to refresh
-        if (error.code === 401 || error.message?.includes('invalid_grant')) {
-            throw new Error('OAuth token expired. Please log in again.');
-        }
-        
-        throw error;
-    }
-}
+// ⚠️ sanitizeName / textToHtml / sendEmailViaGmail lived here until 2026-09-20 — see the note where
+// createOAuth2Client was, above logSecurityEvent. The sender had no caller and built its OAuth2 client the old,
+// wrong-client way; the two helpers existed only to feed it. server/controllers/emailController.js owns the send
+// lanes (and its own copies of both helpers), so nothing here needed them.
 
 // Initialize database (PostgreSQL only)
 const db = dbConfig.initializeConnection();
@@ -892,9 +786,15 @@ passport.use(new GoogleStrategy({
     ],
     accessType: 'offline', // Request refresh token
     prompt: 'consent' // Force consent screen to get refresh token
-}, (accessToken, refreshToken, profile, done) => {
+    // ⚠️ FIVE ARGUMENTS ON PURPOSE (2026-09-20). passport-oauth2 only hands over the token response's `params` when
+    // the verify callback declares five (lib/strategy.js:201-204), and `params.scope` is the only thing that says
+    // whether the user actually allowed us to send mail — Google returns both tokens either way.
+}, (accessToken, refreshToken, params, profile, done) => {
     // Handle Google OAuth callback with tokens
-    handleOAuthUser(profile, 'google', accessToken, refreshToken, done);
+    handleOAuthUser(profile, 'google', accessToken, refreshToken, done, {
+        scopes: params && params.scope,
+        clientId: process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
+    });
 }));
 
 // Second Google strategy for mobile deep-link flow
@@ -907,8 +807,11 @@ passport.use('google-mobile', new GoogleStrategy({
     // 'https://www.googleapis.com/auth/gmail.readonly' — removed to avoid CASA requirement
     accessType: 'offline',
     prompt: 'consent',
-}, (accessToken, refreshToken, profile, done) => {
-    handleOAuthUser(profile, 'google', accessToken, refreshToken, done);
+}, (accessToken, refreshToken, params, profile, done) => {   // five arguments → `params.scope` (see the strategy above)
+    handleOAuthUser(profile, 'google', accessToken, refreshToken, done, {
+        scopes: params && params.scope,
+        clientId: process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
+    });
 }));
 
 // Microsoft OAuth Configuration
@@ -927,9 +830,9 @@ passport.use(new MicrosoftStrategy({
         'offline_access'
     ],
     tenant: 'common' // Supports personal Microsoft accounts and work/school accounts
-}, (accessToken, refreshToken, profile, done) => {
+}, (accessToken, refreshToken, params, profile, done) => {   // five arguments → `params.scope` (see the Google strategy)
     // Handle Microsoft OAuth callback with tokens
-    handleOAuthUser(profile, 'microsoft', accessToken, refreshToken, done);
+    handleOAuthUser(profile, 'microsoft', accessToken, refreshToken, done, { scopes: params && params.scope });
 }));
 
 // Passport LinkedIn OAuth Configuration (Disabled due to API compatibility)
@@ -960,8 +863,36 @@ passport.deserializeUser(async (id, done) => {
     }
 });
 
+/**
+ * Record what a Passport consent granted, and which client minted it — its own best-effort write, never folded into
+ * the statement that stores the tokens (server/services/mailScopes.js). These strategies always use the WEB client,
+ * and the client id is only recorded when THIS consent brought a refresh token (see mailScopes.clientForRefresh).
+ */
+async function recordPassportGrant(userId, provider, grant, refreshToken) {
+    try {
+        const mailScopes = require('./server/services/mailScopes');
+        const scopes = mailScopes.scopeString(grant && grant.scopes);
+        const patch = {};
+        if (provider === 'google') {
+            if (scopes) patch.googleScopes = scopes;
+            if (refreshToken && grant && grant.clientId) patch.googleClient = grant.clientId;
+        } else if (provider === 'microsoft' && scopes) {
+            patch.microsoftScopes = scopes;
+        }
+        if (Object.keys(patch).length) await mailScopes.recordGrant(dbConfig, userId, patch);
+    } catch (e) {
+        console.warn('[handleOAuthUser] could not record the grant:', e && e.message);
+    }
+}
+
 // OAuth user handler function
-async function handleOAuthUser(profile, provider, accessToken, refreshToken, callback) {
+//
+// ⚠️ `grant` CARRIES WHAT THE CONSENT ACTUALLY ALLOWED (2026-09-20, Migration 050). The Passport strategies below now
+// take the token response's `params` (arity-5 verify — passport-oauth2 only passes params when the callback asks for
+// five arguments, node_modules/passport-oauth2/lib/strategy.js:201-204), so the granted scope string reaches the row
+// here exactly as it does on the mobile API flows. Without it a Google account that signed in but never ticked "Send
+// email on your behalf" is stored as a send-ready mailbox and only refuses once a message has been written.
+async function handleOAuthUser(profile, provider, accessToken, refreshToken, callback, grant = {}) {
     try {
         const email = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
         const fullName = profile.displayName;
@@ -1020,6 +951,7 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
                     expires_at: expiresAt.toISOString()
                 });
             }
+            await recordPassportGrant(user.id, provider, grant, refreshToken);
             return callback(null, user);
         } else {
             // Create new user (with ENCRYPTED OAuth tokens for security) and track expiration
@@ -1078,6 +1010,7 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
                 });
             }
             
+            await recordPassportGrant(result.lastID || result.id, provider, grant, refreshToken);
             const newUser = await dbConfig.get('SELECT * FROM users WHERE id = ?', [result.lastID || result.id]);
 
             // Welcome credits — grant the same 5 free credits the email / API-OAuth signup

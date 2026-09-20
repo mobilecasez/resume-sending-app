@@ -116,7 +116,7 @@ import { buildFor, getBuilds, subscribeBuilds, storeKeyOf, type BuildPhase } fro
 import DownloadHistory from './DownloadHistory';
 import DownloadPaywallSheet from '../downloads/DownloadPaywallSheet';
 import { fetchProfileSnapshot, cachedSetup, consumeProfileChanged, makeYoursOf, ProfileSetup } from '../../services/profileSetupService';
-import { fetchSubscriptionStatus } from '../../services/subscriptionService';
+import { fetchSubscriptionStatus, subscribeEntitlements } from '../../services/subscriptionService';
 import { track } from '../../services/analytics';
 
 const nav = () => require('expo-router').router;
@@ -667,7 +667,17 @@ export default function EmployerHome({
   // Every design in the catalogue, as a slot. Pixels arrive later and are merged in by id.
   const [slots, setSlots] = useState<HomeCard[]>([]);
   const [shots, setShots] = useState<Record<string, string>>({});
+  // Which résumé the pictures in `shots` are OF — the server's own thumb cache key without the design
+  // (/resume-builder/home-cards `version`). A load that answers with a different one is a different résumé, and
+  // everything hydrated under the old one is dropped in the same commit as the new cards.
+  const cardsVer = useRef<string | null>(null);
   const dead = useRef<Record<string, true>>({});
+  // How many times a design has been asked for by id and come back with no picture. ⚠️ ONE RETRY BEFORE IT IS
+  // WRITTEN OFF (2026-09-20 review): `dead` is forever for this deck, and now that the first load renders within a
+  // budget and hands part of its own payload back image-less, a single flaky wave would permanently blank designs
+  // that used to arrive with the payload itself. The second miss still stops it — the point of `dead` is that a
+  // failing renderer is never hammered, and two tries is not hammering.
+  const misses = useRef<Record<string, number>>({});
   const hydrating = useRef(false);
   const [hydrateNudge, setHydrateNudge] = useState(0);
   // A library card's base page that found the hydrator's mutex held (fillBasePage): the open it belongs to
@@ -678,6 +688,12 @@ export default function EmployerHome({
   const [cardIdx, setCardIdx] = useState(0);
   const [mode, setMode] = useState<Mode>('resume');
   const [loading, setLoading] = useState(true);
+  // ⚠️ THE PAGES ON SCREEN ARE OF THE PREVIOUS RÉSUMÉ (2026-09-20). A reload asked for fresh pages (a build just
+  // landed) keeps the old cards until its own answer arrives, and the deck under them is THE OLD DOCUMENT — for a
+  // brand-new account, the server's SAMPLE résumé, which carries the user's own name and email and so reads as a
+  // real one. The owner built his first résumé and was shown that: "it didnt load the latest resume". While such a
+  // reload is in flight the deck is drawn as skeletons instead — an honest "coming" beats a wrong résumé.
+  const [deckStale, setDeckStale] = useState(false);
   const [noResume, setNoResume] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // These pages are a stand-in built from the account's name and email — say so.
@@ -723,6 +739,10 @@ export default function EmployerHome({
   // all READS.
   const [listToken, setListToken] = useState(0);
   const [docToken, setDocToken] = useState(0);
+  // The same idea for the gate hint under the action: when this moves, the dry run is asked again. Bumped by a
+  // return to this screen and by an entitlement the SERVER confirmed (a purchase or a Restore) — see the effect
+  // that reads it. A READ, like the two above.
+  const [entRev, setEntRev] = useState(0);
   // Builds that just landed, by store key → the document id they produced. While a chip is in here and its
   // lookup has not yet shown that document, the chip is "document on its way" — never "nothing saved".
   const [landed, setLanded] = useState<Record<string, number>>({});
@@ -830,6 +850,9 @@ export default function EmployerHome({
     if (!force && Date.now() - lastLoad.current < 60_000) return undefined;
     lastLoad.current = Date.now();
     const seq = ++loadSeq.current;
+    // Fresh pages were asked for, so the ones on screen are of the résumé that was just replaced: stop showing
+    // them as this résumé (deckStale). Cleared by whichever load commits a deck last.
+    if (freshPages) setDeckStale(true);
     const { loaders, loadTargets, loadCards, loadPaid, loadSetup } = live.current;
     // ⚠️ BEFORE the merge below: another account's added employers (and its saved row) must never lead this
     // row. The preview harness has no account, and claiming would wipe its fixtures on every load.
@@ -883,9 +906,16 @@ export default function EmployerHome({
         paintSaved(other.row, true);
       }).catch(() => {});
     }
-    const [answer, c, cat, claim, remote] = await Promise.all([
+    // ⚠️ THE DECK IS STARTED HERE AND AWAITED AT THE END (2026-09-20). All five of these used to be one
+    // Promise.all, so the whole screen — the chip row, the catalogue, the `loading` flag — waited on
+    // /home-cards, the ONE call on Home that can take twenty seconds: every card is keyed on the résumé's
+    // updated_at, so the first load after a build is five cold chromium renders. Everything else answers in about
+    // a second (measured against production, 2026-09-20: roster 261 ms, subscription 295 ms, catalogue 527 ms,
+    // profile 687 ms, dashboard 1161 ms) — and the owner sat in front of a skeleton chip row for all of it.
+    // Only the deck may wait for the deck.
+    const cardsP: Promise<HomeCards | 'none' | null> = Promise.resolve().then(() => loadCards()).catch(() => null);
+    const [answer, cat, claim, remote] = await Promise.all([
       loadTargets(),
-      loadCards(),
       (loaders?.catalogue || fetchTemplateCatalogue)().catch(() => [] as HomeCard[]),
       claiming,
       remoteP,
@@ -899,14 +929,20 @@ export default function EmployerHome({
     }
     // Nothing came back at all: if that was the server refusing the session, the cache goes too.
     let refused = false;
-    if (!loaders && !answer.ranked.length && c === null && (await sessionRejected())) {
+    // ⚠️ DECIDED FROM THE READS THAT HAVE ALREADY ANSWERED — NEVER FROM THE DECK (2026-09-20 review). This asked
+    // `(await cardsP) === null`, two lines above the row commit, and `ranked` is empty for exactly the account this
+    // change is for: a brand-new user with no tracked employers and no saved jobs (the owner's own, on build 210).
+    // So the one screen that most needed its row painted still waited the full twenty seconds for /home-cards here.
+    // What "nothing came back at all" really means is that NEITHER STORE ANSWERED — TargetAnswer reports what each
+    // read said, and a failed one is …Ok false with its list null, never an empty answer. An empty ranking from two
+    // reads that succeeded is not a refusal; it is an account with nothing on it yet.
+    if (!loaders && !answer.ranked.length && !answer.dashOk && !answer.savedOk && (await sessionRejected())) {
       forgetAccountCache();
       cacheOwner = null;
       pickedKey.current = null;
       refused = true;
     }
     if (seq !== loadSeq.current) return undefined;
-    if (cat.length) setSlots(cat);
 
     // ── THE ROW: the saved one, merged with this answer (services/homeRoster) ──
     // ⚠️ NOT REPLACED BY IT. This used to be `setTargets(fetchTargets())` — a fresh top 12 on every focus, pull
@@ -975,24 +1011,64 @@ export default function EmployerHome({
     setTargets(t);
     empIdxRef.current = j;
     setEmpIdx(j);
+    // The row, the catalogue and the chrome are on screen NOW — the deck arrives on its own below.
+    setLoading(false);
+    // ⚠️ AND THE PAID FLAG IS NOT WAITED FOR IN FRONT OF THE DECK (2026-09-20 review). Nothing about a card is
+    // decided by it, and it is a network read of its own (/subscription/status, a 20 s timeout, its own SecureStore
+    // reads) — awaited here it held the new résumé's pages, and the skeletons drawn over them, behind a call that
+    // has nothing to do with them. It lands when it lands.
+    loadPaid()
+      .then((paid) => { if (seq === loadSeq.current && alive.current) { setIsPaid(paid); setPaidRead(true); } })
+      .catch(() => {});
+    const c = await cardsP;
+    if (seq !== loadSeq.current || !alive.current) return undefined;
+    // ⚠️ THE CATALOGUE LANDS WITH THE CARDS, NOT BEFORE THEM. `slots` is what turns the deck into all 73 designs,
+    // and the hydrator renders whatever in that deck has no pixels near the card on screen — so a catalogue
+    // committed while /home-cards was still in flight sent it after the first five designs of the CATALOGUE while
+    // the first five of the DECK were already being rendered for this very request: ten cold renders for five
+    // pages, in the wrong order. It answers in ~254 ms and waits here; nothing on screen depends on it sooner.
+    if (cat.length) setSlots(cat);
     // ⚠️ Only the server's own 'none' may arm the build-my-resume lane — see fetchHomeCards.
     // A transient failure leaves cards AND noResume exactly as they were: at worst the user sees
     // the retry state, never a CTA that would spend a generation rewriting a resume they have.
     if (c === 'none') { setCards([]); setNoResume(true); setLoadFailed(false); }
     else if (c) {
-      if (freshPages) { dead.current = {}; setShots({}); }
-      setCards(c.cards); setNoResume(false); setSample(!!c.sample); setLoadFailed(false);
+      // ⚠️ AND WHENEVER THE SERVER SAYS THESE PAGES ARE OF A DIFFERENT RÉSUMÉ (2026-09-20 review). `freshPages` is
+      // raised by exactly one caller — the wizard hand-back — so every other résumé-changing path (an edit in the
+      // builder, a new photo, the pull that follows either) kept hydrated pictures of the résumé that had just been
+      // replaced, and `shots` wins for any design whose picture the payload did not carry. That was survivable while
+      // the payload always carried the lead five; with the render budget it no longer does, and it was never right
+      // for the catalogue designs. `version` is the server's own cache key: a different one is a different résumé.
+      if (freshPages || (c.version && c.version !== cardsVer.current)) {
+        dead.current = {}; misses.current = {}; setShots({});
+      }
+      if (c.version) cardsVer.current = c.version;
+      // ⚠️ THE DEFERRED DESIGNS COME BACK IN `pending`, NOT IN `cards` (2026-09-20 review) — see the server's
+      // homeCards. A card with no picture is one the client has to heal by asking for it by id, and the builds
+      // already in the store do not (one miss and the design is dead for the session), so the server hands them
+      // under a key those builds ignore. THIS client heals them — `misses` retries once, and the deck applies
+      // `shots` even with no catalogue — so it puts them straight back where the server chose them: after the
+      // designs that were drawn, in order. Deferral is a suffix of the server's list, so appending restores it.
+      setCards(c.pending && c.pending.length ? [...c.cards, ...c.pending] : c.cards);
+      setNoResume(false); setSample(!!c.sample); setLoadFailed(false);
       // ⚠️ Only a real boolean counts: an older server that does not send it leaves this null, and `sample`
       // stands in — never `false`, which would tell someone with a resume to build one.
       setHasResume(typeof c.hasResume === 'boolean' ? c.hasResume : null);
     }
     else { setLoadFailed(true); }
-    setLoading(false);
-    const paid = await loadPaid();
-    if (seq === loadSeq.current) { setIsPaid(paid); setPaidRead(true); }
-    // ⚠️ A FAILED READ NEVER HIDES THE BUTTON (2026-09-19): null used to replace the setup on screen, and with it
-    // "Pick up where you left off". Only an answer replaces an answer.
-    loadSetup().then((st) => { if (st && alive.current) setSetup(st); }).catch(() => {});
+    // ⚠️ ONLY A COMMITTED ANSWER ENDS THE SKELETONS (2026-09-20 review). This used to be unconditional, so the
+    // honesty flag was dropped exactly where the client does not know what the new résumé looks like: a
+    // fresh-pages read that FAILED (c === null) fell straight back to the deck it had, which for the account
+    // building its first résumé is the server's SAMPLE — his own name over invented content — under the heading
+    // of the build he had just paid for, with the sample bar and "Build your resume first" back with it. A
+    // failed reload keeps the deck stale; `shown` then stands aside for the retry tile.
+    // ⚠️ Cleared by whichever load COMMITS last, not only by the one that raised it (a superseded fresh-pages
+    // load returns above) — 'none' counts, so the build-my-résumé lane is never held in skeletons either.
+    if (c) setDeckStale(false);
+    // ⚠️ `setup` IS NOT READ HERE ANY MORE (2026-09-20). It used to be the very last thing this function did —
+    // behind the cards, i.e. behind those twenty seconds — which is why Home went on offering "Pick up where you
+    // left off" after a finished build: the server had said `finished` since the moment it was saved, and the
+    // client had not asked yet. The focus effect now reads it on every focus, in parallel with this whole load.
     return { cards: c, targets: t };
   }, []);
 
@@ -1119,9 +1195,12 @@ export default function EmployerHome({
    * the Make Yours wizard within a minute used to show the setup from BEFORE it — "One thing left: your signature"
    * while the signature had just been saved (user 616). One small GET; a failed one leaves the button as it was.
    */
+  // Every SERVER answer applied to `setup`. ⚠️ Only so the wizard's handed-over copy below can tell whether one has
+  // landed since it was handed over: a read that answers first is the newer answer and keeps the screen.
+  const setupRead = useRef(0);
   const refreshSetup = useStableFn(async () => {
     const st = await live.current.loadSetup().catch(() => null);
-    if (st && alive.current) setSetup(st);
+    if (st && alive.current) { setupRead.current++; setSetup(st); }
   });
   // The button paints at once from this account's last known setup, before the first read answers.
   useEffect(() => {
@@ -1129,20 +1208,50 @@ export default function EmployerHome({
     cachedSetup().then((st) => { if (st && alive.current) setSetup((cur) => cur || st); }).catch(() => {});
   }, [loaders]);
   useFocusEffect(useCallback(() => {
+    const built = loaders ? { changed: false, setup: null, who: null } : consumeProfileChanged();
+    // ⚠️ THE WIZARD'S OWN ANSWER, APPLIED BEFORE ANYTHING IS ASKED FOR (2026-09-20). It read the profile the
+    // moment the build landed, while "Your resume is ready" was on screen; using it here is the difference
+    // between a first frame that says "Pick up where you left off" and one that does not.
+    // ⚠️ …AND ONLY TO THE ACCOUNT IT WAS READ FOR (2026-09-20 review). A hand-over is module state that a sign-out
+    // does not clear (the reason SETUP_CACHE is keyed by account), so it is confirmed against the session first —
+    // one SecureStore read, still milliseconds, still far ahead of the profile read fired beside it. A server
+    // answer that lands first is the newer one and keeps the screen (setupRead).
+    if (built.setup) {
+      const handed = built.setup;
+      const at = setupRead.current;
+      signedInAccount()
+        .then((who) => { if (who && who === built.who && alive.current && setupRead.current === at) setSetup(handed); })
+        .catch(() => {});
+    }
+    // ⚠️ AND `setup` IS RE-READ ON EVERY FOCUS, IN PARALLEL WITH load() — never inside it and never behind it.
+    // It used to be the last line of load(), i.e. behind /home-cards: after a build that is twenty seconds of
+    // cold renders, and the button was wrong for every one of them. One small GET (measured 559 ms); a failed
+    // one leaves the button exactly as it was.
+    refreshSetup();
     // Back from a wizard that just built the résumé: the pages on Home are of the OLD one — reload them, now.
-    if (!loaders && consumeProfileChanged()) load(true, true);
-    else load().then((r) => { if (r === undefined && focusCount.current > 1) refreshSetup(); });
+    if (built.changed) load(true, true);
+    else load();
     if (focusCount.current++ > 0) {
       setDocToken((n) => n + 1);
       setListToken((n) => n + 1);
       refreshHistory(modeOfKind(kindRef.current));
+      // ⚠️ Back from the plans screen, the gate hint under the action was a MONTH-old answer (2026-09-20): the
+      // dry run is read once per chip selection, and going to Plans and back changes no chip — so "Your allowance
+      // is used" stayed under the button of someone who had just subscribed. It is a free read; re-ask it.
+      setEntRev((n) => n + 1);
     }
   }, [load, refreshHistory, refreshSetup, loaders]));
+
+  // A purchase or a Restore the server confirmed while Home was mounted underneath the plans screen.
+  useEffect(() => subscribeEntitlements(() => { if (alive.current) setEntRev((n) => n + 1); }), []);
 
   const onRefresh = async () => {
     setRefreshing(true);
     setDocToken((n) => n + 1);
     setListToken((n) => n + 1);
+    // A pull is a request for everything to be current, and `setup` is no longer part of load() — so it is asked
+    // for here too, alongside it. (Its own read; a failed one leaves the button alone.)
+    refreshSetup();
     await load(true);
     setRefreshing(false);
   };
@@ -1331,7 +1440,10 @@ export default function EmployerHome({
   }, [doc, kind, selRk, landedDocId]);
   // An account with nothing a build can read has nothing to rewrite: its action is the builder. ⚠️ The server's
   // hasResume decides (an upload counts); `sample` only stands in when the server did not say.
-  const noResumeYet = noResume || !(hasResume ?? !sample);
+  // ⚠️ …AND NOT WHILE THE DECK IS STALE (2026-09-20 review): a fresh-pages reload only ever follows a build that was
+  // CHARGED AND SAVED, so both answers on screen are from before it and, for a first résumé, both say there is none.
+  // For that window we know better than the last answer — the résumé exists.
+  const noResumeYet = deckStale ? false : noResume || !(hasResume ?? !sample);
 
   const docRks = useMemo(() => {
     const out = new Set<string>();
@@ -1369,9 +1481,19 @@ export default function EmployerHome({
   // What the carousel actually shows. With a catalogue we show EVERY design — the ones the server
   // already rendered lead, the rest follow as slots and fill in on approach.
   const deck: PaperCard[] = React.useMemo(() => {
-    if (!slots.length) return cards as PaperCard[];
+    // ⚠️ HYDRATED PIXELS APPLY EVEN WITH NO CATALOGUE (2026-09-20 review). The first payload used to carry a picture
+    // for every card it named, so `shots` only ever mattered to catalogue slots — and `slots` is empty exactly when
+    // /resume-builder/templates failed on this load, which is when the deck is only those five cards. Now that the
+    // first load renders within a budget and hands the rest back image-less, those five can need `shots` too: this
+    // branch left the hydrator's answers on the floor and the pages blank until the next fresh-pages reload.
+    // ⚠️ …AND THE PAYLOAD WINS OVER THEM (2026-09-20 review). `shots` used to be read FIRST, which was harmless
+    // only while it held nothing but catalogue slots: the picture in `c.image` is one the server rendered for the
+    // résumé it just answered about, and a hydrated one can be of the résumé before it (`shots` is dropped on a
+    // version change and a fresh-pages reload — nowhere else). `shots` is for the cards the payload had no picture
+    // for, which is exactly the deferred ones, so it belongs second.
+    if (!slots.length) return cards.map((c) => ({ ...c, image: c.image || shots[c.id] })) as PaperCard[];
     const ready = new Map(cards.map((c) => [c.id, c] as const));
-    const lead = cards.map((c) => ({ ...c, image: shots[c.id] || c.image })) as PaperCard[];
+    const lead = cards.map((c) => ({ ...c, image: c.image || shots[c.id] })) as PaperCard[];
     const rest = slots
       .filter((sl) => !ready.has(sl.id))
       .map((sl) => ({ ...sl, image: shots[sl.id] || null })) as PaperCard[];
@@ -1411,13 +1533,19 @@ export default function EmployerHome({
       try {
         const got = await fetchHomeCards(want);
         if (cancelled) return;
+        // Asked for and not drawn: one more try, then it is written off for this deck (see `misses`).
+        const missed = (id: string) => {
+          const n = (misses.current[id] || 0) + 1;
+          misses.current[id] = n;
+          if (n >= 2) dead.current[id] = true;   // don't hammer a failing renderer
+        };
         if (got && got !== 'none') {
           const add: Record<string, string> = {};
           for (const c of got.cards) if (c.image) add[c.id] = c.image;
-          for (const id of want) if (!add[id]) dead.current[id] = true;
+          for (const id of want) if (!add[id]) missed(id);
           if (Object.keys(add).length) setShots((p) => ({ ...p, ...add }));
         } else {
-          for (const id of want) dead.current[id] = true;   // don't hammer a failing renderer
+          for (const id of want) missed(id);
         }
       } finally {
         hydrating.current = false;
@@ -1433,6 +1561,15 @@ export default function EmployerHome({
     return () => { cancelled = true; clearTimeout(id); };
   }, [cardIdx, deck, noResume, loaders, hydrateNudge, baseOnScreen]);
 
+  // ⚠️ THE OLD PAGES ARE NOT THIS RÉSUMÉ'S (deckStale). A reload that asked for fresh pages is a build landing,
+  // and until its answer arrives every pixel in the deck belongs to the document it replaced — the SAMPLE résumé,
+  // for the account building its first one, with the user's own name printed on it. The designs keep their names
+  // and accents and lose their pixels, so PaperSkeleton draws them as the pages they are about to be.
+  // ⚠️ APPLIED HERE AND NOT TO `deck`: the hydrator reads `deck` to decide what to render, and a deck of blanks
+  // would send it after all of them — five more cold renders behind the five already coming.
+  const staleDeck: PaperCard[] | null = useMemo(
+    () => (deckStale && deck.length ? deck.map((c) => ({ ...c, image: null })) : null), [deckStale, deck]);
+
   // The deck on screen: the chip's own document when it has one (ranked, with fit), the base resume
   // when it does not, and the letter formats as blank pages while a letter is being written.
   let shown: { cards: PaperCard[]; fit: boolean } | null = null;
@@ -1441,6 +1578,13 @@ export default function EmployerHome({
     if (selBuilding || docPending) shown = { cards: LETTER_SLOTS, fit: false };
   } else if (!noResume) {
     if (docPending && slotCards.length) shown = { cards: slotCards, fit: false };
+    // ⚠️ THE PAGES IT REPLACED ARE NOT AN ANSWER (2026-09-20 review). A fresh-pages reload that could not commit
+    // leaves the deck stale (load() above), and the deck still in memory is the résumé this build replaced — the
+    // sample, for a first build. Nothing is shown for that window, so the slot goes to the "Couldn't load your
+    // designs · Tap to retry" tile below, which `shown` would otherwise win the ternary against; the retry is a
+    // plain load(true), and the first one that commits a deck ends both states.
+    else if (deckStale && loadFailed) shown = null;
+    else if (staleDeck) shown = { cards: staleDeck, fit: false };
     else if (deck.length) shown = { cards: deck, fit: false };
   }
   const card: PaperCard | undefined = shown ? shown.cards[cardIdx] : undefined;
@@ -1786,6 +1930,9 @@ export default function EmployerHome({
   const [gateHint, setGateHint] = useState<{ sig: string; via: 'plan' | 'free' | 'pass' | 'cache' | 'used' } | null>(null);
   // ⚠️ A DRY RUN: the gate reserves, binds and charges nothing. Debounced so flicking along the chips
   // asks once, and an answer for a chip the user has already left is dropped.
+  // ⚠️ …AND IT IS RE-ASKED WHENEVER THE ENTITLEMENTS MAY HAVE MOVED (entRev): on every return to this screen, and
+  // on a purchase or Restore the server confirmed. Without it the answer was cached for the life of a chip
+  // selection, and a subscriber kept reading "Your allowance is used" until they switched chips.
   useEffect(() => {
     if (loaders || !wantsAction || !lookupSig) return;
     let stale = false;
@@ -1805,7 +1952,7 @@ export default function EmployerHome({
       setGateHint(g.covered ? { sig: lookupSig, via: g.via } : used ? { sig: lookupSig, via: 'used' } : null);
     }, 400);
     return () => { stale = true; clearTimeout(id); };
-  }, [lookupSig, wantsAction, loaders]);
+  }, [lookupSig, wantsAction, loaders, entRev]);
   const hint = gateHint && gateHint.sig === lookupSig ? {
     text: gateHint.via !== 'used'
       ? (gateHint.via === 'free' ? 'Included in your free allowance' : 'Included in your plan')
@@ -2875,7 +3022,14 @@ export default function EmployerHome({
               <Text style={s.paperFailSub}>Tap to retry</Text>
             </TouchableOpacity>
           ) : (
-            <View style={s.paperLoading}><ActivityIndicator color="#fff" /></View>
+            /* ⚠️ A BARE SPINNER SAYS NOTHING (2026-09-20). This is what a brand-new account looks at while the
+               deck is on its way — the owner's "the loader was taking time" — and it was the one state here
+               with no words on it, unlike its two siblings above. */
+            <View style={s.paperLoading}>
+              <ActivityIndicator color="#fff" />
+              <Text style={s.paperFailTx}>Getting your designs ready</Text>
+              <Text style={s.paperFailSub}>This takes a moment the first time</Text>
+            </View>
           )}
           {/* Keyed by chip + kind: another chip is another company, so the entrance plays again for it. */}
           {hintOn && hintKind && !!target && (
@@ -3074,7 +3228,12 @@ export default function EmployerHome({
             );
           })()}
 
-          {sample && mode === 'resume' && !doc && (
+          {/* ⚠️ NEVER WHILE THE DECK IS STALE (2026-09-20 review). `sample` is only rewritten when the cards commit,
+              so on the reload that follows a build it is still the answer from BEFORE it — and for the account
+              building its first résumé that answer is "this is a sample". The first screen after "Your resume is
+              ready" would then read "This is a sample … Build yours", over blank skeleton pages, with a tap that
+              arms the builder for ANOTHER build. The deck's own honesty flag decides this line too. */}
+          {sample && !deckStale && mode === 'resume' && !doc && (
             <TouchableOpacity
               style={s.sampleBar}
               activeOpacity={0.9}

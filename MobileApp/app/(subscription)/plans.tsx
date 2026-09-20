@@ -31,7 +31,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   fetchSubscriptionStatus, storeAccountToken, verifyStoreSubscription,
-  foreignStoreFor, purchaseBlock,
+  foreignStoreFor, purchaseBlock, markEntitlementsChanged,
   type SubscriptionStatus, type Plan,
 } from '../../services/subscriptionService';
 import {
@@ -181,10 +181,18 @@ export default function PlansScreen() {
   // declared after the `if (loading) return` is in the temporal dead zone on the loading render.
   const storeName = Platform.OS === 'ios' ? 'the App Store' : 'Google Play';
 
+  // ⚠️ A plan this screen SEES for the first time is news for the screen underneath it (2026-09-20). The wizard
+  // that sent the user here is still mounted with its "no allowance" refusal on it, and the plan may have arrived
+  // with no purchase this app performed at all — an admin grant, a store webhook, a second device. This fires only
+  // on the transition none → a plan, so a re-read that finds what it already knew tells nobody anything.
+  const sawPlan = useRef(false);
   const loadStatus = useCallback(async (): Promise<SubscriptionStatus | null> => {
     try {
       const s = await fetchSubscriptionStatus();
       if (alive.current) setStatus(s);
+      const has = !!(s && s.subscription);
+      if (has && !sawPlan.current) markEntitlementsChanged();
+      sawPlan.current = has;
       return s;
     } catch { return null; }
   }, []);
@@ -615,7 +623,15 @@ export default function PlansScreen() {
           about the offer may be written in here again (the numbers are read, never defaulted). */}
       <View style={[s.trialCard, trialActive ? s.trialOn : null]}>
         <View style={s.trialHead}>
-          <Ionicons name={trialActive ? 'checkmark-circle' : trial?.blocked ? 'close-circle-outline' : 'gift-outline'} size={20} color={trialActive ? T.emerald : T.faint} />
+          {/* ⚠️ PLAN FIRST, like heroStatus and trialActive right above (2026-09-20). `blocked` is a fact about the
+              FREE allowance ("this phone's went to another account"), never about whether this user may generate —
+              a plan beats a claimed device everywhere (server/services/entitlements.js canConsumeMany reads the
+              subscription first). A known plan short-circuits getStatus before the free lane is read, so on the
+              common path trialState is absent; one whose plan_key this build does not know falls past that return
+              and reports both, and then this card would show a paying subscriber a red cross and "Free allowance
+              already used on this device" — on the very screen they had just bought from. usage.tsx (`sub ?
+              sub.label : …`) is the precedent. */}
+          <Ionicons name={trialActive ? 'checkmark-circle' : !current && trial?.blocked ? 'close-circle-outline' : 'gift-outline'} size={20} color={trialActive ? T.emerald : T.faint} />
           <Text style={s.trialTitle}>{status?.trial?.label || 'Free plan'}</Text>
           <View style={{ flex: 1 }} />
           {freeOffer && oneTime ? <View style={s.pillMuted}><Text style={s.pillMutedText}>ONE TIME</Text></View> : null}
@@ -639,7 +655,10 @@ export default function PlansScreen() {
           </View>
         ) : null}
         <Text style={s.trialBody}>
-          {trial?.blocked === 'device_trial_used'
+          {/* ⚠️ …AND THE SAME HERE: "Start a plan below to keep generating" would tell a paying subscriber to buy
+              the thing they had just bought. With a plan this falls through to the sentences below, which say what
+              the Free plan means for someone who is on a paid one. */}
+          {!current && trial?.blocked === 'device_trial_used'
             ? 'Free allowance already used on this device. Start a plan below to keep generating.'
             : !freeOffer
               ? 'Searching, Auto Fill, translating and applying are always unlimited.'
