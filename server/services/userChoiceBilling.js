@@ -26,6 +26,7 @@ const crypto = require('crypto');
 const dbConfig = require('../../db-config');
 const ents = require('./entitlements');
 const playExternal = require('./playExternalTransactions');
+const billdesk = require('./billdesk');
 
 const TABLE_SQL = `CREATE TABLE IF NOT EXISTS ucb_transactions (
     id                  UUID PRIMARY KEY,
@@ -55,6 +56,9 @@ const INDEX_SQL = [
        ON ucb_transactions (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS ucb_transactions_unreported
        ON ucb_transactions (status) WHERE status = 'paid'`,
+    // BillDesk's hosted page is launched from a form built on OUR server (the browser tab carries no auth
+    // header), so the one-time launch data has to live somewhere between the order and the tap: here.
+    `ALTER TABLE ucb_transactions ADD COLUMN IF NOT EXISTS launch_params JSONB`,
 ];
 
 const PERIOD_DAYS = 30;
@@ -87,7 +91,28 @@ function providerName() {
 /** The gateway, behind one small interface so the day BillDesk replaces Razorpay is a new case here
  *  and nothing else. Each provider owns exactly two things: making an order, and proving a payment
  *  against it. */
+const PUBLIC_BASE = () => (process.env.PUBLIC_BASE_URL || 'https://cvapplyr.com').replace(/\/+$/, '');
+
 const PROVIDERS = {
+    // BillDesk (JWS-HMAC). The user pays on BillDesk's HOSTED page in a browser tab; BillDesk posts a signed
+    // `transaction_response` back to our return URL, and anything it could not deliver is asked for again
+    // through its Retrieve Transaction API. See services/billdesk.js for the spec it is written against.
+    billdesk: {
+        ready() { return billdesk.ready(); },
+        publicKey() { return null; },
+        async createOrder({ amountMinor, receipt, device }) {
+            const r = await billdesk.createOrder({
+                orderid: billdesk.orderIdFor(receipt),
+                amountMinor,
+                ru: `${PUBLIC_BASE()}/api/payment/ucb/billdesk/return`,
+                additionalInfo: { additional_info1: 'play_user_choice' },
+                device,
+            });
+            return { orderId: r.bdorderid, launch: r.launch };
+        },
+        // BillDesk's proof is a signed payload, not a (payment id, signature) pair — settleBillDesk handles it.
+        verify() { return false; },
+    },
     razorpay: {
         ready() { return !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET); },
         publicKey() { return process.env.RAZORPAY_KEY_ID || null; },
@@ -153,7 +178,7 @@ async function ensureTable() {
  * Creates the gateway order and remembers the obligation BEFORE any money moves, so a payment can
  * never exist without a row that knows which user and plan it belongs to.
  */
-async function createOrder({ userId, planKey, token, platform, country }) {
+async function createOrder({ userId, planKey, token, platform, country, device }) {
     const cfg = config({ platform, country });
     if (!cfg.enabled) return { ok: false, reason: cfg.reason || 'unavailable' };
 
@@ -165,14 +190,17 @@ async function createOrder({ userId, planKey, token, platform, country }) {
     const id = crypto.randomUUID();
     const p = provider();
     let orderId;
+    let launch = null;
     try {
         const order = await p.createOrder({
             amountMinor,
             currency: CURRENCY,
             receipt: id,
             notes: { userId: String(userId), planKey, via: 'play_user_choice' },
+            device,
         });
         orderId = order.orderId;
+        launch = order.launch || null;
     } catch (e) {
         console.error('[ucb] gateway refused the order:', e && e.message);
         return { ok: false, reason: 'gateway_unavailable' };
@@ -182,9 +210,10 @@ async function createOrder({ userId, planKey, token, platform, country }) {
     await dbConfig.query(
         `INSERT INTO ucb_transactions
            (id, user_id, plan_key, provider, external_token, provider_order_id,
-            amount_minor, currency, tax_percent, region_code, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'created')`,
-        [id, userId, planKey, cfg.provider, token, orderId, amountMinor, CURRENCY, cfg.taxPercent, REGION],
+            amount_minor, currency, tax_percent, region_code, status, launch_params)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'created',$11)`,
+        [id, userId, planKey, cfg.provider, token, orderId, amountMinor, CURRENCY, cfg.taxPercent, REGION,
+            launch ? JSON.stringify(launch) : null],
     );
 
     return {
@@ -197,7 +226,20 @@ async function createOrder({ userId, planKey, token, platform, country }) {
         currency: CURRENCY,
         planKey,
         planLabel: plan.label,
+        // A browser-tab gateway (BillDesk) is opened at this URL; a native one (Razorpay) ignores it.
+        launchUrl: launch ? `${PUBLIC_BASE()}/api/payment/ucb/billdesk/launch/${id}?k=${launchKey(id)}` : null,
     };
+}
+
+/** The launch page is fetched by a browser tab that carries no login, so the URL itself is the permission:
+ *  an HMAC of the transaction id under the server's own secret, compared in constant time. */
+function launchKey(id) {
+    return crypto.createHmac('sha256', process.env.JWT_SECRET || 'ucb-launch').update(`ucb-launch:${id}`).digest('hex').slice(0, 32);
+}
+function launchKeyOk(id, k) {
+    const a = Buffer.from(String(k || ''), 'utf8');
+    const b = Buffer.from(launchKey(id), 'utf8');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 /**
@@ -222,6 +264,19 @@ async function settle({ userId, transactionId, paymentId, signature }) {
             [row.id, 'signature did not verify'],
         );
         return { ok: false, reason: 'bad_signature' };
+    }
+    return settleVerified(row, paymentId);
+}
+
+/**
+ * The shared tail, for ANY gateway, once its proof has been checked: record the money, grant exactly one
+ * period, then tell Google. Idempotent — a second arrival (the return page AND a status poll, a resent
+ * webhook) finds the grant already made and grants nothing more.
+ */
+async function settleVerified(row, paymentId) {
+    const userId = row.user_id;
+    if (row.status === 'reported' || row.granted_at) {
+        return { ok: true, alreadyDone: true, planKey: row.plan_key };
     }
 
     // Money is real from here on. Record it before anything that can fail.
@@ -263,6 +318,90 @@ async function settle({ userId, transactionId, paymentId, signature }) {
     const report = await reportOne({ ...row, provider_payment_id: paymentId });
 
     return { ok: true, planKey: row.plan_key, periodEnd: end.toISOString(), reported: report.reported };
+}
+
+/**
+ * A BillDesk answer — the signed `transaction_response` posted to our return URL, or a Retrieve Transaction
+ * answer — already verified by services/billdesk. Everything else is checked here against OUR row, never
+ * taken from the payload: the order must be ours, for this merchant, for exactly the amount we asked for.
+ */
+async function settleBillDesk(payload) {
+    await ensureTable();
+    const txnId = billdesk.txnIdFromOrderId(payload && payload.orderid);
+    if (!txnId) return { ok: false, reason: 'unknown_order' };
+    const row = await dbConfig.get(`SELECT * FROM ucb_transactions WHERE id = $1 AND provider = 'billdesk'`, [txnId]);
+    if (!row) return { ok: false, reason: 'unknown_order' };
+
+    const c = billdesk.cfg();
+    const expected = (Number(row.amount_minor) / 100).toFixed(2);
+    if (payload.mercid && c.mercid && payload.mercid !== c.mercid) return { ok: false, reason: 'wrong_merchant', txnId };
+    if (Number(payload.amount).toFixed(2) !== expected) {
+        // A signed answer for another amount is not a payment for this plan. Loud: it should never happen.
+        console.error(`❌ [ucb] BillDesk amount mismatch on ${row.id}: expected ${expected}, got ${payload.amount}`);
+        return { ok: false, reason: 'amount_mismatch', txnId };
+    }
+
+    const outcome = billdesk.outcomeOf(payload);
+    if (outcome === 'paid') {
+        const r = await settleVerified(row, String(payload.transactionid || ''));
+        return { ...r, txnId, outcome };
+    }
+    if (row.granted_at || row.status === 'reported') {
+        // A late "failed" or "pending" can never undo a payment we already confirmed.
+        return { ok: true, alreadyDone: true, planKey: row.plan_key, txnId, outcome: 'paid' };
+    }
+    await dbConfig.query(
+        `UPDATE ucb_transactions SET status=$2, last_error=$3, updated_at=NOW() WHERE id=$1`,
+        [row.id, outcome === 'pending' ? 'pending' : 'failed',
+            String(payload.transaction_error_desc || payload.auth_status || outcome).slice(0, 300)],
+    );
+    return { ok: false, reason: outcome, txnId, outcome };
+}
+
+/** The return URL's body. Verified here or not at all — the URL is public. */
+async function acceptBillDeskResponse(transactionResponse) {
+    const v = billdesk.jwsVerify(transactionResponse);
+    if (!v.ok) return { ok: false, reason: `unverified_${v.reason}` };
+    return settleBillDesk(v.payload);
+}
+
+/** Ask BillDesk directly — for a user who closed the page before it came back, or a payment still pending. */
+async function reconcile(row) {
+    if (!row || row.provider !== 'billdesk') return null;
+    if (row.granted_at || row.status === 'reported' || row.status === 'failed') return null;
+    try {
+        const payload = await billdesk.retrieveTransaction(billdesk.orderIdFor(row.id));
+        return await settleBillDesk(payload);
+    } catch (e) {
+        // "No transaction yet" is the normal answer for a page opened and abandoned. Nothing changes.
+        return { ok: false, reason: 'not_found_yet', detail: e && e.message };
+    }
+}
+
+/** What the app shows after the browser tab closes — the SERVER's answer, reconciled with BillDesk first. */
+async function statusFor(userId, transactionId) {
+    await ensureTable();
+    let row = await dbConfig.get(`SELECT * FROM ucb_transactions WHERE id = $1 AND user_id = $2`, [transactionId, userId]);
+    if (!row) return { ok: false, reason: 'unknown_transaction' };
+    if (row.provider === 'billdesk' && (row.status === 'created' || row.status === 'pending')) {
+        await reconcile(row);
+        row = await dbConfig.get(`SELECT * FROM ucb_transactions WHERE id = $1 AND user_id = $2`, [transactionId, userId]);
+    }
+    const state = row.granted_at || row.status === 'reported' ? 'done'
+        : row.status === 'paid' ? 'paid_unconfirmed'
+            : row.status === 'pending' ? 'pending'
+                : row.status === 'failed' ? 'failed' : 'open';
+    return { ok: true, state, planKey: row.plan_key };
+}
+
+/** The auto-submitting form that opens BillDesk's hosted page, or null when the link is not ours / spent. */
+async function launchPageFor(transactionId, key) {
+    if (!launchKeyOk(transactionId, key)) return null;
+    await ensureTable();
+    const row = await dbConfig.get(`SELECT * FROM ucb_transactions WHERE id = $1 AND provider = 'billdesk'`, [transactionId]);
+    if (!row || row.status !== 'created' || !row.launch_params) return null;
+    const launch = typeof row.launch_params === 'string' ? JSON.parse(row.launch_params) : row.launch_params;
+    return billdesk.launchHtml(launch);
 }
 
 /** Report one row and record what happened. Never throws: the row is the memory. */
@@ -316,6 +455,7 @@ async function flushUnreported(limit = 50) {
 }
 
 module.exports = {
-    config, createOrder, settle, flushUnreported, reportOne, ensureTable,
+    config, createOrder, settle, settleVerified, flushUnreported, reportOne, ensureTable,
+    settleBillDesk, acceptBillDeskResponse, reconcile, statusFor, launchPageFor, launchKey, launchKeyOk,
     TABLE_SQL, INDEX_SQL, PROVIDERS, priceTable, taxPercent, PERIOD_DAYS, REGION, CURRENCY,
 };

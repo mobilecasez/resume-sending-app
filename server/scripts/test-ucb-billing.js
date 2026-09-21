@@ -31,15 +31,16 @@ const dbFake = {
     query: async (sql, params = []) => {
         db.sql.push(String(sql).replace(/\s+/g, ' ').trim());
         const s = String(sql);
-        if (/^\s*CREATE/i.test(s)) return [];
+        if (/^\s*(CREATE|ALTER)/i.test(s)) return [];
         if (/^\s*INSERT INTO ucb_transactions/i.test(s)) {
             const [id, user_id, plan_key, provider, external_token, provider_order_id,
-                amount_minor, currency, tax_percent, region_code] = params;
+                amount_minor, currency, tax_percent, region_code, launch_params] = params;
             db.rows.push({
                 id, user_id, plan_key, provider, external_token, provider_order_id,
                 amount_minor, currency, tax_percent, region_code, status: 'created',
                 provider_payment_id: null, granted_at: null, reported_at: null,
                 report_attempts: 0, last_error: null, created_at: new Date('2026-09-20T10:00:00Z'),
+                launch_params: launch_params ? JSON.parse(launch_params) : null,
             });
             return [];
         }
@@ -48,6 +49,7 @@ const dbFake = {
             if (!row) return [];
             if (/status='paid'/.test(s)) { row.status = 'paid'; row.provider_payment_id = params[1]; }
             if (/status='failed'/.test(s)) { row.status = 'failed'; row.last_error = params[1]; }
+            if (/SET status=\$2, last_error=\$3/.test(s)) { row.status = params[1]; row.last_error = params[2]; }
             if (/granted_at=NOW\(\)/.test(s)) row.granted_at = new Date();
             if (/status='reported'/.test(s)) { row.status = 'reported'; row.reported_at = new Date(); row.last_error = null; row.report_attempts += 1; }
             else if (/report_attempts = report_attempts \+ 1/.test(s)) { row.report_attempts += 1; row.last_error = params[1]; }
@@ -56,6 +58,9 @@ const dbFake = {
         }
         if (/SELECT \* FROM ucb_transactions\s+WHERE status = 'paid'/i.test(s)) {
             return db.rows.filter((r) => r.status === 'paid' && r.external_token).slice(0, params[0] || 50);
+        }
+        if (/SELECT \* FROM ucb_transactions WHERE id = \$1 AND provider = 'billdesk'/i.test(s)) {
+            return db.rows.filter((r) => r.id === params[0] && r.provider === 'billdesk');
         }
         if (/SELECT \* FROM ucb_transactions WHERE id/i.test(s)) {
             return db.rows.filter((r) => r.id === params[0] && r.user_id === params[1]);
@@ -346,6 +351,157 @@ const sign = (orderId, paymentId) => crypto.createHmac('sha256', process.env.RAZ
     ok('every playApi.<fn> the reporter calls is really exported', used.length > 0 && used.every((u) => realExports.includes(u)),
         { used, realExports });
     ok('…androidPublisher in particular', realExports.includes('androidPublisher'));
+
+    console.log('── 12. BillDesk: signatures, the hosted page, and money that is only ever ours ──');
+    const billdesk = require(path.join(ROOT, 'server', 'services', 'billdesk.js'));
+    const BD = { mercid: 'BDMERCID', clientid: 'bdclient1', secret: 'bd-hmac-secret-for-tests' };
+    function bdEnv() {
+        envReset();
+        process.env.UCB_ENABLED = '1';
+        process.env.UCB_PROVIDER = 'billdesk';
+        process.env.UCB_PRICES_INR = JSON.stringify({ plus: 99900 });
+        process.env.BILLDESK_MERCHANT_ID = BD.mercid;
+        process.env.BILLDESK_CLIENT_ID = BD.clientid;
+        process.env.BILLDESK_SECRET = BD.secret;
+        delete process.env.BILLDESK_ENV;
+        process.env.JWT_SECRET = 'jwt-secret-for-tests';
+    }
+    // BillDesk's side, in memory: it checks OUR signature the way BillDesk would and signs its answers.
+    const bdCalls = [];
+    const bdRetrieve = new Map();                 // orderid → payload the Retrieve API will answer
+    const bdSign = (payload, secret = BD.secret, header = { alg: 'HS256', clientid: BD.clientid }) => {
+        const b = (x) => Buffer.from(JSON.stringify(x)).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+        const h = b(header), p = b(payload);
+        const sig = crypto.createHmac('sha256', secret).update(`${h}.${p}`).digest('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+        return `${h}.${p}.${sig}`;
+    };
+    let bdSignAnswers = true;
+    billdesk._setFetch(async (url, init) => {
+        const v = billdesk.jwsVerify(init.body, { secret: BD.secret });
+        bdCalls.push({ url, headers: init.headers, verified: v.ok, header: v.header, payload: v.payload });
+        const answer = (obj) => ({ ok: true, status: 200, text: async () => (bdSignAnswers ? bdSign(obj) : JSON.stringify(obj)) });
+        if (!v.ok) return { ok: false, status: 401, text: async () => JSON.stringify({ error_code: 'AUTH', message: 'bad signature' }) };
+        if (url.endsWith(billdesk.PATHS.createOrder)) {
+            return answer({
+                objectid: 'order', orderid: v.payload.orderid, bdorderid: 'OAKU2U0V4C6B', mercid: BD.mercid,
+                amount: v.payload.amount, status: 'ACTIVE', next_step: 'redirect',
+                links: [
+                    { method: 'GET', rel: 'self', href: 'https://uat1.billdesk.com/self' },
+                    { method: 'POST', rel: 'redirect', href: 'https://uat1.billdesk.com/u2/web/v1_2/embeddedsdk',
+                        parameters: { mercid: BD.mercid, bdorderid: 'OAKU2U0V4C6B', rdata: 'd7f81c"<script>x' } },
+                ],
+            });
+        }
+        if (url.endsWith(billdesk.PATHS.retrieve)) {
+            const hit = bdRetrieve.get(v.payload.orderid);
+            if (!hit) return { ok: false, status: 404, text: async () => JSON.stringify({ error_code: 'TXNNF', message: 'Transaction not found' }) };
+            return answer(hit);
+        }
+        return { ok: false, status: 404, text: async () => '{}' };
+    });
+
+    // 12a — the JWS itself
+    bdEnv();
+    const tok = billdesk.jwsSign({ a: 1 });
+    ok('our JWS verifies with our secret', billdesk.jwsVerify(tok).ok);
+    ok('…carries HS256 and our client id in the header', (() => { const v = billdesk.jwsVerify(tok); return v.header.alg === 'HS256' && v.header.clientid === BD.clientid; })());
+    const [th, tp, ts] = tok.split('.');
+    const tampered = `${th}.${Buffer.from(JSON.stringify({ a: 2 })).toString('base64').replace(/=+$/, '')}.${ts}`;
+    ok('a changed payload fails', billdesk.jwsVerify(tampered).reason === 'bad_signature');
+    ok('another secret fails', billdesk.jwsVerify(bdSign({ a: 1 }, 'someone-elses-secret')).reason === 'bad_signature');
+    const noneTok = `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64').replace(/=+$/, '')}.${tp}.x`;
+    ok('⚠️ alg "none" is refused (the classic JWS bypass)', billdesk.jwsVerify(noneTok).reason === 'bad_alg');
+    ok('garbage is refused, not thrown', billdesk.jwsVerify('not.a').ok === false && billdesk.jwsVerify('').ok === false);
+
+    // 12b — the environment can only be production by name
+    ok('no BILLDESK_ENV → UAT', billdesk.cfg().env === 'uat');
+    process.env.BILLDESK_ENV = 'prod'; ok('"prod" → production', billdesk.cfg().env === 'prod');
+    process.env.BILLDESK_ENV = 'production'; ok('⚠️ a typo is UAT, never real money by accident', billdesk.cfg().env === 'uat');
+    delete process.env.BILLDESK_ENV;
+
+    // 12c — the order
+    ok('BillDesk makes the config "on" once its keys are set', ucb.config({ platform: 'android', country: 'IN' }).enabled === true, ucb.config({ platform: 'android', country: 'IN' }));
+    const dev = { init_channel: 'internet', ip: '1.2.3.4', user_agent: 'UA', accept_header: 'text/html' };
+    const bo = await ucb.createOrder({ userId: 21, planKey: 'plus', token: 'TOKBD', platform: 'android', country: 'IN', device: dev });
+    ok('the order is made', bo.ok && bo.provider === 'billdesk' && bo.orderId === 'OAKU2U0V4C6B', bo);
+    const c0 = bdCalls[0] || {};
+    ok('…at UAT\'s create-order path', c0.url === 'https://uat1.billdesk.com/u2/payments/ve1_2/orders/create', c0.url);
+    ok('…signed so BillDesk can verify it', c0.verified === true);
+    ok('…with BD-Traceid ≤35 alphanumerics and a 14-digit BD-Timestamp',
+        /^[A-Za-z0-9]{1,35}$/.test(c0.headers['BD-Traceid']) && /^\d{14}$/.test(c0.headers['BD-Timestamp']), c0.headers);
+    ok('…as application/jose both ways', c0.headers['Content-Type'] === 'application/jose' && c0.headers.Accept === 'application/jose');
+    const pl = c0.payload || {};
+    ok('…for exactly ₹999.00 in INR (356)', pl.amount === '999.00' && pl.currency === '356', pl);
+    ok('…under our merchant id, with OUR transaction as the order id', pl.mercid === BD.mercid && pl.orderid === bo.transactionId.replace(/-/g, ''));
+    ok('…returning to our own return URL', /\/api\/payment\/ucb\/billdesk\/return$/.test(pl.ru), pl.ru);
+    ok('…dated in IST as BillDesk writes it', /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+05:30$/.test(pl.order_date), pl.order_date);
+    ok('…with the paying device', pl.device && pl.device.ip === '1.2.3.4' && pl.device.init_channel === 'internet');
+    ok('the launch data is kept for the tab to open', db.rows[0] && db.rows[0].launch_params && db.rows[0].launch_params.bdorderid === 'OAKU2U0V4C6B');
+    ok('…and the app is handed a launch URL carrying its own key', /\/api\/payment\/ucb\/billdesk\/launch\/[0-9a-f-]{36}\?k=[0-9a-f]{32}$/.test(bo.launchUrl || ''), bo.launchUrl);
+
+    // 12d — the launch page
+    const k = (bo.launchUrl || '').split('k=')[1];
+    const page = await ucb.launchPageFor(bo.transactionId, k);
+    ok('the right key opens the hosted page form', !!page && page.includes('action="https://uat1.billdesk.com/u2/web/v1_2/embeddedsdk"')
+        && /name="merchantid" value="BDMERCID"/.test(page) && /name="bdorderid" value="OAKU2U0V4C6B"/.test(page));
+    ok('⚠️ …and BillDesk\'s values are escaped, never raw HTML', page && page.includes('d7f81c&quot;&lt;script&gt;x') && !page.includes('"<script>x'));
+    ok('a wrong key opens nothing', (await ucb.launchPageFor(bo.transactionId, 'f'.repeat(32))) === null);
+    ok('no key opens nothing', (await ucb.launchPageFor(bo.transactionId, '')) === null);
+
+    // 12e — the return URL: only a signed answer, for our amount, grants anything
+    const orderid = bo.transactionId.replace(/-/g, '');
+    const success = { mercid: BD.mercid, orderid, transactionid: 'X4560477641875', amount: '999.00', auth_status: '0300', transaction_error_desc: 'Transaction Successful' };
+    const forged = await ucb.acceptBillDeskResponse(bdSign(success, 'attacker-secret'));
+    ok('⚠️ a forged "success" (wrong key) grants nothing', forged.ok === false && /unverified/.test(forged.reason) && grants.length === 0, forged);
+    const cheap = await ucb.acceptBillDeskResponse(bdSign({ ...success, amount: '1.00' }));
+    ok('⚠️ a signed success for ANOTHER amount grants nothing', cheap.ok === false && cheap.reason === 'amount_mismatch' && grants.length === 0, cheap);
+    const alien = await ucb.acceptBillDeskResponse(bdSign({ ...success, orderid: 'f'.repeat(32) }));
+    ok('an order that is not ours grants nothing', alien.ok === false && alien.reason === 'unknown_order');
+    const bdGood = await ucb.acceptBillDeskResponse(bdSign(success));
+    ok('a real, signed 0300 grants the plan', bdGood.ok === true && grants.length === 1 && grants[0].userId === 21 && grants[0].planKey === 'plus', bdGood);
+    ok('…keyed on BillDesk\'s transaction id', grants[0] && grants[0].originalTxnId === 'X4560477641875');
+    ok('…and it is reported to Google with the chooser\'s token', reports.length === 1 && reports[0].requestBody.oneTimeTransaction.externalTransactionToken === 'TOKBD');
+    const replay = await ucb.acceptBillDeskResponse(bdSign(success));
+    ok('⚠️ the same answer again grants nothing more', replay.ok === true && replay.alreadyDone === true && grants.length === 1 && reports.length === 1);
+    const lateFail = await ucb.acceptBillDeskResponse(bdSign({ ...success, auth_status: '0399' }));
+    ok('⚠️ a late "failed" cannot undo a confirmed payment', lateFail.ok === true && lateFail.alreadyDone === true && db.rows[0].status === 'reported');
+    ok('a spent order no longer opens the hosted page', (await ucb.launchPageFor(bo.transactionId, k)) === null);
+
+    // 12f — pending, then the user closes the tab: the status check asks BillDesk and settles it
+    bdEnv(); bdCalls.length = 0;
+    const b2 = await ucb.createOrder({ userId: 22, planKey: 'plus', token: 'TOKBD2', platform: 'android', country: 'IN', device: dev });
+    const o2 = b2.transactionId.replace(/-/g, '');
+    const pend = await ucb.acceptBillDeskResponse(bdSign({ mercid: BD.mercid, orderid: o2, amount: '999.00', auth_status: '0002' }));
+    ok('0002 is pending: nothing granted', pend.ok === false && pend.reason === 'pending' && grants.length === 0 && db.rows[0].status === 'pending');
+    bdRetrieve.set(o2, { mercid: BD.mercid, orderid: o2, transactionid: 'X777', amount: '999.00', auth_status: '0300' });
+    const st = await ucb.statusFor(22, b2.transactionId);
+    ok('the status check asks BillDesk and settles the payment', st.ok && st.state === 'done' && grants.length === 1 && grants[0].originalTxnId === 'X777', st);
+    ok('…through the Retrieve Transaction path', bdCalls.some((c) => c.url.endsWith('/payments/ve1_2/transactions/get') && c.payload.orderid === o2));
+    ok('another user cannot read this payment', (await ucb.statusFor(99, b2.transactionId)).ok === false);
+
+    // 12g — an abandoned page: the status check finds nothing and grants nothing
+    bdEnv();
+    const b3 = await ucb.createOrder({ userId: 23, planKey: 'plus', token: 'TOKBD3', platform: 'android', country: 'IN', device: dev });
+    const st3 = await ucb.statusFor(23, b3.transactionId);
+    ok('a page closed before paying is "open", not paid', st3.ok && st3.state === 'open' && grants.length === 0, st3);
+
+    // 12h — BillDesk answering unsigned is not an order
+    bdEnv(); bdSignAnswers = false;
+    const b4 = await ucb.createOrder({ userId: 24, planKey: 'plus', token: 'TOKBD4', platform: 'android', country: 'IN', device: dev });
+    ok('⚠️ an unsigned create-order answer is refused, and leaves no row', b4.ok === false && b4.reason === 'gateway_unavailable' && db.rows.length === 0, b4);
+    bdSignAnswers = true;
+    delete process.env.BILLDESK_MERCHANT_ID; delete process.env.BILLDESK_CLIENT_ID; delete process.env.BILLDESK_SECRET;
+
+    // 12i — the app side: the browser tab's own verdict is never taken as proof.
+    const UC2 = strip(fs.readFileSync(path.join(ROOT, 'MobileApp', 'services', 'userChoiceBilling.ts'), 'utf8'));
+    const tab = (UC2.match(/async function payInBrowserTab[\s\S]*?\n}\n/) || [''])[0];
+    ok('⚠️ after the tab closes the app asks the SERVER, whatever the tab said',
+        /await WebBrowser\.openAuthSessionAsync\(order\.launchUrl, 'cvapplyr:\/\/payment-return'\)/.test(tab)
+        && /fetchUcbStatus\(order\.transactionId\)/.test(tab) && !/result\.type === 'success'/.test(tab));
+    ok('…and a BillDesk order is routed through that tab, not the Razorpay sheet',
+        /if \(made\.order\.provider === 'billdesk'\) return payInBrowserTab\(made\.order\);/.test(UC2));
+    ok('the return link has a route, so it can never land on "unmatched route"',
+        fs.existsSync(path.join(ROOT, 'MobileApp', 'app', 'payment-return.tsx')));
 
     console.log(`\nucb billing: ${pass} passed, ${fail} failed`);
     Module._load = realLoad;

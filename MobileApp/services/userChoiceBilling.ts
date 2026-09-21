@@ -58,6 +58,8 @@ export type UcbOrder = {
   currency: string;
   planKey: string;
   planLabel: string;
+  /** Set for a browser-tab gateway (BillDesk): the page that opens its hosted checkout. */
+  launchUrl?: string | null;
 };
 
 const OFF: UcbConfig = {
@@ -135,6 +137,52 @@ export async function verifyUcbPayment(args: { transactionId: string; paymentId:
   }
 }
 
+/** The server's own answer about one payment — the only thing that decides what the user is told. For BillDesk
+ *  the server first asks BillDesk directly, so a user who closed the page early is still settled here. */
+export async function fetchUcbStatus(transactionId: string)
+  : Promise<{ state: 'done' | 'paid_unconfirmed' | 'pending' | 'failed' | 'open'; planKey?: string } | null> {
+  try {
+    const res = await fetch(`${API_BASE}/payment/ucb/status/${encodeURIComponent(transactionId)}`, { headers: await authHeaders() });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || !d.success) return null;
+    return { state: d.state, planKey: d.planKey };
+  } catch { return null; }
+}
+
+/** BillDesk's hosted checkout, in a secure browser tab (UPI, cards and netbanking all live on BillDesk's page).
+ *  ⚠️ Whatever the tab reports — success, cancel, dismiss — is NOT evidence: the server is asked afterwards. */
+async function payInBrowserTab(order: UcbOrder): Promise<
+  | { status: 'done'; planKey: string }
+  | { status: 'cancelled' }
+  | { status: 'paid_unconfirmed'; reason: string }
+  | { status: 'failed'; reason: string }
+> {
+  if (!order.launchUrl) return { status: 'failed', reason: 'no_launch_url' };
+  let WebBrowser: any = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    WebBrowser = require('expo-web-browser');
+  } catch {
+    return { status: 'failed', reason: 'browser_missing' };
+  }
+  try {
+    await WebBrowser.openAuthSessionAsync(order.launchUrl, 'cvapplyr://payment-return');
+  } catch { /* a tab that could not open is answered by the status check below */ }
+
+  // BillDesk's answer can land a moment after the tab closes; give it a few short tries before calling it.
+  let last: Awaited<ReturnType<typeof fetchUcbStatus>> = null;
+  for (let i = 0; i < 4; i += 1) {
+    last = await fetchUcbStatus(order.transactionId);
+    if (last && last.state !== 'open' && last.state !== 'pending') break;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  if (!last) return { status: 'paid_unconfirmed', reason: 'unreachable' };
+  if (last.state === 'done') return { status: 'done', planKey: last.planKey || order.planKey };
+  if (last.state === 'paid_unconfirmed' || last.state === 'pending') return { status: 'paid_unconfirmed', reason: last.state };
+  if (last.state === 'failed') return { status: 'failed', reason: 'declined' };
+  return { status: 'cancelled' };           // 'open': the page was closed before anything was paid
+}
+
 /** The gateway's own checkout sheet. Razorpay today; the module is loaded lazily so a build without
  *  it (or iOS) degrades to "unavailable" instead of failing to start. */
 export async function openGatewayCheckout(order: UcbOrder, who: { email?: string | null; name?: string | null; phone?: string | null })
@@ -192,6 +240,9 @@ export async function payWithOurGateway(args: {
 > {
   const made = await createUcbOrder(args.planKey, args.externalTransactionToken, args.country);
   if (!made.ok) return { status: 'failed', reason: made.reason };
+
+  // A hosted-page gateway (BillDesk) pays in a browser tab and is settled by the server, not by the phone.
+  if (made.order.provider === 'billdesk') return payInBrowserTab(made.order);
 
   const paid = await openGatewayCheckout(made.order, args.who || {});
   if (!paid.ok) return paid.cancelled ? { status: 'cancelled' } : { status: 'failed', reason: paid.reason };
