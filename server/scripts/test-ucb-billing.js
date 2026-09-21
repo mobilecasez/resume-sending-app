@@ -316,6 +316,37 @@ const sign = (orderId, paymentId) => crypto.createHmac('sha256', process.env.RAZ
     ok('…and never claims a plan started unless the server said so',
         /r\.status === 'done'/.test(PL) && /Payment received — activating/.test(PL) && /Nothing was charged/.test(PL));
 
+    console.log('── 11. The Play credentials are found where production actually keeps them ──');
+    // A child process per case, because playStoreApi reads its env ONCE at require time. The account below is fake:
+    // the point is WHICH variable is read, never whose key it is.
+    const { spawnSync } = require('child_process');
+    const fakeSa = Buffer.from(JSON.stringify({ type: 'service_account', client_email: 'fake@example.iam.gserviceaccount.com' })).toString('base64');
+    const probe = (env) => {
+        const r = spawnSync(process.execPath, ['-e',
+            `process.stdout.write(String(require(${JSON.stringify(path.join(ROOT, 'server', 'services', 'playStoreApi.js'))}).isConfigured()))`],
+            { env: { PATH: process.env.PATH, NODE_PATH: process.env.NODE_PATH || '', GOOGLE_PLAY_SA_KEYFILE: '/nonexistent/key.json', ...env }, encoding: 'utf8' });
+        return (r.stdout || '').trim();
+    };
+    ok('⚠️ GOOGLE_PLAY_SA_B64 alone configures it (what Railway actually has)', probe({ GOOGLE_PLAY_SA_B64: fakeSa }) === 'true', probe({ GOOGLE_PLAY_SA_B64: fakeSa }));
+    ok('GOOGLE_PLAY_SA_JSON still works', probe({ GOOGLE_PLAY_SA_JSON: JSON.stringify({ type: 'service_account' }) }) === 'true');
+    ok('nothing set and no key file → not configured', probe({}) === 'false');
+    ok('a malformed base64 value is "not configured", never a crash', probe({ GOOGLE_PLAY_SA_B64: 'not-base64-json' }) === 'false');
+
+    // ⚠️ THE FAKE ABOVE HID A REAL HOLE (2026-09-21): playExternalTransactions called playApi.androidPublisher(),
+    // which the real module did not export, so every report would have thrown in production while this suite passed.
+    // Check the REAL module's exports against every playApi.<name> the reporter actually calls.
+    const realExports = (() => {
+        const r = spawnSync(process.execPath, ['-e',
+            `process.stdout.write(JSON.stringify(Object.keys(require(${JSON.stringify(path.join(ROOT, 'server', 'services', 'playStoreApi.js'))}))))`],
+            { env: { PATH: process.env.PATH, NODE_PATH: process.env.NODE_PATH || '' }, encoding: 'utf8' });
+        try { return JSON.parse(r.stdout || '[]'); } catch { return []; }
+    })();
+    const PX = strip(fs.readFileSync(path.join(ROOT, 'server', 'services', 'playExternalTransactions.js'), 'utf8'));
+    const used = Array.from(new Set((PX.match(/playApi\.(\w+)/g) || []).map((m) => m.split('.')[1])));
+    ok('every playApi.<fn> the reporter calls is really exported', used.length > 0 && used.every((u) => realExports.includes(u)),
+        { used, realExports });
+    ok('…androidPublisher in particular', realExports.includes('androidPublisher'));
+
     console.log(`\nucb billing: ${pass} passed, ${fail} failed`);
     Module._load = realLoad;
     process.exit(fail ? 1 : 0);

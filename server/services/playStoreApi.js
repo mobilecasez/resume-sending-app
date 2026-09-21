@@ -21,7 +21,25 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const SCOPE = 'https://www.googleapis.com/auth/androidpublisher';
 
 // Key resolution: inline JSON (Railway env) wins, then an explicit path, then the repo key file.
-const KEY_JSON = process.env.GOOGLE_PLAY_SA_JSON || '';
+//
+// ⚠️ 2026-09-21 — PRODUCTION HAD NONE OF THOSE, SO THIS MODULE HAS NEVER WORKED THERE. Railway carries the
+// Play service account as GOOGLE_PLAY_SA_B64 (base64 of the same JSON — eas-submit@cvapplyr, verified by
+// client_email), which only storeAnalytics.js read; Keys/ is not deployed. So isConfigured() was false in
+// production and every Android subscription verification answered 'play_api_not_configured' — a Play
+// purchase could never have been verified (no Android purchase has been attempted yet, per app_events and
+// user_subscriptions, so nobody was charged for nothing). The base64 copy is read here too now.
+function keyJsonFromEnv() {
+  if (process.env.GOOGLE_PLAY_SA_JSON) return process.env.GOOGLE_PLAY_SA_JSON;
+  if (process.env.GOOGLE_PLAY_SA_B64) {
+    try {
+      const text = Buffer.from(process.env.GOOGLE_PLAY_SA_B64, 'base64').toString('utf8');
+      JSON.parse(text);                       // a malformed value is "not configured", never a crash later
+      return text;
+    } catch { return ''; }
+  }
+  return '';
+}
+const KEY_JSON = keyJsonFromEnv();
 const KEY_FILE = process.env.GOOGLE_PLAY_SA_KEYFILE || path.join(ROOT, 'Keys', 'cvapplyr-e46cebab373e.json');
 
 let clientPromise = null;
@@ -151,4 +169,8 @@ async function verifyPubSubPush(req) {
 
 module.exports = {
   isConfigured, getSubscriptionV2, getProductPurchase, acknowledgeSubscription, verifyPubSubPush,
+  // The raw client, for callers whose API has no helper here yet (playExternalTransactions.js reports
+  // user choice billing payments through it). ⚠️ It was not exported until 2026-09-21, and a suite that
+  // FAKED this module could not notice — test-ucb-billing.js now requires the real one to prove it.
+  androidPublisher,
 };
