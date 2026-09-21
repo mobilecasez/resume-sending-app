@@ -288,6 +288,34 @@ const sign = (orderId, paymentId) => crypto.createHmac('sha256', process.env.RAZ
     ok('no service account is a clear error, not a silent skip', /service account/.test(threw || ''), threw);
     playApiFake._configured = true;
 
+    console.log('── 10. The app can never be broken by the optional mode, and iOS never sees it ──');
+    // Source-level, on comment-stripped text: matching our own explanation would prove nothing.
+    const fs = require('fs');
+    const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    const SB = strip(fs.readFileSync(path.join(ROOT, 'MobileApp', 'services', 'storeBilling.ts'), 'utf8'));
+    const UC = strip(fs.readFileSync(path.join(ROOT, 'MobileApp', 'services', 'userChoiceBilling.ts'), 'utf8'));
+    const PL = strip(fs.readFileSync(path.join(ROOT, 'MobileApp', 'app', '(subscription)', 'plans.tsx'), 'utf8'));
+    const init = (SB.match(/export function initStoreBilling\(\)[\s\S]*?\n}\n/) || [''])[0];
+    ok('⚠️ the connection tries user-choice first…', /initConnection\(\{ alternativeBillingModeAndroid: 'user-choice' \}\)/.test(init));
+    // The user-choice branch is everything from `if (wantsUserChoice) {` up to the plain connect. Inside it the ONLY
+    // way out may be the success `return true`; a `return false` or a `throw` in the catch is exactly the regression
+    // that would leave every Android subscription unbuyable while Play enrolment is pending.
+    const ucBranch = (init.match(/if \(wantsUserChoice\) \{([\s\S]*?)await m\.initConnection\(\);\s*return true;\s*\} catch/) || [])[1] || '';
+    ok('⚠️ …and if Google refuses it, falls through to PLAIN Play billing instead of failing every purchase',
+        ucBranch.length > 0
+        && (ucBranch.match(/return true;/g) || []).length === 1
+        && !/return false|throw /.test(ucBranch)
+        && /catch \(e: any\)/.test(ucBranch), ucBranch.slice(0, 200));
+    ok('…the mode is only ever asked for on Android', /Platform\.OS === 'android' && await userChoiceModeWanted\(\)/.test(init));
+    ok('the client module answers "off" on anything but Android',
+        /export async function userChoiceModeWanted[\s\S]*?if \(Platform\.OS !== 'android'\) return false;/.test(UC)
+        && /export async function fetchUcbConfig[\s\S]*?if \(Platform\.OS !== 'android'\) return \{ \.\.\.OFF/.test(UC));
+    ok('…and the gateway checkout refuses to open off Android', /export async function openGatewayCheckout[\s\S]*?if \(Platform\.OS !== 'android'\) return \{ ok: false, reason: 'not_android' \};/.test(UC));
+    ok('the plans screen listens for Google\'s chooser only on Android, and only when the server says on',
+        /if \(Platform\.OS !== 'android'\) return;[\s\S]*?fetchUcbConfig\(\)\.then\(\(cfg\) => \{\s*if \(!on \|\| !cfg\.enabled\) return;[\s\S]*?userChoiceBillingListenerAndroid/.test(PL));
+    ok('…and never claims a plan started unless the server said so',
+        /r\.status === 'done'/.test(PL) && /Payment received — activating/.test(PL) && /Nothing was charged/.test(PL));
+
     console.log(`\nucb billing: ${pass} passed, ${fail} failed`);
     Module._load = realLoad;
     process.exit(fail ? 1 : 0);

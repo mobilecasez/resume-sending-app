@@ -117,7 +117,19 @@ export function initStoreBilling(): Promise<boolean> {
       // way: in 'user-choice' Google still shows its own chooser only where the programme applies
       // (India, enrolled app), and otherwise the purchase runs exactly as it does today.
       const wantsUserChoice = Platform.OS === 'android' && await userChoiceModeWanted();
-      await m.initConnection(wantsUserChoice ? { alternativeBillingModeAndroid: 'user-choice' } : undefined);
+      if (wantsUserChoice) {
+        try {
+          await m.initConnection({ alternativeBillingModeAndroid: 'user-choice' });
+          return true;
+        } catch (e: any) {
+          // ⚠️ NEVER LET THE OPTIONAL MODE TAKE THE REQUIRED ONE DOWN WITH IT (2026-09-21). The server can
+          // switch this on before Play Console has finished enrolling the app, and a billing client that
+          // refuses 'user-choice' would otherwise leave EVERY Android subscription unbuyable. Reopen the
+          // connection the ordinary way: the user pays through Google Play, exactly as before.
+          console.log('[storeBilling] user-choice billing refused, opening plain Play billing:', e?.message || e);
+        }
+      }
+      await m.initConnection();
       return true;
     } catch (e: any) {
       connectPromise = null;   // transient (Play Services updating) — let a later attempt retry
