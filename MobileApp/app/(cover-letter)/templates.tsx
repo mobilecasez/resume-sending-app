@@ -169,6 +169,12 @@ export default function CoverLetterTemplates() {
   const [docEmployer, setDocEmployer] = useState<string | null>(null);
   const [docSlots, setDocSlots] = useState<DocSlot[]>([]);
   const [docImages, setDocImages] = useState<Record<string, DocImage>>({});
+  // ⚠️ A PAGE IS NEVER BLANK (2026-09-22). The spinners above cover "the server is still rendering"; they did not cover
+  // the seconds between an image ARRIVING and it being DRAWN — a 3x page is ~2000x4400 px — so a design opened while it
+  // was still coming in (the owner's Azure Sidebar, 5.8 s to render in production) showed an empty white card with
+  // nothing to say it was on its way. Each page now keeps "Opening …" until its own image has actually drawn.
+  const [drawn, setDrawn] = useState<Record<string, string>>({});   // id → the image uri that has drawn
+
   // Mirror of docImages for the loader: it runs from closures that outlive the render they read.
   const docImagesRef = useRef<Record<string, DocImage>>({});
   const [docFailed, setDocFailed] = useState<Record<string, string>>({});
@@ -661,7 +667,9 @@ export default function CoverLetterTemplates() {
                                 contentFit="cover"
                                 transition={160}
                                 allowDownscaling={!(FULL_RES_ZOOM && i === active)}
+                                onError={() => setDrawn((d) => ({ ...d, [slot.id]: img.image }))}
                                 onLoad={(e) => {
+                                  setDrawn((d) => (d[slot.id] === img.image ? d : { ...d, [slot.id]: img.image }));
                                   // No size from the server → learn the real page height from the image
                                   // itself, once, so a long letter is not cropped to A4.
                                   if (img.width && img.height) return;
@@ -672,6 +680,12 @@ export default function CoverLetterTemplates() {
                                   setDocImages((prev) => (prev[slot.id] && prev[slot.id].image === img.image ? { ...prev, [slot.id]: sized } : prev));
                                 }}
                               />
+                              {drawn[slot.id] !== img.image && (
+                                <View style={s.pageOpening} pointerEvents="none">
+                                  <ActivityIndicator size="large" color={slot.accent} />
+                                  <Text style={s.previewLoadingText}>Opening {slot.name}…</Text>
+                                </View>
+                              )}
                             </ScrollView>
                           ) : docFailed[slot.id] ? (
                             <TouchableOpacity style={s.previewLoading} activeOpacity={0.8} onPress={() => ensureDocCards([slot.id], docId)}>
@@ -767,7 +781,15 @@ export default function CoverLetterTemplates() {
                             <Image
                               source={{ uri: p.image }} style={{ width: CARD_W, height: imgH }} contentFit="cover" transition={160}
                               allowDownscaling={!(FULL_RES_ZOOM && i === active)}
+                              onLoad={() => setDrawn((d) => (d[p.id] === p.image ? d : { ...d, [p.id]: p.image }))}
+                              onError={() => setDrawn((d) => ({ ...d, [p.id]: p.image }))}
                             />
+                            {drawn[p.id] !== p.image && (
+                              <View style={s.pageOpening} pointerEvents="none">
+                                <ActivityIndicator size="large" color={p.accent} />
+                                <Text style={s.previewLoadingText}>Opening {p.name}…</Text>
+                              </View>
+                            )}
                           </ScrollView>
                         </View>
                       </View>
@@ -919,6 +941,7 @@ const s = StyleSheet.create({
   // Doc mode
   previewLoading:     { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: 24 },
   previewLoadingText: { fontSize: 12.5, fontWeight: '600', color: T.muted, textAlign: 'center' },
+  pageOpening:  { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#fff' },
   retryChip:          { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 8 },
   retryChipText:      { fontSize: 12.5, fontWeight: '800', color: '#fff' },
   // lineHeight is pinned so the two-line slot (minHeight, set inline from the font scale) is exact.

@@ -1226,10 +1226,12 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
       rStub.renderPreviews = realRP;
     }
     const elK = fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8');
+    // RETARGETED 2026-09-22 (the unsigned Nordex letter): the key also ends with the signature's version, ONLY for a user
+    // who has one — an unsigned user's keys are exactly what they were (server/scripts/test-sign-and-open.js).
     // RETARGETED 2026-09-19 (the Airbus letter): the key ends with LETTER_REPAIR_REV for a REPAIRED letter only — a clean
     // letter's parts are exactly what they were (pinned by value in "── ⚠️ A LETTER STORED WITH JSON IN IT ──" below).
     ok('⚠️ the page key carries coverLetterRenderer.PREVIEW_REV, read per call, and the card\'s name is the page\'s',
-      /const previewRev = String\(clRenderer\.PREVIEW_REV \|\| ''\);/.test(elK) && /t\.generic \? photoVer : '-', previewRev, \.\.\.\(body\.repaired \? \[letterText\.LETTER_REPAIR_REV\] : \[\]\)\]\.join\('\|'\)/.test(elK)
+      /const previewRev = String\(clRenderer\.PREVIEW_REV \|\| ''\);/.test(elK) && /t\.generic \? photoVer : '-', previewRev, \.\.\.\(body\.repaired \? \[letterText\.LETTER_REPAIR_REV\] : \[\]\),\s*\.\.\.\(sigVer \? \[sigVer\] : \[\]\)\]\.join\('\|'\)/.test(elK)
       && /const cardOf = \(page\) => page\.replace\(\/\\\.jpg\$\/, `\.w\$\{THUMB_W\}\.jpg`\);/.test(elK));
   }
 
@@ -1401,7 +1403,7 @@ const buildBody = (over = {}) => ({ coveredOnly: true, employer: 'Acme', employe
     const elC = stripL(fsSync.readFileSync(path.join(ROOT, 'server/controllers/employerLetterController.js'), 'utf8'));
     ok('⚠️ the thumb key hashes the brand pair for every design, and the cards render with it',
       /const brandHash = sha\(JSON\.stringify\(\{ accent: accent \|\| null, font: brandFont \}\)\)\.slice\(0, 16\);/.test(elC)
-      && /clRenderer\.renderPreviews\(data, \{ photo, brandColor: accent, brandFont \}, missing\)/.test(elC));
+      && /clRenderer\.renderPreviews\(data, \{ photo, signature, brandColor: accent, brandFont \}, missing\)/.test(elC));
     ok('⚠️ LETTER_REV stays letter-v1 through the brand round (a bump re-bills every saved letter)', /const LETTER_REV = 'letter-v1';/.test(elC) && !/LETTER_REV = 'letter-v2'/.test(elC));
     ok('the brand readings live in the core controller (docId downloads never depend on the feature file)',
       typeof CL.researchBrandOf === 'function' && typeof CL.letterBrandOf === 'function' && typeof CL.withSharedLetterBrand === 'function');

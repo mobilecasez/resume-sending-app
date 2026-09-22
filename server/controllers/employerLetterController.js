@@ -649,6 +649,16 @@ const imageMimeOf = (buf) => (Buffer.isBuffer(buf) && buf.length >= 12 && buf.to
 const thumbDirOf = (userId) => path.join(THUMB_ROOT, String(Math.max(0, Math.floor(Number(userId) || 0))));
 
 /** The profile photo's identity (path + mtime) — only the branded 'standard' letter draws it. */
+/** The signature's identity for the cache key, or null when the user has none (their keys then stay exactly as they
+ *  were, so no stored card is thrown away for a letter that had nothing to sign with). */
+async function signatureVersionOf(userId) {
+    try {
+        const u = await dbConfig.get('SELECT signature_path FROM users WHERE id = $1', [userId]);
+        if (!u || !u.signature_path) return null;
+        return `sig:${u.signature_path}:${(await fs.stat(path.join(__dirname, '../../', u.signature_path))).mtimeMs}`;
+    } catch { return null; }
+}
+
 async function photoVersionOf(userId) {
     try {
         const u = await dbConfig.get('SELECT photo_path FROM users WHERE id = $1', [userId]);
@@ -714,6 +724,9 @@ async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) 
     const branded = tpls.some((t) => t.generic);
     const companyName = p.companyName || doc.employer_name || '';
     const photoVer = branded ? await photoVersionOf(userId) : 'none';
+    // ⚠️ Every design now draws the signature (2026-09-22), so a signed user's cards are keyed on it — an unsigned
+    // card must never be served for a letter that now signs, and a new signature must show on the next open.
+    const sigVer = await signatureVersionOf(userId);
     const brand = letterBrandOfDoc(cl, doc);
     // The generic design's colour, exactly as its PDF resolves it: the letter's brand, else the legacy
     // employer_brand_profiles lookup by name (a letter from before research carried a colour).
@@ -730,7 +743,8 @@ async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) 
     const body = letterText.repairLetterHtml(p.coverLetterHtml);
     const dir = thumbDirOf(userId);
     const pageOf = (t) => path.join(dir, `cl_${sha(['cl', userId, doc.id, updatedMs, t.id, senderHash, brandHash,
-        t.generic ? photoVer : '-', previewRev, ...(body.repaired ? [letterText.LETTER_REPAIR_REV] : [])].join('|'))}.jpg`);
+        t.generic ? photoVer : '-', previewRev, ...(body.repaired ? [letterText.LETTER_REPAIR_REV] : []),
+        ...(sigVer ? [sigVer] : [])].join('|'))}.jpg`);
     const cardOf = (page) => page.replace(/\.jpg$/, `.w${THUMB_W}.jpg`);
     const uriOf = (buf) => `data:${imageMimeOf(buf)};base64,${buf.toString('base64')}`;
     const read = (file) => fs.readFile(file).then((buf) => (buf && buf.length ? buf : null), () => null);
@@ -766,8 +780,9 @@ async function letterCardsFor(userId, doc, ids, design, { size = 'card' } = {}) 
     if (missing.length) {
         try {
             const photo = missing.some((t) => t.generic) ? await cl.loadCLPhotoDataUri(userId) : null;
+            const signature = sigVer ? await cl.loadCLSignatureDataUri(userId) : null;
             const data = { sender, company: { name: companyName, address: p.companyAddress || '' }, bodyHtml: body.repaired ? body.html : p.coverLetterHtml, ...cl.letterLinesOf(p) };
-            const rendered = await clRenderer.renderPreviews(data, { photo, brandColor: accent, brandFont }, missing);
+            const rendered = await clRenderer.renderPreviews(data, { photo, signature, brandColor: accent, brandFont }, missing);
             await fs.mkdir(dir, { recursive: true });
             for (const r of rendered || []) {
                 const t = missing.find((m) => m.id === r.id);

@@ -2124,6 +2124,29 @@ async function loadCLPhotoDataUri(userId) {
     } catch { return null; }
 }
 
+// Handwritten signature → compact PNG data URI, transparency KEPT (it sits on the letter's own paper), trimmed of the
+// empty canvas the signature pad leaves around the ink, and capped so a phone-camera PNG cannot bloat every page.
+//
+// ⚠️ 2026-09-22 — THE HTML LETTER DESIGNS NEVER DREW THE SIGNATURE. Only the original PDFKit generator
+// (emailController createCoverLetterPDFFromHTML) and the Word layouts did. The A4 / One-page change of 2026-09-20 then
+// sent the Original design's A4 PDF through its HTML twin too, and letter downloads default to A4 — so the owner's
+// letter came out unsigned (user 618, Nordex, doc 19). coverLetterTemplates now draws opts.signature in every design.
+async function loadCLSignatureDataUri(userId) {
+    try {
+        const u = await dbConfig.get('SELECT signature_path FROM users WHERE id = ?', [userId]);
+        if (!u || !u.signature_path) return null;
+        const p = path.join(__dirname, '../../', u.signature_path);
+        await fs.access(p);
+        const sharp = require('sharp');
+        const shrink = (img) => img.resize(420, 140, { fit: 'inside', withoutEnlargement: true }).png({ compressionLevel: 9 }).toBuffer();
+        let out;
+        // trim() throws on an image with nothing to trim to; the signature is still worth printing untrimmed.
+        try { out = await shrink(sharp(p).rotate().trim({ threshold: 12 })); }
+        catch { out = await shrink(sharp(p).rotate()); }
+        return `data:image/png;base64,${out.toString('base64')}`;
+    } catch { return null; }
+}
+
 // Look up the employer's brand colour for the Generic/branded letter.
 async function lookupBrandColor(companyName, websiteUrl) {
     try {
@@ -2292,6 +2315,10 @@ async function previewCoverLetterTemplates(req, res) {
         if (rgn === 'generic') {
             renderOpts = { photo: await loadCLPhotoDataUri(userId), brandColor: brandColor || await lookupBrandColor(companyName, websiteUrl) };
         }
+        // Every design signs the letter (see loadCLSignatureDataUri) — added only when there IS one, so an unsigned
+        // user's options are exactly what they always were.
+        const signature = await loadCLSignatureDataUri(userId);
+        if (signature) renderOpts.signature = signature;
 
         const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
         const tpls = clTemplates.templatesForRegion(rgn);
@@ -2462,6 +2489,10 @@ async function renderLetterPdfFile(userId, doc, { tplId, mode, coverLetterHtml, 
             opts.photo = await loadCLPhotoDataUri(userId);
             opts.brandColor = brandColor || await lookupBrandColor(companyName, websiteUrl);
         }
+        // Every design signs the letter — the PDF is what gets downloaded and attached to an email. Added only when
+        // there IS one: an unsigned user's options stay exactly { mode } (+ brand in doc mode), as they always were.
+        const signature = await loadCLSignatureDataUri(userId);
+        if (signature) opts.signature = signature;
         const pdf = await clRenderer.renderPdf(tplId, data, opts);
         const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
         fileName = `Cover_Letter_${safeCo}_${Date.now()}.pdf`;
@@ -2675,6 +2706,7 @@ module.exports = {
     letterLinesOf,
     richLetterArgsOf,
     loadCLPhotoDataUri,
+    loadCLSignatureDataUri,
     lookupBrandColor,
     // The one reading of an employer letter's brand (see letterBrandOf): the build stores what
     // researchBrandOf says on design.brand, and every render of that letter reads it back through

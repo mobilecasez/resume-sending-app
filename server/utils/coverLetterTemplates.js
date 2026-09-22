@@ -90,6 +90,19 @@ function recipientBlock(c) {
   return `<div class="recipient">${raw(c.name) ? `<div class="rc-name">${esc(c.name)}</div>` : ''}${raw(c.address) ? `<div class="rc-addr">${esc(c.address)}</div>` : ''}</div>`;
 }
 
+// ── The signature, drawn between the closing word and the typed name ─────────────
+// ⚠️ 2026-09-22: these designs never drew it — only the old PDFKit Original and nothing else — so every letter
+// rendered from here went out unsigned (the owner's Nordex letter). opts.signature is the profile's own signature
+// (coverLetterController.loadCLSignatureDataUri). Only an image data URI is ever written into the page: this string
+// lands in HTML that Chromium renders, so anything else is dropped rather than escaped into an <img>.
+const SIG_SRC_RE = /^data:image\/(?:png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/;
+function sigImg(opts) {
+  const src = opts && typeof opts.signature === 'string' ? opts.signature : '';
+  return SIG_SRC_RE.test(src) ? `<img class="cl-sig" src="${src}" alt="">` : '';
+}
+const SIG_CSS = `.cl-sig{display:block;height:46px;max-width:200px;width:auto;object-fit:contain;object-position:left center;margin-top:10px}
+  .cl-sig+.cl-name{margin-top:4px}`;
+
 // ── Shared letter assembler ───────────────────────────────────────────────────
 function buildLetter(data, opts, style) {
   const { s, c, date, body, contact, salutation, closing } = prep(data);
@@ -108,6 +121,7 @@ function buildLetter(data, opts, style) {
   .closing{margin-top:18px}
   .cl-word{font-size:11pt;color:#27313f}
   .cl-name{font-weight:700;font-size:11pt;color:#111827;margin-top:18px}
+  ${SIG_CSS}
   `;
   const html = `<!DOCTYPE html><html lang="en"><head>${fontsHead('Cover Letter')}<style>
 ${baseCss}${style.css}
@@ -118,7 +132,7 @@ ${baseCss}${style.css}
   ${recipientBlock(c)}
   <div class="salutation">${esc(salutation || style.salutation || 'Dear Hiring Manager,')}</div>
   <div class="body">${body}</div>
-  <div class="closing"><div class="cl-word">${esc(closing || style.closing || 'Sincerely,')}</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
+  <div class="closing"><div class="cl-word">${esc(closing || style.closing || 'Sincerely,')}</div>${sigImg(opts)}<div class="cl-name">${esc(raw(s.name) || '')}</div></div>
 </div></body></html>`;
   return brandLetterHtml(html, style.id, opts);
 }
@@ -285,6 +299,7 @@ function standardLetter(data, opts = {}) {
   .body p{font-size:10.5pt;line-height:1.6;color:#2b333b;margin-bottom:11px}
   .body strong,.body b{font-weight:700}
   .closing{margin-top:16px}.cl-word{font-size:10.5pt}.cl-name{font-family:'Poppins',sans-serif;font-weight:700;font-size:10.5pt;color:#1a2230;margin-top:14px;text-transform:uppercase}
+  ${SIG_CSS}
   ${pageRule}
 </style></head><body><div class="sheet">
   <aside class="side">
@@ -299,7 +314,7 @@ function standardLetter(data, opts = {}) {
     <div class="ttl">Cover Letter</div>
     <div class="salutation">${esc(salutation || 'Dear Hiring Manager,')}</div>
     <div class="body">${body}</div>
-    <div class="closing"><div class="cl-word">${esc(closing || 'Best regards,')}</div><div class="cl-name">${esc(raw(s.name) || '')}</div></div>
+    <div class="closing"><div class="cl-word">${esc(closing || 'Best regards,')}</div>${sigImg(opts)}<div class="cl-name">${esc(raw(s.name) || '')}</div></div>
   </main>
 </div></body></html>`, opts.brandFont);
 }
@@ -335,4 +350,5 @@ function renderCoverLetterHtml(templateId, data, opts = {}) {
   return tpl.build(data || {}, opts);
 }
 
-module.exports = { TEMPLATES, TEMPLATE_IDS, REGIONS, templatesForRegion, renderCoverLetterHtml, brandedLetterAccent, LETTER_ACCENTS };
+module.exports = {
+  sigImg, TEMPLATES, TEMPLATE_IDS, REGIONS, templatesForRegion, renderCoverLetterHtml, brandedLetterAccent, LETTER_ACCENTS };

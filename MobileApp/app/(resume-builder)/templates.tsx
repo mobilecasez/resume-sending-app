@@ -179,6 +179,12 @@ export default function ResumeTemplates() {
   // family id → the variant currently chosen on that family's page (defaults to the base)
   const [chosen, setChosen]     = useState<Record<string, string>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
+  // ⚠️ A PAGE IS NEVER BLANK (2026-09-22). The spinners above cover "the server is still rendering"; they did not cover
+  // the seconds between an image ARRIVING and it being DRAWN — a 3x page is ~2000x4400 px — so a design opened while it
+  // was still coming in (the owner's Azure Sidebar, 5.8 s to render in production) showed an empty white card with
+  // nothing to say it was on its way. Each page now keeps "Opening …" until its own image has actually drawn.
+  const [drawn, setDrawn] = useState<Record<string, string>>({});   // id → the image uri that has drawn
+
   // ids whose preview request FAILED → the card shows a retry instead of a spinner. A silent
   // failure here was an infinite "Rendering Azure Sidebar…": the full-screen error only covers
   // catalogue failure, so a lost preview request left the pager spinning with no way out.
@@ -786,7 +792,15 @@ export default function ResumeTemplates() {
                                 contentFit="cover"
                                 transition={160}
                                 allowDownscaling={!(FULL_RES_ZOOM && i === active)}
+                                onLoad={() => setDrawn((d) => (d[tid] === p.image ? d : { ...d, [tid]: p.image }))}
+                                onError={() => setDrawn((d) => ({ ...d, [tid]: p.image }))}
                               />
+                              {drawn[tid] !== p.image && (
+                                <View style={s.pageOpening} pointerEvents="none">
+                                  <ActivityIndicator size="large" color={accent} />
+                                  <Text style={s.previewLoadingText}>Opening {f.variants.find((v) => v.id === tid)?.name || f.name}…</Text>
+                                </View>
+                              )}
                             </ScrollView>
                           ) : failed[tid] ? (
                             <TouchableOpacity style={s.previewLoading} activeOpacity={0.8} onPress={() => ensurePreviews([tid])}>
@@ -1028,6 +1042,7 @@ const s = StyleSheet.create({
   zoomContent:  { alignItems: 'center' },
   previewLoading:     { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: 24 },
   previewLoadingText: { fontSize: 12.5, fontWeight: '600', color: T.muted, textAlign: 'center' },
+  pageOpening:  { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#fff' },
   retryChip:          { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 8 },
   retryChipText:      { fontSize: 12.5, fontWeight: '800', color: '#fff' },
 
