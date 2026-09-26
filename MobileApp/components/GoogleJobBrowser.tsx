@@ -25,7 +25,7 @@ import type { LiveJobCard } from '../services/aiHubService';
 // here would be a cycle). Re-exported so existing imports keep working.
 export { googleSearchUrl, directUrlOf };
 
-export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere }: {
+export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere, onViewSaved }: {
   visible: boolean;
   query: string;
   onClose: () => void;
@@ -33,6 +33,8 @@ export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere 
   // upload, cover letter). There is no result card in this flow, so the parent gets null and
   // synthesizes a minimal job from the page title.
   onApplyHere?: (applyUrl: string, pageTitle: string, card: LiveJobCard | null) => void;
+  /** "View saved job" on the saved-toast: this modal closes and the page takes the user to it. */
+  onViewSaved?: (savedUrl: string) => void;
 }) {
   const { costOf } = useEventCosts();
   const fetchCost = costOf('live_fetch') ?? 0;
@@ -59,6 +61,10 @@ export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere 
         // Saving is BrowseFetch's own job (it stores server-side and shows "Saved ✓"); the parent
         // refreshes its Saved count when this closes, so there is nothing to do per fetch.
         onFetched={() => {}}
+        // ⚠️ CLOSE THE MODAL FIRST, then hand the url over — same reason as onApplyHere below: the
+        // saved list is the page UNDER this full-screen Modal, so switching to it while the modal is
+        // still up is a tab change nobody can see.
+        onViewSaved={onViewSaved ? (savedUrl) => { onClose(); setTimeout(() => onViewSaved(savedUrl), 320); } : undefined}
         // ⚠️ CLOSE THIS MODAL FIRST. The apply tools are a pushed ROUTE, so pushing while a
         // full-screen Modal is still mounted puts the new screen BEHIND it — the user taps
         // "Apply here", agrees, and nothing appears to happen.

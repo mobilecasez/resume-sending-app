@@ -24,6 +24,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchSearchPrefill, fetchRoleSuggestions, fetchPlaceSuggestions } from '../services/interestsService';
 import { localRoles, localPlaces, mergeSuggestions, composeQuery } from '../utils/searchSuggest';
+import EmployerJobsTab from './jobs/EmployerJobsTab';
 
 // Same reason as THREAD_ROUTE in app/(support)/index.tsx: expo-router builds its typed-route table
 // during prebuild, so a group it has not indexed yet fails typecheck even though the path is real.
@@ -89,6 +90,11 @@ export default function JobSearchLauncher({
   const [location, setLocation] = useState('');
   const [url, setUrl] = useState('');
   const [advanced, setAdvanced] = useState(false);
+  // ⚠️ TWO WAYS TO START, ONE SHEET. "Search" asks Google what exists; "By employer" starts from the
+  // company and finds where THEY list their jobs (components/jobs/EmployerJobsTab). Both end in the
+  // same place — a URL opened in the same in-app browser, where "Fetch job" works as it always has —
+  // so this is new INPUT, not a second engine.
+  const [tab, setTab] = useState<'search' | 'employer'>('search');
   const [prefilled, setPrefilled] = useState(false);
 
   // ⚠️ Bound the sheet against the REAL top inset, not a percentage. A bottom sheet grows upward,
@@ -304,6 +310,31 @@ export default function JobSearchLauncher({
                 <Ionicons name="close" size={20} color={T.faint} />
               </TouchableOpacity>
             </View>
+            <View style={s.tabs}>
+              {([['search', 'Search jobs', 'search'], ['employer', 'By employer', 'business-outline']] as const).map(([k, label, icon]) => (
+                <TouchableOpacity
+                  key={k}
+                  style={[s.tab, tab === k && s.tabOn]}
+                  activeOpacity={0.85}
+                  onPress={() => { Keyboard.dismiss(); setFocus(null); setTab(k); }}
+                >
+                  <Ionicons name={icon as any} size={14} color={tab === k ? T.blue : T.muted} />
+                  <Text style={[s.tabTx, tab === k && s.tabTxOn]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {tab === 'employer' ? (
+              <EmployerJobsTab
+                maxH={bodyMaxH}
+                onOpen={(u) => {
+                  // The same exit as a typed search: the sheet closes, the browser opens on that page.
+                  setOpen(false);
+                  onLaunch({ query: '', role: '', location: '', url: u, mode: 'url' });
+                }}
+              />
+            ) : (
+            <>
             {prefilled && (
               <View style={s.prefillNote}>
                 <Ionicons name="sparkles" size={12} color={T.violet} />
@@ -363,6 +394,8 @@ export default function JobSearchLauncher({
               </TouchableOpacity>
               {!url.trim() && !!composed && <Text style={s.preview} numberOfLines={1}>We'll search: {composed}</Text>}
             </ScrollView>
+            </>
+            )}
 
             {launching && (
               <View style={s.launchOverlay}>
@@ -403,6 +436,11 @@ const s = StyleSheet.create({
   // Mirrors the Filters sheet exactly (sheetOverlay/sheet/sheetGrip/sheetHead in the discover
   // screen) so the two popups read as one family.
   sheetOverlay: { flex: 1, backgroundColor: 'rgba(6,10,25,0.45)' },
+  tabs: { flexDirection: 'row', gap: 8, marginTop: 4, marginBottom: 2 },
+  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 12, backgroundColor: T.field, borderWidth: 1, borderColor: T.border },
+  tabOn: { backgroundColor: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.35)' },
+  tabTx: { fontSize: 13, fontWeight: '700', color: T.muted },
+  tabTxOn: { color: T.blue },
   sheet: { backgroundColor: T.bg, borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingTop: 8, paddingHorizontal: 18, paddingBottom: 28 },
   sheetGrip: { alignSelf: 'center', width: 40, height: 4, borderRadius: 100, backgroundColor: 'rgba(11,15,34,0.14)', marginBottom: 10 },
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },

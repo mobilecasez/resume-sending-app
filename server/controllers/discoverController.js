@@ -826,6 +826,28 @@ function mergeWebHits(rows, hits, q) {
   return out;
 }
 
+/**
+ * GET /api/discover/employer-pages?site=acme.com
+ * Where this employer lists its jobs: their openings on whatever ATS they use, their careers page, and
+ * career URLs from the sitemap when the site's own menu says nothing. FREE — it reads a website and
+ * returns links; nothing is saved, charged or researched. See services/careerPages.js for the rules
+ * (SSRF-safe fetching, and every link either on the employer's own domain or on a known ATS).
+ */
+async function employerPages(req, res) {
+  try {
+    const site = String(req.query.site || '').trim().slice(0, 200);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 8, 1), 12);
+    if (!site) return res.json({ success: true, site: null, pages: [], reason: 'bad_site' });
+    const { findCareerPages } = require('../services/careerPages');
+    const out = await findCareerPages(site, { limit });
+    return res.json({ success: true, ...out });
+  } catch (e) {
+    console.warn('[discover] employer-pages:', e && e.message);
+    // A page list is a convenience: the user can still search the ordinary way, so this never 500s.
+    return res.json({ success: true, site: null, pages: [], reason: 'unreachable' });
+  }
+}
+
 async function discoverEmployers(req, res) {
   try {
     const q = String(req.query.q || '').trim().toLowerCase().slice(0, 80);
@@ -1738,7 +1760,8 @@ async function getGlobalJobById(req, res) {
   }
 }
 
-module.exports = { discoverJobs, discoverFacets, discoverEmployers, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard, getGlobalJobById,
+module.exports = { discoverJobs, discoverFacets, discoverEmployers,
+  employerPages, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard, getGlobalJobById,
   // Exported for reuse ONLY (behaviour unchanged): the admin "matched jobs" view scores jobs with the
   // EXACT same expression + résumé-skill normalisation as the user's own feed, so the two never drift.
   matchExprSql, getResume, skillsOf,

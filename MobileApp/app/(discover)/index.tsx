@@ -257,6 +257,10 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
   const [noProfile, setNoProfile] = useState(false);
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'explore' | 'saved'>('explore');   // top segmented tabs
+  // ⚠️ "View saved job" on the browser's saved-toast lands HERE: the Saved tab, scrolled to that job
+  // and holding it lit for a moment. Without the url the user is dropped at the top of a list and has
+  // to find the thing they just saved. SavedJobsList clears it once it has shown it.
+  const [focusSaved, setFocusSaved] = useState<string | null>(null);
   const [savedCount, setSavedCount] = useState(0);
   const [liveOpen, setLiveOpen] = useState(false);   // "Look for live jobs on Google" modal
   const [launcherOpen, setLauncherOpen] = useState(false);   // the Find-your-job panel is expanded
@@ -690,7 +694,8 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
       </Modal>
       {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
       {/* On close, tell the parent so the Saved count/summary refresh (fetching happens here, not on the Saved tab). */}
-      <GoogleJobBrowser visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} onApplyHere={openApplyHere} />
+      <GoogleJobBrowser visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} onApplyHere={openApplyHere}
+        onViewSaved={(savedUrl) => { onSavedChange?.(); setTab('saved'); setFocusSaved(savedUrl); }} />
 
       {/* First landing on the Jobs page → SHOW the Google-search flow once, at a readable speed. */}
       <Modal visible={searchIntro} transparent animationType="fade" onRequestClose={dismissSearchIntro}>
@@ -748,7 +753,9 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
           </TouchableOpacity>
         ))}
       </View>
-      {tab === 'saved' ? <SavedJobsList onCountChange={setSavedCount} /> : feedContent}
+      {tab === 'saved'
+        ? <SavedJobsList onCountChange={setSavedCount} focusUrl={focusSaved} onFocused={() => setFocusSaved(null)} />
+        : feedContent}
       {tab !== 'saved' && <FilterFab active={activeCount > 0 || !!field} count={activeCount + (field ? 1 : 0)} onPress={() => setShowFilters(true)} />}
       {overlays}
     </SafeAreaView>

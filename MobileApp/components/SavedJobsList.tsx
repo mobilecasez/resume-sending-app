@@ -2,7 +2,7 @@
 // Reusable Saved-Jobs list: the postings the user fetched via "Look for live jobs on Google", stored
 // server-side and listed newest-first. Rendered as the "Saved" tab on Explore and by the /saved route.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -59,12 +59,38 @@ function Meta({ icon, color, text }: { icon: any; color: string; text?: string |
   return <View style={styles.metaChip}><Ionicons name={icon} size={12} color={color} /><Text style={styles.metaText} numberOfLines={1}>{text}</Text></View>;
 }
 
-function SavedCard({ job, onOpen, onRemove, clStatus }: { job: SavedJobCard; onOpen: (j: SavedJobCard) => void; onRemove: (j: SavedJobCard) => void; clStatus?: string | null }) {
+/**
+ * ⚠️ THE HIGHLIGHT IS ONE ANIMATED VALUE ON A NON-NATIVE DRIVER, and every animation in this card tree
+ * must stay that way: borderColor and backgroundColor cannot be driven natively, and mixing the two
+ * drivers inside one view tree is what crashed builds 126-128 (see project_guide_coach).
+ */
+function SavedCard({ job, onOpen, onRemove, clStatus, highlight }: { job: SavedJobCard; onOpen: (j: SavedJobCard) => void; onRemove: (j: SavedJobCard) => void; clStatus?: string | null; highlight?: boolean }) {
   const c = gradFor(job.company || job.employer_name || job.title);
+  const glow = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!highlight) { glow.setValue(0); return; }
+    // Two clear pulses, then it settles — long enough to find the card, short enough not to nag.
+    const seq = Animated.sequence([
+      Animated.timing(glow, { toValue: 1, duration: 380, easing: Easing.out(Easing.quad), useNativeDriver: false }),
+      Animated.timing(glow, { toValue: 0.3, duration: 420, easing: Easing.inOut(Easing.quad), useNativeDriver: false }),
+      Animated.timing(glow, { toValue: 1, duration: 380, easing: Easing.out(Easing.quad), useNativeDriver: false }),
+      Animated.timing(glow, { toValue: 0, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: false }),
+    ]);
+    seq.start();
+    return () => seq.stop();
+  }, [highlight, glow]);
   const skills = Array.isArray(job.skills) ? job.skills : [];
   const resp = Array.isArray(job.responsibilities) ? job.responsibilities : [];
   const clt = clTagOf(clStatus);
   return (
+    <View style={{ position: 'relative' }}>
+    {/* pointerEvents none: the ring is a signal, never something that eats the tap it is pointing at */}
+    {!!highlight && (
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.focusRing, { opacity: glow, backgroundColor: glow.interpolate({ inputRange: [0, 1], outputRange: ['rgba(16,185,129,0)', 'rgba(16,185,129,0.12)'] }) }]}
+      />
+    )}
     <TouchableOpacity style={[styles.card, clStatus === 'applied' && styles.cardApplied, (clStatus === 'generated' || clStatus === 'downloaded') && styles.cardCl]} activeOpacity={0.85} onPress={() => onOpen(job)}>
       <View style={styles.cardHead}>
         <LinearGradient colors={c} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logo}><Text style={styles.logoText}>{initial(job.company || job.employer_name)}</Text></LinearGradient>
@@ -100,10 +126,21 @@ function SavedCard({ job, onOpen, onRemove, clStatus }: { job: SavedJobCard; onO
         <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.applyBtn}><Ionicons name="reader-outline" size={14} color="#fff" /><Text style={styles.applyText}>View & Apply</Text></LinearGradient>
       </View>
     </TouchableOpacity>
+    </View>
   );
 }
 
-export default function SavedJobsList({ onCountChange, onStats }: { onCountChange?: (n: number) => void; onStats?: (s: { count: number; withCl: number; applied: number }) => void }) {
+export default function SavedJobsList({ onCountChange, onStats, focusUrl, onFocused }: {
+  onCountChange?: (n: number) => void;
+  onStats?: (s: { count: number; withCl: number; applied: number }) => void;
+  /**
+   * "View saved job" from the in-app browser: the job just saved. The list scrolls to it and lights it
+   * for a moment, because dropping someone at the top of a list of saved jobs and expecting them to
+   * spot the new one is not showing it to them. Cleared through onFocused once it has been shown.
+   */
+  focusUrl?: string | null;
+  onFocused?: () => void;
+}) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [jobs, setJobs] = useState<SavedJobCard[]>([]);
@@ -154,6 +191,41 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
   }, [reportStats]));
 
   const onRefresh = useCallback(async () => { setRefreshing(true); await load(); setRefreshing(false); }, [load]);
+
+  // ── "View saved job": find it, scroll to it, light it ────────────────────────────────────────
+  // ⚠️ THE JOB MAY NOT BE IN THIS LIST YET. The browser saves server-side and the list may have loaded
+  // a moment earlier, so a miss reloads ONCE and looks again; a second miss gives up quietly (the user
+  // is on the saved list either way, which is where they asked to go) rather than reloading forever.
+  const listRef = useRef<FlatList<SavedJobCard>>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const focusRun = useRef<{ url: string; reloaded: boolean; done: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!focusUrl) { focusRun.current = null; return; }
+    if (!focusRun.current || focusRun.current.url !== focusUrl) focusRun.current = { url: focusUrl, reloaded: false, done: false };
+    const run = focusRun.current;
+    if (run.done || loading) return;
+
+    const key = (u: unknown) => String(u || '').replace(/[#?].*$/, '').replace(/\/+$/, '').toLowerCase()
+      .replace(/^https?:\/\//, '').replace(/^www\./, '');
+    const idx = sorted.findIndex((j) => key(j.job_url) === key(focusUrl));
+
+    if (idx < 0) {
+      if (run.reloaded) { run.done = true; onFocused?.(); return; }
+      run.reloaded = true;
+      load();
+      return;
+    }
+
+    run.done = true;
+    setHighlight(sorted[idx].job_url);
+    // After the frame that rendered the rows — scrollToIndex on an unmeasured row throws otherwise.
+    const raf = requestAnimationFrame(() => {
+      try { listRef.current?.scrollToIndex({ index: idx, viewPosition: 0.15, animated: true }); } catch { /* onScrollToIndexFailed picks it up */ }
+    });
+    const clear = setTimeout(() => { setHighlight(null); onFocused?.(); }, 2600);
+    return () => { cancelAnimationFrame(raf); clearTimeout(clear); };
+  }, [focusUrl, loading, sorted, load, onFocused]);
   const openJob = useCallback((c: SavedJobCard) => { router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(c) }); }, [router]);
   const removeJob = useCallback((c: SavedJobCard) => {
     Alert.alert('Remove saved job', `Remove “${c.title}” from Saved Jobs?`, [
@@ -166,10 +238,24 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
 
   return (
     <FlatList
+      ref={listRef}
       data={sorted}
-      extraData={clStatuses}
+      extraData={`${JSON.stringify(clStatuses)}|${highlight || ''}`}
       keyExtractor={(j, i) => j.job_url + ':' + i}
-      renderItem={({ item }) => <SavedCard job={item} onOpen={openJob} onRemove={removeJob} clStatus={clStatuses[hashId(item.job_url)]} />}
+      renderItem={({ item }) => (
+        <SavedCard
+          job={item} onOpen={openJob} onRemove={removeJob}
+          clStatus={clStatuses[hashId(item.job_url)]}
+          highlight={!!highlight && item.job_url === highlight}
+        />
+      )}
+      // Saved cards are all different heights (skills, responsibilities), so there is no getItemLayout to
+      // give: a scroll to a row that has not been measured fails by design, and is retried once it has.
+      onScrollToIndexFailed={(info) => {
+        setTimeout(() => {
+          try { listRef.current?.scrollToIndex({ index: Math.min(info.index, Math.max(0, sorted.length - 1)), viewPosition: 0.15, animated: true }); } catch { /* the list moved on */ }
+        }, 260);
+      }}
       contentContainerStyle={{ padding: 12, paddingBottom: insets.bottom + 96 }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
@@ -194,6 +280,8 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   headRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginLeft: 2 },
   countLine: { fontSize: 12, color: T.textMuted, fontWeight: '700', marginBottom: 8, marginLeft: 2 },
+  // The ring sits OVER the card (inset a touch so it reads as a highlight, not a second border).
+  focusRing: { position: 'absolute', left: -2, right: -2, top: -2, bottom: 10, borderRadius: 22, borderWidth: 2, borderColor: '#10B981', zIndex: 5 },
   card: { backgroundColor: T.surface, borderRadius: 20, borderWidth: 1, borderColor: T.border, padding: 15, marginBottom: 12, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 18, elevation: 2 },
   cardApplied: { backgroundColor: '#F1FBF5', borderColor: '#CDEBD8' },
   cardCl: { backgroundColor: '#F5F9FF', borderColor: '#D6E4FB' },

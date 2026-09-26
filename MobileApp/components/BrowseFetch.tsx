@@ -217,12 +217,17 @@ function diagnosePage(html: string): 'login' | 'challenge' | null {
   return null;
 }
 
-export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onApplyHere, homeUrl, backRef }: {
+export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onApplyHere, onViewSaved, homeUrl, backRef }: {
   url: string;
   fetchCost: number;
   onClose: () => void;
   onFetched: (job: LiveJobCard | null, sourceUrl: string) => void;
   onApplyHere?: (applyUrl: string, pageTitle: string) => void;
+  /**
+   * "View saved job" on the saved-toast. The job is already stored server-side by then; this only
+   * takes the user to it. Absent → the toast still says it was saved, with nothing to tap.
+   */
+  onViewSaved?: (savedUrl: string) => void;
   // Where "start over" goes — the search-results page this browsing session began at. Set by the
   // Google job search; without it the user has to tap back a dozen times to run another search.
   homeUrl?: string;
@@ -258,6 +263,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [fetching, setFetching] = useState(false);
   const [stage, setStage] = useState<null | 'reading' | 'understanding' | 'saving'>(null);   // what the loader says
   const [justSaved, setJustSaved] = useState(false);
+  // ⚠️ "Saved ✓" on the robot lasts 2.6 s and says nothing about WHERE it went — the owner asked for the
+  // way there. This toast names the job and offers it, and it stays long enough to be read and tapped.
+  const [savedToast, setSavedToast] = useState<{ url: string; title: string } | null>(null);
+  const savedToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dockOpen, setDockOpen] = useState(false);
   const [companyHint, setCompanyHint] = useState(false);   // reached the company site after a LinkedIn apply
   const [tipHidden, setTipHidden] = useState(false);       // "tap a result, then Fetch job" tip on a results page
@@ -800,6 +809,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       if (job) {
         savedUrlsRef.current.add(normUrl(srcUrl));
         setJustSaved(true); setTimeout(() => setJustSaved(false), 2600);
+        setSavedToast({ url: srcUrl, title: String((job && (job as any).title) || payload.title || 'This job').slice(0, 70) });
+        if (savedToastTimer.current) clearTimeout(savedToastTimer.current);
+        savedToastTimer.current = setTimeout(() => setSavedToast(null), 9000);
         onFetched(job, srcUrl);
       } else {
         const kept = await degrade();
@@ -1103,6 +1115,38 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         }}
       />
 
+      {/* Saved, and the way to it. Shown only after the server stored the job (the success branch of the
+          fetch), so it can never promise a job that is not there. */}
+      {savedToast && (
+        <View style={[styles.appliedToast, { top: insets.top + 56 }]} pointerEvents="box-none">
+          <View style={styles.savedToastCard}>
+            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.appliedToastText} numberOfLines={1}>Job saved</Text>
+              <Text style={styles.savedToastSub} numberOfLines={1}>{savedToast.title}</Text>
+            </View>
+            {!!onViewSaved && (
+              <TouchableOpacity
+                style={styles.savedToastBtn}
+                activeOpacity={0.85}
+                onPress={() => {
+                  const u = savedToast.url;
+                  if (savedToastTimer.current) clearTimeout(savedToastTimer.current);
+                  setSavedToast(null);
+                  onViewSaved(u);
+                }}
+              >
+                <Text style={styles.savedToastBtnTx}>View saved job</Text>
+                <Ionicons name="arrow-forward" size={13} color="#047857" />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity onPress={() => { if (savedToastTimer.current) clearTimeout(savedToastTimer.current); setSavedToast(null); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close" size={17} color="rgba(255,255,255,0.85)" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* Only ever shown when the server actually matched and recorded the job — never on a guess. */}
       {appliedBanner && (
         <View style={[styles.appliedToast, { top: insets.top + 56 }]} pointerEvents="box-none">
@@ -1209,6 +1253,14 @@ const styles = StyleSheet.create({
     shadowColor: '#0F172A', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.18, shadowRadius: 20, elevation: 8,
   },
   appliedToastText: { flex: 1, color: '#fff', fontSize: 13, fontWeight: '700' },
+  savedToastCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, maxWidth: '94%',
+    backgroundColor: '#059669', borderRadius: 14, paddingVertical: 11, paddingHorizontal: 14,
+    shadowColor: '#0F172A', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.18, shadowRadius: 20, elevation: 8,
+  },
+  savedToastSub: { color: 'rgba(255,255,255,0.85)', fontSize: 11.5, fontWeight: '600', marginTop: 1 },
+  savedToastBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#fff', borderRadius: 10, paddingVertical: 7, paddingHorizontal: 10 },
+  savedToastBtnTx: { color: '#047857', fontSize: 12.5, fontWeight: '800' },
   root: { backgroundColor: '#F0F4FA', zIndex: 100, elevation: 100 },
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingBottom: 10, gap: 4, backgroundColor: '#F0F4FA' },
   navBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
