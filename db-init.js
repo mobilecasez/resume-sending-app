@@ -1872,6 +1872,17 @@ async function runPostgresMigrations(db) {
         }
         console.log('✅ Migration 051: ucb_transactions (Play user choice billing) done');
 
+        // ── Migration 052: ONE INSTALL ALERT PER NEW DEVICE ─────────────────────────────────────
+        // The install alert checked "exactly one event" and lost the race whenever a new iPhone's first two
+        // events (foreground + app_open) were inserted before either check ran — 3 of 93 new devices in 30 days.
+        // The alert is now claimed per device with an INSERT … ON CONFLICT DO NOTHING (server/services/adminNotifier.js).
+        // No backfill: only a device whose events all fall in its first two minutes can claim one.
+        {
+            const { INSTALL_CLAIMS_SQL } = require('./server/services/adminNotifier');
+            await col(INSTALL_CLAIMS_SQL);
+        }
+        console.log('✅ Migration 052: admin_install_alerts done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
