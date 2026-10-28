@@ -2002,23 +2002,16 @@ async function generateAI(req, res) {
             }
         }
 
-        // ── Regenerate is its OWN lane, because the free plan's quota is 1 resume/30 days: the
-        // first build consumes it, so "regenerate once free" can only be true if that one
-        // regeneration BYPASSES the quota gate. Paid plans regenerate through their quota as a
-        // normal generation. The count lives on user_resumes and resets on every fresh build.
-        const sub = await entitlements.activeSubscription(userId).catch(() => null);
-        let freeRegen = false;
-        if (isRegenerate && !sub) {
+        // ── Regenerate is a GENERATION (2026-10-29). It used to be its own lane — one free regeneration that
+        // BYPASSED the quota gate, because the free plan was a single resume. With 10 a day that bypass doubled the
+        // daily cap (build, "regenerate" with brand-new text and company, build, …), skipped the device rule, and
+        // refused a racing second regeneration with 'regen_limit' after its AI call had already run. So every
+        // regeneration now asks the same gate and pays the same way as a fresh build. regen_count still counts them
+        // (persistResume) for the builder's display; it decides nothing.
+        if (isRegenerate) {
             await ensureResumeTable();
             const rrow = await dbConfig.get('SELECT regen_count FROM user_resumes WHERE user_id = $1', [userId]);
             if (!rrow) return res.status(404).json({ error: 'No resume to regenerate yet — generate one first.', reason: 'no_resume' });
-            if ((rrow.regen_count || 0) >= 1) {
-                return res.status(403).json({
-                    error: 'Your free plan includes one regeneration, and you have used it. Upgrade to keep refining your resume.',
-                    reason: 'regen_limit',
-                });
-            }
-            freeRegen = true;
         }
         // GATE — plan/trial quota first, legacy credits fallback; deduct on success only (below).
         //
@@ -2030,19 +2023,19 @@ async function generateAI(req, res) {
         // consulted in full — and that call RESERVES it, so two generations for two companies
         // inside one AI minute cannot both ride the same pass.
         // (passEmployer — job.company — is read at the top: the cache must key on this same string.)
-        const quota = freeRegen ? { allowed: true } : await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        const quota = await entitlements.canConsumeMany(userId, 'resume', 1, req);
         // Under coveredOnly the credits lane does not exist, so a quota that is "allowed" only through
         // credits is exhausted as far as this build is concerned — and the pass is consulted in full,
         // exactly as it is for a user with no quota at all (generationGate answers the same way).
         const quotaCovers = !!quota.allowed && !(coveredOnly && quota.via === 'credits');
-        const viaPass = (!freeRegen && passEmployer)
+        const viaPass = passEmployer
             ? await downloads.passCoversGeneration(userId, 'resume', passEmployer, req, { boundOnly: quota.allowed && quotaCovers }).catch(() => false)
             : false;
-        const gate = (freeRegen || viaPass) ? { allowed: true } : quota;
+        const gate = viaPass ? { allowed: true } : quota;
         if (!gate.allowed) {
             return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
         }
-        if (coveredOnly && !freeRegen && !viaPass && !quotaCovers) {
+        if (coveredOnly && !viaPass && !quotaCovers) {
             // Before ANY AI call: nothing is spent, reserved or generated.
             console.log(`[resumeBuilder] coveredOnly build for user ${userId} refused — only legacy credits could pay`);
             return res.status(402).json({
@@ -2229,26 +2222,12 @@ async function generateAI(req, res) {
          */
         const settlePayment = async () => {
             let spentPass = false;
-            if (freeRegen) {
-                // ⚠️ THE ONE FREE REGENERATION, RE-READ UNDER THE LOCK. The gate read regen_count before the AI
-                // minute, so regenerations started together all read 0 and each landed its own bump: N taps, N
-                // free resumes. Under this lock the next one reads the bump the previous one wrote.
-                const rrow = await dbConfig.get('SELECT regen_count FROM user_resumes WHERE user_id = $1', [userId]);
-                if (rrow && (rrow.regen_count || 0) >= 1) {
-                    console.warn(`[resumeBuilder] a racing free regeneration for user ${userId} already used the one it had — refused, nothing saved`);
-                    refusal = { status: 403, body: {
-                        error: 'Your free plan includes one regeneration, and you have used it. Upgrade to keep refining your resume.',
-                        reason: 'regen_limit',
-                    } };
-                    return;
-                }
-            }
             if (viaPass) {
                 const claimed = await downloads.claimGeneration(userId, 'resume', passEmployer, req);
                 spentPass = !!(claimed && claimed.charged);
                 if (spentPass) paid.passId = claimed.passId || null;
             }
-            if (!spentPass && !freeRegen) {
+            if (!spentPass) {
                 if (coveredOnly) {
                     const now = await entitlements.canConsumeMany(userId, 'resume', 1, req);
                     if (!now.allowed || now.via === 'credits') {
@@ -2318,13 +2297,12 @@ async function generateAI(req, res) {
             // before the overwrite. A build with no employer IS a new base, so it clears the marker.
             if (passEmployer) await snapshotBaseBeforeTailoring(userId, env);
             await saveResumeRow(userId, resumeData, passEmployer ? downloads.employerKeyOf(passEmployer) : null);
-            // A regenerate spends the allowance; a fresh build restores it.
-            // ⚠️ The free regeneration's only ledger IS this bump, so it counts as charged only once it lands.
-            const regenLanded = await dbConfig.run(
+            // How many times this resume was regenerated since its fresh build — display only (getResume); every
+            // regeneration is paid by the gate like any build, so nothing is charged on this count.
+            await dbConfig.run(
                 isRegenerate ? 'UPDATE user_resumes SET regen_count = regen_count + 1 WHERE user_id = $1'
                              : 'UPDATE user_resumes SET regen_count = 0 WHERE user_id = $1',
-                [userId]).then(() => true, () => false);
-            if (freeRegen && regenLanded) charged = true;
+                [userId]).catch(() => {});
             return true;
         };
 
@@ -3808,14 +3786,12 @@ async function generationGate(req, res) {
                 if (hit && hit.payload && hit.payload.personal_info && docServesPlace(hit, placeKey)) return answer(true, 'cache', null, null);
             }
         }
-        // Same subscription read, same (Production-default) environment, as generateAI's regen lane.
-        const sub = await entitlements.activeSubscription(userId).catch(() => null);
-        if (regenerate && !sub) {
+        // A regeneration is a generation (2026-10-29 — see generateAI): it needs a resume to regenerate, and then
+        // the same gate as any build. There is no free regeneration lane any more, so no 'regen_limit'.
+        if (regenerate) {
             await ensureResumeTable();
             const rrow = await dbConfig.get('SELECT regen_count FROM user_resumes WHERE user_id = $1', [userId]);
             if (!rrow) return answer(false, null, null, null);
-            if ((rrow.regen_count || 0) >= 1) return answer(false, null, null, 'regen_limit');
-            return answer(true, 'free', null, null);
         }
         const quota = await entitlements.canConsumeMany(userId, 'resume', 1, req);
         const quotaCovers = !!quota.allowed && (quota.via === 'plan' || quota.via === 'free');
@@ -3929,9 +3905,18 @@ async function getResume(req, res) {
         // isPaid/regen ride along so the builder can label its buttons truthfully without a
         // second round-trip; the server remains the authority when the buttons are pressed.
         const sub = await entitlements.activeSubscription(userId).catch(() => null);
+        // ⚠️ freeLimit IS "how many regenerations you could still start", not "one free one" (2026-10-29). Every app
+        // build blocks Regenerate on `!isPaid && used >= freeLimit` without asking the server, and the server now
+        // pays a regeneration from the free day like any build — so a fixed 1 here refused everyone after their
+        // first. used + what the free day has left keeps that client check equal to the gate's answer.
+        const used = row ? (row.regen_count || 0) : 0;
+        let left = 1;
+        if (!sub) {
+            try { const u = await entitlements.usageFor(userId, 'resume', req); left = u ? Math.max(0, u.remaining) : 1; } catch { left = 1; }
+        }
         return res.json({
             resumeData: row ? row.resume_data : null,
-            regen: { used: row ? (row.regen_count || 0) : 0, freeLimit: 1 },
+            regen: { used, freeLimit: used + left },
             isPaid: !!sub,
         });
     } catch (e) {

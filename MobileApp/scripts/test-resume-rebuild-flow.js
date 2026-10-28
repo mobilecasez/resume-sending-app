@@ -33,12 +33,15 @@ ok('generateDocx gates the same way', /async function generateDocx[\s\S]{0,1200}
 ok('the PDF path no longer deducts credits', !/deductCredits\(userId, DOWNLOAD_CREDIT_COST/.test(ctl));
 ok('previewTemplates has NO plan/credit gate', !/previewTemplates[\s\S]{0,900}(activeSubscription|checkUserCredits)/.test(ctl.slice(ctl.indexOf('async function previewTemplates'))));
 
-console.log('── server: free plan = one regeneration, in its own lane ──');
-ok('regenerate checks regen_count for free users', /isRegenerate && !sub[\s\S]{0,400}regen_count/.test(ctl));
-ok('the used-up case is a 403 with reason regen_limit', /regen_limit/.test(ctl));
-ok('the one free regen BYPASSES the quota gate',
-  /const quota = freeRegen \? \{ allowed: true \} : await entitlements\.canConsumeMany/.test(ctl)
-  && /const gate = \(freeRegen \|\| viaPass\) \? \{ allowed: true \} : quota;/.test(ctl));
+// ⚠️ 2026-10-29: the free plan makes 10 a day, and the one-free-regeneration lane that BYPASSED the gate doubled
+// that cap (build → "regenerate" with new text and company → build …) and skipped the device rule. A regeneration is
+// now a generation: same gate, same payment, regen_count is display only.
+console.log('── server: a regeneration is a generation ──');
+ok('regenerate still needs a resume to regenerate (404 no_resume)', /if \(isRegenerate\) \{[\s\S]{0,300}regen_count[\s\S]{0,200}reason: 'no_resume'/.test(ctl));
+ok('⚠️ there is no free-regeneration lane and no regen_limit refusal', !/freeRegen/.test(ctl) && !/reason: 'regen_limit'/.test(ctl));
+ok('every build, regeneration included, asks the quota gate',
+  /const quota = await entitlements\.canConsumeMany\(userId, 'resume', 1, req\);/.test(ctl)
+  && /const gate = viaPass \? \{ allowed: true \} : quota;/.test(ctl));
 // ⚠️ boundOnly is now `quota.allowed && quotaCovers`. Without coveredOnly the two are identical, so this is
 // the old rule. WITH coveredOnly (a build Home auto-started), a quota "allowed" only through legacy credits
 // does not cover it — so the pass is consulted in full instead, exactly as for a user with no quota at all.
@@ -51,13 +54,14 @@ ok('⚠️ …but the PLAN is asked first, so an unspent one-off is not burned a
   ctl.indexOf('canConsumeMany(userId, \'resume\', 1, req)') < ctl.indexOf('passCoversGeneration(userId, \'resume\''));
 // The rule is unchanged — the plan is charged only when no pass paid and it was not the free regen — but
 // the call now sits in a block that re-asks coveredOnly at the moment of payment first.
-ok('…and is not double-counted on success',
-  /if \(!spentPass && !freeRegen\) \{[\s\S]{0,1400}await entitlements\.consumeOnSuccess/.test(ctl));
+ok('…and pays once on success (pass, else the allowance)',
+  /if \(!spentPass\) \{[\s\S]{0,1400}await entitlements\.consumeOnSuccess/.test(ctl));
 ok('⚠️ …and a pass is spent BEFORE the plan, never both',
-  ctl.indexOf("claimGeneration(userId, 'resume'") < ctl.indexOf('if (!spentPass && !freeRegen)'));
+  ctl.indexOf("claimGeneration(userId, 'resume'") > -1 && ctl.indexOf("claimGeneration(userId, 'resume'") < ctl.indexOf('if (!spentPass) {'));
 ok('a fresh build resets the allowance', /regen_count = 0 WHERE user_id/.test(ctl));
 ok('a regenerate spends it', /regen_count = regen_count \+ 1/.test(ctl));
-ok('getResume reports regen state + plan', /regen: \{ used:[\s\S]{0,120}isPaid: !!sub/.test(ctl));
+ok('getResume reports regen state + plan, with freeLimit = used + what the free day has left (every build gates on it)',
+  /regen: \{ used, freeLimit: used \+ left \},\s*isPaid: !!sub/.test(ctl) && /usageFor\(userId, 'resume', req\)/.test(ctl));
 ok('the regen column is created idempotently', /ADD COLUMN IF NOT EXISTS regen_count/.test(ctl));
 
 console.log('── server: the 37-design catalogue renders LAZILY ──');
@@ -90,7 +94,7 @@ console.log('── app: preview action bar ──');
 ok('Download/Preview routes to the gallery, naming the company it is for',
   /pathname: '\/\(resume-builder\)\/templates',[\s\S]{0,140}employer: builderEmployer/.test(prev));
 ok('Regenerate knows the free allowance before navigating', /regen\.used >= regen\.freeLimit/.test(prev));
-ok('…and offers the plans screen', /Regeneration used[\s\S]{0,300}\/\(subscription\)\/plans/.test(prev));
+ok('…and, when today\'s free ones are used, says so and offers the plans screen', /Today’s free resumes are used[\s\S]{0,300}\/\(subscription\)\/plans/.test(prev));
 
 console.log('── app: gallery ──');
 ok('the catalogue is fetched from the server (no hardcoded template list)', /resume-builder\/templates`/.test(tpl));

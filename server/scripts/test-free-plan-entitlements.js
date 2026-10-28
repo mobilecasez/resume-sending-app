@@ -1,4 +1,4 @@
-// The 2026-09-13 money model, run against the REAL entitlements.js / quotaGrants.js / adminUserOps.js /
+// The money model (2026-09-13, Free made DAILY 2026-10-29), run against the REAL entitlements.js / quotaGrants.js / adminUserOps.js /
 // lifecycleNudges.js with an in-memory stand-in for db-config that understands exactly the SQL they send.
 //   DATABASE_URL=postgresql://t@localhost:5432/t node server/scripts/test-free-plan-entitlements.js
 //
@@ -6,10 +6,12 @@
 // The product owner's decisions this file pins:
 //   1. NO CREDITS FOR GENERATION — canConsumeMany/consumeOnSuccess never answer 'credits' for a resume or
 //      a letter, never touch user_credits, and an exhausted allowance is quota_exhausted (→ Plans).
-//   2. FREE = 3 resumes + 3 letters ONE TIME, counted from max(started_at, 2026-09-13) — it never refills,
-//      pre-cutover usage/bonuses do not count, and ONE free allowance per DEVICE (device_trial_used).
+//   2. FREE = 10 resumes + 10 letters in any ROLLING 24 HOURS (2026-10-29; it was 3 + 3 one time), counted from
+//      max(started_at, 2026-09-13, now − 24 h) — older usage/bonuses do not count, the refusal says when the next
+//      one opens, a spent PLAN falls through to the free day, and ONE free allowance per DEVICE (device_trial_used).
+//      Time is frozen at db.now (Date.now is patched) so the window is exact.
 //   3. PLANS: starter 6/10, plus 15/25, pro 25/50, power 40/100, max 100/500; prices and downloads unchanged.
-//   A. getStatus's free block: { active, startedAt, oneTime, windowStart, endsAt:null, renewsAt:null, used }.
+//   A. getStatus's free block: { active, startedAt, oneTime:false, daily:true, windowStart, endsAt:null, renewsAt:null, used, remaining, nextAt }.
 'use strict';
 const path = require('path');
 const fs = require('fs');
@@ -27,9 +29,13 @@ const db = {
   now: new Date('2026-09-14T12:00:00Z'),
   trials: new Map(), trialDevices: new Map(), userDevices: [], subs: [], ledger: [], grants: [],
   credits: new Map(), sql: [], unhandled: [], creditWrites: [], nextId: 1,
+  globalFree: null,   // when a number: what the breaker's global count reads (simulates an attack)
 };
 const norm = (s) => String(s).replace(/--[^\n]*\n/g, ' ').replace(/\s+/g, ' ').trim();
 const ts = (v) => new Date(v).getTime();
+// The free window is "the last 24 hours" — so the harness owns the clock.
+const REAL_NOW = Date.now;
+Date.now = () => ts(db.now);
 
 function exec(sqlRaw, p = []) {
   const sql = norm(sqlRaw);
@@ -68,6 +74,15 @@ function exec(sqlRaw, p = []) {
   if (/^SELECT environment FROM user_subscriptions /.test(sql)) return [];
   if ((m = /^SELECT COUNT\(\*\)::int AS n FROM usage_ledger WHERE user_id = \$1 AND kind = \$2 AND source = \$3 AND created_at >= \$4$/.exec(sql))) {
     return [{ n: db.ledger.filter((r) => r.user_id === Number(p[0]) && r.kind === p[1] && r.source === p[2] && ts(r.created_at) >= ts(p[3])).length }];
+  }
+  if (/^SELECT MIN\(created_at\) AS first FROM usage_ledger WHERE user_id = \$1 AND kind = \$2 AND source = 'trial' AND created_at >= \$3$/.test(sql)) {
+    const hit = db.ledger.filter((r) => r.user_id === Number(p[0]) && r.kind === p[1] && r.source === 'trial' && ts(r.created_at) >= ts(p[2]))
+      .map((r) => ts(r.created_at));
+    return [{ first: hit.length ? new Date(Math.min(...hit)) : null }];
+  }
+  if (/^SELECT COUNT\(\*\)::int AS n FROM usage_ledger WHERE kind = \$1 AND source = 'trial' AND created_at >= \$2$/.test(sql)) {
+    if (db.globalFree != null) return [{ n: db.globalFree }];
+    return [{ n: db.ledger.filter((r) => r.kind === p[0] && r.source === 'trial' && ts(r.created_at) >= ts(p[1])).length }];
   }
   if (/^SELECT COALESCE\(SUM\(amount\), 0\)::int AS n FROM quota_grants WHERE user_id = \$1 AND kind = \$2 AND created_at >= \$3$/.test(sql)) {
     return [{ n: db.grants.filter((g) => g.user_id === Number(p[0]) && g.kind === p[1] && ts(g.created_at) >= ts(p[2])).reduce((a, g) => a + g.amount, 0) }];
@@ -147,8 +162,10 @@ const seedSub = (uid, planKey, periodStart) => {
 const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
 
 (async () => {
-  console.log('── constants: the one-time Free plan, the new PLANS ──');
-  ok('FREE = 3 resumes + 3 letters, oneTime', ent.FREE.resumes === 3 && ent.FREE.letters === 3 && ent.FREE.oneTime === true, ent.FREE);
+  const DAY_AGO_ISO = new Date(ts(db.now) - DAY).toISOString();   // '2026-09-13T12:00:00.000Z' — the window's floor
+  console.log('── constants: the daily Free plan, the PLANS ──');
+  ok('FREE = 10 resumes + 10 letters a day (daily, not one time, no downloads)',
+    ent.FREE.resumes === 10 && ent.FREE.letters === 10 && ent.FREE.daily === true && ent.FREE.oneTime === false && ent.FREE.downloads === 0, ent.FREE);
   ok('TRIAL is still the same object (quotaGrants/adminUserOps read it)', ent.TRIAL === ent.FREE);
   ok('FREE_CUTOVER is 2026-09-13T00:00:00Z', ent.FREE_CUTOVER === CUTOVER_ISO, ent.FREE_CUTOVER);
   const want = { starter: [4.99, 6, 10], plus: [9.99, 15, 25], pro: [14.99, 25, 50], power: [24.99, 40, 100], max: [49.99, 100, 500] };
@@ -157,55 +174,62 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     ok(`${k}: $${price} → ${r} resumes / ${l} letters`, p && p.priceUsd === price && p.resumes === r && p.letters === l, p);
   }
   ok('downloads unchanged (20/40/60/100/200)', ent.PLANS.map((p) => p.downloads).join() === '20,40,60,100,200');
-  ok('freeWindowEnd is null (no refill)', ent.freeWindowEnd('2026-08-01T00:00:00Z') === null && ent.freeWindowEnd() === null);
-  ok('freeWindowStart: a pre-cutover signup counts from the cutover', ent.freeWindowStart('2026-08-01T00:00:00Z').toISOString() === CUTOVER_ISO);
-  ok('freeWindowStart: a post-cutover signup counts from signup', ent.freeWindowStart('2026-09-14T08:00:00Z').toISOString() === '2026-09-14T08:00:00.000Z');
-  ok('freeWindowStart: never rolls (same answer 90 days later)', (() => { const real = Date.now; Date.now = () => real() + 90 * DAY; try { return ent.freeWindowStart('2026-08-01T00:00:00Z').toISOString() === CUTOVER_ISO; } finally { Date.now = real; } })());
-  ok('freeWindowStart fails CLOSED on garbage (the cutover, not "now")', ent.freeWindowStart('nope').toISOString() === CUTOVER_ISO && ent.freeWindowStart(null).toISOString() === CUTOVER_ISO);
+  ok('freeWindowEnd is null (the window rolls, it has no end)', ent.freeWindowEnd('2026-08-01T00:00:00Z') === null && ent.freeWindowEnd() === null);
+  ok('freeWindowStart: an old account counts the last 24 hours', ent.freeWindowStart('2026-08-01T00:00:00Z').toISOString() === DAY_AGO_ISO);
+  ok('freeWindowStart: an account younger than a day counts from signup', ent.freeWindowStart('2026-09-14T08:00:00Z').toISOString() === '2026-09-14T08:00:00.000Z');
+  ok('freeWindowStart: ROLLS (90 days later it is 90 days later)', (() => { const real = Date.now; Date.now = () => ts(db.now) + 90 * DAY; try { return ent.freeWindowStart('2026-08-01T00:00:00Z').toISOString() === new Date(ts(db.now) + 89 * DAY).toISOString(); } finally { Date.now = real; } })());
+  ok('freeWindowStart fails CLOSED on garbage (now − 24 h, the earliest the window can start — never "now")', ent.freeWindowStart('nope').toISOString() === DAY_AGO_ISO && ent.freeWindowStart(null).toISOString() === DAY_AGO_ISO);
+  ok('the cutover still floors the window (a clock before it counts nothing older)', ent.freeWindowStart(null, ts('2026-09-13T06:00:00Z')).toISOString() === CUTOVER_ISO);
+  ok('opensInText rounds up and never promises early', ent.opensInText(new Date(ts(db.now) + 61 * 60000)) === 'in about 2 hours'
+    && ent.opensInText(new Date(ts(db.now) + 59 * 60000)) === 'in about 59 minutes' && ent.opensInText(null) === 'within 24 hours');
   ok('FREE_WINDOW_MS is gone', ent.FREE_WINDOW_MS === undefined);
 
   console.log('── free user, 0 used → allowed via free, both kinds ──');
   {
     const r1 = await ent.canConsumeMany(1, 'resume', 1, req('dev-AAAAAAAA'));
     const r2 = await ent.canConsumeMany(1, 'cover_letter', 1, req('dev-AAAAAAAA'));
-    ok('resume: allowed via free, 3 left', r1.allowed === true && r1.via === 'free' && r1.remaining === 3, r1);
-    ok('cover letter: allowed via free, 3 left', r2.allowed === true && r2.via === 'free' && r2.remaining === 3, r2);
+    ok('resume: allowed via free, 10 left', r1.allowed === true && r1.via === 'free' && r1.remaining === 10, r1);
+    ok('cover letter: allowed via free, 10 left', r2.allowed === true && r2.via === 'free' && r2.remaining === 10, r2);
     ok('a free row was created and the device claimed by user 1', db.trials.has(1) && db.trialDevices.get('dev-AAAAAAAA').first_user_id === 1);
   }
 
-  console.log('── usage before the cutover does not count ──');
+  console.log('── usage older than 24 hours does not count ──');
   {
     seedTrial(20, '2026-08-01T00:00:00Z');
     seedUse(20, 'resume', 'trial', '2026-09-01T10:00:00Z', 5);
     seedUse(20, 'cover_letter', 'trial', '2026-09-12T23:59:59Z', 5);
     const r = await ent.canConsumeMany(20, 'resume', 1, req());
     const l = await ent.canConsumeMany(20, 'cover_letter', 3, req());
-    ok('5 pre-cutover resumes → still 3 left', r.allowed && r.via === 'free' && r.remaining === 3, r);
-    ok('5 letters one second before the cutover → a batch of 3 still fits', l.allowed && l.via === 'free' && l.remaining === 3, l);
+    ok('5 resumes two weeks ago → 10 left', r.allowed && r.via === 'free' && r.remaining === 10, r);
+    ok('5 letters 36 hours ago → a batch of 3 fits in 10', l.allowed && l.via === 'free' && l.remaining === 10, l);
     const st = await ent.getStatus(20, req());
-    ok('getStatus: via free, used 0/0, remaining 3/3', st.via === 'free' && st.used.letters === 0 && st.used.resumes === 0 && st.remaining.letters === 3 && st.remaining.resumes === 3, { via: st.via, used: st.used, remaining: st.remaining });
-    ok('getStatus: trialState is the contract shape (oneTime, windowStart=cutover, endsAt/renewsAt null)',
-      st.trialState && st.trialState.active === true && st.trialState.oneTime === true && st.trialState.windowStart === CUTOVER_ISO
-      && st.trialState.endsAt === null && st.trialState.renewsAt === null && st.trialState.used.letters === 0 && !!st.trialState.startedAt, st.trialState);
-    ok('getStatus: trial exposes letters 3, resumes 3, oneTime', st.trial.letters === 3 && st.trial.resumes === 3 && st.trial.oneTime === true, st.trial);
+    ok('getStatus: via free, used 0/0, remaining 10/10', st.via === 'free' && st.used.letters === 0 && st.used.resumes === 0 && st.remaining.letters === 10 && st.remaining.resumes === 10, { via: st.via, used: st.used, remaining: st.remaining });
+    ok('getStatus: trialState is the contract shape (daily, not oneTime, windowStart = 24 h ago, endsAt/renewsAt null, nothing to wait for)',
+      st.trialState && st.trialState.active === true && st.trialState.oneTime === false && st.trialState.daily === true && st.trialState.windowStart === DAY_AGO_ISO
+      && st.trialState.endsAt === null && st.trialState.renewsAt === null && st.trialState.used.letters === 0 && !!st.trialState.startedAt
+      && st.trialState.remaining.resumes === 10 && st.trialState.nextAt.resumes === null && st.trialState.nextAt.letters === null, st.trialState);
+    ok('getStatus: trial exposes letters 10, resumes 10, daily (days 1 for builds that print "every N days")',
+      st.trial.letters === 10 && st.trial.resumes === 10 && st.trial.daily === true && st.trial.oneTime === false && st.trial.days === 1, st.trial);
     const bonusOld = { id: db.nextId++, user_id: 20, kind: 'resume', amount: 5, idem_key: 'old', created_at: new Date('2026-09-02T00:00:00Z') };
     db.grants.push(bonusOld);
     const r2 = await ent.canConsumeMany(20, 'resume', 1, req());
-    ok('a bonus granted before the cutover is not counted either', r2.remaining === 3, r2);
+    ok('a bonus granted two weeks ago is not counted either', r2.remaining === 10, r2);
   }
 
-  console.log('── free user with 3 used → quota_exhausted, never credits (1000 credits on file) ──');
+  console.log('── free user with today\'s 10 used → quota_exhausted with the time the next opens, never credits (1000 on file) ──');
   {
     seedTrial(30, '2026-07-01T00:00:00Z');
     db.credits.set(30, 1000);
-    seedUse(30, 'resume', 'trial', '2026-09-13T09:00:00Z', 3);
-    seedUse(30, 'cover_letter', 'trial', '2026-09-14T09:00:00Z', 3);
+    seedUse(30, 'resume', 'trial', '2026-09-13T09:00:00Z', 4);         // 27 h ago: outside the day
+    seedUse(30, 'resume', 'trial', '2026-09-13T13:00:00Z', 10);        // 23 h ago: the oldest counted → opens in 1 h
+    seedUse(30, 'cover_letter', 'trial', '2026-09-14T09:00:00Z', 10);  // 3 h ago → opens in 21 h
     const r = await ent.canConsumeMany(30, 'resume', 1, req());
     const l = await ent.canConsumeMany(30, 'cover_letter', 1, req());
     ok('resume refused: quota_exhausted, via null (not credits)', r.allowed === false && r.via === null && r.reason === 'quota_exhausted', r);
-    ok('resume message is the contract text', r.message === "You've used your 3 free resume generations. Start a plan in Plans & Usage to keep going.", r.message);
+    ok('resume message is the contract text, with when the next opens', r.message === "You've used today's 10 free resume generations. The next one opens up in about 1 hour, or start a plan in Plans & Usage to keep going now.", r.message);
+    ok('…and the refusal carries that instant (nextFreeAt)', r.nextFreeAt === '2026-09-14T13:00:00.000Z', r.nextFreeAt);
     ok('letter refused: quota_exhausted, via null (not credits)', l.allowed === false && l.via === null && l.reason === 'quota_exhausted', l);
-    ok('letter message is the contract text', l.message === "You've used your 3 free cover letters. Start a plan in Plans & Usage to keep going.", l.message);
+    ok('letter message is the contract text', l.message === "You've used today's 10 free cover letters. The next one opens up in about 21 hours, or start a plan in Plans & Usage to keep going now.", l.message);
     const before = db.ledger.length;
     const c = await ent.consumeOnSuccess(30, 'resume', { screen: 'harness' }, req());
     ok("consumeOnSuccess → via 'none', charge null, ledgerId null", c.via === 'none' && c.charge === null && c.ledgerId === null, c);
@@ -213,19 +237,31 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     ok('no statement ever wrote to user_credits, chargeCredits never called', db.creditWrites.length === 0 && chargeCalls === 0, { creditWrites: db.creditWrites, chargeCalls });
     ok('the 1000 credits are untouched', db.credits.get(30) === 1000);
     const st = await ent.getStatus(30, req());
-    ok('getStatus: remaining 0/0, used 3/3, legacyCredits still reported (display)', st.remaining.letters === 0 && st.remaining.resumes === 0 && st.used.letters === 3 && st.used.resumes === 3 && st.legacyCredits === 1000, { remaining: st.remaining, used: st.used, legacyCredits: st.legacyCredits });
-    // partial: 2 letters used, a batch of 3 asks for more than is left
-    seedTrial(31, '2026-09-14T00:00:00Z'); seedUse(31, 'cover_letter', 'trial', '2026-09-14T01:00:00Z', 2);
+    ok('getStatus: remaining 0/0, used 10/10, legacyCredits still reported (display)', st.remaining.letters === 0 && st.remaining.resumes === 0 && st.used.letters === 10 && st.used.resumes === 10 && st.legacyCredits === 1000, { remaining: st.remaining, used: st.used, legacyCredits: st.legacyCredits });
+    ok('getStatus: trialState says when each opens', st.trialState.nextAt.resumes === '2026-09-14T13:00:00.000Z' && st.trialState.nextAt.letters === '2026-09-15T09:00:00.000Z', st.trialState.nextAt);
+    // partial: 9 letters used, a batch of 3 asks for more than is left
+    seedTrial(31, '2026-09-14T00:00:00Z'); seedUse(31, 'cover_letter', 'trial', '2026-09-14T01:00:00Z', 9);
     const b = await ent.canConsumeMany(31, 'cover_letter', 3, req());
-    ok('a batch bigger than what is left says what is left (singular)', !b.allowed && b.message === 'You have 1 free cover letter left, not enough for 3. Start a plan in Plans & Usage to keep going.', b.message);
-    // bonus after the cutover adds on top
+    ok('a batch bigger than what is left says what is left (singular)', !b.allowed && b.message === 'You have 1 free cover letter left today, not enough for 3. More open up in about 13 hours, or start a plan in Plans & Usage.', b.message);
+    // a bonus granted today adds on top
     await quotaGrants.grantQuota(30, 'resume', 1, 'harness-bonus', { source: 'harness' });
     const r3 = await ent.canConsumeMany(30, 'resume', 1, req());
-    ok('a bonus granted after the cutover adds on top (1 left)', r3.allowed && r3.via === 'free' && r3.remaining === 1, r3);
+    ok('a bonus granted today adds on top (1 left)', r3.allowed && r3.via === 'free' && r3.remaining === 1, r3);
     const c2 = await ent.consumeOnSuccess(30, 'resume', { screen: 'harness' }, req());
     ok("consuming it → via 'trial' with a ledger row", c2.via === 'trial' && typeof c2.ledgerId === 'number' && db.ledger.some((x) => x.id === c2.ledgerId && x.source === 'trial'), c2);
     const r4 = await ent.canConsumeMany(30, 'resume', 1, req());
     ok('…and then it is exhausted again', !r4.allowed && r4.via === null, r4);
+    // ⚠️ THE POINT OF THE CHANGE: it comes back. 25 hours later every one of those has left the window.
+    const saved = db.now;
+    db.now = new Date(ts(saved) + 25 * 3600000);
+    const back = await ent.canConsumeMany(30, 'resume', 1, req());
+    const backL = await ent.canConsumeMany(30, 'cover_letter', 1, req());
+    ok('⚠️ a day later the free ones are back: 10 resumes (yesterday\'s bonus gone with its day)', back.allowed && back.via === 'free' && back.remaining === 10, back);
+    ok('…and 10 letters', backL.allowed && backL.remaining === 10, backL);
+    db.now = new Date(ts(saved) + 2 * 3600000);   // two hours on: the 13:00 batch has left, the bonus-paid one has not
+    const part = await ent.canConsumeMany(30, 'resume', 1, req());
+    ok('…and it rolls unit by unit, not at midnight (2 h on: the ten from 23 h ago have left, today\'s one has not)', part.allowed && part.remaining === 10, part);
+    db.now = saved;
   }
 
   console.log('── plan users: the new allowances, and no credits after them ──');
@@ -243,13 +279,62 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     seedUse(uid, 'cover_letter', 'plan', '2026-09-11T00:00:00Z', 20);    // old allowance was 30: already over the new 10
     const r = await ent.canConsumeMany(uid, 'resume', 1, req());
     const l = await ent.canConsumeMany(uid, 'cover_letter', 1, req());
-    ok('starter with 6 resumes used → refused, via null despite 5000 credits', !r.allowed && r.via === null && r.reason === 'quota_exhausted', r);
-    ok('plan resume message is the contract text', r.message === "You've used all the resume generations in your plan this month. Upgrade in Plans & Usage to continue.", r.message);
-    ok('plan letter message is the contract text (usage over the new allowance clamps, no crash)', !l.allowed && l.message === "You've used all the cover letters in your plan this month. Upgrade in Plans & Usage to continue.", l.message);
+    // ⚠️ 2026-10-29: a spent plan is NOT a refusal any more — the free day is every subscriber's floor (a free user
+    // gets 10 a day; refusing a Starter subscriber at 6 a month would make paying the worse deal).
+    ok('⚠️ starter with 6 resumes used → the free day takes over (via free, 10 left), never credits', r.allowed && r.via === 'free' && r.remaining === 10, r);
+    ok('…letters too, even over a cut allowance (clamps, no crash)', l.allowed && l.via === 'free' && l.remaining === 10, l);
     const c = await ent.consumeOnSuccess(uid, 'cover_letter', {}, req());
-    ok("plan exhausted: consumeOnSuccess → 'none', no credits", c.via === 'none' && chargeCalls === 0 && db.creditWrites.length === 0 && db.credits.get(uid) === 5000, c);
+    ok("plan spent: consumeOnSuccess → 'trial' (the free day's row, plan_key null), no credits",
+      c.via === 'trial' && db.ledger.some((x) => x.id === c.ledgerId && x.source === 'trial' && x.plan_key === null)
+      && chargeCalls === 0 && db.creditWrites.length === 0 && db.credits.get(uid) === 5000, c);
+    seedUse(uid, 'resume', 'trial', '2026-09-14T12:00:00Z', 10);   // the free row was opened at db.now: count from there
+    const both = await ent.canConsumeMany(uid, 'resume', 1, req());
+    ok('plan AND free day spent → refused with the subscriber\'s sentence, never "start a plan"', !both.allowed && both.via === null && both.reason === 'quota_exhausted'
+      && both.message === "You've used this month's resume generations in your plan and today's 10 daily ones. The next daily one opens up in about 24 hours, or upgrade in Plans & Usage.", both.message);
+    ok('⚠️ …and that sentence never says "free" (builds before 4.8 test /free/ first and would call a payer\'s allowance the free one)', !/\bfree\b/i.test(both.message));
+    const stSpent = await ent.getStatus(uid, req());
+    ok('getStatus for a spent subscriber: remaining stays the plan\'s 0, remainingNow is what Generate can still do',
+      stSpent.remaining.resumes === 0 && stSpent.remainingNow && stSpent.remainingNow.resumes === 0 && stSpent.remainingNow.letters === 9 && stSpent.freeFloor === true,
+      { remaining: stSpent.remaining, remainingNow: stSpent.remainingNow });
+    const none = await ent.consumeOnSuccess(uid, 'resume', {}, req());
+    ok("…and consumeOnSuccess → 'none', nothing written", none.via === 'none' && none.ledgerId === null, none);
+    // A batch the plan starts and the free day finishes: allowed, and charged plan first, unit by unit.
+    seedSub(41, 'starter', '2026-09-10T00:00:00Z');
+    seedUse(41, 'resume', 'plan', '2026-09-11T00:00:00Z', 4);
+    const batch = await ent.canConsumeMany(41, 'resume', 5, req());
+    ok('a batch of 5 with 2 left on the plan → allowed (2 plan + 3 free), first unit the plan\'s', batch.allowed && batch.via === 'plan' && batch.remaining === 12, batch);
+    const vias = [];
+    for (let i = 0; i < 5; i++) vias.push((await ent.consumeOnSuccess(41, 'resume', {}, req())).via);
+    ok('…charged plan, plan, then the free day', vias.join() === 'plan,plan,trial,trial,trial', vias);
+    const tooBig = await ent.canConsumeMany(41, 'resume', 8, req());
+    ok('…and a batch bigger than what is left is refused with what is left', !tooBig.allowed && /^You have 7 resume generations left right now, not enough for 8\./.test(tooBig.message), tooBig.message);
+    // ⚠️ A subscriber's bonus is the PLAN's — never counted a second time in the free day.
+    seedSub(42, 'starter', '2026-09-10T00:00:00Z');
+    seedUse(42, 'resume', 'plan', '2026-09-11T00:00:00Z', 6);
+    await quotaGrants.grantQuota(42, 'resume', 1, 'sub-bonus-42', { source: 'harness' });
+    const sb = await ent.canConsumeMany(42, 'resume', 1, req());
+    ok('a subscriber\'s grant raises the plan (1 left on it), not the plan AND the free day', sb.allowed && sb.via === 'plan' && sb.remaining === 1, sb);
+    await ent.consumeOnSuccess(42, 'resume', {}, req());
+    const sb2 = await ent.usageFor(42, 'resume', req());
+    ok('…and once it is spent the free day is the plain 10, not 11', sb2 && sb2.pool === 'free' && sb2.allowance === 10 && sb2.remaining === 10, sb2);
+    // A batch the free day can never hold is not told "more open up".
+    seedTrial(43, '2026-07-01T00:00:00Z');
+    const big = await ent.canConsumeMany(43, 'cover_letter', 12, req());
+    ok('a batch of 12 on a 10-a-day plan → refused without promising more will open', !big.allowed
+      && big.message === 'The free plan makes up to 10 cover letters a day, and you have 10 left today — not enough for 12 at once. Start a plan in Plans & Usage to do more.', big.message);
+    // ⚠️ THE BREAKER: an attack across many throwaway accounts stops at the global cap; plans never notice.
+    db.globalFree = 5000;
+    const paused = await ent.canConsumeMany(43, 'resume', 1, req());
+    ok('⚠️ global free volume over the cap → the free lane pauses (refused, paused:true, nothing promised)', !paused.allowed && paused.paused === true
+      && paused.message === 'Free resume generations are paused for a few hours because of very high demand. A plan or a one-time pass still works now.', paused);
+    seedSub(44, 'plus', '2026-09-10T00:00:00Z');
+    const planStill = await ent.canConsumeMany(44, 'resume', 1, req());
+    ok('…a subscriber with plan left is untouched by it', planStill.allowed && planStill.via === 'plan', planStill);
+    db.globalFree = null;
+    const back2 = await ent.canConsumeMany(43, 'resume', 1, req());
+    ok('…and below the cap the free lane is back', back2.allowed && back2.via === 'free', back2);
     const st = await ent.getStatus(uid, req());
-    ok('getStatus: via plan, remaining clamps at 0', st.via === 'plan' && st.remaining.letters === 0 && st.remaining.resumes === 0, { via: st.via, remaining: st.remaining });
+    ok('getStatus: via plan, the PLAN\'s remaining (clamped at 0) — the free floor never overwrites it', st.via === 'plan' && st.remaining.letters === 0 && st.remaining.resumes === 0, { via: st.via, remaining: st.remaining });
     const dl = await ent.canConsumeMany(uid, 'download', 1, req());
     ok('downloads still answered by the plan (20 left, no credit lane)', dl.allowed && dl.via === 'plan' && dl.remaining === 20, dl);
     const dFree = await ent.canConsumeMany(20, 'download', 1, req());
@@ -282,7 +367,7 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     // grandfathered: a second account that got its row while the rule was off keeps it
     seedTrial(54, '2026-08-20T00:00:00Z', 'dev-AAAAAAAA');
     const g = await ent.canConsumeMany(54, 'resume', 1, req('dev-AAAAAAAA'));
-    ok('an EXISTING second account on the claimed device keeps its fresh 3 (only row creation is gated)', g.allowed && g.via === 'free' && g.remaining === 3, g);
+    ok('an EXISTING second account on the claimed device keeps its own (only row creation is gated)', g.allowed && g.via === 'free' && g.remaining === 10, g);
   }
 
   // ⚠️ A PLAN BEATS A CLAIMED DEVICE (2026-09-20, the owner's own report on build 210).
@@ -324,6 +409,15 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
       + 'someone who genuinely has no plan)',
       !after.allowed && after.blocked === 'device_trial_used'
       && after.message === 'The free plan on this device was already used by another account. Start a plan in Plans & Usage to keep going.', after);
+    // A subscriber whose PLAN is spent, on a device whose free day belongs to someone else: the plan's sentence,
+    // and no `blocked` — the clients turn that into the device message, which is not what a payer ran out of.
+    seedSub(56, 'starter', '2026-09-10T00:00:00Z');
+    seedUse(56, 'resume', 'plan', '2026-09-11T00:00:00Z', 6);
+    const spent = await ent.canConsumeMany(56, 'resume', 1, req('dev-AAAAAAAA'));
+    ok('a spent plan on a claimed device → the plan\'s refusal, never device_trial_used',
+      !spent.allowed && spent.blocked === undefined && spent.message === "You've used all the resume generations in your plan this month. Upgrade in Plans & Usage to continue.", spent);
+    const su = await ent.usageFor(56, 'resume', req('dev-AAAAAAAA'));
+    ok('…and usageFor shows the plan at 0, not a device block', su && su.pool === 'plan' && su.remaining === 0 && !su.blocked, su);
   }
 
   console.log('── quotaGrants.ensureCountableWindow ──');
@@ -336,9 +430,9 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     ok('a plan user → plan', (await quotaGrants.ensureCountableWindow(40, 'k')).via === 'plan');
     seedTrial(61, '2026-08-01T00:00:00Z');
     seedUse(61, 'cover_letter', 'trial', '2026-09-05T00:00:00Z', 4);
-    seedUse(61, 'cover_letter', 'trial', '2026-09-13T05:00:00Z', 1);
+    seedUse(61, 'cover_letter', 'trial', '2026-09-14T05:00:00Z', 1);
     const e = await quotaGrants.extendTrial(61, 5, 'harness-extend', {});
-    ok('extendTrial (bookkeeping) counts letters in the one-time window: 3 − 1 = 2', e.extended && e.lettersStillAvailable === 2 && e.resumesStillAvailable === 3, e);
+    ok('extendTrial (bookkeeping) counts letters in today\'s window: 10 − 1 = 9', e.extended && e.lettersStillAvailable === 9 && e.resumesStillAvailable === 10, e);
   }
 
   console.log('── adminUserOps: read-only free state ──');
@@ -346,8 +440,8 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
   try { adminOps = require(path.join(ROOT, 'server/services/adminUserOps.js')); } catch (e) { console.log('  (adminUserOps not loadable here: ' + e.message + ')'); }
   if (adminOps && typeof adminOps.planStateOf === 'function') {
     const p = await adminOps.planStateOf(30);
-    ok('planStateOf(free): window_start = cutover, window_end + window_days_left null', p.status === 'free' && p.window_start === CUTOVER_ISO && p.window_end === null && p.window_days_left === null, { status: p.status, ws: p.window_start, we: p.window_end, wd: p.window_days_left });
-    ok('planStateOf(free): base 3 per kind', p.quotas.every((q) => q.base === 3), p.quotas.map((q) => q.base));
+    ok('planStateOf(free): window_start = 24 h ago, window_end + window_days_left null', p.status === 'free' && p.window_start === DAY_AGO_ISO && p.window_end === null && p.window_days_left === null, { status: p.status, ws: p.window_start, we: p.window_end, wd: p.window_days_left });
+    ok('planStateOf(free): base 10 per kind', p.quotas.every((q) => q.base === 10), p.quotas.map((q) => q.base));
     const rowsBefore = db.trials.size;
     const blocked = await adminOps.planStateOf(51);
     ok('planStateOf(no row, device claimed): a device_trial_used caveat, and nothing created', blocked.status === 'never_started' && blocked.caveats.some((c) => /device_trial_used/.test(c)) && db.trials.size === rowsBefore, blocked.caveats);
@@ -362,7 +456,7 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
   }
   if (adminOps && typeof adminOps.quotaStateOf === 'function') {
     const q = await adminOps.quotaStateOf(20);
-    ok('quotaStateOf(free): trialDaysLeft null, 3/3 left', q.trialDaysLeft === null && q.lettersLeft === 3 && q.resumesLeft === 3 && q.via === 'trial', q);
+    ok('quotaStateOf(free): trialDaysLeft null, 10/10 left', q.trialDaysLeft === null && q.lettersLeft === 10 && q.resumesLeft === 10 && q.via === 'trial', q);
   } else if (adminOps && typeof adminOps.buildUserState === 'function') {
     console.log('  (quotaStateOf not exported — checked through the source instead)');
     const src = fs.readFileSync(path.join(ROOT, 'server/services/adminUserOps.js'), 'utf8');
@@ -396,24 +490,25 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     };
     // a brand-new free user on an unclaimed device (usageFor first: it must not change what the gate then says)
     const u70 = await same('new free user', 70, 'resume', req('dev-CCCCCCCC'),
-      (u) => u.pool === 'free' && u.allowance === 3 && u.used === 0 && u.oneTime === true && u.planLabel === null);
+      (u) => u.pool === 'free' && u.allowance === 10 && u.used === 0 && u.oneTime === false && u.daily === true && u.nextAt === null && u.planLabel === null);
     ok('…the Free row usageFor opened is the one the gate counts (one row, device claimed once)', db.trials.has(70) && db.trialDevices.get('dev-CCCCCCCC').first_user_id === 70, u70);
     seedUse(70, 'resume', 'trial', '2026-09-14T12:30:00Z', 1);   // after the row usageFor opened (db.now)
-    await same('free user, 1 used', 70, 'resume', req('dev-CCCCCCCC'), (u) => u.remaining === 2 && u.used === 1 && u.allowance === 3);
-    await same('pre-cutover usage does not count', 20, 'cover_letter', req(), (u) => u.used === 0 && u.remaining === 3);
-    await same('free, exhausted after a post-cutover bonus (3 + 1, 4 used)', 30, 'resume', req(), (u) => u.pool === 'free' && u.remaining === 0 && u.allowance === 4 && u.used === 4);
+    await same('free user, 1 used', 70, 'resume', req('dev-CCCCCCCC'), (u) => u.remaining === 9 && u.used === 1 && u.allowance === 10 && u.nextAt === '2026-09-15T12:30:00.000Z');
+    await same('usage older than a day does not count', 20, 'cover_letter', req(), (u) => u.used === 0 && u.remaining === 10);
+    await same('free, exhausted after today\'s bonus (10 + 1, 11 used)', 30, 'resume', req(), (u) => u.pool === 'free' && u.remaining === 0 && u.allowance === 11 && u.used === 11);
     // plans: the plan's count and label, environment-scoped exactly like the gate
     seedSub(71, 'plus', '2026-09-10T00:00:00Z');
     seedUse(71, 'resume', 'plan', '2026-09-11T00:00:00Z', 3);
     await same('Plus, 3 of 15 used', 71, 'resume', req(), (u) => u.pool === 'plan' && u.planLabel === 'Plus' && u.allowance === 15 && u.used === 3 && u.remaining === 12 && u.oneTime === false);
     await same('Plus letters untouched', 71, 'cover_letter', req(), (u) => u.remaining === 25 && u.allowance === 25);
-    await same('Starter over a cut allowance clamps at 0 (never negative)', 40, 'cover_letter', req(), (u) => u.pool === 'plan' && u.remaining === 0 && u.used === 20 && u.allowance === 10);
+    await same('⚠️ a SPENT plan shows the free day, the lane that pays next (Starter, letters over a cut allowance)', 40, 'cover_letter', req(),
+      (u) => u.pool === 'free' && u.remaining === 9 && u.used === 1 && u.allowance === 10);
     const beforeRows = db.trials.size;
     await same('⚠️ a subscriber is never shown the Free allowance', 71, 'resume', req('dev-DDDDDDDD'), (u) => u.pool === 'plan');
     ok('…and asking for one opened no Free row', db.trials.size === beforeRows);
     // the device another account holds: not "0 of 3" — that account never had them
     const b = await same('device already used by another account', 50, 'resume', req('dev-AAAAAAAA'),
-      (u, g) => u.pool === null && u.allowance === 0 && u.blocked === 'device_trial_used' && g.blocked === 'device_trial_used' && u.oneTime === true);
+      (u, g) => u.pool === null && u.allowance === 0 && u.blocked === 'device_trial_used' && g.blocked === 'device_trial_used' && u.daily === true);
     ok('…and no Free row was created for it', !db.trials.has(50), b);
     ok('an unknown kind → null', (await ent.usageFor(70, 'poster', req())) === null);
     const src = fs.readFileSync(path.join(ROOT, 'server/services/entitlements.js'), 'utf8');
@@ -456,8 +551,12 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     seedUse(81, 'cover_letter', 'plan', '2026-08-20T00:00:00Z');
     seedUse(81, 'cover_letter', 'trial', '2026-09-13T08:00:00Z');
     const pl = await ent.getUsage(81, 50, req());
-    ok('a subscriber: only this period\'s plan rows are counted', pl.filter((i) => i.counted).length === 1 && pl.find((i) => i.counted).source === 'plan'
+    ok('a subscriber: this period\'s plan rows are counted, the old period and an old free row are not', pl.filter((i) => i.counted).length === 1 && pl.find((i) => i.counted).source === 'plan'
       && ts(pl.find((i) => i.counted).createdAt) === ts('2026-09-14T06:00:00Z'), pl.map((i) => [i.source, i.createdAt, i.counted]));
+    seedUse(81, 'cover_letter', 'trial', '2026-09-14T11:00:00Z');   // the free day paid this one (plan spent)
+    const pl2 = await ent.getUsage(81, 50, req());
+    ok('…and a free-day row from the last 24 hours IS counted (it counts against today\'s free allowance)',
+      pl2.filter((i) => i.counted).length === 2 && pl2.some((i) => i.counted && i.source === 'trial'), pl2.map((i) => [i.source, i.createdAt, i.counted]));
 
     // The environment decides WHICH pool is paying: a TestFlight plan is not the App Store's.
     seedTrial(82, '2026-09-13T00:00:00Z');
@@ -488,7 +587,21 @@ const CUTOVER_ISO = '2026-09-13T00:00:00.000Z';
     ok("no code path returns via: 'credits'", !/via: 'credits'|via = 'credits'/.test(code));
   }
 
+  console.log('── regeneration is a generation; the score bonus needs a real score ──');
+  {
+    const rb = fs.readFileSync(path.join(ROOT, 'server/controllers/resumeBuilderController.js'), 'utf8')
+      .replace(/^\s*(\/\/|\*)[^\n]*$/gm, '');
+    ok('⚠️ no free-regeneration lane is left (it doubled the daily cap and skipped the device rule)', !/freeRegen/.test(rb) && !/reason: 'regen_limit'/.test(rb));
+    ok('getResume\'s freeLimit is used + what the free day has left (old builds gate Regenerate on it)', /regen: \{ used, freeLimit: used \+ left \}/.test(rb));
+    const rs = fs.readFileSync(path.join(ROOT, 'server/routes/resumeScoreRoutes.js'), 'utf8');
+    const ep = rs.slice(rs.indexOf("router.post('/resume-score/enhance-pass'"));
+    ok('⚠️ enhance-pass grants only for a score that is this user\'s (made-up ids minted a resume each)',
+      ep.indexOf("SELECT id FROM resume_scores WHERE id = ? AND user_id = ?") > -1
+      && ep.indexOf("SELECT id FROM resume_scores WHERE id = ? AND user_id = ?") < ep.indexOf('grantQuota('));
+  }
+
   ok('the fake database saw no SQL it did not understand', db.unhandled.length === 0, db.unhandled);
+  Date.now = REAL_NOW;
   console.log(`\nfree-plan entitlements: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('free-plan entitlements: CRASH', e); process.exit(2); });

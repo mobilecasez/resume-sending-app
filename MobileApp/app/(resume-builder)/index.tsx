@@ -253,11 +253,17 @@ export default function ResumeBuilderIndex() {
   // The model is SUBSCRIPTION COUNTS now, not credits — the button shows what the user has
   // LEFT this period (server truth via /subscription/status), never a per-action price.
   const [resumesLeft, setResumesLeft] = useState<number | null>(null);
+  // DAILY free plan (2026-10-29): a free user's count is today's, not this period's.
+  const [leftToday, setLeftToday] = useState(false);
   const loadResumesLeft = useCallback(async () => {
     try {
       const { fetchSubscriptionStatus } = require('../../services/subscriptionService');
       const st = await fetchSubscriptionStatus();
-      if (st && st.remaining && typeof st.remaining.resumes === 'number') setResumesLeft(Math.max(0, st.remaining.resumes));
+      // ⚠️ remainingNow, when the server sends it: a subscriber whose plan's month is spent can still generate
+      // on the free day, and `remaining` (the plan's own count, 0) told them "Limit reached" while Generate worked.
+      const now = st && (st.remainingNow || st.remaining);
+      if (now && typeof now.resumes === 'number') setResumesLeft(Math.max(0, now.resumes));
+      setLeftToday(!!(st && !st.subscription && (st.trial?.daily || st.trialState?.daily)));
     } catch {}
   }, []);
   // ⚠️ RE-READ, NOT READ ONCE (review, 2026-09-20). Read only at mount, "Limit reached — see plans for more" stayed
@@ -959,7 +965,7 @@ export default function ResumeBuilderIndex() {
               )}
             </LinearGradient>
           </TouchableOpacity>
-          <Text style={s.creditNote}>{resumesLeft == null ? 'Included in your plan' : resumesLeft > 0 ? `${resumesLeft} generation${resumesLeft === 1 ? '' : 's'} left this period` : 'Limit reached — see plans for more'}</Text>
+          <Text style={s.creditNote}>{resumesLeft == null ? 'Included in your plan' : resumesLeft > 0 ? `${resumesLeft} generation${resumesLeft === 1 ? '' : 's'} left ${leftToday ? 'today' : 'this period'}` : leftToday ? 'Today’s free ones are used — more open up within 24 hours' : 'Limit reached — see plans for more'}</Text>
           <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>

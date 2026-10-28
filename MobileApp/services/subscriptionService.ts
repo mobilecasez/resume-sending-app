@@ -31,11 +31,12 @@ export type Plan = {
 export type SubscriptionStatus = {
   plans: Plan[];
   /**
-   * The Free plan (the server's FREE constant). ⚠️ Since 2026-09-13 it is ONE-TIME (`oneTime: true`):
-   * N resume generations + N cover letters for the life of the account, never refilled, one per
-   * device. `days` is a leftover of the old 30-day refilling window — do not render it when oneTime.
+   * The Free plan (the server's FREE constant). ⚠️ Since 2026-10-29 it is DAILY (`daily: true`): N resume
+   * generations + N cover letters in any rolling 24 hours, free to make and preview, one per device
+   * (2026-09-13 → 10-28 it was one time, `oneTime: true`). `days` is a filler — render it only when neither
+   * flag is set.
    */
-  trial: { key: string; label: string; days?: number; letters: number; resumes: number; oneTime?: boolean };
+  trial: { key: string; label: string; days?: number; letters: number; resumes: number; oneTime?: boolean; daily?: boolean };
   subscription: {
     planKey: string; label: string; periodEnd: string; source: string;
     /**
@@ -54,9 +55,12 @@ export type SubscriptionStatus = {
    * was already claimed by another account reads `{ active: false, blocked: 'device_trial_used' }`.
    */
   trialState?: {
-    active: boolean; startedAt?: string; oneTime?: boolean; windowStart?: string;
+    active: boolean; startedAt?: string; oneTime?: boolean; daily?: boolean; windowStart?: string;
     endsAt?: string | null; renewsAt?: string | null; blocked?: string;
     used?: { letters: number; resumes: number };
+    /** Daily plan: what is left in the last 24 hours, and when the next of each kind opens (null = nothing to wait for). */
+    remaining?: { letters: number; resumes: number };
+    nextAt?: { letters: string | null; resumes: string | null };
   };
   remaining: { letters: number; resumes: number };
   used: { letters: number; resumes: number };

@@ -35,6 +35,13 @@ router.post('/resume-score/enhance-pass', authenticateToken, async (req, res) =>
   const { scoreId } = req.body || {};
   if (!scoreId) return res.status(400).json({ error: 'bad_request' });
   try {
+    // ⚠️ THE SCORE MUST BE THIS USER'S (2026-10-29). The grant is keyed on the client's scoreId, and nothing
+    // checked that it named a real score — posting {scoreId:'a1'}, {scoreId:'a2'}, … minted one bonus resume per
+    // made-up id, each a real AI call (found when the free plan went daily and every grant started counting in
+    // today's window). One grant per score the user actually received, and nothing for an id that is not theirs.
+    const dbConfig = require('../../db-config');
+    const own = await dbConfig.get('SELECT id FROM resume_scores WHERE id = ? AND user_id = ?', [scoreId, userId]).catch(() => null);
+    if (!own) return res.status(404).json({ ok: false, error: 'not_found' });
     const idem = `resume_score_pass:${scoreId}`;
     const win = await quotaGrants.ensureCountableWindow(userId, idem);
     // No countable window (device already used its trial) — the user can still improve their

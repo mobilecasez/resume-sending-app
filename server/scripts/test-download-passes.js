@@ -298,7 +298,7 @@ const sql = () => db.calls.map((c) => c.sql).join(' | ');
 
   const rb = strip(R('server', 'controllers', 'resumeBuilderController.js'));
   ok('⚠️ the resume gate asks the plan FIRST and the pass second',
-    /const quota = freeRegen \? \{ allowed: true \} : await entitlements\.canConsumeMany\(userId, 'resume', 1, req\);[\s\S]{0,260}boundOnly: quota\.allowed/.test(rb));
+    /const quota = await entitlements\.canConsumeMany\(userId, 'resume', 1, req\);[\s\S]{0,260}boundOnly: quota\.allowed/.test(rb));
   // ⚠️ RETARGETED 2026-09-14 — THIS PIN USED TO REQUIRE THE WAIVER, AND THE WAIVER WAS THE HOLE. "A client that
   // gave up is never charged" still saved the resume into user_resumes, so on a one-time allowance it was an
   // endless one: kill the app mid-AI, reopen the builder, find it saved — repeat. Now a saved resume is a paid

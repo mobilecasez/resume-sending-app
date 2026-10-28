@@ -45,8 +45,9 @@ export type TrackedEmployer = {
 /**
  * The allowance a build would use, as the gate counted it (contract 3) — what Home's confirm sheet says:
  * "You have 2 of 3 free resume generations left", "12 of 15 left this month on Plus". `remaining` is
- * BEFORE this build. `pool` names the allowance the count is about — 'free' is one time for the life of
- * the account (`oneTime`), 'plan' is this billing month's — and is null when the server named none.
+ * BEFORE this build. `pool` names the allowance the count is about — 'free' is the last 24 hours (`daily`,
+ * since 2026-10-29; `oneTime` on an older server), 'plan' is this billing month's — and null when the server
+ * named none. `nextAt` is when the next free one opens (daily only; null when nothing is waiting).
  * ⚠️ DISPLAY ONLY. Nothing here decides whether a build is covered or what pays: `covered` and `via` do,
  * and the server asks again at the moment of payment under coveredOnly.
  */
@@ -58,6 +59,8 @@ export type GateUsage = {
   allowance: number;
   used: number;
   oneTime: boolean;
+  daily?: boolean;
+  nextAt?: string | null;
 };
 
 /**
@@ -366,6 +369,10 @@ function usageOf(v: any, kind: DocKind): GateUsage | undefined {
     planLabel: label ? label.slice(0, 40) : null,
     remaining, allowance, used,
     oneTime: v.oneTime === true,
+    // Only when the server said so: an older server's answer parses to exactly what it sent.
+    ...(v.daily === true ? { daily: true } : {}),
+    // An ISO instant or nothing — never a guessed time.
+    ...(typeof v.nextAt === 'string' && Number.isFinite(Date.parse(v.nextAt)) ? { nextAt: v.nextAt } : {}),
   };
 }
 

@@ -7,12 +7,13 @@
 //   • Job fetch, Auto Fill, translate, apply (portal + email), searches → FREE (their ai_event_costs
 //     rows are zeroed by Migration 028; the admin screen can re-price). Downloads are a plan
 //     allowance or a one-time single-download pass (services/downloads.js).
-//   • FREE PLAN: 3 resume generations + 3 cover letters, ONE TIME for the life of the account — it
-//     never refills and never expires. Counted from max(user_trials.started_at, FREE_CUTOVER), so
-//     every account that existed before the switch starts it with a fresh 3 + 3. ONE free allowance
-//     per DEVICE: the app sends a keychain-persisted device id (x-device-id), and a second account on
-//     a device whose allowance is already claimed gets none ('device_trial_used'). No device id at
-//     all (old builds) → one free allowance per user. quota_grants bonuses add on top.
+//   • FREE PLAN (2026-10-29): 10 resume generations + 10 cover letters in any ROLLING 24 HOURS —
+//     generate and preview for free, every day; only DOWNLOADING costs money (a plan or a pass). It is
+//     also every subscriber's floor: once a plan's monthly allowance is spent, the free daily lane
+//     pays. ONE free allowance per DEVICE: the app sends a keychain-persisted device id
+//     (x-device-id), and a second account on a device whose allowance is already claimed gets none
+//     ('device_trial_used'). No device id at all (old builds) → one free allowance per user.
+//     quota_grants bonuses add on top, inside the same 24 hours.
 //   • Paid plans (monthly): see PLANS. Bought in the stores (storeSetSubscription); an admin can
 //     also assign one (source 'admin') via POST /api/admin/set-subscription.
 //   • NO CREDITS FOR GENERATION. A legacy credit balance no longer pays for a resume or a cover
@@ -75,13 +76,21 @@ try {
     }
   }
 } catch (e) { console.warn('[entitlements] product id check skipped:', e.message); }
-// ── The FREE plan — ONE TIME since 2026-09-13 ─────────────────────────────────────────────────
-// 3 resume generations + 3 cover letters for the life of the account. It never refills and never
-// expires. Both earlier shapes are still visible in the data, so the history matters:
+// ── The FREE plan — DAILY since 2026-10-29 ─────────────────────────────────────────────────────
+// 10 resume generations + 10 cover letters in any rolling 24 hours. The owner's decision after the
+// October sales analysis: nobody EVER used up the one-time 3 + 3, and the real paywall is Download —
+// so making and previewing is free, every day, and money changes hands only for the file. The cap is
+// fair use: each generation is a real AI call (≈₹0.5 a resume, ≈₹3 a grounded letter). History:
 //   • 2026-07-31  7-day trial, 2 resumes + 5 letters, one per device.
 //   • 2026-08-10  refilling Free plan: 1 resume + 5 letters again every 30 days from signup, and on
 //                 2026-08-12 the device rule came OFF (a refilling allowance gains a 2nd account nothing).
-//   • 2026-09-13  this: one-time — which is exactly why the device rule is back (see ensureTrial).
+//   • 2026-09-13  one-time 3 + 3 — which is why the device rule came back (see ensureTrial).
+//   • 2026-10-29  this: 10 + 10 a day. The device rule STAYS: without it every new email doubles the
+//                 daily cap, and the cap is the only thing between a script and our AI bill.
+//
+// ⚠️ ROLLING, NOT CALENDAR. "Today" is the last 24 hours measured on the ledger's own timestamps, so no
+// timezone is involved and there is no midnight at which 20 can be made in a minute. The next free unit
+// opens when the oldest one counted leaves the window (freeNextAt) — that is the time the refusal quotes.
 //
 // ⚠️ COUNTED FROM max(user_trials.started_at, FREE_CUTOVER), never from started_at alone. Every account
 // older than the cutover would otherwise have its whole refilling-era history billed against 3 + 3 and
@@ -99,31 +108,95 @@ try {
 // to render `days` when oneTime is set.
 // ⚠️ downloads: 0 is not a new restriction — downloads have ALWAYS been paid-only. A free
 // user buys a single-download pass or subscribes.
-const FREE = { key: 'free', label: 'Free plan', letters: 3, resumes: 3, downloads: 0, oneTime: true, days: 30 };
+// ⚠️ oneTime: false + daily: true is the CONTRACT the apps read. Builds before 4.8 render a non-oneTime
+// offer as "every {days} days", which is why days is 1 (true, if clumsy, on an old build); 4.8+ reads daily.
+const FREE = { key: 'free', label: 'Free plan', letters: 10, resumes: 10, downloads: 0, oneTime: false, daily: true, days: 1 };
 const TRIAL = FREE;
-/** The instant the one-time model began. Nothing before it counts against the Free plan. */
+/** The instant the one-time model began (2026-09-13). Kept: nothing before it ever counts against the Free plan. */
 const FREE_CUTOVER = '2026-09-13T00:00:00.000Z';
 const FREE_CUTOVER_MS = Date.parse(FREE_CUTOVER);
+/** The free allowance's window: the last 24 hours. */
+const FREE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Where the free allowance's counting starts: max(started_at, FREE_CUTOVER). Usage and bonus grants
- * are both counted from here. It never rolls — a one-time allowance has one window, open for good.
- * ⚠️ FAILS CLOSED. An unparseable started_at counts from the cutover, the earliest start any account
- * can have, which can only count MORE usage than the true start, never less. (The refilling version
- * answered "now" — a fresh window — which on a one-time allowance would be an unlimited one.)
+ * Where the free allowance's counting starts NOW: max(started_at, FREE_CUTOVER, now − 24 h). Usage and
+ * bonus grants are both counted from here, so a bonus granted today adds to today's cap.
+ * ⚠️ FAILS CLOSED. An unparseable started_at counts from now − 24 h, the earliest start the window can
+ * have, which can only count MORE usage than the true start, never less.
+ * `now` is a parameter for the tests; every caller passes nothing.
  */
-function freeWindowStart(startedAt) {
+function freeWindowStart(startedAt, now = Date.now()) {
+  const floor = Math.max(FREE_CUTOVER_MS, now - FREE_DAY_MS);
   const start = startedAt == null ? NaN : new Date(startedAt).getTime();
-  if (!Number.isFinite(start)) return new Date(FREE_CUTOVER_MS);
-  return new Date(Math.max(start, FREE_CUTOVER_MS));
+  if (!Number.isFinite(start)) return new Date(floor);
+  return new Date(Math.max(start, floor));
 }
 /**
- * When the free allowance refills: never, so ALWAYS null. Kept as a function rather than deleted so a
- * caller that used to show "refills on <date>" gets an explicit "there is none" — never a crash, and
- * never a date reconstructed from started_at.
+ * The window has no fixed end — it rolls — so ALWAYS null. Kept as a function rather than deleted so a
+ * caller that used to show "refills on <date>" gets an explicit "there is none". The real "when does the
+ * next one open" depends on usage: freeNextAt.
  */
 function freeWindowEnd() {
   return null;
+}
+
+/**
+ * When the next free <kind> opens up: the oldest unit counted in the window, plus 24 hours. null when none
+ * is counted (nothing to wait for). Display only — the gate counts, it never trusts this.
+ */
+async function freeNextAt(userId, kind, since) {
+  const rows = await dbConfig.query(
+    `SELECT MIN(created_at) AS first FROM usage_ledger
+      WHERE user_id = $1 AND kind = $2 AND source = 'trial' AND created_at >= $3`,
+    [userId, kind, since]);
+  const first = rows && rows[0] && rows[0].first ? new Date(rows[0].first).getTime() : NaN;
+  return Number.isFinite(first) ? new Date(first + FREE_DAY_MS) : null;
+}
+
+/** "in about 3 hours" — for a refusal. Rounds UP below an hour so it never promises a minute early. */
+function opensInText(at, now = Date.now()) {
+  const ms = at instanceof Date ? at.getTime() - now : NaN;
+  if (!Number.isFinite(ms)) return 'within 24 hours';
+  const mins = Math.max(1, Math.ceil(ms / 60000));
+  if (mins < 60) return `in about ${mins} minute${mins === 1 ? '' : 's'}`;
+  const h = Math.ceil(mins / 60);
+  return `in about ${h} hour${h === 1 ? '' : 's'}`;
+}
+
+/**
+ * The free daily lane for one kind: { since, used, allowance, left }. Only resume and cover_letter have one
+ * (FREE.downloads is 0 — a download is never free).
+ * ⚠️ `withBonus` is false for a SUBSCRIBER. quota_grants rows carry no pool, and a grant made to a subscriber is
+ * the plan's (ensureCountableWindow answers 'plan'; allowanceIn counts it in the period). Counting it here too
+ * paid every subscriber grant twice — once in the month, once more in the free day.
+ */
+async function freeLaneOf(userId, kind, startedAt, { withBonus = true } = {}) {
+  const since = freeWindowStart(startedAt);
+  const used = await usedSince(userId, kind, 'trial', '$4', [since]);
+  const base = FREE[KIND_QUOTA_FIELD[kind]] || 0;
+  const allowance = withBonus ? await allowanceIn(userId, kind, base, since) : base;
+  return { since, used, allowance, left: Math.max(0, allowance - used) };
+}
+const hasFreeLane = (kind) => (FREE[KIND_QUOTA_FIELD[kind]] || 0) > 0;
+
+/**
+ * ⚠️ THE CIRCUIT BREAKER ON FREE AI (2026-10-29). The device rule stops a second account on one phone, but a
+ * script that signs up throwaway accounts (no device id, or a random one) gets 10 + 10 a day EACH, for ever —
+ * under the one-time plan the same script got 3 + 3 once. So free generations of a kind across EVERYONE are
+ * capped per rolling 24 hours (FREE_GLOBAL_DAILY_CAP, default 2000 — ~200× today's real volume). Normal use
+ * never meets it; an attack meets it and stops costing money. Plans and passes are never affected.
+ * The GATE asks it; the charge does not (a build the gate admitted is paid, never dropped, on a race).
+ */
+const FREE_GLOBAL_DAILY_CAP = Math.max(1, parseInt(process.env.FREE_GLOBAL_DAILY_CAP || '2000', 10) || 2000);
+async function freeLaneSaturated(kind) {
+  try {
+    const rows = await dbConfig.query(
+      `SELECT COUNT(*)::int AS n FROM usage_ledger WHERE kind = $1 AND source = 'trial' AND created_at >= $2`,
+      [kind, new Date(Date.now() - FREE_DAY_MS)]);
+    const n = rows && rows[0] ? Number(rows[0].n) || 0 : 0;
+    if (n >= FREE_GLOBAL_DAILY_CAP) console.warn(`[entitlements] FREE ${kind} BREAKER: ${n} free in 24 h ≥ cap ${FREE_GLOBAL_DAILY_CAP} — free lane paused`);
+    return n >= FREE_GLOBAL_DAILY_CAP;
+  } catch { return false; }   // an unreadable count must not refuse real users; the per-user cap still holds
 }
 const planByKey = (k) => PLANS.find((p) => p.key === k) || null;
 
@@ -314,6 +387,21 @@ async function getStatus(userId, req) {
     out.remaining = { letters: Math.max(0, aL - uL), resumes: Math.max(0, aR - uR) };
     out.bonus = { letters: aL - plan.letters, resumes: aR - plan.resumes };
     out.via = 'plan';
+    // ⚠️ remaining STAYS THE PLAN'S (the Plans/Usage bars are drawn against the plan's totals). What the user can
+    // still make RIGHT NOW is remainingNow: once the plan's month is spent the free day pays (canConsumeMany), and
+    // a screen reading only `remaining` told a paying user "Limit reached — see plans" while Generate worked.
+    out.remainingNow = { ...out.remaining };
+    if (out.remaining.letters === 0 || out.remaining.resumes === 0) {
+      const t = await ensureTrial(userId, deviceId, ipHashOf(req || {})).catch(() => null);
+      if (t && !t.blocked) {
+        for (const [kind, f] of [['cover_letter', 'letters'], ['resume', 'resumes']]) {
+          if (out.remaining[f] > 0) continue;
+          const lane = await freeLaneOf(userId, kind, t.started_at, { withBonus: false });
+          out.remainingNow[f] = lane.left;
+        }
+        out.freeFloor = true;
+      }
+    }
     return out;
   }
   // DIAGNOSTIC ONLY — never acted on. When a user holds a live store plan in the OTHER environment
@@ -333,29 +421,31 @@ async function getStatus(userId, req) {
 
   const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
   if (trial && !trial.blocked) {
-    // ONE-TIME: counted from max(started_at, FREE_CUTOVER) and never rolled, so `active` is simply
-    // "not superseded by a paid plan", and what is left is left for good.
-    const winStart = freeWindowStart(trial.started_at);
-    const uL = await usedSince(userId, 'cover_letter', 'trial', '$4', [winStart]);
-    const uR = await usedSince(userId, 'resume', 'trial', '$4', [winStart]);
-    const aL = await allowanceIn(userId, 'cover_letter', FREE.letters, winStart);
-    const aR = await allowanceIn(userId, 'resume', FREE.resumes, winStart);
+    // DAILY: the last 24 hours, so `active` is "not superseded by a paid plan" and what is left comes back
+    // as each counted unit turns 24 hours old (nextAt).
+    const L = await freeLaneOf(userId, 'cover_letter', trial.started_at, { withBonus: !sub });
+    const R = await freeLaneOf(userId, 'resume', trial.started_at, { withBonus: !sub });
+    const [nL, nR] = await Promise.all([
+      L.left < L.allowance ? freeNextAt(userId, 'cover_letter', L.since).catch(() => null) : null,
+      R.left < R.allowance ? freeNextAt(userId, 'resume', R.since).catch(() => null) : null,
+    ]);
     out.trialState = {
-      active: !sub, startedAt: trial.started_at, oneTime: true,
-      windowStart: winStart.toISOString(),
-      // ⚠️ NULL, NOT A DATE. Both used to carry the next 30-day refill. The allowance no longer refills
-      // or expires, so any date here would be rendered as "Refills on …" — a promise the server will
-      // not keep. Clients key their copy off oneTime and must not reconstruct one from startedAt.
+      active: !sub, startedAt: trial.started_at, oneTime: false, daily: true,
+      windowStart: L.since.toISOString(),
+      // ⚠️ NULL, NOT A DATE: the window rolls, it has no end. When the next one opens is nextAt, per kind.
       endsAt: null, renewsAt: null,
-      used: { letters: uL, resumes: uR },
+      used: { letters: L.used, resumes: R.used },
+      remaining: { letters: L.left, resumes: R.left },
+      nextAt: { letters: nL ? nL.toISOString() : null, resumes: nR ? nR.toISOString() : null },
     };
-    // ⚠️ A paid plan always wins. Filling these in when `sub` exists would overwrite the plan's
-    // own remaining counts a few lines above with the free allowance.
+    // ⚠️ A paid plan's own counts stay in remaining/used — filling these in when `sub` exists would
+    // overwrite them. (A subscriber whose plan the catalogue knows never gets here: it returned above.)
     if (!sub) {
-      out.used = { letters: uL, resumes: uR };
-      out.remaining = { letters: Math.max(0, aL - uL), resumes: Math.max(0, aR - uR) };
-      out.bonus = { letters: aL - FREE.letters, resumes: aR - FREE.resumes };
+      out.used = { letters: L.used, resumes: R.used };
+      out.remaining = { letters: L.left, resumes: R.left };
+      out.bonus = { letters: L.allowance - FREE.letters, resumes: R.allowance - FREE.resumes };
       out.via = 'free';
+      out.remainingNow = { ...out.remaining };
     }
   } else if (trial && trial.blocked) {
     out.trialState = { active: false, blocked: trial.blocked };
@@ -375,36 +465,43 @@ async function canConsumeMany(userId, kind, count, req) {
   const n = Math.max(1, parseInt(count, 10) || 1);
   const deviceId = req ? deviceIdOf(req) : null;
 
-  // ⚠️ ORDER IS LOAD-BEARING: plan → free, and NOTHING after them. There used to be a third lane —
+  // ⚠️ ORDER IS LOAD-BEARING: plan → free daily, and NOTHING after them. There used to be a third lane —
   // legacy credits at the old per-event price — and it is gone on purpose (2026-09-13): credits no
   // longer pay for generation, and downloads never had a credit price. An exhausted allowance is
   // simply exhausted, and the answer is quota_exhausted, which every caller turns into the plans
   // screen. Which plan is visible is environment-scoped: a store plan from another environment is not.
+  // ⚠️ SINCE 2026-10-29 THE FREE DAILY LANE IS EVERYONE'S FLOOR, a subscriber's too. A Starter plan has 6
+  // resumes a month; a free user has 10 a day — refusing the subscriber at 6 while the free user carries on
+  // would make paying the worse deal. So a spent plan falls through to the free lane (consumeOnSuccess
+  // charges in the same order, one unit at a time: the plan's first, then the free day's). Downloads have
+  // no free lane (FREE.downloads is 0), so a download is still plan or pass, exactly as before.
   const sub = await activeSubscription(userId, requestEnvironment(req || {}));
-  let left = 0;          // what the lane that was asked still has, for an honest refusal below
+  let planLeft = 0;      // what the plan still has, for an honest refusal below
+  let lane = null;       // the free daily lane, when it could be asked
   let blocked = null;    // why the free lane could not even be asked
+  let saturated = false; // the global breaker (freeLaneSaturated) paused the free lane
   if (sub) {
     const plan = planByKey(sub.plan_key);
     if (plan) {
       const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
       const allow = await allowanceIn(userId, kind, plan[field], sub.period_start);
       if (allow - used >= n) return { allowed: true, via: 'plan', remaining: allow - used };
-      left = Math.max(0, allow - used);
-      // plan exhausted → refused below. Never the free allowance: a subscriber's usage is the plan's.
+      planLeft = Math.max(0, allow - used);
     }
-  } else {
-    // Free plan: no expiry and no refill — only "is there allowance left since the counting start".
+  }
+  if (hasFreeLane(kind)) {
     const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
     if (trial && !trial.blocked) {
-      const winStart = freeWindowStart(trial.started_at);
-      const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
-      const allow = await allowanceIn(userId, kind, FREE[field], winStart);
-      if (allow - used >= n) return { allowed: true, via: 'free', remaining: allow - used };
-      left = Math.max(0, allow - used);
+      lane = await freeLaneOf(userId, kind, trial.started_at, { withBonus: !sub });
+      if (lane.left > 0 && await freeLaneSaturated(kind)) { saturated = true; lane = { ...lane, left: 0 }; }
+      if (planLeft === 0 && lane.left >= n) return { allowed: true, via: 'free', remaining: lane.left };
+      // A batch (Generate All) the plan starts and the free day finishes: the first unit is the plan's.
+      if (planLeft > 0 && planLeft + lane.left >= n) return { allowed: true, via: 'plan', remaining: planLeft + lane.left };
     } else if (trial) {
       blocked = trial.blocked;
     }
   }
+  const left = planLeft + (lane ? lane.left : 0);
 
   // ── refused ──
   if (kind !== 'resume' && kind !== 'cover_letter') {
@@ -417,23 +514,51 @@ async function canConsumeMany(userId, kind, count, req) {
   }
   const noun = kind === 'resume' ? 'resume generations' : 'cover letters';
   const leftNoun = left === 1 ? noun.slice(0, -1) : noun;   // "1 cover letter left", not "1 cover letters"
+  // When the oldest free unit counted turns 24 hours old. Display only, and a failed read just says "within 24 hours".
+  const nextAt = lane && lane.used > 0 && !saturated ? await freeNextAt(userId, kind, lane.since).catch(() => null) : null;
+  const opens = opensInText(nextAt);
+  // A batch the free day could NEVER hold (12 letters on a 10-a-day allowance): "more open up" would be a promise.
+  const tooBig = !!lane && n > planLeft + lane.allowance;
   let message;
-  if (sub) {
+  if (saturated) {
+    message = sub
+      ? `You've used this month's ${noun} in your plan, and the daily ones are paused for a few hours. Upgrade in Plans & Usage to continue now.`
+      : `Free ${noun} are paused for a few hours because of very high demand. A plan or a one-time pass still works now.`;
+  } else if (sub && !lane) {
+    // A subscriber whose free floor could not be asked (this device's free allowance is another account's).
     message = left > 0
       ? `You have ${left} ${leftNoun} left in your plan this month, not enough for ${n}. Upgrade in Plans & Usage to continue.`
       : `You've used all the ${noun} in your plan this month. Upgrade in Plans & Usage to continue.`;
   } else if (blocked === 'device_trial_used') {
-    // Not "you've used your 3": this account never had them — the device's allowance went to another.
+    // Not "you've used your free ones": this account never had them — the device's allowance went to another.
     message = 'The free plan on this device was already used by another account. Start a plan in Plans & Usage to keep going.';
   } else if (blocked) {
     // trial_unavailable — the row could not be written. A transient failure, not a used-up allowance.
     message = "We couldn't check your free allowance just now. Please try again in a moment.";
+  } else if (sub) {
+    // ⚠️ NO WORD "free" IN A SUBSCRIBER'S SENTENCE. Store builds before 4.8 pick the allowance that ran out by
+    // testing /free/ before /this month/ (BuildingOverlay.allowanceOf), and would tell a paying user their "free
+    // generations are a one-time allowance — pick a plan". "daily ones" reads as the plan's sentence there.
+    message = tooBig
+      ? `You have ${left} ${leftNoun} left right now, not enough for ${n}. Upgrade in Plans & Usage to do more at once.`
+      : left > 0
+        ? `You have ${left} ${leftNoun} left right now, not enough for ${n}. More daily ones open up ${opens}, or upgrade in Plans & Usage.`
+        : `You've used this month's ${noun} in your plan and today's ${FREE[field]} daily ones. The next daily one opens up ${opens}, or upgrade in Plans & Usage.`;
   } else {
-    message = left > 0
-      ? `You have ${left} free ${leftNoun} left, not enough for ${n}. Start a plan in Plans & Usage to keep going.`
-      : `You've used your ${FREE[field]} free ${noun}. Start a plan in Plans & Usage to keep going.`;
+    message = tooBig
+      ? `The free plan makes up to ${FREE[field]} ${noun} a day, and you have ${left} left today — not enough for ${n} at once. Start a plan in Plans & Usage to do more.`
+      : left > 0
+        ? `You have ${left} free ${leftNoun} left today, not enough for ${n}. More open up ${opens}, or start a plan in Plans & Usage.`
+        : `You've used today's ${FREE[field]} free ${noun}. The next one opens up ${opens}, or start a plan in Plans & Usage to keep going now.`;
   }
-  return { allowed: false, via: null, reason: 'quota_exhausted', message, ...(blocked ? { blocked } : {}) };
+  return {
+    allowed: false, via: null, reason: 'quota_exhausted', message,
+    // ⚠️ never `blocked` on a subscriber's refusal: the device sentence is about the free plan, and the clients
+    // render it as "this device's free plan belongs to another account" — not what a paying user ran out of.
+    ...(blocked && !sub ? { blocked } : {}),
+    ...(saturated ? { paused: true } : {}),
+    ...(nextAt ? { nextFreeAt: nextAt.toISOString() } : {}),
+  };
 }
 
 // ── the confirm sheet's numbers (display — NEVER a gate) ──────────────────────────────────────
@@ -467,26 +592,35 @@ async function usageFor(userId, kind, req) {
   if (!field) return null;
   const deviceId = req ? deviceIdOf(req) : null;
   const sub = await activeSubscription(userId, requestEnvironment(req || {}));
+  let planPool = null;
   if (sub) {
     const plan = planByKey(sub.plan_key);
     const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
     if (!plan) {
-      return { kind, pool: 'plan', planLabel: sub.plan_key || null, remaining: 0, allowance: 0, used, oneTime: false };
+      planPool = { kind, pool: 'plan', planLabel: sub.plan_key || null, remaining: 0, allowance: 0, used, oneTime: false };
+    } else {
+      const allowance = await allowanceIn(userId, kind, plan[field], sub.period_start);
+      planPool = { kind, pool: 'plan', planLabel: plan.label, remaining: Math.max(0, allowance - used), allowance, used, oneTime: false };
     }
-    const allowance = await allowanceIn(userId, kind, plan[field], sub.period_start);
-    return { kind, pool: 'plan', planLabel: plan.label, remaining: Math.max(0, allowance - used), allowance, used, oneTime: false };
+    // The plan pays while it has any left — the gate's first clause.
+    if (planPool.remaining > 0 || !hasFreeLane(kind)) return planPool;
   }
+  // No plan, or a spent one: the free daily lane is what pays next (the gate's second clause).
   const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
   if (!trial || trial.blocked) {
+    // A subscriber whose free floor is unavailable is still on their plan — show that, at 0, not a device message.
+    if (planPool) return planPool;
     return {
-      kind, pool: null, planLabel: null, remaining: 0, allowance: 0, used: 0, oneTime: true,
+      kind, pool: null, planLabel: null, remaining: 0, allowance: 0, used: 0, oneTime: false, daily: true,
       blocked: (trial && trial.blocked) || 'trial_unavailable',
     };
   }
-  const winStart = freeWindowStart(trial.started_at);
-  const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
-  const allowance = await allowanceIn(userId, kind, FREE[field], winStart);
-  return { kind, pool: 'free', planLabel: null, remaining: Math.max(0, allowance - used), allowance, used, oneTime: true };
+  const lane = await freeLaneOf(userId, kind, trial.started_at, { withBonus: !sub });
+  const nextAt = lane.used > 0 ? await freeNextAt(userId, kind, lane.since).catch(() => null) : null;
+  return {
+    kind, pool: 'free', planLabel: null, remaining: lane.left, allowance: lane.allowance, used: lane.used,
+    oneTime: false, daily: true, nextAt: nextAt ? nextAt.toISOString() : null,
+  };
 }
 
 // ── the deduction — call ONLY after the work succeeded ────────────────────────────────────────
@@ -524,17 +658,18 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
       const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
       const allow = await allowanceIn(userId, kind, plan[KIND_QUOTA_FIELD[kind]], sub.period_start);
       if (allow - used >= 1) via = 'plan';
-    } else {
+    }
+    // The free daily lane — a free user's only lane and a subscriber's floor once the plan is spent
+    // (the gate's order, unit by unit).
+    if (!via && hasFreeLane(kind)) {
       const trial = await ensureTrial(userId, deviceId, null);
       if (trial && !trial.blocked) {
-        const winStart = freeWindowStart(trial.started_at);
-        const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
-        const allow = await allowanceIn(userId, kind, FREE[KIND_QUOTA_FIELD[kind]], winStart);
+        const lane = await freeLaneOf(userId, kind, trial.started_at, { withBonus: !sub });
         // ⚠️ THE LEDGER SOURCE STAYS 'trial'. usage_ledger.source is what usedSince() matches on,
         // and every free-tier row ever written carries 'trial'. Writing 'free' here would make the
         // counter stop seeing the new rows — every user would silently get unlimited free
         // generations. The user-facing name changed; the stored label must not.
-        if (allow - used >= 1) via = 'trial';
+        if (lane.left >= 1) via = 'trial';
       }
     }
     if (!via) {
@@ -548,7 +683,8 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
       `INSERT INTO usage_ledger (user_id, kind, source, plan_key, detail, created_at)
        VALUES ($1,$2,$3,$4,$5::jsonb,NOW())
        RETURNING id`,
-      [userId, kind, via, sub ? sub.plan_key : null,
+      // plan_key only on a row the plan paid — a subscriber's free-floor row is the free day's, not the plan's.
+      [userId, kind, via, via === 'plan' ? sub.plan_key : null,
        JSON.stringify({ ...detail, env: requestEnvironment(req || {}) }).slice(0, 4000)]);
     const id = rows && rows[0] ? Number(rows[0].id) : NaN;
     return { via, charge, ledgerId: Number.isFinite(id) && id > 0 ? id : null };
@@ -567,9 +703,12 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
  */
 async function payingPoolOf(userId, req) {
   const sub = await activeSubscription(userId, requestEnvironment(req || {}));
-  if (sub) return { source: 'plan', since: new Date(sub.period_start) };
   const rows = await dbConfig.query('SELECT started_at FROM user_trials WHERE user_id = $1', [userId]);
-  return { source: 'trial', since: freeWindowStart(rows && rows[0] ? rows[0].started_at : null) };
+  const free = { source: 'trial', since: freeWindowStart(rows && rows[0] ? rows[0].started_at : null) };
+  // A subscriber's free-day rows (written once the plan's month was spent) count against today's free allowance,
+  // so they are counted too — not filed under "before your current allowance".
+  if (sub) return { source: 'plan', since: new Date(sub.period_start), also: free };
+  return free;
 }
 
 /**
@@ -588,12 +727,14 @@ async function getUsage(userId, limit = 100, req = null) {
   try { pool = await payingPoolOf(userId, req); }
   catch (e) { console.warn('[entitlements] getUsage: the paying pool is unreadable —', e.message); }
   const sinceMs = pool ? pool.since.getTime() : NaN;
+  const also = pool && pool.also ? pool.also : null;
   return (rows || []).map((r) => ({
     id: r.id, kind: r.kind, source: r.source, planKey: r.plan_key,
     detail: typeof r.detail === 'object' ? r.detail : (() => { try { return JSON.parse(r.detail); } catch { return {}; } })(),
     createdAt: r.created_at,
     counted: pool && Number.isFinite(sinceMs)
-      ? (r.source === pool.source && new Date(r.created_at).getTime() >= sinceMs)
+      ? ((r.source === pool.source && new Date(r.created_at).getTime() >= sinceMs)
+        || (!!also && r.source === also.source && new Date(r.created_at).getTime() >= also.since.getTime()))
       : null,
   }));
 }
@@ -823,10 +964,9 @@ module.exports = {
   adminSetSubscription, storeSetSubscription, storeSubscriptionFor, deviceIdOf, ipHashOf,
   // exported for the lifecycle nudges (which must know what a user has LEFT before offering more)
   activeSubscription, usedSince, bonusSince, allowanceIn, planByKey, KIND_QUOTA_FIELD,
-  // The one-time free-plan counting start, and its absent end. Exported so the admin screens and bonus
-  // grants count "used" exactly the way the app does — counting from signup instead would bill every
-  // pre-cutover generation against the fresh 3 + 3 and show older accounts as already exhausted.
-  freeWindowStart, freeWindowEnd,
+  // The free plan's counting start (the last 24 hours), its absent end, and when the next unit opens. Exported
+  // so the admin screens and bonus grants count "used" exactly the way the app does.
+  freeWindowStart, freeWindowEnd, freeNextAt, opensInText, FREE_DAY_MS, FREE_GLOBAL_DAILY_CAP,
   // re-exported so callers do not have to know where the environment vocabulary lives
   PRODUCTION, normalizeEnvironment, requestEnvironment,
 };

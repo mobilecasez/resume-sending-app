@@ -759,8 +759,8 @@ async function quotaStateOf(userId) {
     if (!(await tableExists('user_trials'))) return out;
     const t = await g('SELECT started_at FROM user_trials WHERE user_id = $1', [userId]);
     if (!t) return out;                                   // no free-plan row — do NOT create one
-    // ⚠️ Count from the ONE-TIME window's start, max(started_at, the 2026-09-13 cutover) — the same
-    // helper the app's own quota check uses. From started_at alone, every generation an older account
+    // ⚠️ Count from the free window's start — the last 24 hours since 2026-10-29 (max(started_at, cutover,
+    // now − 24 h)) — the same helper the app's own quota check uses. From started_at alone, every generation an older account
     // made under the old refilling plan would count against its fresh 3 + 3, so it would report "0 left"
     // — and this feeds the lifecycle nudges, which would then offer bonus letters to people who have
     // plenty.
@@ -850,7 +850,7 @@ async function planStateOf(userId) {
       const t = await g('SELECT started_at FROM user_trials WHERE user_id = $1', [userId]);
       if (t && t.started_at) {
         out.status = 'free'; out.free_since = t.started_at;
-        // ONE-TIME: a start, max(started_at, cutover), and NO end. freeWindowEnd answers null, so
+        // DAILY (2026-10-29): a start 24 h back and NO fixed end — it rolls. freeWindowEnd answers null, so
         // window_end and window_days_left stay null — a free user has no refill date to show, and
         // rendering one would promise something the server no longer does.
         winStart = ent.freeWindowStart(t.started_at);
@@ -863,7 +863,7 @@ async function planStateOf(userId) {
         // rule, so "the one-time allowance is untouched" is not shown for a user the app will refuse.
         const owner = await freeDeviceOwnerOf(userId);
         if (owner) {
-          out.caveats.push(`A device this account uses already gave its one-time Free allowance to user #${owner}. `
+          out.caveats.push(`A device this account uses already gave its Free allowance to user #${owner}. `
             + 'Free generations requested from that device are refused (device_trial_used) — a plan or a download pass still works.');
         }
       }

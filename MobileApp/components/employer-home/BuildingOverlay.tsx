@@ -13,9 +13,10 @@
 // letters auto-regeneration incident came from a SCREEN deciding to spend money on entry.
 //
 // ⚠️ A USED-UP ALLOWANCE NEVER MENTIONS CREDITS (the product owner's call, 2026-09-13). Credits no longer
-// pay for a resume or a letter: generation is a plan's monthly allowance or the free one — 3 resumes and
-// 3 letters, ONE TIME for the life of the account, never refilled. So "used up" says WHICH of the two ran
-// out (allowanceOf) and offers exactly one way on: See plans.
+// pay for a resume or a letter: generation is a plan's monthly allowance or the free one — 10 resumes and
+// 10 letters in any 24 hours since 2026-10-29 (3 + 3 one time before), and a spent plan falls through to the
+// free day. So "used up" says WHICH ran out (allowanceOf), when the next free one opens (the server's own
+// "opens up in about N hours"), and offers exactly one way on now: See plans.
 //
 // ⚠️ "KEEP IT BUILDING IN THE BACKGROUND" IS NOT CANCEL, AND ITS COPY MUST NEVER SAY SO. The async job
 // is already on the server and is charged whether or not anyone watches it; closing this only hides
@@ -660,6 +661,9 @@ type Outcome = 'plans' | 'upload' | 'retry' | 'wait' | 'built' | 'unknown' | 'do
 function allowanceOf(reason: string, message: string, isPaid?: boolean): 'free' | 'plan' {
   if (reason === 'regen_limit') return 'free';
   const said = String(message || '');
+  // A subscriber is refused only when the plan AND the free day are spent, and that sentence names both —
+  // "in your plan" decides it (checked before "free", which it also contains).
+  if (/\bin your plan\b/i.test(said)) return 'plan';
   if (/\bfree\b/i.test(said)) return 'free';
   if (/\bthis month\b/i.test(said)) return 'plan';
   return isPaid ? 'plan' : 'free';
@@ -689,30 +693,40 @@ export function errorCopy(reason: string, message: string, company: string, kind
   switch (reason) {
     case 'quota_exhausted':
     case 'regen_limit': {
-      // ⚠️ NO CREDITS, AND NO PROMISE THE FREE ONES COME BACK: they are one time. See the header.
+      // ⚠️ NO CREDITS. The free ones are DAILY (2026-10-29): they come back as each turns 24 hours old, and the
+      // server's sentence says when ("opens up in about 3 hours") — repeated here, never invented.
       const used = allowanceOf(reason, message, isPaid);
+      const opens = (/opens up ((?:in about|within) [^,.]+)/i.exec(String(message || '')) || [])[1] || 'within 24 hours';
       if (used === 'free') {
         return letter
           ? {
-            title: "You've used your free cover letters",
-            body: `Free cover letters are a one-time allowance, so they don’t refill. Pick a plan to write the cover letter ${forWho}, and to keep writing one for every employer you add.`,
+            title: "You've used today's free cover letters",
+            body: `The next free one opens up ${opens}. To write the cover letter ${forWho} now, pick a plan.`,
             icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
           }
           : {
-            title: "You've used your free resume generations",
-            body: `Free generations are a one-time allowance, so they don’t refill. Pick a plan to build the resume ${forWho}, and to keep tailoring one to every employer you add.`,
+            title: "You've used today's free resume generations",
+            body: `The next free one opens up ${opens}. To build the resume ${forWho} now, pick a plan.`,
             icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
           };
       }
+      // A subscriber is refused when the plan's month AND the daily ones are used — the server's sentence then
+      // says "daily ones" and when the next opens. A subscriber with no daily lane (this phone's free plan belongs
+      // to another account) gets the plan-only sentence, and must not be promised a daily one that never comes.
+      const daily = /\bdaily\b/i.test(String(message || ''));
       return letter
         ? {
           title: "You've used this month's cover letters",
-          body: `Your plan’s cover letters for this month are used. A plan with more lets you write the cover letter ${forWho} now.`,
+          body: daily
+            ? `Your plan’s cover letters for this month and today’s daily ones are used. The next daily one opens up ${opens}, or a plan with more lets you write the cover letter ${forWho} now.`
+            : `Your plan’s cover letters for this month are used. A plan with more lets you write the cover letter ${forWho} now.`,
           icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
         }
         : {
           title: "You've used this month's resume generations",
-          body: `Your plan’s resume generations for this month are used. A plan with more lets you build the resume ${forWho} now.`,
+          body: daily
+            ? `Your plan’s resume generations for this month and today’s daily ones are used. The next daily one opens up ${opens}, or a plan with more lets you build the resume ${forWho} now.`
+            : `Your plan’s resume generations for this month are used. A plan with more lets you build the resume ${forWho} now.`,
           icon: 'diamond-outline', tint: E.purpleLite, outcome: 'plans',
         };
     }

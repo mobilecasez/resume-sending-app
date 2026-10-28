@@ -168,11 +168,21 @@ function benefitsFor(kind: DocKind, who: string): Array<{ icon: IconName; title:
   ];
 }
 
-/** "You've used your 3 free resume generations" — from the count that ran out, or plainly when there is none. */
+/** "When the next free one opens", in the phone's own clock: "at 3:40 PM", "tomorrow at 9:05 AM", or "within 24 hours". */
+export function opensAt(nextAt: string | null | undefined, now: Date = new Date()): string {
+  const t = nextAt ? Date.parse(nextAt) : NaN;
+  if (!Number.isFinite(t)) return 'within 24 hours';
+  const d = new Date(t);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return d.toDateString() === now.toDateString() ? `at ${time}` : `tomorrow at ${time}`;
+}
+
+/** "You've used today's 10 free resume generations" — from the count that ran out, or plainly when there is none. */
 function emptyTitle(kind: DocKind, usage: GateUsage | null): string {
   const w = wordsFor(kind);
   const n = usage ? usage.allowance : 0;
   const noun = n === 1 ? w.one : w.many;
+  if (usage && usage.pool === 'free' && n > 0 && usage.daily) return `You’ve used today’s ${n} free ${noun}`;
   if (usage && usage.pool === 'free' && n > 0) return `You’ve used your ${n} free ${noun}`;
   if (usage && usage.pool === 'plan' && n > 0) {
     return `You’ve used this month’s ${n} ${noun}${usage.planLabel ? ` on ${usage.planLabel}` : ''}`;
@@ -261,13 +271,18 @@ function UsageStrip({ kind, mode, who, usage, pass }: {
   const left = empty ? 0 : Math.max(0, Math.min(Math.floor(usage.remaining), allowance));
   const noun = allowance === 1 ? w.one : w.many;
   const title = usage.pool === 'free'
-    ? `${empty ? '' : 'You have '}${left} of ${allowance} free ${noun} left`
+    ? `${empty ? '' : 'You have '}${left} of ${allowance} free ${noun} left${usage.daily ? ' today' : ''}`
     : usage.pool === 'plan'
       ? `${left} of ${allowance} ${noun} left this month${usage.planLabel ? ` · ${usage.planLabel}` : ''}`
       : `${left} of ${allowance} ${noun} left`;
+  // DAILY (2026-10-29): free ones come back as each turns 24 hours old, so the empty sheet says when — in the phone's time.
   const sub = empty
-    ? (usage.pool === 'plan' ? 'Your plan’s count refills when it renews.' : usage.oneTime ? 'Free ones are one time — they don’t refill.' : '')
-    : (usage.pool === 'plan' ? 'Continue uses one of this month’s.' : usage.oneTime ? 'Continue uses one — free ones don’t refill.' : 'Continue uses one.');
+    ? (usage.pool === 'plan' ? 'Your plan’s count refills when it renews.'
+      : usage.daily ? `The next free one opens ${opensAt(usage.nextAt)}.`
+      : usage.oneTime ? 'Free ones are one time — they don’t refill.' : '')
+    : (usage.pool === 'plan' ? 'Continue uses one of this month’s.'
+      : usage.daily ? 'Continue uses one of today’s — previews are free, downloads need a pass or plan.'
+      : usage.oneTime ? 'Continue uses one — free ones don’t refill.' : 'Continue uses one.');
 
   return (
     <View style={[s.strip, empty && s.stripEmpty]} accessible accessibilityLabel={sub ? `${title}. ${sub}` : title}>

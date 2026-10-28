@@ -155,7 +155,8 @@ export default function DownloadPaywallSheet({
             <View style={[s.oneIcon, passOff && s.oneIconOff]}><Ionicons name="download" size={19} color="#fff" /></View>
             <View style={{ flex: 1 }}>
               <Text style={[s.oneTitle, passOff && s.textOff]} numberOfLines={1}>Just this one</Text>
-              <Text style={s.oneSub} numberOfLines={2}>
+              {/* 3 lines: at 2 an iPhone 16 Pro cut "One payment, no subscription" to "no s…" — the one line that says it isn't a subscription. */}
+              <Text style={s.oneSub} numberOfLines={3}>
                 {passOff
                   ? 'One-off downloads are not available in your store yet.'
                   : `Unlocks every design and the cover letter for ${who}. One payment, no subscription.`}

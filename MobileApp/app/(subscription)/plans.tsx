@@ -622,11 +622,13 @@ export default function PlansScreen() {
   const pendingKey = status?.subscription?.pendingPlanKey || null;
   const source = status?.subscription?.source || null;
   const trial = status?.trialState;
-  // ⚠️ THE FREE PLAN IS ONE-TIME (2026-09-13). There is no refill date and no expiry — the server
-  // sends renewsAt/endsAt as null — so this card renders NO date at all. It used to say "refilling
-  // on <date>", and any fallback to endsAt would resurrect exactly that promise.
+  // ⚠️ THE FREE PLAN IS DAILY (2026-10-29; it was one time from 2026-09-13): 10 + 10 in any 24 hours, free
+  // to make and preview — only downloads cost money. There is still no refill DATE (the window rolls; the
+  // server sends renewsAt/endsAt as null). What it does send is trialState.nextAt — when the next one opens,
+  // per kind — and that is the only time this card may show. An older server sends oneTime instead.
   const freeOffer = status?.trial || null;
-  const oneTime = !!(freeOffer?.oneTime || trial?.oneTime);
+  const daily = !!(freeOffer?.daily || trial?.daily);
+  const oneTime = !daily && !!(freeOffer?.oneTime || trial?.oneTime);
   // `current` is a plan KEY, not the plan object — resolve it for display.
   const currentLabel = (status?.plans || []).find((p: any) => p.key === current)?.label || current || 'a paid plan';
   const trialActive = !current && trial?.active;
@@ -641,6 +643,17 @@ export default function PlansScreen() {
     };
   })();
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  // When the next free one opens: the earlier of the two kinds that are waiting (only when something is used up).
+  const nextOpen = (() => {
+    const at = [trial?.nextAt?.resumes, trial?.nextAt?.letters]
+      .filter((v, i) => !!v && (i === 0 ? freeLeft?.resumes === 0 : freeLeft?.letters === 0))
+      .map((v) => new Date(v as string).getTime()).filter((t) => Number.isFinite(t));
+    if (!at.length) return '';
+    const d = new Date(Math.min(...at));
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return sameDay ? `at ${time}` : `tomorrow at ${time}`;
+  })();
   // "Tailored resume", not "resume generation": since 2026-09-14 every generation is built for ONE
   // employer (research → ranked designs → their conventions), and that is what the allowance buys.
   const offerText = freeOffer
@@ -663,8 +676,8 @@ export default function PlansScreen() {
     ? `You're on ${currentLabel}`
     : trialActive && freeLeft
       ? (freeLeft.resumes + freeLeft.letters === 0
-        ? 'Your free allowance is used up'
-        : `Free plan · ${plural(freeLeft.resumes, 'resume', 'resumes')} + ${plural(freeLeft.letters, 'letter', 'letters')} left`)
+        ? (daily ? `Today's free ones are used${nextOpen ? ` · more ${nextOpen}` : ''}` : 'Your free allowance is used up')
+        : `Free plan · ${plural(freeLeft.resumes, 'resume', 'resumes')} + ${plural(freeLeft.letters, 'letter', 'letters')} left${daily ? ' today' : ''}`)
       : 'Pick a plan to keep generating';
 
   const unusedPasses = dl?.passes || 0;
@@ -707,23 +720,23 @@ export default function PlansScreen() {
           <Ionicons name={trialActive ? 'checkmark-circle' : !current && trial?.blocked ? 'close-circle-outline' : 'gift-outline'} size={20} color={trialActive ? T.emerald : T.faint} />
           <Text style={s.trialTitle}>{status?.trial?.label || 'Free plan'}</Text>
           <View style={{ flex: 1 }} />
-          {freeOffer && oneTime ? <View style={s.pillMuted}><Text style={s.pillMutedText}>ONE TIME</Text></View> : null}
+          {freeOffer && (daily || oneTime) ? <View style={s.pillMuted}><Text style={s.pillMutedText}>{daily ? 'EVERY DAY' : 'ONE TIME'}</Text></View> : null}
           {trialActive ? <View style={s.pillOn}><Text style={s.pillOnText}>ACTIVE</Text></View> : null}
         </View>
         {freeOffer ? (
           <Text style={s.freeOffer}>
-            {offerText}{oneTime ? ', one time' : ` every ${freeOffer.days ?? 30} days`}
+            {offerText}{daily ? ' a day, free to make and preview' : oneTime ? ', one time' : ` every ${freeOffer.days ?? 30} days`}
           </Text>
         ) : null}
         {trialActive && freeLeft ? (
           <View style={s.leftRow}>
             <View style={s.leftChip}>
               <Ionicons name="document-text-outline" size={13} color="#7C6BFF" />
-              <Text style={s.leftText}>{plural(freeLeft.resumes, 'resume', 'resumes')} left</Text>
+              <Text style={s.leftText}>{plural(freeLeft.resumes, 'resume', 'resumes')} left{daily ? ' today' : ''}</Text>
             </View>
             <View style={s.leftChip}>
               <Ionicons name="mail-outline" size={13} color={T.cyan} />
-              <Text style={s.leftText}>{plural(freeLeft.letters, 'cover letter', 'cover letters')} left</Text>
+              <Text style={s.leftText}>{plural(freeLeft.letters, 'cover letter', 'cover letters')} left{daily ? ' today' : ''}</Text>
             </View>
           </View>
         ) : null}
@@ -737,11 +750,17 @@ export default function PlansScreen() {
               ? 'Searching, Auto Fill, translating and applying are always unlimited.'
               : trialActive && freeLeft
                 ? (freeLeft.resumes + freeLeft.letters === 0
-                  ? `You have used your ${offerText}${oneTime ? ' — a one-time allowance, it does not refill' : ''}. Start a plan below, or use the one-time option, to keep generating.`
-                  : `${oneTime ? 'A one-time allowance — it does not refill. ' : ''}Searching, Auto Fill, translating and applying are always unlimited.`)
-                : oneTime
-                  ? 'Free — one time per device, it does not refill. Searching, Auto Fill, translating and applying are always unlimited.'
-                  : 'Searching, Auto Fill, translating and applying are always unlimited.'}
+                  ? (daily
+                    ? `You have made today's ${offerText}. More open up ${nextOpen || 'within 24 hours'} — or a plan below adds more each month.`
+                    : `You have used your ${offerText}${oneTime ? ' — a one-time allowance, it does not refill' : ''}. Start a plan below, or use the one-time option, to keep generating.`)
+                  : daily
+                    ? 'Make and preview them free, every day. Searching, Auto Fill, translating and applying are always unlimited.'
+                    : `${oneTime ? 'A one-time allowance — it does not refill. ' : ''}Searching, Auto Fill, translating and applying are always unlimited.`)
+                : daily
+                  ? 'Free every day, one free plan per device. Searching, Auto Fill, translating and applying are always unlimited.'
+                  : oneTime
+                    ? 'Free — one time per device, it does not refill. Searching, Auto Fill, translating and applying are always unlimited.'
+                    : 'Searching, Auto Fill, translating and applying are always unlimited.'}
         </Text>
         {freeOffer ? (
           <View style={s.features}>
@@ -757,9 +776,9 @@ export default function PlansScreen() {
             free: the store owns the subscription, so the honest instruction is to cancel there. */}
         {current && !trialActive ? (
           <Text style={s.trialFallback}>
-            You are on {currentLabel}. Cancel in your {storeName} account settings and you return to
-            the Free plan (whatever is left of its {oneTime ? 'one-time ' : ''}allowance) when the period you
-            have paid for ends — nothing is lost in between.
+            {daily
+              ? `You are on ${currentLabel}. When its monthly allowance is used up, the Free plan's daily one still applies. Cancel in your ${storeName} account settings and you return to the Free plan when the period you have paid for ends — nothing is lost in between.`
+              : `You are on ${currentLabel}. Cancel in your ${storeName} account settings and you return to the Free plan (whatever is left of its ${oneTime ? 'one-time ' : ''}allowance) when the period you have paid for ends — nothing is lost in between.`}
           </Text>
         ) : null}
       </View>

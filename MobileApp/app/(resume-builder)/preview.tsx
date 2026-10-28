@@ -620,13 +620,13 @@ export default function ResumePreview() {
               style={s.actionHalf}
               activeOpacity={0.88}
               onPress={async () => {
-                // The free plan includes ONE regeneration. When it is spent, say so here — walking
-                // the user back through the AI form just to meet a 403 is the worse experience.
-                // The server enforces the same rule authoritatively.
+                // A regeneration is a generation (2026-10-29): the server sends freeLimit = used + what today's free
+                // resumes have left, so this fires only when today's are used — say so here rather than walking the
+                // user back through the AI form to meet a 402. The server enforces the same rule authoritatively.
                 if (!regen.isPaid && regen.used >= regen.freeLimit) {
                   Alert.alert(
-                    'Regeneration used',
-                    'Your free plan includes one regeneration, and you have used it. Upgrade to keep refining your resume.',
+                    'Today’s free resumes are used',
+                    'Regenerating makes a new resume, and today’s free ones are used. More open up within 24 hours, or a plan lets you keep refining now.',
                     [{ text: 'Not now', style: 'cancel' }, { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) }],
                   );
                   return;

@@ -92,7 +92,16 @@ for (const [n, re, what] of [
     problems.push(`Free plan: ${what} allowance ${n} not shown`);
   }
 }
-if (TRIAL.oneTime) {
+if (TRIAL.daily) {
+  // 2026-10-29: 10 + 10 in any 24 hours. The page must say it is daily, and must not still call it one time.
+  if (!/(?:every|a|per)\s+day|daily/i.test(html)) problems.push('Free plan is daily, but the page never says "a day"/"every day"');
+  for (const [re, label] of [
+    [/<strong>3<\/strong>\s+(?:AI\s+)?(?:resumes?|cover letters?)/i, '"3 resumes / 3 cover letters"'],
+    [/one time, no card|does not refill|one time and do not refill/i, '"one time … does not refill"'],
+  ]) {
+    if (re.test(html)) problems.push(`page still describes the old one-time Free plan (${label}) — it is daily`);
+  }
+} else if (TRIAL.oneTime) {
   // A one-time allowance described as recurring is the exact promise a user would hold us to.
   if (!/one[- ]time/i.test(html)) problems.push('Free plan is one-time, but the page never says "one time"');
   for (const [re, label] of [
@@ -138,5 +147,5 @@ if (problems.length) {
   console.error('\nUpdate the pricing section (and the FAQ JSON-LD) to match the catalog.');
   process.exit(1);
 }
-const freeCadence = TRIAL.oneTime ? 'one time' : `per ${TRIAL.days} days`;
+const freeCadence = TRIAL.daily ? 'a day' : TRIAL.oneTime ? 'one time' : `per ${TRIAL.days} days`;
 console.log(`✓ pricing parity: ${PLANS.length} plans + the Free plan (${TRIAL.resumes} resumes / ${TRIAL.letters} letters, ${freeCadence}) all match entitlements.js`);

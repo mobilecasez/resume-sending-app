@@ -1956,10 +1956,11 @@ export default function EmployerHome({
   const hint = gateHint && gateHint.sig === lookupSig ? {
     text: gateHint.via !== 'used'
       ? (gateHint.via === 'free' ? 'Included in your free allowance' : 'Included in your plan')
-      // The free allowance is ONE TIME and never comes back; a plan's is this month's.
+      // The free allowance is TODAY'S (the last 24 hours, since 2026-10-29); a plan's is this month's — and once a
+      // plan is spent the free day pays, so a refusal for a subscriber means both are used.
       : !paidRead ? 'Your allowance is used'
-        : isPaid ? 'This month’s plan allowance is used'
-          : kind === 'cover_letter' ? 'Your free cover letters are used' : 'Your free resume generations are used',
+        : isPaid ? 'Your plan’s allowance is used for now'
+          : kind === 'cover_letter' ? 'Today’s free cover letters are used' : 'Today’s free resume generations are used',
     warn: gateHint.via === 'used',
   } : null;
 

@@ -134,7 +134,9 @@ export default function UsageScreen() {
   const quotaTotals = sub
     ? status!.plans.find((p) => p.key === sub.planKey)
     : (trialActive ? status!.trial : null);
-  const oneTime = !!(status?.trial?.oneTime || trial?.oneTime);
+  // DAILY since 2026-10-29 (10 + 10 in any 24 hours); an older server says oneTime instead.
+  const daily = !!(status?.trial?.daily || trial?.daily);
+  const oneTime = !daily && !!(status?.trial?.oneTime || trial?.oneTime);
   // A bar's total is the allowance PLUS any quota_grants bonus: `remaining` already includes the
   // bonus, so used + remaining is the true size whenever it is larger than the plain allowance.
   const totalOf = (base: number, used: number, left: number) => Math.max(base, used + left);
@@ -160,8 +162,12 @@ export default function UsageScreen() {
               {sub ? sub.label : trialActive ? (status?.trial?.label || 'Free plan') : trial?.blocked === 'device_trial_used' ? 'Free allowance already used on this device' : 'No plan'}
             </Text>
             {sub ? <Text style={s.planSub}>Renews {when(sub.periodEnd)}{quotaTotals ? ` · ${quotaTotals.resumes} tailored resumes + ${quotaTotals.letters} cover letters a month` : ''}</Text>
+              : trialActive && freeUsedUp && daily
+                ? <Text style={s.planSub}>Today's are used — more open up within 24 hours, or pick a plan</Text>
               : trialActive && freeUsedUp
                 ? <Text style={s.planSub}>All used — pick a plan to keep generating</Text>
+              : trialActive && daily && quotaTotals
+                ? <Text style={s.planSub}>{quotaTotals.resumes} tailored resumes + {quotaTotals.letters} cover letters a day, free to make and preview</Text>
               : trialActive && oneTime
                 ? <Text style={s.planSub}>One-time allowance — it does not refill</Text>
               : <Text style={s.planSub}>Pick a plan to keep generating</Text>}

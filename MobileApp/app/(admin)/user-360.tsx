@@ -2181,13 +2181,13 @@ function planTileSub(p?: AdminUserPlan | null): string {
   if (!p) return '';
   if (p.status === 'never_started') return 'nothing used yet';
   if (p.status === 'unknown_plan') return 'plan key not in catalog';
-  // ⚠️ Only a PAID plan has a next period. The Free allowance is one-time since 2026-09-13, so a
-  // "refills in Nd" here would be a promise the server no longer keeps — even if an older server
-  // still sends window_days_left for a free user.
+  // ⚠️ Only a PAID plan has a next period. The Free allowance is the last 24 hours since 2026-10-29 (one
+  // time before that), so a "refills in Nd" here would be a promise the server does not make — even if an
+  // older server still sends window_days_left for a free user.
   if (p.status === 'paid' && p.window_days_left != null) return `renews in ${p.window_days_left}d`;
   if (p.status === 'free') {
     const left = p.quotas.reduce((n, q) => n + Math.max(0, Number(q.remaining) || 0), 0);
-    return left > 0 ? 'one-time allowance' : 'free allowance used up';
+    return left > 0 ? 'daily allowance' : 'today’s free allowance used up';
   }
   return p.status === 'paid' ? 'active' : 'free plan';
 }
@@ -2195,7 +2195,7 @@ function planTileSub(p?: AdminUserPlan | null): string {
 /** The sentence that explains the plan in words, so the numbers below have context. */
 function planSubline(p: AdminUserPlan): string {
   if (p.status === 'never_started') {
-    return `On the Free plan. They have not generated anything yet, so the one-time ${freeAllowanceText(p)} is untouched.`;
+    return `On the Free plan. They have not generated anything yet, so today’s ${freeAllowanceText(p)} are untouched.`;
   }
   if (p.status === 'unknown_plan') {
     return `Subscription row has plan key “${p.key}”, which is not in the catalog — the app falls back to Free for this user.`;
@@ -2207,9 +2207,9 @@ function planSubline(p: AdminUserPlan): string {
     if (p.pending_label) bits.push(`changing to ${p.pending_label} at renewal`);
     return bits.join(' · ');
   }
-  // No refill date: the Free allowance is one time for the life of the account (counted from
-  // max(signup, 2026-09-13)), so window_end is deliberately not shown for a free user.
-  const bits = [`Free plan — ${freeAllowanceText(p)}, one time (never refills)`];
+  // No refill date: the Free allowance rolls over the last 24 hours (since 2026-10-29), so window_end is
+  // deliberately not shown for a free user — window_start is "24 hours ago" (or signup, if later).
+  const bits = [`Free plan — ${freeAllowanceText(p)} in any 24 hours`];
   if (p.window_start) bits.push(`counted from ${dateLabel(p.window_start)}`);
   return bits.join(' · ');
 }
@@ -2217,7 +2217,7 @@ function planSubline(p: AdminUserPlan): string {
 /** "3 résumés and 3 cover letters" — from the server's own quota rows when it sent them, so this
  *  screen cannot drift from entitlements.FREE again (it said "5 letters + 1 résumé every 30 days"
  *  for a month after that stopped being true). The literal is only the no-data fallback. */
-const FREE_FALLBACK = { resume: 3, cover_letter: 3 };
+const FREE_FALLBACK = { resume: 10, cover_letter: 10 };
 function freeAllowanceText(p: AdminUserPlan): string {
   const base = (kind: AdminPlanQuota['kind']) => {
     const q = p.quotas.find((x) => x.kind === kind);
@@ -2296,7 +2296,7 @@ function PlanSection({ plan }: { plan?: AdminUserPlan | null }) {
 
       {p.status === 'never_started' ? (
         <Text style={s.footnote}>
-          No usage recorded. The Free allowance is one time and has not been touched, so all of it is
+          No usage recorded. The Free allowance (per 24 hours) has not been touched, so all of it is
           available.
         </Text>
       ) : null}

@@ -1779,10 +1779,17 @@ console.log('── ⚠️ A USED-UP ALLOWANCE NAMES WHICH ONE, AND NEVER A CRED
     ok('the device-blocked sentence → free', allowanceOf('quota_exhausted', DEVICE, false) === 'free');
     ok('a sentence naming neither falls back to isPaid; regen_limit is always free',
       allowanceOf('quota_exhausted', '', true) === 'plan' && allowanceOf('quota_exhausted', '', false) === 'free' && allowanceOf('regen_limit', PLAN_L, true) === 'free');
+    // 2026-10-29, the daily Free plan: the server's new sentences, word for word (entitlements.canConsumeMany).
+    const FREE_DAY = "You've used today's 10 free resume generations. The next one opens up in about 3 hours, or start a plan in Plans & Usage to keep going now.";
+    const BOTH = "You've used this month's cover letters in your plan and today's 10 free ones. The next free one opens up in about 5 hours, or upgrade in Plans & Usage.";
+    ok('the daily free sentence → free', allowanceOf('quota_exhausted', FREE_DAY, false) === 'free');
+    ok('⚠️ a subscriber\'s "plan AND today\'s free ones" sentence → plan (it says "free" too, "in your plan" decides)', allowanceOf('quota_exhausted', BOTH, true) === 'plan');
   }
   ok('the overlay\'s titles are the contract\'s, free and plan, resume and letter',
-    /title: "You've used your free cover letters"/.test(overlaySrc) && /title: "You've used your free resume generations"/.test(overlaySrc)
+    /title: "You've used today's free cover letters"/.test(overlaySrc) && /title: "You've used today's free resume generations"/.test(overlaySrc)
     && /title: "You've used this month's cover letters"/.test(overlaySrc) && /title: "You've used this month's resume generations"/.test(overlaySrc));
+  ok('the free refusal repeats the server\'s own "opens up in about N hours" (never invents a time)',
+    /\/opens up \(\(\?:in about\|within\) \[\^,\.\]\+\)\/i\.exec/.test(overlaySrc) && /The next free one opens up \$\{opens\}/.test(overlaySrc));
   ok('⚠️ the overlay\'s refusal copy never promises a refill or names credits',
     !/credit/i.test(overlayC) && !/refills? (on|in|every)|every 30 days/i.test(overlayC));
   ok('Home tells the overlay whether the user is on a plan', /isPaid=\{isPaid\}/.test(homeC));
