@@ -30,6 +30,7 @@ import { useFocusEffect } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { E } from '../employer-home/theme';
 import { buyDownloadPass, fetchPassPrice, fetchDownloadState, recoverStrandedPasses } from '../../services/downloadPassService';
+import { track } from '../../services/analytics';
 
 export default function DownloadPaywallSheet({
   visible, employer, onClose, onUnlocked, onSeePlans,
@@ -46,6 +47,11 @@ export default function DownloadPaywallSheet({
   const insets = useSafeAreaInsets();
   const t = useRef(new Animated.Value(0)).current;
   const [price, setPrice] = useState<string | null>(null);
+  // ⚠️ "NO PRICE YET" AND "NOT ON SALE" ARE DIFFERENT ANSWERS (2026-10-28). The sheet used to show
+  // "Checking the App Store price…" for ever when the store had no pass to sell — the first option on the
+  // only screen where anyone meets a price was a dead one, and its tap said "not on sale yet". Once the store
+  // has answered, an unavailable pass says so and the plan becomes the way to download today.
+  const [passState, setPassState] = useState<'loading' | 'available' | 'unavailable'>('loading');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   // False the moment the calling screen is covered (the plans screen being the only route this
@@ -61,13 +67,22 @@ export default function DownloadPaywallSheet({
     }).start();
     if (visible) {
       setNote(null);
-      fetchPassPrice().then(setPrice).catch(() => setPrice(null));
+      setPassState('loading');
+      // The paywall is the one moment a free user meets a price; until 2026-10 nothing recorded it.
+      track('paywall_shown', { forEmployer: !!employer }).catch(() => {});
+      fetchPassPrice()
+        .then((p) => {
+          setPrice(p);
+          setPassState(p ? 'available' : 'unavailable');
+          track('paywall_pass', { available: !!p }).catch(() => {});
+        })
+        .catch(() => { setPrice(null); setPassState('unavailable'); });
       // A purchase Play still holds unconsumed is money we took and never honoured. Heal it as the
       // sheet opens, so someone who was cut off mid-verification is not asked to pay a second time.
       // No-op everywhere but Android; the server dedupes, so it cannot grant twice.
       recoverStrandedPasses().catch(() => {});
     }
-  }, [visible, t]);
+  }, [visible, t, employer]);
 
   // Coming BACK from the plans screen. If they subscribed, this sheet has nothing left to offer;
   // if they backed out, it stays exactly as it was and the one-off is still there.
@@ -82,25 +97,35 @@ export default function DownloadPaywallSheet({
   }, [visible, employer, onUnlocked]));
 
   const buy = async () => {
-    if (busy) return;
+    if (busy || passState !== 'available') return;
     setBusy(true); setNote(null);
+    track('paywall_pass_tap', { price }).catch(() => {});
+    // What the purchase ended as. ⚠️ `paid` and `pending` are not failures (see BuyResult) — counting them as
+    // such would make the funnel lie in exactly the direction that hides money we took.
+    let result = 'failed';
     try {
       const r = await buyDownloadPass(employer);
+      result = r.ok ? 'ok' : r.cancelled ? 'cancelled' : r.pending ? 'pending' : r.paid ? 'paid_unconfirmed' : 'failed';
       if (r.ok) { onUnlocked(); return; }
       if (r.cancelled) return;                       // they changed their mind; say nothing
       setNote(r.message || 'That did not go through.');
     } finally {
+      track('pass_purchase_result', { result }).catch(() => {});
       setBusy(false);
     }
   };
 
+  const seePlans = () => { track('paywall_plans_tap', { pass: passState }).catch(() => {}); onSeePlans(); };
+  const dismiss = () => { if (busy) return; track('paywall_dismissed', { pass: passState }).catch(() => {}); onClose(); };
+  const passOff = passState === 'unavailable';
+
   const who = employer ? employer : 'this employer';
 
   return (
-    <Modal visible={visible && screenFocused} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
+    <Modal visible={visible && screenFocused} transparent animationType="none" onRequestClose={dismiss} statusBarTranslucent>
       <View style={s.fill}>
         <Animated.View style={[StyleSheet.absoluteFill, { opacity: t }]}><View style={s.scrim} /></Animated.View>
-        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={busy ? undefined : onClose} />
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={busy ? undefined : dismiss} />
 
         <Animated.View
           style={[s.sheet, {
@@ -114,32 +139,42 @@ export default function DownloadPaywallSheet({
               <Text style={s.h}>Download this document</Text>
               <Text style={s.sub} numberOfLines={2}>Previewing every design is free. Downloading is paid.</Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={s.x} activeOpacity={0.85} disabled={busy} accessibilityLabel="Close">
+            <TouchableOpacity onPress={dismiss} style={s.x} activeOpacity={0.85} disabled={busy} accessibilityLabel="Close">
               <Ionicons name="close" size={18} color={E.textMuted} />
             </TouchableOpacity>
           </View>
 
           {/* ── one-off ─────────────────────────────────────────────────────────────────── */}
-          <TouchableOpacity style={s.one} activeOpacity={0.9} onPress={buy} disabled={busy}>
-            <View style={s.oneIcon}><Ionicons name="download" size={19} color="#fff" /></View>
+          <TouchableOpacity
+            style={[s.one, passOff && s.oneOff]}
+            activeOpacity={0.9}
+            onPress={buy}
+            disabled={busy || passState !== 'available'}
+            accessibilityState={{ disabled: busy || passState !== 'available' }}
+          >
+            <View style={[s.oneIcon, passOff && s.oneIconOff]}><Ionicons name="download" size={19} color="#fff" /></View>
             <View style={{ flex: 1 }}>
-              <Text style={s.oneTitle} numberOfLines={1}>Just this one</Text>
+              <Text style={[s.oneTitle, passOff && s.textOff]} numberOfLines={1}>Just this one</Text>
               <Text style={s.oneSub} numberOfLines={2}>
-                Unlocks every design and the cover letter for {who}. One payment, no subscription.
+                {passOff
+                  ? 'One-off downloads are not available in your store yet.'
+                  : `Unlocks every design and the cover letter for ${who}. One payment, no subscription.`}
               </Text>
             </View>
             {busy
               ? <ActivityIndicator color={E.blueDeep} />
-              : <Text style={s.price} numberOfLines={1}>{price || '—'}</Text>}
+              : passState === 'loading'
+                ? <ActivityIndicator size="small" color={E.textFaint} />
+                : <Text style={[s.price, passOff && s.textOff]} numberOfLines={1}>{passOff ? 'Soon' : price}</Text>}
           </TouchableOpacity>
 
           {/* ── the plan ────────────────────────────────────────────────────────────────── */}
-          <TouchableOpacity style={s.planRow} activeOpacity={0.9} onPress={onSeePlans} disabled={busy}>
+          <TouchableOpacity style={[s.planRow, passOff && s.planRowPrimary]} activeOpacity={0.9} onPress={seePlans} disabled={busy}>
             <LinearGradient colors={[E.blue, E.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.planIcon}>
               <Ionicons name="sparkles" size={17} color="#fff" />
             </LinearGradient>
             <View style={{ flex: 1 }}>
-              <Text style={s.planTitle} numberOfLines={1}>Or take a monthly plan</Text>
+              <Text style={s.planTitle} numberOfLines={1}>{passOff ? 'Take a monthly plan' : 'Or take a monthly plan'}</Text>
               <Text style={s.planSub} numberOfLines={2}>
                 Downloads every month, plus AI resumes and cover letters.
               </Text>
@@ -153,7 +188,7 @@ export default function DownloadPaywallSheet({
               <Text style={s.noteTx} numberOfLines={3}>{note}</Text>
             </View>
           )}
-          {!price && (
+          {passState === 'loading' && (
             <Text style={s.unavailable} numberOfLines={2}>
               {Platform.OS === 'ios' ? 'Checking the App Store price…' : 'Checking the Play Store price…'}
             </Text>
@@ -180,6 +215,10 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 16, padding: 13,
     borderRadius: 16, borderWidth: 1.5, borderColor: 'rgba(79,141,255,0.55)', backgroundColor: 'rgba(79,141,255,0.07)',
   },
+  oneOff: { borderColor: E.border, backgroundColor: E.inputBg },
+  oneIconOff: { backgroundColor: E.textFaint },
+  textOff: { color: E.textFaint },
+  planRowPrimary: { borderWidth: 1.5, borderColor: 'rgba(79,141,255,0.55)', backgroundColor: 'rgba(79,141,255,0.07)' },
   oneIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: E.blueDeep, alignItems: 'center', justifyContent: 'center' },
   oneTitle: { fontSize: 15, fontWeight: '800', color: E.ink },
   oneSub: { fontSize: 11.5, fontWeight: '600', color: E.textMuted, marginTop: 2, lineHeight: 15 },

@@ -23,19 +23,26 @@ const MAX_ASKS = 4;                               // hard cap on lifetime prompt
 const COOLDOWN_MS = 2 * 24 * 60 * 60 * 1000;      // ≥ 2 days between prompts
 let askedThisSession = false;
 
-type RatingState = { rated: boolean; handled: boolean; askCount: number; lastAskAt: number };
+type RatingState = { rated: boolean; handled: boolean; askCount: number; lastAskAt: number; valueAt?: number };
+
+// ⚠️ ASK AFTER A SUCCESS, NOT AFTER A DRAFT (2026-10-28). The résumé and letter prompts fired on leaving the
+// preview — usually the person's FIRST visit, before they had downloaded anything — and the prompt could not be
+// closed. Those triggers now wait until this device has seen a real success: a document actually downloaded.
+// An application sent (apply_portal / apply_email) is a success in itself, so those triggers are unchanged.
+const NEEDS_SUCCESS = new Set(['resume', 'cover_letter']);
 
 async function getState(): Promise<RatingState> {
   try { const raw = await AsyncStorage.getItem(KEY); if (raw) return JSON.parse(raw); } catch {}
-  return { rated: false, handled: false, askCount: 0, lastAskAt: 0 };
+  return { rated: false, handled: false, askCount: 0, lastAskAt: 0, valueAt: 0 };
 }
 async function setState(s: RatingState) { try { await AsyncStorage.setItem(KEY, JSON.stringify(s)); } catch {} }
 
-/** Should we surface the prompt now? (not rated, within cap, past cooldown, once/session) */
-export async function shouldAskForReview(): Promise<boolean> {
+/** Should we surface the prompt now? (not rated, within cap, past cooldown, once/session, after a success) */
+export async function shouldAskForReview(trigger?: string): Promise<boolean> {
   if (askedThisSession) return false;
   const s = await getState();
   if (s.rated) return false;
+  if (trigger && NEEDS_SUCCESS.has(trigger) && !s.valueAt) return false;
   if (s.askCount >= MAX_ASKS) return false;
   if (s.lastAskAt && Date.now() - s.lastAskAt < COOLDOWN_MS) return false;
   return true;
@@ -45,6 +52,12 @@ export async function recordAsked() {
   askedThisSession = true;
   const s = await getState();
   await setState({ ...s, askCount: s.askCount + 1, lastAskAt: Date.now() });
+}
+
+/** A real success on this device — call it when a download has actually been saved. */
+export async function noteValueMoment() {
+  const s = await getState();
+  if (!s.valueAt) await setState({ ...s, valueAt: Date.now() });
 }
 
 export async function markRated() { const s = await getState(); await setState({ ...s, rated: true }); }

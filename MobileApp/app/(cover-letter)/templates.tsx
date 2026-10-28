@@ -24,6 +24,8 @@
 // sends) under letterSend's CLASSIC_SEND_KEY and opens the Send page with classic=1 — which sends it through the classic
 // lane (gated and charged exactly like this page's classic Download). Still navigation only: nothing is sent or charged here.
 import React, { useEffect, useRef, useState } from 'react';
+import { track } from '../../services/analytics';
+import { noteValueMoment } from '../../services/ratingService';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
   Alert, ActivityIndicator, Dimensions, Platform, Modal, Pressable,
@@ -484,6 +486,9 @@ export default function CoverLetterTemplates() {
         Alert.alert('Downloaded', `Cover letter ${fmt === 'docx' ? 'Word document' : 'PDF'} saved successfully.`);
       }
       refreshDownloadState();   // the pass is now bound, or a plan download spent
+      // A file the person actually has: the success the rating prompt waits for, and the end of the paywall funnel.
+      noteValueMoment().catch(() => {});
+      track('download_complete', { kind: 'cover_letter', format: fmt }).catch(() => {});
     } catch (e: any) {
       Alert.alert('Download failed', e.message || 'Please try again.');
     } finally {

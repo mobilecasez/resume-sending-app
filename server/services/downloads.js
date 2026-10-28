@@ -247,8 +247,31 @@ async function canDownload(userId, { employer = null } = {}, req) {
   }
 
   if (await unboundPassCount(userId, env) > 0) return { allowed: true, via: 'pass' };
-  if (!METERED) return { allowed: false, reason: 'paid_required', message: 'Downloads are on paid plans.' };
-  return { allowed: false, reason: sub ? 'quota_exhausted' : 'paid_required', message: gate && gate.message };
+  const refused = !METERED
+    ? { allowed: false, reason: 'paid_required', message: 'Downloads are on paid plans.' }
+    : { allowed: false, reason: sub ? 'quota_exhausted' : 'paid_required', message: gate && gate.message };
+  noteBlocked(userId, refused.reason, employer, env, req);
+  return refused;
+}
+
+/**
+ * ⚠️ THE ONE MOMENT A FREE USER MEETS A PRICE, RECORDED (2026-10-28). The free plan includes no downloads, so a
+ * refusal here IS the paywall — and nothing recorded it: the October sales analysis could not say how many people
+ * reached it and left. One server-side row per refusal (the app may be an old build, or offline when the sheet
+ * opens). canDownload is only ever called for a real download or attachment attempt, never for a status read, so
+ * this does not over-count. Fire and forget: it never delays or breaks the answer.
+ */
+function noteBlocked(userId, reason, employer, env, req) {
+  try {
+    const h = (req && req.headers) || {};
+    require('./liveAnalytics').trackEvent({
+      userId,
+      event: 'download_blocked',
+      platform: h['x-platform'] || null,
+      appVersion: h['x-app-version'] || null,
+      props: { reason, forEmployer: !!employer, env },
+    }).catch(() => {});
+  } catch { /* analytics must never touch a download */ }
 }
 
 /**

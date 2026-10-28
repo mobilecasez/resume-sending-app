@@ -22,6 +22,8 @@
 // attach, email attachment). A tailored version choosing a design must not repaint every other file.
 // Without `docId` every line below behaves exactly as it did before doc mode existed.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { track } from '../../services/analytics';
+import { noteValueMoment } from '../../services/ratingService';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
   Alert, ActivityIndicator, Dimensions, Platform, Modal, Pressable,
@@ -668,6 +670,9 @@ export default function ResumeTemplates() {
       // The pass is now bound to this employer, or a plan download has been spent — either way the
       // button's label is stale until we re-read it.
       refreshDownloadState();
+      // A file the person actually has: the success the rating prompt waits for, and the end of the paywall funnel.
+      noteValueMoment().catch(() => {});
+      track('download_complete', { kind: 'resume', format: fmt }).catch(() => {});
     } catch (e: any) {
       Alert.alert('Download failed', e.message || 'Please try again.');
     } finally {

@@ -70,7 +70,7 @@ ok('a purchase is confirmed by re-reading the server, not by the store callback'
   /async function waitForPass/.test(svc) && /fetchDownloadState/.test(svc));
 
 console.log('── ⚠️ prices are the STORE’s, so India sees ₹99 and not "$1" ──');
-ok('the sheet renders displayPrice', /displayPrice/.test(bill) && /price \|\| /.test(sheet));
+ok('the sheet renders displayPrice (or "Soon" when the store is not selling it)', /displayPrice/.test(bill) && /passOff \? 'Soon' : price\}/.test(sheet));
 ok('…and never hardcodes a currency', !/\$0?\.?99/.test(sheet) && !/₹99/.test(sheet));
 ok('a sku the store did not price is NOT purchasable', /if \(!item \|\| !item\.id \|\| !want\.has\(item\.id\) \|\| !item\.displayPrice\) continue;/.test(bill));
 

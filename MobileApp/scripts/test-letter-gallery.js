@@ -201,6 +201,8 @@ Module._load = function (request) {
   if (request === './storeEnv') return { storeEnvHeader: async () => ({}) };
   if (request === '../../components/downloads/DownloadPaywallSheet') return { __esModule: true, default: 'DownloadPaywallSheet' };
   if (request === '../../components/RatingPromptModal') return { __esModule: true, default: 'RatingPromptModal', useRatingPrompt: () => ({ trigger: null, ask: async () => false, close() {} }) };
+  if (request === '../../services/analytics') return { track: async () => {} };
+  if (request === '../../services/ratingService') return { noteValueMoment: async () => {} };
   if (request === '../../hooks/useEventCosts') return { useEventCosts: () => ({ costs: {} }) };
   if (request === '../../services/downloadPassService') return {
     fetchDownloadState: async () => (locked ? SHUT : OPEN),

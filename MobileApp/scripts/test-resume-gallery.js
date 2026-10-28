@@ -233,6 +233,8 @@ Module._load = function (request, parent, isMain) {
   if (request === 'expo-sharing') return { isAvailableAsync: async () => false, shareAsync: async () => {} };
   if (request === '../../config') return { API_BASE: 'https://api.test' };
   if (request === '../../components/downloads/DownloadPaywallSheet') return { __esModule: true, default: 'DownloadPaywallSheet' };
+  if (request === '../../services/analytics') return { track: async () => {} };
+  if (request === '../../services/ratingService') return { noteValueMoment: async () => {} };
   if (request === '../../services/downloadPassService') return {
     fetchDownloadState: async () => ({ metered: false, paid: true, unlimited: true, remaining: null, passes: 0, ownsEmployer: false, employer: null }),
     downloadButtonLabel: () => ({ locked: false, label: 'Download' }),

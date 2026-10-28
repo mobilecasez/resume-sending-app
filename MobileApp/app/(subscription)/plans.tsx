@@ -44,6 +44,7 @@ import {
   buyDownloadPass, fetchPassPrice, fetchDownloadState, type DownloadState,
 } from '../../services/downloadPassService';
 import { fetchUcbConfig, payWithOurGateway } from '../../services/userChoiceBilling';
+import { track } from '../../services/analytics';
 
 const T = {
   bg: '#F0F4FA', card: '#FFFFFF', ink: '#0B0F22', muted: '#5B6B8A', faint: '#8896B0',
@@ -158,6 +159,8 @@ export default function PlansScreen() {
   // The plan a tap is currently buying, readable from a listener closure that was created
   // before the tap happened (Google's chooser fires long after the effect mounted).
   const busyKeyRef = useRef<string | null>(null);
+  // In 90 days no real user was ever recorded on this screen — partly because nothing recorded it.
+  useEffect(() => { track('plans_view', { platform: Platform.OS }).catch(() => {}); }, []);
 
   const [restoring, setRestoring] = useState(false);
   const alive = useRef(true);
@@ -395,6 +398,9 @@ export default function PlansScreen() {
 
     // No store product → the honest stub. Same behaviour this screen had before purchases existed.
     if (!prod) {
+      // ⚠️ Recorded since 2026-10-28: Google Play sold the plans in only 4 countries until then, and every
+      // Android user elsewhere landed here in silence.
+      track('plan_unavailable', { plan: p.key }).catch(() => {});
       Alert.alert(
         // "US list" because this is the catalog price, not a quote: the store has not told us what
         // this user would actually be charged, and inventing a local figure is the exact thing this
@@ -412,6 +418,10 @@ export default function PlansScreen() {
     }
 
     setBusyKey(p.key);
+    // How this purchase ended, recorded once in `finally` below. ⚠️ 'retry' is NOT a failure: the store took
+    // the money and only our server's confirmation is missing — counting it as failed would hide revenue.
+    let planResult = 'failed';
+    track('plan_purchase_start', { plan: p.key }).catch(() => {});
     try {
       // Same token on both stores: it is what lets a later renewal/refund webhook be attributed to
       // this user instead of landing with a NULL user_id like every store_notifications row today.
@@ -449,14 +459,16 @@ export default function PlansScreen() {
         groupSkus: (status?.plans || []).map(skuFor).filter((x): x is string => !!x),
       });
 
-      if (outcome.status === 'cancelled') return;             // the user said no. Say nothing.
+      if (outcome.status === 'cancelled') { planResult = 'cancelled'; return; }   // the user said no. Say nothing.
 
       if (outcome.status === 'unavailable') {
+        planResult = 'unavailable';
         Alert.alert('Not available', 'In-app purchases are not available on this device.');
         return;
       }
 
       if (outcome.status === 'pending') {
+        planResult = 'pending';
         // Android deferred payment. Nothing has been charged and nothing is owed yet.
         await loadStatus();
         Alert.alert(
@@ -472,6 +484,7 @@ export default function PlansScreen() {
       }
 
       const { result, reason } = await settleOne(outcome.purchase);
+      planResult = result;                          // confirmed | retry | rejected
       const fresh = await loadStatus();
 
       if (result === 'confirmed') {
@@ -505,6 +518,7 @@ export default function PlansScreen() {
         Alert.alert('We could not activate this', rejectionText(reason));
       }
     } finally {
+      track('plan_purchase_result', { plan: p.key, result: planResult }).catch(() => {});
       if (alive.current) setBusyKey(null);
     }
   }, [busyKey, restoring, store, storeUsable, storeName, status, settleOne, loadStatus, replacementFor]);
