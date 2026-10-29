@@ -51,16 +51,19 @@ const { PRODUCTION, normalizeEnvironment, requestEnvironment } = require('./stor
 // clamps at 0 until the next period, and the admin screen flags the row as `over`. The website
 // (scripts/check-pricing-parity.js) and the store-listing tools read these literals as source, so
 // PLANS must stay one plain array literal ending in "\n];".
+// ⚠️ autoApplies (2026-10-29): how many applications the Job Agent may PREPARE in a billing month (services/jobAgent.js —
+// the AI cost is spent writing the documents, so preparation is what is metered). Defaults only: the owner overrides any
+// of them in job_agent_limits without a release. Sized at ≈$0.023 typical / $0.058 worst per application.
 const PLANS = [
-  { key: 'starter', label: 'Starter', priceUsd: 4.99,  letters: 10,  resumes: 6,   downloads: 20,
+  { key: 'starter', label: 'Starter', priceUsd: 4.99,  letters: 10,  resumes: 6,   downloads: 20, autoApplies: 25,
     productIos: 'com.cvapplyr.mobile.sub.starter', productAndroid: 'com.cvapplyr.mobile.sub.starter' },
-  { key: 'plus',    label: 'Plus',    priceUsd: 9.99,  letters: 25,  resumes: 15,  downloads: 40,
+  { key: 'plus',    label: 'Plus',    priceUsd: 9.99,  letters: 25,  resumes: 15,  downloads: 40, autoApplies: 60,
     productIos: 'com.cvapplyr.mobile.sub.plus', productAndroid: 'com.cvapplyr.mobile.sub.plus' },
-  { key: 'pro',     label: 'Pro',     priceUsd: 14.99, letters: 50,  resumes: 25,  downloads: 60,
+  { key: 'pro',     label: 'Pro',     priceUsd: 14.99, letters: 50,  resumes: 25,  downloads: 60, autoApplies: 120,
     productIos: 'com.cvapplyr.mobile.sub.pro', productAndroid: 'com.cvapplyr.mobile.sub.pro' },
-  { key: 'power',   label: 'Power',   priceUsd: 24.99, letters: 100, resumes: 40,  downloads: 100,
+  { key: 'power',   label: 'Power',   priceUsd: 24.99, letters: 100, resumes: 40,  downloads: 100, autoApplies: 250,
     productIos: 'com.cvapplyr.mobile.sub.power', productAndroid: 'com.cvapplyr.mobile.sub.power' },
-  { key: 'max',     label: 'Max',     priceUsd: 49.99, letters: 500, resumes: 100, downloads: 200,
+  { key: 'max',     label: 'Max',     priceUsd: 49.99, letters: 500, resumes: 100, downloads: 200, autoApplies: 500,
     productIos: 'com.cvapplyr.mobile.sub.max', productAndroid: 'com.cvapplyr.mobile.sub.max' },
 ];
 
@@ -349,6 +352,18 @@ async function allowanceIn(userId, kind, base, since) {
   return base + await bonusSince(userId, kind, since);
 }
 
+/**
+ * PLANS as the app shows them: the Job Agent allowance is the owner's override (job_agent_limits) when one is set, so
+ * a plan card never promises a number the agent will not honour. Any failure shows the catalogue defaults.
+ */
+async function plansForDisplay() {
+  try {
+    const limits = await require('./jobAgent').getLimits();
+    const m = new Map((limits || []).map((l) => [l.planKey, l.monthly]));
+    return PLANS.map((p) => (m.has(p.key) ? { ...p, autoApplies: m.get(p.key) } : p));
+  } catch { return PLANS; }
+}
+
 // Full picture for the app: plan, trial, remaining, used — one call.
 async function getStatus(userId, req) {
   const deviceId = req ? deviceIdOf(req) : null;
@@ -356,7 +371,7 @@ async function getStatus(userId, req) {
   const sub = await activeSubscription(userId, env);
   const plan = sub ? planByKey(sub.plan_key) : null;
   const out = {
-    plans: PLANS, trial: TRIAL,
+    plans: await plansForDisplay(), trial: TRIAL,
     // The environment this answer was computed in. The app persists it off a verify/restore
     // response (services/storeEnv.ts) and echoes it back as x-store-env; surfacing it here is what
     // makes "why does my TestFlight plan not show up" answerable instead of a mystery.

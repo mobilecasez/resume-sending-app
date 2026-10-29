@@ -75,6 +75,7 @@ function exec(sqlRaw, p = []) {
   if ((m = /^SELECT COUNT\(\*\)::int AS n FROM usage_ledger WHERE user_id = \$1 AND kind = \$2 AND source = \$3 AND created_at >= \$4$/.exec(sql))) {
     return [{ n: db.ledger.filter((r) => r.user_id === Number(p[0]) && r.kind === p[1] && r.source === p[2] && ts(r.created_at) >= ts(p[3])).length }];
   }
+  if (/^SELECT plan_key, monthly FROM job_agent_limits$/.test(sql)) return [];
   if (/^SELECT MIN\(created_at\) AS first FROM usage_ledger WHERE user_id = \$1 AND kind = \$2 AND source = 'trial' AND created_at >= \$3$/.test(sql)) {
     const hit = db.ledger.filter((r) => r.user_id === Number(p[0]) && r.kind === p[1] && r.source === 'trial' && ts(r.created_at) >= ts(p[2]))
       .map((r) => ts(r.created_at));

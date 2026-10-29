@@ -13,6 +13,13 @@ const dbConfig = require('../../db-config');
 // carrying a nudgeKey are counted from user_nudge_log instead, which records one row per send.
 const SWITCHES = [
   {
+    // The Job Agent's daily run (server/services/jobAgent.js). Seeded OFF by Migration 053 and fail-closed: it
+    // writes tailored documents (AI cost) and may email applications for every user who switched their agent on.
+    key: 'job_agent', label: 'Job Agent daily run', icon: '🤖',
+    description: 'Once a day, for every user who switched their Job Agent on: finds matching jobs, scores the fit, prepares tailored résumés + letters within their plan’s monthly allowance, and (only if they chose automatic sending) emails applications from their own mailbox. Needs JOB_AGENT_SWEEP=1 too. Off by default.',
+    types: [],
+  },
+  {
     key: 'demand_jobs', label: 'Interest match alerts', icon: '🎯',
     description: '“New matching jobs for you” — sent when the demand researcher finds fresh jobs for a user’s saved interest card (place + skills). Max 1/user/day.',
     types: ['demand_jobs'],
@@ -181,7 +188,7 @@ async function getAll() {
  * Keys whose safe answer when we cannot read the table is OFF. Everything here either sends to a
  * user or arms something that does; "we could not check, so we sent it anyway" is the wrong call.
  */
-const FAIL_CLOSED = new Set(['lifecycle_nudges_master', 'instant_research']);
+const FAIL_CLOSED = new Set(['lifecycle_nudges_master', 'instant_research', 'job_agent']);
 
 async function isOn(key) {
   const all = await getAll();

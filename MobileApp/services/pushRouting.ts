@@ -95,6 +95,7 @@ export const PENDING_NAV_TTL_MS = 5 * 60 * 1000;
 const HANDLED_KEY = 'push_last_handled_response';
 
 const DISCOVER = '/(discover)';
+const JOB_AGENT = '/(job-agent)';
 const AI_HUB = '/(ai-hub)';
 const SUPPORT = '/(support)';
 const SUPPORT_THREAD = '/(support)/thread';
@@ -204,6 +205,11 @@ export function resolveRoute(data: any): PushRouteAction {
       return { kind: 'navigate', pathname: USAGE, params: {} };
     case 'plans':
       return { kind: 'navigate', pathname: PLANS, params: {} };
+
+    // The Job Agent's "N applications ready" — straight to its queue.
+    case 'job-agent':
+    case 'job_agent':
+      return { kind: 'navigate', pathname: JOB_AGENT, params: {} };
 
     case 'rewards':
     case 'earn':

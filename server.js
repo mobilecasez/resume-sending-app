@@ -4150,7 +4150,8 @@ app.use('/api/employer-docs', require('./server/routes/employerDocsRoutes'));   
 // are gated and claimed exactly like a Download (see server/controllers/letterSendController.js).
 app.use('/api/employer-docs', require('./server/routes/letterSendRoutes'));
 app.use('/api/downloads', require('./server/routes/downloads'));
-app.use('/api', require('./server/routes/resumeScoreRoutes'));   // résumé score popup (additive)
+app.use('/api', require('./server/routes/resumeScoreRoutes'));
+app.use('/api', require('./server/routes/jobAgentRoutes'));        // the Job Agent: find, score, prepare, send (additive)   // résumé score popup (additive)
 app.use('/api', require('./server/routes/journeyRoutes'));       // activation journey coach (additive)
 app.use('/api', featureFlagsRoutes);
 const batchRoutes = require('./server/routes/batchRoutes');
@@ -4229,6 +4230,11 @@ catch (e) { console.error('[firehose] failed to start:', e.message); }
 // seeds FALSE. Deploying this line must not start spending money on AI by itself.
 try { require('./server/services/resumeScorer').startScheduler(); }
 catch (e) { console.error('[resumeScore] failed to start:', e.message); }
+
+// The Job Agent's daily run. SHIPS DISARMED, twice: a no-op unless JOB_AGENT_SWEEP=1, and every sweep re-checks the
+// 'job_agent' switch, which Migration 053 seeds FALSE (fail-closed). It writes documents and can send email for users.
+try { require('./server/services/jobAgent').startScheduler(); }
+catch (e) { console.error('[jobAgent] failed to start:', e.message); }
 
 // Start server
 const HOST = process.env.HOST || '0.0.0.0';

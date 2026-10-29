@@ -1883,6 +1883,19 @@ async function runPostgresMigrations(db) {
         }
         console.log('✅ Migration 052: admin_install_alerts done');
 
+        // ── Migration 053: THE JOB AGENT ───────────────────────────────────────────────────────────
+        // Saved criteria, the per-user application queue, a fit-score cache and per-plan monthly overrides
+        // (server/services/jobAgent.js). The daily sweep ships DISARMED: the 'job_agent' switch row must EXIST and say
+        // FALSE (notifSwitch reads a missing row as ON), and JOB_AGENT_SWEEP=1 is needed as well.
+        {
+            const { AGENT_SQL } = require('./server/services/jobAgent');
+            for (const sql of AGENT_SQL) await col(sql);
+            await col(`INSERT INTO user_notification_switches (key, enabled, updated_at)
+                       VALUES ('job_agent', FALSE, NOW())
+                       ON CONFLICT (key) DO NOTHING`);
+        }
+        console.log('✅ Migration 053: job_agent_* tables done (sweep switch seeded OFF)');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

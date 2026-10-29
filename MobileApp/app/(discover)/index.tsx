@@ -28,6 +28,7 @@ import SilentWebSearch from '../../components/SilentWebSearch';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import GoogleJobBrowser, { directUrlOf } from '../../components/GoogleJobBrowser';
 import JobSearchLauncher, { type LaunchPayload } from '../../components/JobSearchLauncher';
+import JobAgentEntry from '../../components/JobAgentEntry';
 import SavedJobsList from '../../components/SavedJobsList';
 
 const T = {
@@ -537,6 +538,8 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
           for a role and a place, prefills both from their résumé, and only suggests things we have
           jobs for. See components/JobSearchLauncher.tsx. */}
       <JobSearchLauncher onLaunch={launchSearch} onExpandChange={setLauncherOpen} />
+      {/* The Job Agent: the agent does the searching, scoring and tailoring every day (app/(job-agent)). */}
+      {!launcherOpen ? <JobAgentEntry /> : null}
 
       {/* Recent searches — shown whenever the box is focused, filtered by what is typed.
           ⚠️ THIS USED TO REQUIRE AN EMPTY BOX (`query.trim().length === 0`), which meant it

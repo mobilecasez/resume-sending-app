@@ -26,6 +26,8 @@ async function authHeader(): Promise<Record<string, string>> {
 
 export type Plan = {
   key: string; label: string; priceUsd: number; letters: number; resumes: number;
+  /** Job Agent applications prepared per month (2026-10-29). Absent on an older server. */
+  autoApplies?: number;
   productIos?: string; productAndroid?: string;
 };
 export type SubscriptionStatus = {

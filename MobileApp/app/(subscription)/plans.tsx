@@ -878,6 +878,10 @@ export default function PlansScreen() {
                   : 'PDF & Word downloads'}
               />
               <Feature icon="sparkles-outline" text={RESEARCH_LINE} />
+              {/* The Job Agent's monthly allowance (server PLANS[].autoApplies, or the owner's override in job_agent_limits). */}
+              {Number(p.autoApplies) > 0 ? (
+                <Feature icon="rocket-outline" text={`Job Agent: ${plural(Number(p.autoApplies), 'application', 'applications')} prepared / month`} />
+              ) : null}
             </View>
             {buyable ? (
               <View style={[s.buyBtn, popular && s.buyBtnPopular]}>
